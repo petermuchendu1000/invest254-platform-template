@@ -18,7 +18,7 @@ function allowedLedgerTypes(): Set<string> {
   const schema = readFileSync(join(MIGRATIONS, "0003_wallet_ledger.sql"), "utf8");
   const m = schema.match(/type\s+text\s+not null\s+check\s*\(\s*type\s+in\s*\(([\s\S]*?)\)\s*\)/i);
   assert.ok(m, "could not locate the ledger_entries type CHECK in 0003_wallet_ledger.sql");
-  const set = new Set([...m![1].matchAll(/'([a-z_]+)'/g)].map((x) => x[1]!));
+  const set = new Set([...m![1]!.matchAll(/'([a-z_]+)'/g)].map((x) => x[1]!));
   assert.ok(set.size >= 5, `expected several allowed ledger types, got ${[...set].join(",")}`);
   return set;
 }
