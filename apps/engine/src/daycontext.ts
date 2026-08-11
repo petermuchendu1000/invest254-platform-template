@@ -88,7 +88,8 @@ export class SeedManager {
       : new SettlementEngine(curve, cfg);
     return {
       gameDayId: null, dateKey, dayStartMs: dayStartMsForKey(dateKey), seedVersion, seed, seedHash,
-      configVersion: cfg.version, cfg, curve, settlement, siteId: this.siteId,
+      configVersion: cfg.version, cfg, curve, settlement,
+      ...(this.siteId !== undefined ? { siteId: this.siteId } : {}),
     };
   }
 
