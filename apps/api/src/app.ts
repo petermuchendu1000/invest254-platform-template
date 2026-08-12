@@ -6,6 +6,7 @@ import type {
 import { Router, ApiError, serverFrom, type Ctx } from "./http.js";
 import { registerProtectedRoutes } from "./app.payments.js";
 import { registerHistoryRoutes } from "./app.history.js";
+import { registerSiteRoutes } from "./app.site.js";
 import { registerAuthRoutes } from "./app.auth.js";
 import { registerAffiliateRoutes } from "./app.affiliate.js";
 import { registerAdminRoutes } from "./app.admin.js";
@@ -22,6 +23,28 @@ import type { Server } from "node:http";
  */
 export interface BonusStatus { bonusId: string; amount: Cents; wageringX: number; wagered: Cents; required: Cents; remaining: Cents; status: string; createdAt: string; }
 export interface WalletBalance { real: Cents; bonus: Cents; currency: string; bonuses?: BonusStatus[]; }
+
+/**
+ * Public brand identity for one site (docs/22 Task E). Served by `GET /site/brand?host=` and
+ * consumed verbatim by the web resolver (`apps/web/src/lib/brand/brand.ts`) to re-skin per brand.
+ * Sourced from the `sites` row (migration 0044); no secrets.
+ */
+export interface Brand {
+  siteId: string;
+  slug: string;
+  name: string;
+  wordmarkText?: string | null;
+  logoUrl?: string | null;
+  faviconUrl?: string | null;
+  colorPrimary: string;
+  colorBg: string;
+  colorAccent: string;
+  theme: "dark" | "light" | "auto";
+  currency: string;
+  locale: string;
+  licenceLine?: string | null;
+  supportEmail?: string | null;
+}
 
 export interface ApiDeps {
   /** JWT verifier for player/admin routes; null → DEV header auth (see requireAuth). */
@@ -54,6 +77,8 @@ export interface ApiDeps {
   config: () => GameConfig | VersionedGameConfig;
   /** Public fairness record for a game-day id (commitment always; seed only after reveal). */
   fairnessById(gameDayId: number): Promise<FairnessRecord | null>;
+  /** Public brand resolution (docs/22 Task E): host (or slug) → the `sites` brand DTO, or null. */
+  brandByHost(host: string): Promise<Brand | null>;
 
   // ── E2: player + payments + admin ──
   /** Deposit/withdrawal orchestration over the atomic 0014 RPCs + Daraja. */
@@ -133,6 +158,7 @@ export function registerPublicRoutes(router: Router, deps: ApiDeps): void {
 export function createRouter(deps: ApiDeps): Router {
   const router = new Router();
   registerPublicRoutes(router, deps);
+  registerSiteRoutes(router, deps);
   registerAuthRoutes(router, deps);
   registerAffiliateRoutes(router, deps);
   registerAdminRoutes(router, deps);

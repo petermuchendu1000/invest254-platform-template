@@ -81,22 +81,30 @@ Files: `apps/engine/src/authservice.ts`, `auth.ts`, `identity.ts`, `apps/api/src
   + live-DB verified (4-arg→default site, 5-arg→brand; site-scoped login).
 - ✅ Verifier (`auth.ts`) surfaces `claims.site`; the multiplex WS `AUTH_SITE_MISMATCH` guard now
   runs on real tokens.
-- 🔲 API resolves the brand from the request host (`/s/<slug>` / `Host` → `sites`) and passes it
-  into `register`/`login` — this is Task E (`requireSite`); the engine/auth layer is complete.
+- ✅ API resolves the brand from the request `host` and passes it into `register`/`login`
+  (`resolveSiteId` in `app.auth.ts`); the returned session carries `site`. Landed with Task E.
 - **Done when:** ✅ a token minted for Brand A carries `site=A` and login is per-brand (proven);
-  wiring the API host→site resolution lands with Task E.
+  the API host→site resolution is wired (Task E). **Task D complete.**
 
 ## E. API — site scoping + public brand route
-Files: `apps/api/src/http.ts`, `app.ts`, all `app.*.ts`.
-- 🔲 `requireSite` middleware: derive `ctx.siteId` from the JWT `site` claim (or `/s/<slug>` for
-  public routes/callbacks); reject cross-site access.
+Files: `apps/api/src/http.ts`, `app.ts`, `app.site.ts`, `app.auth.ts`, `server.ts`, `testutil.ts`.
+- ✅ `requireSite` middleware (`http.ts`): derives `ctx.siteId` from the JWT `site` claim (default
+  site for legacy tokens) and rejects a request naming a different brand (`?site=` →
+  `AUTH_SITE_MISMATCH`). Surfaced by `GET /site/me`. Tested (`app.site.test.ts`).
+- ✅ `GET /site/brand?host=` (public, `app.site.ts`): host/slug → the `sites` brand DTO the web
+  resolver (`apps/web/src/lib/brand/brand.ts`) renders — Pg query in `server.ts`, in-memory in
+  `testutil.ts`. Tested (host, slug case-insensitive, 400 missing, 404 unknown).
+- ✅ Brand-scoped auth: `register`/`login` resolve the brand from the request `host` and pass
+  `site_id`, returning the session's `site`; identity is isolated per brand. Tested (two-brand
+  register + login isolation).
 - 🔲 Thread `ctx.siteId` into every service/repository call (wallet, positions, transactions,
-  payments, affiliate, admin reads/writes).
-- 🔲 New public route `GET /site/brand?host=` → returns the `sites` brand DTO (the web resolver
-  in `apps/web/src/lib/brand/brand.ts` already consumes this).
+  payments, affiliate, admin reads/writes). The mechanism is in place — `requireSite` populates
+  `ctx.siteId` — so this is the remaining per-handler bulk (apply `requireSite` to each group and
+  pass `ctx.siteId` down).
 - 🔲 M-Pesa callback routes accept the `/s/<slug>` prefix and resolve the site.
-- **Done when:** every list/mutation is implicitly filtered to the caller's site; the brand
-  route returns correct per-host branding.
+- **Done when:** every list/mutation is implicitly filtered to the caller's site; the brand route
+  returns correct per-host branding. (Brand route + auth scoping + middleware ✅; per-handler
+  threading + callback prefix remain.)
 
 ## F. RLS — second dimension
 Files: new `packages/db/migrations/00XX_rls_site.sql`.

@@ -32,6 +32,8 @@ export interface Ctx {
   body: unknown;
   /** Set by `requireAuth` once a caller is authenticated. */
   claims?: AuthClaims;
+  /** Set by `requireSite`: the brand the request is scoped to (JWT `site` claim, else default). */
+  siteId?: string;
 }
 
 export interface HandlerResult { status?: number; body: unknown; }
@@ -304,6 +306,28 @@ export function requireRole(minRole: keyof typeof ROLE_RANK): Middleware {
     const have = ROLE_RANK[ctx.claims.role ?? "player"] ?? 0;
     const need = ROLE_RANK[minRole] ?? Number.POSITIVE_INFINITY;
     if (have < need) throw new ApiError("FORBIDDEN", `requires role ${minRole}`, 403);
+  };
+}
+
+/** The default (single-tenant) brand, seeded by migration 0044. */
+export const DEFAULT_SITE_ID = "00000000-0000-0000-0000-000000000001";
+
+/**
+ * Site scoping (docs/22 Task E). Runs AFTER `requireAuth`: derives `ctx.siteId` from the token's
+ * `site` claim so every downstream read/mutation can implicitly filter to the caller's brand.
+ * Legacy tokens minted before per-brand auth carry no claim → the default site. A request that
+ * explicitly names a different brand (`?site=`) than its token is rejected (AUTH_SITE_MISMATCH),
+ * closing the cross-brand access hole the JWT claim exists to prevent.
+ */
+export function requireSite(defaultSiteId: string = DEFAULT_SITE_ID): Middleware {
+  return (ctx) => {
+    if (!ctx.claims) throw new ApiError("AUTH_REQUIRED", "authentication required", 401);
+    const siteId = ctx.claims.site ?? defaultSiteId;
+    const named = ctx.query.get("site");
+    if (named && named !== siteId) {
+      throw new ApiError("AUTH_SITE_MISMATCH", "token is not scoped to the requested site", 403);
+    }
+    ctx.siteId = siteId;
   };
 }
 

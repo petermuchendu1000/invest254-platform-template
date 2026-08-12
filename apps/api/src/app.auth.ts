@@ -69,6 +69,19 @@ function optionalString(body: Record<string, unknown>, key: string): string | un
   return v;
 }
 
+/**
+ * Resolve the brand a public auth call belongs to (docs/22 Task E). The frontend (which already
+ * resolved its brand via GET /site/brand) passes its `host` in the body (or `?host=`); we map it
+ * to a `site_id` so register/login are brand-scoped. No hint → undefined → the default site
+ * (unchanged single-tenant behaviour), so existing callers keep working.
+ */
+async function resolveSiteId(ctx: Ctx, body: Record<string, unknown>, deps: ApiDeps): Promise<string | undefined> {
+  const host = (optionalString(body, "host") ?? ctx.query.get("host") ?? undefined)?.trim().toLowerCase();
+  if (!host) return undefined;
+  const brand = await deps.brandByHost(host);
+  return brand?.siteId;
+}
+
 /** Register the auth routes (register/login are public; /me requires a bearer token). */
 export function registerAuthRoutes(router: Router, deps: ApiDeps): void {
   const auth = requireAuth(deps.verifier);
@@ -82,8 +95,11 @@ export function registerAuthRoutes(router: Router, deps: ApiDeps): void {
     const username = requireString(body, "username");
     const password = requireString(body, "password");
     const referralCode = optionalString(body, "referral_code"); // first-touch attribution (optional)
-    const s = await domain(() => deps.auth.register({ phone, username, password, ...(referralCode !== undefined ? { referralCode } : {}) }));
-    return { status: 201, body: { token: s.token, userId: s.userId, role: s.role } };
+    const siteId = await resolveSiteId(ctx, body, deps);
+    const s = await domain(() => deps.auth.register({ phone, username, password,
+      ...(referralCode !== undefined ? { referralCode } : {}),
+      ...(siteId ? { siteId } : {}) }));
+    return { status: 201, body: { token: s.token, userId: s.userId, role: s.role, ...(s.site ? { site: s.site } : {}) } };
   });
 
   router.post(`${BASE}/auth/login`, authLimit, async (ctx: Ctx) => {
@@ -94,17 +110,20 @@ export function registerAuthRoutes(router: Router, deps: ApiDeps): void {
     // the service decides — so an unenrolled player's login is unchanged.
     const totp = optionalString(body, "totp");
     const recoveryCode = optionalString(body, "recovery_code");
+    const siteId = await resolveSiteId(ctx, body, deps);
     const s = await domain(() => deps.auth.login({
       phone,
       password,
       ...(totp !== undefined ? { totp } : {}),
       ...(recoveryCode !== undefined ? { recoveryCode } : {}),
+      ...(siteId ? { siteId } : {}),
     }));
     return {
       token: s.token,
       userId: s.userId,
       role: s.role,
       ...(s.mfaEnrolmentRequired ? { mfaEnrolmentRequired: true } : {}),
+      ...(s.site ? { site: s.site } : {}),
     };
   });
 

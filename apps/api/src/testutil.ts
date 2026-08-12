@@ -6,7 +6,7 @@ import {
   NotificationService, InMemoryNotificationRepository,
   type FairnessRecord, type AuthClaims, type Verifier,
 } from "@invest254/engine";
-import { createApp, type ApiDeps, type WalletBalance } from "./app.js";
+import { createApp, type ApiDeps, type WalletBalance, type Brand } from "./app.js";
 import type { MarketerRepo, MarketerRow, MarketerProfile, MarketerLedgerRow, WithdrawResult } from "./app.marketers.js";
 
 /** In-memory MarketerRepo mirroring the SQL RPCs (0033): overdraw guard, idempotency, initials. */
@@ -97,14 +97,37 @@ export function makeInMemoryMarketerRepo(): MarketerRepo {
 export function stubVerifier(): Verifier {
   return async (token: string): Promise<AuthClaims> => {
     if (!token) throw new Error("TOKEN_REQUIRED");
-    const [userId, role] = token.split(":");
+    // `<userId>` | `<userId>:<role>` | `<userId>:<role>:<siteId>` — the optional 3rd segment
+    // lets tests exercise the JWT `site` claim that requireSite reads.
+    const [userId, role, site] = token.split(":");
     if (!userId) throw new Error("TOKEN_INVALID");
-    return { userId, role: role || "player", raw: {} };
+    return { userId, role: role || "player", ...(site ? { site } : {}), raw: {} };
   };
 }
 
 export const TEST_USER = "u-test";
 export const TEST_ADMIN = "u-admin";
+
+/** Two brands on one deployment, for site-scoping tests (docs/22 Task E). */
+export const SITE_A = "00000000-0000-0000-0000-000000000001";
+export const SITE_B = "22222222-2222-2222-2222-222222222222";
+export const TEST_BRANDS: Record<string, Brand> = {
+  "invest254.com": {
+    siteId: SITE_A, slug: "invest254", name: "Invest254", wordmarkText: "invest254.com",
+    logoUrl: null, faviconUrl: null, colorPrimary: "#22c55e", colorBg: "#0a0a0a", colorAccent: "#06b6d4",
+    theme: "dark", currency: "KES", locale: "en-KE", licenceLine: "Operated under licence.", supportEmail: null,
+  },
+  "brandb.example": {
+    siteId: SITE_B, slug: "brandb", name: "Brand B", wordmarkText: null,
+    logoUrl: null, faviconUrl: null, colorPrimary: "#f97316", colorBg: "#111111", colorAccent: "#a855f7",
+    theme: "light", currency: "KES", locale: "en-KE", licenceLine: null, supportEmail: "support@brandb.example",
+  },
+};
+/** Resolve a brand by primary host or slug (mirrors the Pg resolver in server.ts). */
+export function resolveTestBrand(hostOrSlug: string): Brand | null {
+  const k = hostOrSlug.trim().toLowerCase();
+  return TEST_BRANDS[k] ?? Object.values(TEST_BRANDS).find((b) => b.slug === k) ?? null;
+}
 
 export interface TestApi {
   baseUrl: string;
@@ -168,6 +191,7 @@ export async function startTestApi(opts: TestApiOptions = {}): Promise<TestApi> 
     marketers: makeInMemoryMarketerRepo(),
     config: () => DEFAULT_CONFIG,
     fairnessById: async (id) => fairness.get(id) ?? null,
+    brandByHost: async (host) => resolveTestBrand(host),
     payments,
     resolveHandle,
     walletBalance: async (userId): Promise<WalletBalance> =>
