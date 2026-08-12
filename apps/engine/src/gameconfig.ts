@@ -80,6 +80,12 @@ export interface ConfigProvider {
   active(): VersionedGameConfig;
   /** The historical config for a version; falls back to `active()` for unknown/null. */
   forVersion(version: number | null | undefined): Promise<VersionedGameConfig>;
+  /**
+   * Optional live-change subscription. Present on the DB-backed stores (`GameConfigStore`,
+   * `SiteGameConfigStore`); absent on `StaticConfigProvider`. Returns an unsubscribe fn.
+   * The SiteRegistry uses it to rebuild a brand's pricing the instant its economy is edited.
+   */
+  subscribe?(listener: ConfigChangeListener): () => void;
 }
 
 /** Fixed-config provider for local dev, tests, and any no-database process. */
@@ -268,4 +274,176 @@ export function affectsPricing(a: GameConfig, b: GameConfig): boolean {
     || a.volatility !== b.volatility
     || a.driftBias !== b.driftBias
     || a.defaultDurationS !== b.defaultDurationS;
+}
+
+/** NOTIFY channel the migration-0046 trigger fires (payload = the changed `site_id`). */
+export const SITE_CONFIG_CHANNEL = "site_game_config_changed";
+
+/**
+ * Per-brand live game configuration — the multi-tenant sibling of {@link GameConfigStore}
+ * and the closing piece of docs/22 Task C.
+ *
+ * One instance per site. It loads that brand's `site_game_config` row and keeps it current via
+ * the same two independent freshness paths, scoped to the brand:
+ *   - **Push** — `LISTEN site_game_config_changed`; the migration-0046 trigger fires `pg_notify`
+ *     with the changed `site_id` as the payload, so this store ignores other brands' edits.
+ *   - **Poll** — a low-frequency `select` fallback (covers dropped LISTEN / pooled deployments).
+ *
+ * Historical versions resolve from `site_game_config_versions` (per site), and any candidate that
+ * fails `checkFeasible` is rejected so a bad save can never crash-loop or mis-price a brand.
+ */
+export class SiteGameConfigStore implements ConfigProvider {
+  private cfg: VersionedGameConfig = DEFAULT_VERSIONED_CONFIG;
+  private loaded = false;
+  private readonly history = new Map<number, VersionedGameConfig>();
+  private readonly listeners = new Set<ConfigChangeListener>();
+  private pollTimer: NodeJS.Timeout | undefined;
+  private listenClient: ListenClient | undefined;
+  private reconnectTimer: NodeJS.Timeout | undefined;
+  private stopped = false;
+  private refreshing: Promise<VersionedGameConfig> | null = null;
+
+  constructor(
+    private readonly siteId: string,
+    private readonly q: Querier,
+    private readonly opts: GameConfigStoreOptions = {},
+  ) {}
+
+  private report(err: Error, ctx: string): void {
+    if (this.opts.onError) this.opts.onError(err, `${ctx} [site ${this.siteId}]`);
+    else console.error(`[config] ${ctx} [site ${this.siteId}]:`, err.message);
+  }
+
+  active(): VersionedGameConfig {
+    if (!this.loaded) throw new Error(`SiteGameConfigStore(${this.siteId}) not initialised — call init() first`);
+    return this.cfg;
+  }
+
+  /** Snapshot loaded at least once? Lets callers distinguish "default" from "loaded default". */
+  isLoaded(): boolean { return this.loaded; }
+
+  subscribe(l: ConfigChangeListener): () => void {
+    this.listeners.add(l);
+    return () => this.listeners.delete(l);
+  }
+
+  /** Load the brand's row once, seed the history cache, then start push + poll refresh. */
+  async init(): Promise<VersionedGameConfig> {
+    await this.refresh();
+    this.loaded = true;
+    this.startPolling();
+    void this.startListening();
+    return this.cfg;
+  }
+
+  /** Re-read this brand's `site_game_config` and swap it in if the version moved and it's solvable. */
+  async refresh(): Promise<VersionedGameConfig> {
+    if (this.refreshing) return this.refreshing;
+    this.refreshing = (async () => {
+      try {
+        const r = await this.q.query(`select ${CONFIG_COLUMNS} from site_game_config where site_id = $1`, [this.siteId]);
+        if (!r.rows.length) throw new Error(`no site_game_config for site ${this.siteId}`);
+        this.apply(mapConfigRow(r.rows[0] as Record<string, unknown>));
+        return this.cfg;
+      } finally {
+        this.refreshing = null;
+      }
+    })();
+    return this.refreshing;
+  }
+
+  /** Validate, cache and publish a candidate. Rejects infeasible configs, keeping the old one. */
+  private apply(next: VersionedGameConfig): void {
+    const verdict = checkFeasible(next);
+    if (!verdict.ok) {
+      this.report(new Error(`rejected site_game_config v${next.version}: ${verdict.reason}`), "apply");
+      return;
+    }
+    this.history.set(next.version, next);
+    if (this.loaded && next.version === this.cfg.version) return;
+    const prev = this.cfg;
+    this.cfg = next;
+    if (!this.loaded) return;                       // initial load is not a "change"
+    for (const l of this.listeners) {
+      try { l(next, prev); } catch (err) { this.report(err as Error, "listener"); }
+    }
+  }
+
+  async forVersion(version: number | null | undefined): Promise<VersionedGameConfig> {
+    if (version === null || version === undefined) return this.active();
+    const hit = this.history.get(version);
+    if (hit) return hit;
+    try {
+      const r = await this.q.query(
+        `select ${CONFIG_COLUMNS} from site_game_config_versions where site_id = $1 and version = $2`,
+        [this.siteId, version],
+      );
+      if (!r.rows.length) {
+        this.report(new Error(`site_game_config version ${version} not found; recovering on v${this.cfg.version}`), "forVersion");
+        return this.active();
+      }
+      const cfg = mapConfigRow(r.rows[0] as Record<string, unknown>);
+      this.history.set(version, cfg);
+      return cfg;
+    } catch (err) {
+      this.report(err as Error, "forVersion");
+      return this.active();
+    }
+  }
+
+  private startPolling(): void {
+    const ms = this.opts.pollMs ?? 15_000;
+    if (ms <= 0 || this.pollTimer) return;
+    this.pollTimer = setInterval(() => {
+      void this.refresh().catch((err) => this.report(err as Error, "poll"));
+    }, ms);
+    this.pollTimer.unref?.();
+  }
+
+  private async startListening(): Promise<void> {
+    if (!this.opts.connect || this.stopped || this.listenClient) return;
+    try {
+      const client = await this.opts.connect();
+      this.listenClient = client;
+      client.on("notification", (msg) => {
+        if (msg.channel !== SITE_CONFIG_CHANNEL) return;
+        // Payload is the site_id that changed; ignore other brands' notifications.
+        if (msg.payload && msg.payload !== this.siteId) return;
+        void this.refresh().catch((err) => this.report(err as Error, "notify"));
+      });
+      client.on("error", (err) => {
+        this.report(err, "listen");
+        this.dropListener();
+        this.scheduleReconnect();
+      });
+      await client.query(`listen ${SITE_CONFIG_CHANNEL}`);
+      // A change may have landed between the initial load and LISTEN being armed.
+      await this.refresh();
+    } catch (err) {
+      this.report(err as Error, "listen-connect");
+      this.dropListener();
+      this.scheduleReconnect();
+    }
+  }
+
+  private dropListener(): void {
+    try { this.listenClient?.release?.(true); } catch { /* already gone */ }
+    this.listenClient = undefined;
+  }
+
+  private scheduleReconnect(): void {
+    if (this.stopped || this.reconnectTimer) return;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = undefined;
+      void this.startListening();
+    }, this.opts.reconnectMs ?? 5000);
+    this.reconnectTimer.unref?.();
+  }
+
+  stop(): void {
+    this.stopped = true;
+    if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = undefined; }
+    if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = undefined; }
+    this.dropListener();
+  }
 }

@@ -2,7 +2,7 @@ import { type IncomingMessage } from "node:http";
 import {
   InMemoryGameRepository, PgGameRepository, type GameRepository, type Querier,
 } from "./wallet.js";
-import { StaticConfigProvider, mapConfigRow, type ConfigProvider } from "./gameconfig.js";
+import { StaticConfigProvider, SiteGameConfigStore, type ConfigProvider, type ListenClient } from "./gameconfig.js";
 import { PgUserOverridesRepository, type UserOverridesRepository } from "./overrides.js";
 import { SiteRegistry } from "./siteregistry.js";
 import { startMultiEngine } from "./multiengine.js";
@@ -17,9 +17,9 @@ import { DEFAULT_VERSIONED_CONFIG } from "@invest254/shared";
  * and fans out per-site. A brand is resolved from the connection's `?site=<slug|id>` (or Host),
  * and — when a JWT verifier is configured — the token's `site` claim must match.
  *
- * Config: each brand prices from its own `site_game_config` row. NOTE: live hot-reload
- * (LISTEN site_game_config_changed) is the SiteGameConfigStore task in docs/22; this entrypoint
- * loads each brand's config at first use and re-reads historical versions for recovery.
+ * Config: each brand prices from its own `site_game_config` row via a per-site SiteGameConfigStore
+ * that hot-reloads on `LISTEN site_game_config_changed` (+ a poll fallback). The SiteRegistry
+ * subscribes to it, so editing a brand's economy re-prices its next round without a redeploy.
  *
  * Without DATABASE_URL the engine runs fully in-memory for local dev (single default brand).
  */
@@ -62,24 +62,15 @@ if (usingDb) {
   }
   masterSeedFor = (siteId) => masterRefBySite.get(siteId);
 
-  const CONFIG_COLS = "house_edge, max_multiplier, min_stake, max_stake, min_withdrawal, default_duration_s, tick_rate_ms, drift_bias, volatility, target_win_rate, version";
+  // Each brand gets its own live store: LISTEN site_game_config_changed (filtered to the brand's
+  // payload) + a poll fallback, with historical versions resolved from site_game_config_versions.
+  // A dedicated LISTEN connection per brand is opened lazily via pool.connect().
   configFor = async (siteId): Promise<ConfigProvider> => {
-    const load = async () => {
-      const r = await q.query(`select ${CONFIG_COLS} from site_game_config where site_id = $1`, [siteId]);
-      if (!r.rows.length) throw new Error(`no site_game_config for site ${siteId}`);
-      return mapConfigRow(r.rows[0] as Record<string, unknown>);
-    };
-    let current = await load();
-    return {
-      active: () => current,
-      // Poll on read is cheap here and keeps the entrypoint dependency-free until the
-      // LISTEN-based SiteGameConfigStore lands (docs/22 Task C).
-      forVersion: async (v) => {
-        if (v === null || v === undefined) return current;
-        const r = await q.query(`select ${CONFIG_COLS} from site_game_config_versions where site_id = $1 and version = $2`, [siteId, v]);
-        return r.rows.length ? mapConfigRow(r.rows[0] as Record<string, unknown>) : current;
-      },
-    };
+    const store = new SiteGameConfigStore(siteId, q, {
+      connect: () => pool.connect() as unknown as Promise<ListenClient>,
+    });
+    await store.init();
+    return store;
   };
   console.log(`[engine] multi-tenant: ${siteAliases.size} alias(es) for active brands; store=postgres`);
 } else {
