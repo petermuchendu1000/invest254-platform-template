@@ -107,17 +107,18 @@ Files: `apps/api/src/http.ts`, `app.ts`, `app.site.ts`, `app.auth.ts`, `server.t
 - ✅ Brand-scoped auth: `register`/`login` resolve the brand from the request `host` and pass
   `site_id`, returning the session's `site`; identity is isolated per brand. Tested (two-brand
   register + login isolation).
-- 🟡 Thread `ctx.siteId` into every service/repository call. **Done:** history reads
-  (`/wallet/ledger`, `/positions`, `/positions/:id`, `/transactions`) and the wallet + payments
-  money core (`/wallet`, `/deposits`, `/withdrawals`) now run under `requireSite` and pass
-  `ctx.siteId` through PaymentService + PaymentRepository into the site-aware
-  `fn_create_deposit`/`fn_create_withdrawal` RPCs and site-filtered wallet reads (null → default
-  brand, so single-tenant is unchanged). **Blocked (needs Task B / F first):** affiliate + admin.
-  Their RPCs (`fn_affiliate_enroll`, `fn_accrue_affiliate_commissions`, all `fn_admin_*`) are NOT
-  site-aware — the tables carry `site_id` but the functions neither accept nor filter on it, so
-  threading `ctx.siteId` there would be a no-op at best and risk cross-brand commission leakage at
-  worst; deferred until the affiliate accrual is site-grouped (Task B) and admin roles/RLS land
-  (Tasks F, H).
+- ✅ Thread `ctx.siteId` into every service/repository call. **Player money core:** history reads
+  (`/wallet/ledger`, `/positions`, `/positions/:id`, `/transactions`) + wallet/deposits/withdrawals
+  run under `requireSite` and pass `ctx.siteId` into the site-aware RPCs + site-filtered wallet
+  reads. **Affiliate:** the marketer routes (`/affiliate/enroll|summary|referrals|commissions|
+  payouts`) run under `requireSite` (identity is brand-bound, so reads are self-scoped by userId +
+  the cross-brand `?site=` guard); the accrual is site-grouped in the RPC (Task B). **Admin:** the
+  list reads (`/admin/users|transactions|withdrawals|deposits`) are scoped by the admin token's
+  optional `site` claim — a site-operator token sees only its brand, a platform-admin token (no
+  claim) sees all (forward-compatible with the Task H role model). null site → default brand
+  everywhere, so single-tenant is unchanged. Tested (`app.admin.sites.test.ts`).
+  Remaining for Task H: admin *mutations* (adjust/clear/reset/role/config/overrides/seeds) gain
+  per-brand enforcement once the platform-superadmin vs site-admin roles exist.
 - ✅ M-Pesa callback routes accept the `/s/<slug>` prefix and resolve the site (`app.payments.ts`):
   `POST /s/<slug>/deposits/mpesa/callback` and `.../withdrawals/mpesa/result/:txId` resolve the
   slug → `ctx.siteId` before the handler; unprefixed routes stay for the default brand.
@@ -125,17 +126,26 @@ Files: `apps/api/src/http.ts`, `app.ts`, `app.site.ts`, `app.auth.ts`, `server.t
   deposit/withdrawal/position lifecycles across two brands proving transaction/position/ledger
   ISOLATION, `/s/<slug>` callback ROUTING (+ unknown-slug 404), `AUTH_SITE_MISMATCH` on every
   site-scoped route, legacy-token default-site fallback, and brand resolution by host/slug.
-- **Done when:** every list/mutation is implicitly filtered to the caller's site; the brand route
-  returns correct per-host branding. (Brand route + auth scoping + middleware + callback prefix +
-  history/wallet/payments threading + e2e ✅; affiliate + admin threading blocked on Tasks B/F/H.)
+- **Done when:** ✅ every player/affiliate list + admin list read is implicitly filtered to the
+  caller's site; the brand route returns correct per-host branding. Player/affiliate/admin-read
+  threading + callback prefix + e2e ✅. (Admin write-path per-brand enforcement lands with Task H roles.)
 
 ## F. RLS — second dimension
-Files: new `packages/db/migrations/00XX_rls_site.sql`.
-- 🔲 Extend player policies to `auth.uid() = user_id AND site_id = current_site()` (or enforce
-  site in the service layer if RLS stays service-role-bypassed for money paths, as today).
-- 🔲 Admin policies: `site_superadmin`/`finance_admin`/`support` see only their `site_id`;
-  `platform_superadmin` sees all.
-- **Done when:** a site operator cannot read another site's rows via any path.
+Files: `packages/db/migrations/0051_rls_site.sql`.
+- ✅ Player/affiliate policies extended to `auth.uid() = <owner> AND site_id = current_site()`
+  (`0051_rls_site.sql`) on profiles, wallets, ledger_entries, positions, transactions, bonuses,
+  affiliates, referrals, affiliate_commissions, affiliate_payouts. `current_site()` reads the JWT
+  `site` claim (per-claim GUC or full-claims JSON), defaulting to the default brand for legacy
+  tokens. This closes the anon/authenticated PostgREST cross-brand hole (the app itself connects
+  as service_role — RLS-bypassed — and enforces site in the service layer, proven by the money e2e).
+  Tested: `packages/db/_testkit/e2e_rls_sites.py` (18 scenarios: own-brand visible, a valid uid with
+  the wrong brand claim sees nothing, symmetric brand isolation, cross-user isolation, legacy
+  default-brand fallback).
+- 🔲 Admin RLS policies (`site_superadmin`/`finance_admin`/`support` scoped, `platform_superadmin`
+  global) land with the Task H role model. Today admin runs as service_role and is scoped in the
+  service layer (Task E admin-read threading), so no cross-brand admin read leaks via the app.
+- **Done when:** ✅ a brand's anon/authenticated client cannot read another brand's rows via
+  PostgREST; app-layer admin reads are site-scoped. (DB-role-based admin RLS is Task H.)
 
 ## G. Web — brand + site context end-to-end
 Files: `apps/web/src/lib/brand/*` (resolver shipped), `app/layout.tsx`, `lib/env.ts`,

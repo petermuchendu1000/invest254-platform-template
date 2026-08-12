@@ -28,7 +28,7 @@ export interface TransactionRecord {
 /** Filters for a player's transaction history. */
 export interface TxListQuery extends PageQuery { kind?: "deposit" | "withdrawal" | undefined; status?: string | undefined; }
 /** A transaction as the admin back office sees it (J2). */
-export interface AdminTxSnapshot { txId: string; userId: string; kind: "deposit" | "withdrawal"; amountCents: Cents; status: string; phone: string; mpesaReceipt: string | null; checkoutRequestId: string | null; createdAtMs: number; }
+export interface AdminTxSnapshot { txId: string; userId: string; kind: "deposit" | "withdrawal"; amountCents: Cents; status: string; phone: string; mpesaReceipt: string | null; checkoutRequestId: string | null; createdAtMs: number; siteId?: string | null; }
 
 /** A deposit still awaiting a terminal outcome — the reconciliation sweep's unit of work. */
 export interface UnsettledDeposit { txId: string; checkoutRequestId: string; }
@@ -205,7 +205,7 @@ export class InMemoryPaymentRepository implements PaymentRepository {
   adminTransactions(): AdminTxSnapshot[] {
     return [...this.txns.values()].map((t) => ({
       txId: t.id, userId: t.userId, kind: t.kind, amountCents: t.amount, status: t.status, phone: t.phone,
-      mpesaReceipt: t.receipt, checkoutRequestId: t.checkoutId ?? null, createdAtMs: t.createdAtMs,
+      mpesaReceipt: t.receipt, checkoutRequestId: t.checkoutId ?? null, createdAtMs: t.createdAtMs, siteId: t.siteId ?? null,
     }));
   }
   /** Apply a signed manual balance adjustment to a wallet (admin J3); returns the new balance.

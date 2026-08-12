@@ -1,4 +1,4 @@
-import { Router, ApiError, requireAuth, requireRole, type Ctx } from "./http.js";
+import { Router, ApiError, requireAuth, requireRole, requireSite, type Ctx } from "./http.js";
 import type { PageQuery } from "@invest254/engine";
 import type { ApiDeps } from "./app.js";
 import { parseB2cResult } from "./app.payments.js";
@@ -54,8 +54,11 @@ export function registerAffiliateRoutes(router: Router, deps: ApiDeps): void {
   const auth = requireAuth(deps.verifier);
   const admin = requireRole("admin");
   const marketer = requireRole("marketer");
+  // Marketer-facing routes run under requireSite: a marketer's identity is brand-bound, so this
+  // both makes ctx.siteId available and rejects a token that names a different brand (?site=).
+  const site = requireSite();
 
-  router.post(`${BASE}/affiliate/enroll`, auth, async (ctx: Ctx) => {
+  router.post(`${BASE}/affiliate/enroll`, auth, site, async (ctx: Ctx) => {
     const e = await domain(() => deps.affiliate.enroll(ctx.claims!.userId));
     // Enrollment promotes player -> marketer in the DB, but the caller's JWT still carries the
     // old role. Reissue a token that reflects the new role so the marketer-gated dashboard routes
@@ -72,17 +75,17 @@ export function registerAffiliateRoutes(router: Router, deps: ApiDeps): void {
   });
 
   // ── Marketer dashboard (I3) ──
-  router.get(`${BASE}/affiliate/summary`, auth, marketer, async (ctx: Ctx) =>
+  router.get(`${BASE}/affiliate/summary`, auth, site, marketer, async (ctx: Ctx) =>
     domain(() => deps.affiliate.summary(ctx.claims!.userId)));
 
-  router.get(`${BASE}/affiliate/referrals`, auth, marketer, async (ctx: Ctx) =>
+  router.get(`${BASE}/affiliate/referrals`, auth, site, marketer, async (ctx: Ctx) =>
     domain(() => deps.affiliate.listReferrals(ctx.claims!.userId, pageQuery(ctx))));
 
-  router.get(`${BASE}/affiliate/commissions`, auth, marketer, async (ctx: Ctx) =>
+  router.get(`${BASE}/affiliate/commissions`, auth, site, marketer, async (ctx: Ctx) =>
     domain(() => deps.affiliate.listCommissions(ctx.claims!.userId, pageQuery(ctx))));
 
   // ── Payouts (I4): marketer request → admin approve/reject → M-Pesa B2C result ──
-  router.post(`${BASE}/affiliate/payouts`, auth, marketer, async (ctx: Ctx) =>
+  router.post(`${BASE}/affiliate/payouts`, auth, site, marketer, async (ctx: Ctx) =>
     domain(async () => {
       const r = await deps.affiliate.requestPayout(ctx.claims!.userId);
       return { status: 201, body: { payoutId: r.payoutId, amountCents: r.amountCents } };

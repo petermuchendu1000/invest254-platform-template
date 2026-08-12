@@ -52,7 +52,7 @@ export interface PayoutCompleteResult { applied: boolean; status: string; }
 /** A user as the admin back office sees it (J2). */
 export interface AdminUserSnapshot {
   userId: string; username: string; phone: string; role: string; status: string;
-  referredBy: string | null; createdAtMs: number;
+  referredBy: string | null; createdAtMs: number; siteId: string | null;
 }
 /** An affiliate's commission terms for admin reads/mutations (J2). */
 export interface AdminAffiliateSnapshot { userId: string; commissionRate: number; status: string; }
@@ -638,7 +638,7 @@ export class InMemoryIdentityRepository implements IdentityRepository, Affiliate
   private toAdminUser(u: MemUser): AdminUserSnapshot {
     return {
       userId: u.userId, username: u.username, phone: u.phone, role: u.role, status: u.status,
-      referredBy: u.referredBy, createdAtMs: u.createdAtMs,
+      referredBy: u.referredBy, createdAtMs: u.createdAtMs, siteId: u.siteId ?? null,
     };
   }
 }

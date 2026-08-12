@@ -45,7 +45,7 @@ export interface AdminTransactionRow {
   provider: string | null; phone: string; mpesaReceipt: string | null; checkoutRequestId: string | null;
   resultDesc: string | null; createdAtMs: number; updatedAtMs: number | null;
 }
-export interface AdminTransactionListQuery extends PageQuery { kind?: string | undefined; status?: string | undefined; q?: string | undefined; }
+export interface AdminTransactionListQuery extends PageQuery { kind?: string | undefined; status?: string | undefined; q?: string | undefined; siteId?: string | undefined; }
 export interface AdminAuditRow {
   id: string; actorId: string; actorRole: string; action: string;
   targetType: string; targetId: string | null; detail: unknown; createdAtMs: number;
@@ -56,8 +56,10 @@ export interface AdminUserListQuery extends PageQuery {
   minBalanceCents?: number | undefined; maxBalanceCents?: number | undefined;
   minDepositsCents?: number | undefined; minWithdrawalsCents?: number | undefined;
   minTurnoverCents?: number | undefined; minBets?: number | undefined;
+  // Admin site scope (docs/22 Task E/H): filter to one brand. Undefined = platform-wide (all brands).
+  siteId?: string | undefined;
 }
-export interface AdminWithdrawalListQuery extends PageQuery { status?: string | undefined; }
+export interface AdminWithdrawalListQuery extends PageQuery { status?: string | undefined; siteId?: string | undefined; }
 export interface SetUserStatusResult { userId: string; status: string; }
 export interface SetCommissionRateResult { userId: string; commissionRate: number; }
 export interface SetUserRoleResult { userId: string; role: string; }
@@ -84,7 +86,7 @@ export interface AdminDepositRow {
   txId: string; userId: string; username: string; amountCents: Cents; status: string; phone: string;
   mpesaReceipt: string | null; checkoutRequestId: string | null; createdAtMs: number;
 }
-export interface AdminDepositListQuery extends PageQuery { status?: string | undefined; }
+export interface AdminDepositListQuery extends PageQuery { status?: string | undefined; siteId?: string | undefined; }
 /** One deposit-status bucket in the reconcile summary (J3). */
 export interface AdminDepositStatusBucket { status: string; count: number; amountCents: Cents; }
 /** Deposits reconcile read (J3): per-status totals + the non-terminal STK pushes that are stale
@@ -245,6 +247,12 @@ export interface AdminRepository {
 const VALID_STATUS = ["active", "suspended", "banned"];
 const ADMIN_ROLES = ["admin", "superadmin"];
 const VALID_ROLES = ["player", "marketer", "admin", "superadmin"];
+
+/** In-memory admin site filter (docs/22 Task E): rows with a null/legacy site read as the default
+ *  brand, so a default-scoped admin still sees them; undefined filter = platform-wide (all brands). */
+const ADMIN_DEFAULT_SITE = "00000000-0000-0000-0000-000000000001";
+const siteMatches = (rowSite: string | null | undefined, filter: string | undefined): boolean =>
+  filter === undefined || (rowSite ?? ADMIN_DEFAULT_SITE) === filter;
 const DATE_KEY_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 /** Rolling windows for the realised-RTP monitor (J5). `days = null` is all-time. */
@@ -491,6 +499,7 @@ export class PgAdminRepository implements AdminRepository {
          left join lateral (select amount as last_funded from transactions t where t.user_id = p.id and t.kind='deposit' and t.status='success' order by created_at desc, id desc limit 1) lf on true
         where ($1::text is null or p.role = $1)
           and ($2::text is null or p.status = $2)
+          and ($13::uuid is null or p.site_id = $13)
           and ($3::text is null or p.username ilike '%'||$3||'%' or p.phone ilike '%'||$3||'%')
           and ($4::timestamptz is null or (p.created_at, p.id) < ($4::timestamptz, $5::uuid))
           and ($7::bigint  is null or coalesce(w.real_balance,0) >= $7)
@@ -502,7 +511,7 @@ export class PgAdminRepository implements AdminRepository {
         order by p.created_at desc, p.id desc
         limit $6`,
       [q.role ?? null, q.status ?? null, q.q ?? null, cur ? new Date(cur.tsMs).toISOString() : null, cur ? cur.id : null, limit + 1,
-       q.minBalanceCents ?? null, q.maxBalanceCents ?? null, q.minDepositsCents ?? null, q.minWithdrawalsCents ?? null, q.minTurnoverCents ?? null, q.minBets ?? null]);
+       q.minBalanceCents ?? null, q.maxBalanceCents ?? null, q.minDepositsCents ?? null, q.minWithdrawalsCents ?? null, q.minTurnoverCents ?? null, q.minBets ?? null, q.siteId ?? null]);
     const rows: AdminUserRow[] = r.rows.map(mapUserRow);
     return pageFrom(rows, limit, (u) => `${u.createdAtMs}:${u.userId}`);
   }
@@ -599,10 +608,11 @@ export class PgAdminRepository implements AdminRepository {
          left join profiles p on p.id = t.user_id
         where t.kind = 'withdrawal'
           and ($1::text is null or t.status = $1)
+          and ($5::uuid is null or t.site_id = $5)
           and ($2::timestamptz is null or (t.created_at, t.id) < ($2::timestamptz, $3::uuid))
         order by t.created_at desc, t.id desc
         limit $4`,
-      [q.status ?? null, cur ? new Date(cur.tsMs).toISOString() : null, cur ? cur.id : null, limit + 1]);
+      [q.status ?? null, cur ? new Date(cur.tsMs).toISOString() : null, cur ? cur.id : null, limit + 1, q.siteId ?? null]);
     const rows: AdminWithdrawalRow[] = r.rows.map((x) => ({
       txId: String(x.id), userId: String(x.user_id), username: x.username == null ? "" : String(x.username),
       amountCents: num(x.amount), status: String(x.status), phone: String(x.phone), createdAtMs: ms(x.created_at),
@@ -620,11 +630,12 @@ export class PgAdminRepository implements AdminRepository {
          left join profiles p on p.id = t.user_id
         where ($1::text is null or t.kind = $1)
           and ($2::text is null or t.status = $2)
+          and ($7::uuid is null or t.site_id = $7)
           and ($3::text is null or p.username ilike '%'||$3||'%' or t.phone ilike '%'||$3||'%' or t.mpesa_receipt ilike '%'||$3||'%')
           and ($4::timestamptz is null or (t.created_at, t.id) < ($4::timestamptz, $5::uuid))
         order by t.created_at desc, t.id desc
         limit $6`,
-      [q.kind ?? null, q.status ?? null, q.q ?? null, cur ? new Date(cur.tsMs).toISOString() : null, cur ? cur.id : null, limit + 1]);
+      [q.kind ?? null, q.status ?? null, q.q ?? null, cur ? new Date(cur.tsMs).toISOString() : null, cur ? cur.id : null, limit + 1, q.siteId ?? null]);
     const rows: AdminTransactionRow[] = r.rows.map(mapTransactionRow);
     return pageFrom(rows, limit, (t) => `${t.createdAtMs}:${t.txId}`);
   }
@@ -702,10 +713,11 @@ export class PgAdminRepository implements AdminRepository {
          from transactions t left join profiles p on p.id = t.user_id
         where t.kind = 'deposit'
           and ($1::text is null or t.status = $1)
+          and ($5::uuid is null or t.site_id = $5)
           and ($2::timestamptz is null or (t.created_at, t.id) < ($2::timestamptz, $3::uuid))
         order by t.created_at desc, t.id desc
         limit $4`,
-      [q.status ?? null, cur ? new Date(cur.tsMs).toISOString() : null, cur ? cur.id : null, limit + 1]);
+      [q.status ?? null, cur ? new Date(cur.tsMs).toISOString() : null, cur ? cur.id : null, limit + 1, q.siteId ?? null]);
     const rows: AdminDepositRow[] = r.rows.map(mapDepositRow);
     return pageFrom(rows, limit, (d) => `${d.createdAtMs}:${d.txId}`);
   }
@@ -1096,6 +1108,7 @@ export class InMemoryAdminRepository implements AdminRepository {
     const matched = this.identity.adminUsers().filter((u) =>
       (q.role === undefined || u.role === q.role) &&
       (q.status === undefined || u.status === q.status) &&
+      siteMatches(u.siteId, q.siteId) &&
       (needle === undefined || u.username.toLowerCase().includes(needle) || u.phone.includes(needle)));
     const built = await Promise.all(matched.map(async (u) => ({ ...(await this.memUserRow(u)), _ts: u.createdAtMs, _id: u.userId })));
     const rows = built.filter((r) =>
@@ -1182,7 +1195,7 @@ export class InMemoryAdminRepository implements AdminRepository {
 
   async listWithdrawals(q: AdminWithdrawalListQuery): Promise<Page<AdminWithdrawalRow>> {
     const rows = this.payments.adminTransactions()
-      .filter((t) => t.kind === "withdrawal" && (q.status === undefined || t.status === q.status))
+      .filter((t) => t.kind === "withdrawal" && (q.status === undefined || t.status === q.status) && siteMatches(t.siteId, q.siteId))
       .map((t) => ({ txId: t.txId, userId: t.userId, username: this.identity.adminUser(t.userId)?.username ?? "", amountCents: t.amountCents, status: t.status, phone: t.phone, createdAtMs: t.createdAtMs, _ts: t.createdAtMs, _id: t.txId }));
     return memKeyset(rows, q);
   }
@@ -1193,6 +1206,7 @@ export class InMemoryAdminRepository implements AdminRepository {
       .filter((t) =>
         (q.kind === undefined || t.kind === q.kind) &&
         (q.status === undefined || t.status === q.status) &&
+        siteMatches(t.siteId, q.siteId) &&
         (needle === undefined ||
           (this.identity.adminUser(t.userId)?.username ?? "").toLowerCase().includes(needle) ||
           t.phone.includes(needle) ||
@@ -1313,7 +1327,7 @@ export class InMemoryAdminRepository implements AdminRepository {
 
   async listDeposits(q: AdminDepositListQuery): Promise<Page<AdminDepositRow>> {
     const rows = this.payments.adminTransactions()
-      .filter((t) => t.kind === "deposit" && (q.status === undefined || t.status === q.status))
+      .filter((t) => t.kind === "deposit" && (q.status === undefined || t.status === q.status) && siteMatches(t.siteId, q.siteId))
       .map((t) => ({ ...memDepositRow(t, this.identity.adminUser(t.userId)?.username ?? ""), _ts: t.createdAtMs, _id: t.txId }));
     return memKeyset(rows, q);
   }
