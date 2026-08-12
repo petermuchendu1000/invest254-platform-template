@@ -1,8 +1,12 @@
+'use client';
+
 import Link from 'next/link';
+import { useBrand } from '@/lib/brand/BrandProvider';
 
 // Global footer: responsible-gaming messaging, 18+ badge and legal links.
 // Required by FE7 (responsible gaming is first-class, not an afterthought).
 export function Footer() {
+  const brand = useBrand();
   const year = new Date().getFullYear();
   return (
     <footer className="mt-8 border-t border-border bg-surface/60">
@@ -33,13 +37,21 @@ export function Footer() {
           <Link href="/legal#licence" className="text-muted hover:text-fg">
             Licence
           </Link>
+          {brand.supportEmail ? (
+            <a href={`mailto:${brand.supportEmail}`} className="text-muted hover:text-fg">
+              Support
+            </a>
+          ) : null}
           <a href="tel:1190" className="text-muted hover:text-fg">
             Helpline 1190
           </a>
         </nav>
 
+        {brand.licenceLine ? (
+          <p className="text-[11px] text-muted">{brand.licenceLine}</p>
+        ) : null}
         <p className="text-[11px] text-muted">
-          © {year} Invest254. Self-control is the best game plan.
+          © {year} {brand.name}. Self-control is the best game plan.
         </p>
       </div>
     </footer>

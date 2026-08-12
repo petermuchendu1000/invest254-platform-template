@@ -33,6 +33,21 @@ html.light {
   --pp-warn: #9a6700;
 }
 
+/*
+ * Brand skin (multi-tenant): brandRootStyle() sets --brand-primary/-accent on <html> from the
+ * resolved brand, and these rules feed them into the accent + brand design tokens so the whole UI
+ * re-skins per brand. Fallbacks keep the default look when no brand is set. Declared for BOTH
+ * themes (html.light out-specifies :root, so the light theme needs its own mapping).
+ */
+:root {
+  --pp-accent: var(--brand-accent, #00a859);
+  --pp-brand: var(--brand-primary, #43b02a);
+}
+html.light {
+  --pp-accent: var(--brand-accent, #00a859);
+  --pp-brand: var(--brand-primary, #43b02a);
+}
+
 html, body {
   height: 100%;
 }

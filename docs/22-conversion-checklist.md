@@ -148,13 +148,27 @@ Files: `packages/db/migrations/0051_rls_site.sql`.
   PostgREST; app-layer admin reads are site-scoped. (DB-role-based admin RLS is Task H.)
 
 ## G. Web — brand + site context end-to-end
-Files: `apps/web/src/lib/brand/*` (resolver shipped), `app/layout.tsx`, `lib/env.ts`,
-`lib/api/client.ts`, `lib/game/GameSocketProvider.tsx`.
-- 🔲 Resolve brand by host in the root layout; apply `brandRootStyle` (CSS vars) + logo/title.
-- 🔲 API client + WS carry the site implicitly via the token (post-login) and via host for
-  public calls.
-- 🔲 Tailwind tokens read the `--brand-*` CSS variables so components re-skin per brand.
-- **Done when:** two domains on one deployment render two distinct brands with no rebuild.
+Files: `apps/web/src/lib/brand/*`, `app/layout.tsx`, `app/globals.css`, `lib/game/GameSocketProvider.tsx`,
+`components/layout/{Logo,Footer}.tsx`.
+- ✅ Resolve brand by host in the root layout (server component: `resolveBrand(env.apiBaseUrl,
+  requestHost())` from the proxy-aware host header) and apply `brandRootStyle` (CSS vars) on `<html>`
+  before paint. `generateMetadata`/`generateViewport` derive title/description/icons/theme-colour
+  from the brand, and a `BrandProvider` (`lib/brand/BrandProvider.tsx`) hands the brand to every
+  client component. `Logo` renders the brand logo/wordmark; `Footer` renders the brand name +
+  licence line + support email.
+- ✅ WS carries the site: `GameSocketProvider` connects to `wsUrlForSite(env.wsUrl, brand.siteId)`
+  (`?site=<siteId>`), so the multiplexed engine binds the socket to the brand at connect (before the
+  token) and the post-auth JWT `site` claim must then match. REST carries the site implicitly via the
+  token post-login; brand resolution is host-based via the public `/site/brand` route.
+- ✅ Tailwind tokens read the `--brand-*` CSS variables: `globals.css` maps `--brand-primary` →
+  `--pp-brand` and `--brand-accent` → `--pp-accent` (both themes, with default fallbacks), so the
+  whole design system re-skins per brand from the vars the layout sets.
+- ✅ Tested: `lib/brand/brand.test.ts` (wsUrlForSite query composition, brandCssVars/rootStyle,
+  brandWordmark fallback, resolveBrand fetch-merge + non-ok/network fallback). `next build` green
+  (all routes SSR per-request for per-brand rendering; server/client boundaries valid).
+- **Done when:** ✅ two domains on one deployment render two distinct brands (colours, logo/wordmark,
+  title/favicon/theme-colour, licence) with no rebuild — brand is DB data served by `/site/brand`.
+  **Task G complete.**
 
 ## H. Platform superadmin console
 Files: `apps/web/src/app/admin/*`, new `app/platform/*`.

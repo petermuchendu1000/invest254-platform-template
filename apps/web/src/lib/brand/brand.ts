@@ -79,3 +79,20 @@ export function brandCssVars(b: Brand): Record<string, string> {
 export function brandRootStyle(b: Brand): Record<string, string> {
   return brandCssVars(b);
 }
+
+/**
+ * Append the brand to a WebSocket base URL as `?site=<siteId>`. The multiplexed engine binds a
+ * socket to its brand at connect from `?site=` (slug|domain|id) or Host, BEFORE any token, so the
+ * public tick stream starts on the right brand and the post-auth JWT `site` claim must then match.
+ * Preserves any existing query string. Empty siteId → base unchanged.
+ */
+export function wsUrlForSite(wsBase: string, siteId: string | null | undefined): string {
+  if (!siteId) return wsBase;
+  const sep = wsBase.includes("?") ? "&" : "?";
+  return `${wsBase}${sep}site=${encodeURIComponent(siteId)}`;
+}
+
+/** The user-facing wordmark: an explicit brand wordmark, else the brand name. */
+export function brandWordmark(b: Brand): string {
+  return (b.wordmarkText && b.wordmarkText.trim()) || b.name;
+}

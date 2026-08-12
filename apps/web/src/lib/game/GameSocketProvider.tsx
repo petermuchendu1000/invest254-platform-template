@@ -12,6 +12,8 @@ import { useQueryClient } from '@tanstack/react-query';
 import { formatKes } from '@invest254/shared/money';
 import { CURVE_AMPLITUDE, CURVE_BASE_RATE } from '@invest254/shared/config';
 import { env } from '@/lib/env';
+import { useBrand } from '@/lib/brand/BrandProvider';
+import { wsUrlForSite } from '@/lib/brand/brand';
 import { useSession } from '@/lib/auth/session';
 import { useToast } from '@/lib/toast/ToastProvider';
 import { useOutcomeFx } from '@/lib/game/outcomeFx';
@@ -100,6 +102,13 @@ export function GameSocketProvider({ children }: { children: React.ReactNode }) 
   const token = useSession((s) => s.token);
   const tokenRef = useRef<string | null>(token);
   tokenRef.current = token;
+
+  // Bind the live socket to the current brand: the multiplexed engine reads `?site=` at connect
+  // (before any token) so the public tick stream starts on the right brand; the post-auth JWT
+  // `site` claim must then match. Kept in a ref so the mount-scoped connect() closure sees it.
+  const brand = useBrand();
+  const siteRef = useRef(brand.siteId);
+  siteRef.current = brand.siteId;
 
   const qc = useQueryClient();
   const toast = useToast();
@@ -391,7 +400,7 @@ export function GameSocketProvider({ children }: { children: React.ReactNode }) 
       setStatus('connecting');
       let ws: WebSocket;
       try {
-        ws = new WebSocket(env.wsUrl);
+        ws = new WebSocket(wsUrlForSite(env.wsUrl, siteRef.current));
       } catch {
         scheduleReconnect();
         return;

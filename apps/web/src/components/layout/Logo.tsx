@@ -1,4 +1,8 @@
+'use client';
+
 import Link from 'next/link';
+import { useBrand } from '@/lib/brand/BrandProvider';
+import { brandWordmark } from '@/lib/brand/brand';
 
 /** Brand colours (Kenyan-flag inspired) — fixed in both themes. The navy elements adapt to the
  *  theme via `currentColor` (dark on light backgrounds, light on dark) so the mark always reads. */
@@ -36,17 +40,25 @@ export function LogoMark({ className = 'h-7 w-7' }: { className?: string }) {
   );
 }
 
-/** invest254 brand lockup — mark + two-tone wordmark, theme-aware via currentColor. */
+/** Brand lockup — the brand's logo image when set, else the chart mark + brand wordmark. */
 export function Logo({ className = '' }: { className?: string }) {
+  const brand = useBrand();
+  const wordmark = brandWordmark(brand);
   return (
     <Link
       href="/"
-      aria-label="invest254.com home"
+      aria-label={`${brand.name} home`}
       className={`flex items-center gap-2 text-fg ${className}`}
     >
-      <LogoMark />
+      {brand.logoUrl ? (
+        // Brand-provided logo (served from the sites row). Height-constrained; width auto.
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={brand.logoUrl} alt={brand.name} className="h-7 w-auto max-w-[160px] object-contain" />
+      ) : (
+        <LogoMark />
+      )}
       <span className="text-base font-extrabold leading-none tracking-tight text-fg">
-        invest254.com
+        {wordmark}
       </span>
     </Link>
   );
