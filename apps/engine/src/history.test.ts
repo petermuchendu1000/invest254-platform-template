@@ -109,7 +109,7 @@ test("Pg listLedger: keyset params + bigint/date mapping + nextCursor", async ()
   const r = new PgGameRepository(fake);
   const page = await r.listLedger("u", { limit: 2 });
   assert.ok(calls[0]!.text.includes("from ledger_entries"));
-  assert.deepEqual(calls[0]!.params, ["u", null, null, 3]);           // cursor null → first page, limit+1
+  assert.deepEqual(calls[0]!.params, ["u", null, null, 3, null]);           // cursor null → first page, limit+1; $5 site = null (no filter)
   assert.equal(page.items.length, 2);
   assert.equal(page.items[0]!.amountCents, 50000);
   assert.equal(page.items[0]!.createdAtMs, 3000);
@@ -118,7 +118,7 @@ test("Pg listLedger: keyset params + bigint/date mapping + nextCursor", async ()
 
   // second page: cursor decodes into keyset params $2 (ISO ts) and $3 (id)
   await r.listLedger("u", { limit: 2, cursor: encodeCursor("2000:20") });
-  assert.deepEqual(calls[1]!.params, ["u", new Date(2000).toISOString(), "20", 3]);
+  assert.deepEqual(calls[1]!.params, ["u", new Date(2000).toISOString(), "20", 3, null]);
 });
 
 test("Pg listPositions: status filter param + numeric coercion", async () => {
@@ -136,7 +136,7 @@ test("Pg listPositions: status filter param + numeric coercion", async () => {
   const r = new PgGameRepository(fake);
   const page = await r.listPositions("u", { status: "settled", limit: 50 });
   assert.ok(calls[0]!.text.includes("from positions"));
-  assert.deepEqual(calls[0]!.params, ["u", "settled", null, null, 51]);
+  assert.deepEqual(calls[0]!.params, ["u", "settled", null, null, 51, null]);  // $6 site = null (no filter)
   const p = page.items[0]!;
   assert.equal(p.gameDayId, 7);
   assert.equal(p.entryRate, 0.21);
@@ -187,7 +187,7 @@ test("Pg listTransactions: kind/status filter params + mapping", async () => {
   const r = new PgPaymentRepository(fake);
   const page = await r.listTransactions("u", { kind: "withdrawal", status: "success", limit: 10 });
   assert.ok(calls[0]!.text.includes("from transactions"));
-  assert.deepEqual(calls[0]!.params, ["u", "withdrawal", "success", null, null, 11]);
+  assert.deepEqual(calls[0]!.params, ["u", "withdrawal", "success", null, null, 11, null]);  // $7 site = null (no filter)
   assert.equal(page.items[0]!.amountCents, 30000);
   assert.equal(page.items[0]!.mpesaReceipt, "R1");
   assert.equal(page.items[0]!.createdAtMs, 9000);

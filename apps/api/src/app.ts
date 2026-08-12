@@ -86,14 +86,14 @@ export interface ApiDeps {
     "initiateDeposit" | "requestWithdrawal" | "handleStkCallback" | "handleB2cResult" | "approveWithdrawal" | "rejectWithdrawal" | "reconcileDeposits">;
   /** Resolve a player's display handle (falls back to a guest handle). */
   resolveHandle(userId: string): Promise<string>;
-  /** Wallet balances (real + bonus) for the authenticated player. */
-  walletBalance(userId: string): Promise<WalletBalance>;
+  /** Wallet balances (real + bonus) for the authenticated player, scoped to their brand. */
+  walletBalance(userId: string, siteId?: string): Promise<WalletBalance>;
 
-  // ── F2: player history reads (each scoped to the caller's own userId) ──
-  ledger(userId: string, q: PageQuery): Promise<Page<LedgerEntry>>;
-  positions(userId: string, q: PositionListQuery): Promise<Page<PositionRecord>>;
-  positionDetail(userId: string, positionId: string): Promise<PositionDetail | null>;
-  transactions(userId: string, q: TxListQuery): Promise<Page<TransactionRecord>>;
+  // ── F2: player history reads (each scoped to the caller's own userId AND site) ──
+  ledger(userId: string, q: PageQuery, siteId?: string): Promise<Page<LedgerEntry>>;
+  positions(userId: string, q: PositionListQuery, siteId?: string): Promise<Page<PositionRecord>>;
+  positionDetail(userId: string, positionId: string, siteId?: string): Promise<PositionDetail | null>;
+  transactions(userId: string, q: TxListQuery, siteId?: string): Promise<Page<TransactionRecord>>;
 }
 
 const BASE = "/api/v1";

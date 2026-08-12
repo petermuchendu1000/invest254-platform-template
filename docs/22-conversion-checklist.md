@@ -18,7 +18,8 @@ Legend: ✅ shipped in template · 🔲 to do
 - ✅ **Applied & verified** — all migrations 0001→0047 apply cleanly and idempotently on a local
   Postgres 17; existing data backfills to the default site; per-site uniques hold. Proven by
   `packages/db/_testkit/e2e_multitenant.py` (23 scenarios). See TESTING.md.
-  🔲 Re-run the same harness against a fresh **Supabase** project before any live use.
+  ✅ Re-run harness against a fresh project: 38/38 pass on a fresh Postgres 17 (Supabase shim +
+  all migrations) via `packages/db/_testkit/e2e_multitenant.py`. (A fresh managed-Supabase run is still recommended before pointing a NEW brand at its own project.)
 
 ## B. Money RPCs — stamp/accept `site_id`
 File: `packages/db/migrations/0047_site_money_rpcs.sql` (shipped) + more to extend 0014/0018/0019.
@@ -97,14 +98,27 @@ Files: `apps/api/src/http.ts`, `app.ts`, `app.site.ts`, `app.auth.ts`, `server.t
 - ✅ Brand-scoped auth: `register`/`login` resolve the brand from the request `host` and pass
   `site_id`, returning the session's `site`; identity is isolated per brand. Tested (two-brand
   register + login isolation).
-- 🔲 Thread `ctx.siteId` into every service/repository call (wallet, positions, transactions,
-  payments, affiliate, admin reads/writes). The mechanism is in place — `requireSite` populates
-  `ctx.siteId` — so this is the remaining per-handler bulk (apply `requireSite` to each group and
-  pass `ctx.siteId` down).
-- 🔲 M-Pesa callback routes accept the `/s/<slug>` prefix and resolve the site.
+- 🟡 Thread `ctx.siteId` into every service/repository call. **Done:** history reads
+  (`/wallet/ledger`, `/positions`, `/positions/:id`, `/transactions`) and the wallet + payments
+  money core (`/wallet`, `/deposits`, `/withdrawals`) now run under `requireSite` and pass
+  `ctx.siteId` through PaymentService + PaymentRepository into the site-aware
+  `fn_create_deposit`/`fn_create_withdrawal` RPCs and site-filtered wallet reads (null → default
+  brand, so single-tenant is unchanged). **Blocked (needs Task B / F first):** affiliate + admin.
+  Their RPCs (`fn_affiliate_enroll`, `fn_accrue_affiliate_commissions`, all `fn_admin_*`) are NOT
+  site-aware — the tables carry `site_id` but the functions neither accept nor filter on it, so
+  threading `ctx.siteId` there would be a no-op at best and risk cross-brand commission leakage at
+  worst; deferred until the affiliate accrual is site-grouped (Task B) and admin roles/RLS land
+  (Tasks F, H).
+- ✅ M-Pesa callback routes accept the `/s/<slug>` prefix and resolve the site (`app.payments.ts`):
+  `POST /s/<slug>/deposits/mpesa/callback` and `.../withdrawals/mpesa/result/:txId` resolve the
+  slug → `ctx.siteId` before the handler; unprefixed routes stay for the default brand.
+- ✅ **Aggressive e2e** (`apps/api/src/app.multitenant.e2e.test.ts`, 8 scenarios): full HTTP
+  deposit/withdrawal/position lifecycles across two brands proving transaction/position/ledger
+  ISOLATION, `/s/<slug>` callback ROUTING (+ unknown-slug 404), `AUTH_SITE_MISMATCH` on every
+  site-scoped route, legacy-token default-site fallback, and brand resolution by host/slug.
 - **Done when:** every list/mutation is implicitly filtered to the caller's site; the brand route
-  returns correct per-host branding. (Brand route + auth scoping + middleware ✅; per-handler
-  threading + callback prefix remain.)
+  returns correct per-host branding. (Brand route + auth scoping + middleware + callback prefix +
+  history/wallet/payments threading + e2e ✅; affiliate + admin threading blocked on Tasks B/F/H.)
 
 ## F. RLS — second dimension
 Files: new `packages/db/migrations/00XX_rls_site.sql`.

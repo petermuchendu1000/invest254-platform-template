@@ -1,5 +1,5 @@
 import type { Cents } from "@invest254/shared";
-import { Router, ApiError, requireAuth, requireRole, rateLimit, restrictToCidrs, type Ctx } from "./http.js";
+import { Router, ApiError, requireAuth, requireRole, requireSite, rateLimit, restrictToCidrs, type Ctx, type Middleware } from "./http.js";
 import type { ApiDeps } from "./app.js";
 
 /**
@@ -108,6 +108,7 @@ export function parseB2cResult(body: unknown): B2cResult {
 /** Register player-authenticated, public-callback, and admin routes (E2). */
 export function registerProtectedRoutes(router: Router, deps: ApiDeps): void {
   const auth = requireAuth(deps.verifier);
+  const site = requireSite();
   // Per-user throttle so a client can't spam real STK pushes / withdrawal requests. Tunable via env.
   const payLimit = Number(process.env.RATE_LIMIT_PAYMENTS_PER_MIN) || 20;
   const depositLimit = rateLimit({ name: "deposit", by: "user", limit: payLimit, windowMs: 60_000 });
@@ -117,24 +118,24 @@ export function registerProtectedRoutes(router: Router, deps: ApiDeps): void {
   const darajaOnly = restrictToCidrs("MPESA_CALLBACK_ALLOWED_CIDRS");
 
   // ── Player: wallet & chat ──
-  router.get(`${BASE}/wallet`, auth, async (ctx: Ctx) => {
-    return deps.walletBalance(ctx.claims!.userId);
+  router.get(`${BASE}/wallet`, auth, site, async (ctx: Ctx) => {
+    return deps.walletBalance(ctx.claims!.userId, ctx.siteId);
   });
 
   // ── Player: payments ──
-  router.post(`${BASE}/deposits`, auth, depositLimit, async (ctx: Ctx) => {
+  router.post(`${BASE}/deposits`, auth, site, depositLimit, async (ctx: Ctx) => {
     const body = asObject(ctx.body);
     const amount = requireIntAmount(body);
     const phone = requirePhone(body);
-    const out = await domain(() => deps.payments.initiateDeposit(ctx.claims!.userId, amount, phone));
+    const out = await domain(() => deps.payments.initiateDeposit(ctx.claims!.userId, amount, phone, ctx.siteId));
     return { status: 202, body: { transactionId: out.txId, checkoutRequestId: out.checkoutRequestId } };
   });
 
-  router.post(`${BASE}/withdrawals`, auth, withdrawLimit, async (ctx: Ctx) => {
+  router.post(`${BASE}/withdrawals`, auth, site, withdrawLimit, async (ctx: Ctx) => {
     const body = asObject(ctx.body);
     const amount = requireIntAmount(body);
     const phone = requirePhone(body);
-    const out = await domain(() => deps.payments.requestWithdrawal(ctx.claims!.userId, amount, phone));
+    const out = await domain(() => deps.payments.requestWithdrawal(ctx.claims!.userId, amount, phone, ctx.siteId));
     // Marketer instant transfer -> paid to the mpesa app wallet (200). Normal player -> pending (202).
     if (out.mode === "marketer") {
       return { status: 200, body: { paid: true, transactionId: out.txId, newBalance: out.newBalance, mpesaBalance: out.mpesaBalanceCents } };
@@ -143,17 +144,33 @@ export function registerProtectedRoutes(router: Router, deps: ApiDeps): void {
   });
 
   // ── Public: Daraja callbacks (network-allowlisted at the edge, not in-app) ──
-  router.post(`${BASE}/deposits/mpesa/callback`, darajaOnly, async (ctx: Ctx) => {
+  // Multi-tenant (docs/22 Task E): each brand registers its own callback URL with Safaricom as
+  // `/api/v1/s/<slug>/...`. The slug identifies which brand's shortcode fired, so the prefixed
+  // variants resolve it to `ctx.siteId` before the handler runs. The unprefixed routes stay for
+  // the default brand (single-tenant deployments and the in-flight callbacks at cutover).
+  const resolveSlug: Middleware = async (ctx: Ctx) => {
+    const slug = ctx.params.slug;
+    if (!slug) return;
+    const brand = await deps.brandByHost(slug.trim().toLowerCase());
+    if (!brand) throw new ApiError("SITE_NOT_FOUND", `no active brand for slug '${slug}'`, 404);
+    ctx.siteId = brand.siteId;
+  };
+
+  const stkCallback = async (ctx: Ctx) => {
     const cb = parseStkCallback(ctx.body);
     await domain(() => deps.payments.handleStkCallback(cb.checkoutRequestId, cb.resultCode, cb.resultDesc, cb.receipt, ctx.body));
     return DARAJA_ACK;
-  });
+  };
+  router.post(`${BASE}/deposits/mpesa/callback`, darajaOnly, stkCallback);
+  router.post(`${BASE}/s/:slug/deposits/mpesa/callback`, darajaOnly, resolveSlug, stkCallback);
 
-  router.post(`${BASE}/withdrawals/mpesa/result/:txId`, darajaOnly, async (ctx: Ctx) => {
+  const b2cResult = async (ctx: Ctx) => {
     const r = parseB2cResult(ctx.body);
     await domain(() => deps.payments.handleB2cResult(ctx.params.txId!, r.resultCode, r.conversationId, r.receipt, ctx.body));
     return DARAJA_ACK;
-  });
+  };
+  router.post(`${BASE}/withdrawals/mpesa/result/:txId`, darajaOnly, b2cResult);
+  router.post(`${BASE}/s/:slug/withdrawals/mpesa/result/:txId`, darajaOnly, resolveSlug, b2cResult);
 
   // ── Admin: withdrawal moderation ──
   const admin = requireRole("admin");

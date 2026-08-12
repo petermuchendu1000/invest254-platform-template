@@ -132,8 +132,8 @@ async function buildDeps(): Promise<ApiDeps> {
     },
     payments,
     resolveHandle,
-    walletBalance: async (userId: string): Promise<WalletBalance> => {
-      const r = await q.query("select real_balance, bonus_balance, currency from wallets where user_id = $1", [userId]);
+    walletBalance: async (userId: string, siteId?: string): Promise<WalletBalance> => {
+      const r = await q.query("select real_balance, bonus_balance, currency from wallets where user_id = $1 and ($2::uuid is null or site_id = $2)", [userId, siteId ?? null]);
       const toCents = (v: unknown): number => (typeof v === "string" ? Number(v) : (v as number)) || 0;
       const base = !r.rows.length
         ? { real: 0, bonus: 0, currency: "KES" }
@@ -155,10 +155,10 @@ async function buildDeps(): Promise<ApiDeps> {
         return base;
       }
     },
-    ledger: (userId, qy) => repo.listLedger(userId, qy),
-    positions: (userId, qy) => repo.listPositions(userId, qy),
-    positionDetail: (userId, id) => repo.getPositionDetail(userId, id),
-    transactions: (userId, qy) => payRepo.listTransactions(userId, qy),
+    ledger: (userId, qy, siteId) => repo.listLedger(userId, qy, siteId),
+    positions: (userId, qy, siteId) => repo.listPositions(userId, qy, siteId),
+    positionDetail: (userId, id, siteId) => repo.getPositionDetail(userId, id, siteId),
+    transactions: (userId, qy, siteId) => payRepo.listTransactions(userId, qy, siteId),
   };
 }
 

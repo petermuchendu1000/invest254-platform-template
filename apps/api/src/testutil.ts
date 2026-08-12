@@ -194,12 +194,12 @@ export async function startTestApi(opts: TestApiOptions = {}): Promise<TestApi> 
     brandByHost: async (host) => resolveTestBrand(host),
     payments,
     resolveHandle,
-    walletBalance: async (userId): Promise<WalletBalance> =>
-      ({ real: await payRepo.getBalance(userId), bonus: bonus.get(userId) ?? 0, currency: "KES" }),
-    ledger: (userId, q) => gameRepo.listLedger(userId, q),
-    positions: (userId, q) => gameRepo.listPositions(userId, q),
-    positionDetail: (userId, id) => gameRepo.getPositionDetail(userId, id),
-    transactions: (userId, q) => payRepo.listTransactions(userId, q),
+    walletBalance: async (userId, siteId): Promise<WalletBalance> =>
+      ({ real: await payRepo.getBalance(userId, siteId), bonus: bonus.get(userId) ?? 0, currency: "KES" }),
+    ledger: (userId, q, siteId) => gameRepo.listLedger(userId, q, siteId),
+    positions: (userId, q, siteId) => gameRepo.listPositions(userId, q, siteId),
+    positionDetail: (userId, id, siteId) => gameRepo.getPositionDetail(userId, id, siteId),
+    transactions: (userId, q, siteId) => payRepo.listTransactions(userId, q, siteId),
     ...opts.depsOverrides,
   };
 

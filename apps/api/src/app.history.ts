@@ -1,5 +1,5 @@
 import type { LedgerEntry, PositionRecord, PositionDetail, TransactionRecord, FairnessRecord } from "@invest254/engine";
-import { Router, ApiError, requireAuth, type Ctx } from "./http.js";
+import { Router, ApiError, requireAuth, requireSite, type Ctx } from "./http.js";
 import type { ApiDeps } from "./app.js";
 
 /**
@@ -54,27 +54,28 @@ const transactionDto = (t: TransactionRecord) => ({
 
 export function registerHistoryRoutes(router: Router, deps: ApiDeps): void {
   const auth = requireAuth(deps.verifier);
+  const site = requireSite();
 
-  router.get(`${BASE}/wallet/ledger`, auth, async (ctx: Ctx) => {
-    const page = await deps.ledger(ctx.claims!.userId, { limit: parseLimit(ctx), cursor: cursorOf(ctx) });
+  router.get(`${BASE}/wallet/ledger`, auth, site, async (ctx: Ctx) => {
+    const page = await deps.ledger(ctx.claims!.userId, { limit: parseLimit(ctx), cursor: cursorOf(ctx) }, ctx.siteId);
     return { items: page.items.map(ledgerDto), nextCursor: page.nextCursor };
   });
 
-  router.get(`${BASE}/positions`, auth, async (ctx: Ctx) => {
+  router.get(`${BASE}/positions`, auth, site, async (ctx: Ctx) => {
     const status = ctx.query.get("status") ?? undefined;
-    const page = await deps.positions(ctx.claims!.userId, { limit: parseLimit(ctx), cursor: cursorOf(ctx), status });
+    const page = await deps.positions(ctx.claims!.userId, { limit: parseLimit(ctx), cursor: cursorOf(ctx), status }, ctx.siteId);
     return { items: page.items.map(positionDto), nextCursor: page.nextCursor };
   });
 
-  router.get(`${BASE}/positions/:id`, auth, async (ctx: Ctx) => {
+  router.get(`${BASE}/positions/:id`, auth, site, async (ctx: Ctx) => {
     const id = ctx.params.id!;
     if (!UUID_RE.test(id)) throw new ApiError("INVALID_ID", "position id must be a UUID", 400);
-    const detail = await deps.positionDetail(ctx.claims!.userId, id);
+    const detail = await deps.positionDetail(ctx.claims!.userId, id, ctx.siteId);
     if (!detail) throw new ApiError("NOT_FOUND", `position ${id} not found`, 404);
     return positionDetailDto(detail);
   });
 
-  router.get(`${BASE}/transactions`, auth, async (ctx: Ctx) => {
+  router.get(`${BASE}/transactions`, auth, site, async (ctx: Ctx) => {
     const kindRaw = ctx.query.get("kind");
     if (kindRaw !== null && kindRaw !== "deposit" && kindRaw !== "withdrawal") {
       throw new ApiError("INVALID_KIND", "kind must be 'deposit' or 'withdrawal'", 400);
@@ -82,7 +83,7 @@ export function registerHistoryRoutes(router: Router, deps: ApiDeps): void {
     const status = ctx.query.get("status") ?? undefined;
     const page = await deps.transactions(ctx.claims!.userId, {
       limit: parseLimit(ctx), cursor: cursorOf(ctx), kind: kindRaw ?? undefined, status,
-    });
+    }, ctx.siteId);
     return { items: page.items.map(transactionDto), nextCursor: page.nextCursor };
   });
 }

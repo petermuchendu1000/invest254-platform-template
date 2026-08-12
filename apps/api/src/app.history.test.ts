@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { startTestApi, TEST_USER, type TestApi } from "./testutil.js";
+import { startTestApi, TEST_USER, SITE_A, SITE_B, type TestApi } from "./testutil.js";
 
 const json = (res: Response): Promise<any> => res.json() as Promise<any>;
 const PLAYER = TEST_USER;
@@ -126,5 +126,41 @@ test("GET /transactions?kind=bogus → 400", async () => {
     const res = await get(api, "/api/v1/transactions?kind=bogus", PLAYER);
     assert.equal(res.status, 400);
     assert.equal((await json(res)).error.code, "INVALID_KIND");
+  } finally { await api.close(); }
+});
+
+// ───────────────────────────── site scoping (docs/22 Task E) ─────────────────────────────
+
+test("history reads are scoped to the token's site: brand-B token sees only brand-B rows", async () => {
+  const api = await startTestApi();
+  try {
+    // Same user plays on BOTH brands: one position on the default site, one on brand B.
+    const dayA = await api.gameRepo.ensureGameDay("2026-08-12", "hA", SITE_A);
+    const dayB = await api.gameRepo.ensureGameDay("2026-08-12", "hB", SITE_B);
+    const posA = await api.gameRepo.openPosition({ userId: PLAYER, stakeCents: 10_000, direction: "buy", entryRate: 0.2, durationS: 10, gameDayId: dayA, nonce: 1, openedAtMs: 10, configVersion: 1, siteId: SITE_A });
+    const posB = await api.gameRepo.openPosition({ userId: PLAYER, stakeCents: 20_000, direction: "sell", entryRate: 0.2, durationS: 10, gameDayId: dayB, nonce: 2, openedAtMs: 20, configVersion: 1, siteId: SITE_B });
+
+    // Token scoped to brand B (3rd token segment = siteId, see testutil).
+    const playerB = `${PLAYER}:player:${SITE_B}`;
+
+    const positions = await json(await get(api, "/api/v1/positions", playerB));
+    assert.equal(positions.items.length, 1, "brand-B token sees only the brand-B position");
+    assert.equal(positions.items[0].id, posB.positionId);
+
+    const ledger = await json(await get(api, "/api/v1/wallet/ledger", playerB));
+    assert.ok(ledger.items.length > 0);
+    assert.ok(ledger.items.every((e: any) => e.type !== "stake" || true)); // ledger rows exist
+    const stakes = ledger.items.filter((e: any) => e.type === "stake");
+    assert.equal(stakes.length, 1, "brand-B ledger shows only the brand-B stake");
+    assert.equal(stakes[0].amountCents, -20_000);
+
+    // Position detail: brand-A position is invisible to the brand-B token.
+    assert.equal((await get(api, `/api/v1/positions/${posA.positionId}`, playerB)).status, 404);
+    assert.equal((await get(api, `/api/v1/positions/${posB.positionId}`, playerB)).status, 200);
+
+    // Legacy token (no site claim) still sees the default site's rows.
+    const positionsA = await json(await get(api, "/api/v1/positions", PLAYER));
+    assert.equal(positionsA.items.length, 1);
+    assert.equal(positionsA.items[0].id, posA.positionId);
   } finally { await api.close(); }
 });

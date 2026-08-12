@@ -46,11 +46,11 @@ export class PaymentService {
   }
 
   // ── Deposit (STK Push) ──
-  async initiateDeposit(userId: string, amountCents: number, phoneRaw: string): Promise<{ txId: string; checkoutRequestId: string }> {
+  async initiateDeposit(userId: string, amountCents: number, phoneRaw: string, siteId?: string): Promise<{ txId: string; checkoutRequestId: string }> {
     if (!Number.isInteger(amountCents) || amountCents <= 0) throw new Error("INVALID_AMOUNT");
     if (amountCents < this.minDeposit) throw new Error("BELOW_MIN");
     const msisdn = normalizeMsisdn(phoneRaw);
-    const txId = await this.repo.createDeposit(userId, amountCents, msisdn);
+    const txId = await this.repo.createDeposit(userId, amountCents, msisdn, siteId);
     const stk = await this.daraja.stkPush({ amountCents, msisdn, accountRef: "Invest254", desc: "Deposit" });
     await this.repo.attachStk(txId, stk.merchantRequestId, stk.checkoutRequestId);
     return { txId, checkoutRequestId: stk.checkoutRequestId };
@@ -109,7 +109,7 @@ export class PaymentService {
    *    that phone's mpesa (marketer) wallet — no Daraja, no admin approval — and returned as paid.
    *  - Otherwise it validates and HOLDS funds atomically (status pending) for the normal M-Pesa flow.
    */
-  async requestWithdrawal(userId: string, amountCents: number, phoneRaw: string): Promise<WithdrawalOutcome> {
+  async requestWithdrawal(userId: string, amountCents: number, phoneRaw: string, siteId?: string): Promise<WithdrawalOutcome> {
     const minWithdrawal = this.currentMinWithdrawal();
     if (!Number.isInteger(amountCents) || amountCents <= 0) throw new Error("INVALID_AMOUNT");
     if (amountCents < minWithdrawal) throw new Error("BELOW_MIN");
@@ -123,7 +123,7 @@ export class PaymentService {
     }
     // Normal player: real M-Pesa payout via the pending -> admin approve -> Daraja B2C flow.
     const msisdn = normalizeMsisdn(phoneRaw);
-    const res: CreateWithdrawalResult = await this.repo.createWithdrawal(userId, amountCents, msisdn, minWithdrawal);
+    const res: CreateWithdrawalResult = await this.repo.createWithdrawal(userId, amountCents, msisdn, minWithdrawal, siteId);
     return { mode: "daraja", txId: res.txId, newBalance: res.newBalance };
   }
 
@@ -158,5 +158,5 @@ export class PaymentService {
     return res;
   }
 
-  getBalance(userId: string): Promise<Cents> { return this.repo.getBalance(userId); }
+  getBalance(userId: string, siteId?: string): Promise<Cents> { return this.repo.getBalance(userId, siteId); }
 }

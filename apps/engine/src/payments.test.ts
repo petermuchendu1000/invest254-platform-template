@@ -85,7 +85,7 @@ test("Pg payments: maps each method to the right RPC + params", async () => {
   };
   const r = new PgPaymentRepository(fake);
   assert.equal(await r.createDeposit("u", 5000, "254712345678"), "tx-d");
-  assert.deepEqual(calls.at(-1)!.params, ["u", 5000, "254712345678"]);
+  assert.deepEqual(calls.at(-1)!.params, ["u", 5000, "254712345678", "00000000-0000-0000-0000-000000000001"]);
   await r.completeDeposit("co-1", 0, "OK", "RCPT", { a: 1 });
   assert.deepEqual(calls.at(-1)!.params, ["co-1", 0, "OK", "RCPT", JSON.stringify({ a: 1 })]);
   const w = await r.createWithdrawal("u", 20000, "254712345678", 20000);

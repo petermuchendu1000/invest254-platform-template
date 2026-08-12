@@ -34,11 +34,11 @@ export interface AdminTxSnapshot { txId: string; userId: string; kind: "deposit"
 export interface UnsettledDeposit { txId: string; checkoutRequestId: string; }
 
 export interface PaymentRepository {
-  getBalance(userId: string): Promise<Cents>;
-  createDeposit(userId: string, amountCents: Cents, phone: string): Promise<string>;
+  getBalance(userId: string, siteId?: string): Promise<Cents>;
+  createDeposit(userId: string, amountCents: Cents, phone: string, siteId?: string): Promise<string>;
   attachStk(txId: string, merchantRequestId: string, checkoutRequestId: string): Promise<boolean>;
   completeDeposit(checkoutRequestId: string, resultCode: number, resultDesc: string, receipt: string | null, raw: unknown): Promise<CompleteResult>;
-  createWithdrawal(userId: string, amountCents: Cents, phone: string, minCents: Cents): Promise<CreateWithdrawalResult>;
+  createWithdrawal(userId: string, amountCents: Cents, phone: string, minCents: Cents, siteId?: string): Promise<CreateWithdrawalResult>;
   /**
    * Marketer instant withdrawal: if this player's phone is a marketer, move the amount from the
    * game wallet into that phone's mpesa (marketer) wallet atomically and return the balances.
@@ -49,13 +49,13 @@ export interface PaymentRepository {
   rejectWithdrawal(txId: string, adminId: string): Promise<{ reversed: boolean; newBalance: Cents }>;
   completeWithdrawal(txId: string, resultCode: number, conversationId: string | null, receipt: string | null, raw: unknown): Promise<CompleteResult>;
   getTransaction(txId: string): Promise<TxRow | null>;
-  /** A player's transaction history (optional kind/status filter), newest-first, cursor-paginated. */
-  listTransactions(userId: string, q: TxListQuery): Promise<Page<TransactionRecord>>;
+  /** A player's transaction history (optional kind/status filter), newest-first, cursor-paginated. `siteId` scopes it per brand. */
+  listTransactions(userId: string, q: TxListQuery, siteId?: string): Promise<Page<TransactionRecord>>;
   /** Deposits still non-terminal after `olderThanMs` (oldest first) — input to the reconcile sweep. */
   listUnsettledDeposits(olderThanMs: number, limit: number): Promise<UnsettledDeposit[]>;
 }
 
-interface MemTx { id: string; userId: string; kind: "deposit" | "withdrawal"; amount: Cents; status: string; phone: string; checkoutId?: string; seq: number; createdAtMs: number; receipt: string | null; }
+interface MemTx { id: string; userId: string; kind: "deposit" | "withdrawal"; amount: Cents; status: string; phone: string; checkoutId?: string; seq: number; createdAtMs: number; receipt: string | null; siteId?: string | null; }
 interface MemLedger { userId: string; type: string; amount: Cents; ref: string; }
 
 export class InMemoryPaymentRepository implements PaymentRepository {
@@ -68,13 +68,13 @@ export class InMemoryPaymentRepository implements PaymentRepository {
   constructor(private readonly now: () => number = () => Date.now()) {}
 
   seed(userId: string, cents: Cents): void { this.balances.set(userId, assertCents(cents)); }
-  async getBalance(userId: string): Promise<Cents> { return this.balances.get(userId) ?? 0; }
+  async getBalance(userId: string, _siteId?: string): Promise<Cents> { return this.balances.get(userId) ?? 0; }
 
-  async createDeposit(userId: string, amountCents: Cents, phone: string): Promise<string> {
+  async createDeposit(userId: string, amountCents: Cents, phone: string, siteId?: string): Promise<string> {
     if (amountCents <= 0) throw new Error("INVALID_AMOUNT");
     if (!this.balances.has(userId)) throw new Error("WALLET_NOT_FOUND");
     const id = randomUUID();
-    this.txns.set(id, { id, userId, kind: "deposit", amount: amountCents, status: "pending", phone, seq: ++this.txSeq, createdAtMs: this.now(), receipt: null });
+    this.txns.set(id, { id, userId, kind: "deposit", amount: amountCents, status: "pending", phone, seq: ++this.txSeq, createdAtMs: this.now(), receipt: null, siteId: siteId ?? null });
     return id;
   }
   async attachStk(txId: string, _merchant: string, checkoutId: string): Promise<boolean> {
@@ -107,7 +107,7 @@ export class InMemoryPaymentRepository implements PaymentRepository {
       .map((t) => ({ txId: t.id, checkoutRequestId: t.checkoutId! }));
   }
 
-  async createWithdrawal(userId: string, amountCents: Cents, phone: string, minCents: Cents): Promise<CreateWithdrawalResult> {
+  async createWithdrawal(userId: string, amountCents: Cents, phone: string, minCents: Cents, siteId?: string): Promise<CreateWithdrawalResult> {
     if (amountCents <= 0) throw new Error("INVALID_AMOUNT");
     if (amountCents < minCents) throw new Error("BELOW_MIN");
     const bal = this.balances.get(userId);
@@ -115,7 +115,7 @@ export class InMemoryPaymentRepository implements PaymentRepository {
     if (bal < amountCents) throw new Error("INSUFFICIENT_FUNDS");
     const next = bal - amountCents; this.balances.set(userId, next);
     const id = randomUUID();
-    this.txns.set(id, { id, userId, kind: "withdrawal", amount: amountCents, status: "pending", phone, seq: ++this.txSeq, createdAtMs: this.now(), receipt: null });
+    this.txns.set(id, { id, userId, kind: "withdrawal", amount: amountCents, status: "pending", phone, seq: ++this.txSeq, createdAtMs: this.now(), receipt: null, siteId: siteId ?? null });
     this.ledger.push({ userId, type: "withdrawal", amount: -amountCents, ref: `transactions:${id}` });
     return { txId: id, newBalance: next };
   }
@@ -179,11 +179,12 @@ export class InMemoryPaymentRepository implements PaymentRepository {
     return tx ? { id: tx.id, userId: tx.userId, kind: tx.kind, amountCents: tx.amount, status: tx.status, phone: tx.phone } : null;
   }
 
-  async listTransactions(userId: string, q: TxListQuery): Promise<Page<TransactionRecord>> {
+  async listTransactions(userId: string, q: TxListQuery, siteId?: string): Promise<Page<TransactionRecord>> {
     const limit = clampLimit(q.limit);
     const after = numCursor(q.cursor);
     const rows = [...this.txns.values()]
       .filter((t) => t.userId === userId
+        && (siteId === undefined || (t.siteId ?? "00000000-0000-0000-0000-000000000001") === siteId)
         && (q.kind === undefined || t.kind === q.kind)
         && (q.status === undefined || t.status === q.status)
         && (after === null || t.seq < after))
@@ -233,14 +234,21 @@ function numCursor(cursor?: string | null): number | null {
 
 const toCents = (v: unknown): Cents => (typeof v === "string" ? Number(v) : (v as number));
 
+/** The default (single-tenant) brand, seeded by migration 0044. A null siteId maps here so
+ *  legacy/single-tenant callers keep writing to the default brand's wallet exactly as before. */
+const DEFAULT_SITE_ID = "00000000-0000-0000-0000-000000000001";
+
 export class PgPaymentRepository implements PaymentRepository {
   constructor(private readonly q: Querier) {}
-  async getBalance(userId: string): Promise<Cents> {
-    const r = await this.q.query("select real_balance from wallets where user_id = $1", [userId]);
+  async getBalance(userId: string, siteId?: string): Promise<Cents> {
+    const r = await this.q.query(
+      "select real_balance from wallets where user_id = $1 and ($2::uuid is null or site_id = $2)",
+      [userId, siteId ?? null]);
     return r.rows.length ? toCents(r.rows[0].real_balance) : 0;
   }
-  async createDeposit(userId: string, amountCents: Cents, phone: string): Promise<string> {
-    const r = await this.q.query("select fn_create_deposit($1,$2,$3) as id", [userId, amountCents, phone]);
+  async createDeposit(userId: string, amountCents: Cents, phone: string, siteId?: string): Promise<string> {
+    // migration 0047: fn_create_deposit(user, amount, phone, site_id) — stamps the deposit's brand.
+    const r = await this.q.query("select fn_create_deposit($1,$2,$3,$4) as id", [userId, amountCents, phone, siteId ?? DEFAULT_SITE_ID]);
     return String(r.rows[0].id);
   }
   async attachStk(txId: string, merchantRequestId: string, checkoutRequestId: string): Promise<boolean> {
@@ -263,8 +271,9 @@ export class PgPaymentRepository implements PaymentRepository {
     );
     return r.rows.map((x: any) => ({ txId: String(x.id), checkoutRequestId: String(x.checkout_request_id) }));
   }
-  async createWithdrawal(userId: string, amountCents: Cents, phone: string, minCents: Cents): Promise<CreateWithdrawalResult> {
-    const r = await this.q.query("select tx_id, new_balance from fn_create_withdrawal($1,$2,$3,$4)", [userId, amountCents, phone, minCents]);
+  async createWithdrawal(userId: string, amountCents: Cents, phone: string, minCents: Cents, siteId?: string): Promise<CreateWithdrawalResult> {
+    // migration 0047: fn_create_withdrawal(user, amount, phone, min, site_id) — holds within the brand's wallet.
+    const r = await this.q.query("select tx_id, new_balance from fn_create_withdrawal($1,$2,$3,$4,$5)", [userId, amountCents, phone, minCents, siteId ?? DEFAULT_SITE_ID]);
     return { txId: String(r.rows[0].tx_id), newBalance: toCents(r.rows[0].new_balance) };
   }
   async gameWithdraw(userId: string, amountCents: Cents): Promise<GameWithdrawResult> {
@@ -293,19 +302,20 @@ export class PgPaymentRepository implements PaymentRepository {
     return { id: String(x.id), userId: String(x.user_id), kind: x.kind, amountCents: toCents(x.amount), status: String(x.status), phone: String(x.phone) };
   }
 
-  async listTransactions(userId: string, q: TxListQuery): Promise<Page<TransactionRecord>> {
+  async listTransactions(userId: string, q: TxListQuery, siteId?: string): Promise<Page<TransactionRecord>> {
     const limit = clampLimit(q.limit);
     const cur = decodeKeyset(q.cursor);
     const r = await this.q.query(
       `select id, kind, amount, status, provider, phone, mpesa_receipt, created_at
          from transactions
         where user_id = $1
+          and ($7::uuid is null or site_id = $7)
           and ($2::text is null or kind = $2)
           and ($3::text is null or status = $3)
           and ($4::timestamptz is null or (created_at, id) < ($4::timestamptz, $5::uuid))
         order by created_at desc, id desc
         limit $6`,
-      [userId, q.kind ?? null, q.status ?? null, cur ? new Date(cur.tsMs).toISOString() : null, cur ? cur.id : null, limit + 1]);
+      [userId, q.kind ?? null, q.status ?? null, cur ? new Date(cur.tsMs).toISOString() : null, cur ? cur.id : null, limit + 1, siteId ?? null]);
     const rows: TransactionRecord[] = r.rows.map((x) => ({
       id: String(x.id), kind: x.kind as "deposit" | "withdrawal", amountCents: toCents(x.amount), status: String(x.status),
       provider: String(x.provider ?? "mpesa"), phone: String(x.phone), mpesaReceipt: x.mpesa_receipt ?? null, createdAtMs: toMs(x.created_at),
