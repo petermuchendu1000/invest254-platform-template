@@ -13,7 +13,7 @@ import { useHydrated } from '@/lib/useHydrated';
 import { LogoMark } from '@/components/layout/Logo';
 
 type NavItem = { href: string; label: string; icon: React.ReactNode };
-type NavSection = { title: string; items: NavItem[]; superadmin?: boolean };
+type NavSection = { title: string; items: NavItem[]; superadmin?: boolean; platform?: boolean };
 
 function Icon({ d }: { d: string }) {
   return (
@@ -48,6 +48,13 @@ const SECTIONS: NavSection[] = [
       { href: '/admin/fly', label: 'Fly.io', icon: <Icon d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 00-2.91-.09zM12 15l-3-3a22 22 0 012-3.95A12.88 12.88 0 0122 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 01-4 2zM9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5" /> },
     ],
   },
+  {
+    title: 'Platform',
+    platform: true,
+    items: [
+      { href: '/platform', label: 'All brands', icon: <Icon d="M3 21h18M5 21V7l7-4 7 4v14M9 21v-6h6v6" /> },
+    ],
+  },
 ];
 
 export function AdminShell({ children }: { children: React.ReactNode }) {
@@ -75,7 +82,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
       />
     );
   }
-  if (user && user.role !== 'admin' && user.role !== 'superadmin') {
+  if (user && user.role !== 'admin' && user.role !== 'superadmin' && user.role !== 'platform_superadmin') {
     return (
       <Gate
         title="Not authorised"
@@ -89,8 +96,9 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
     );
   }
 
-  const isSuper = user?.role === 'superadmin';
-  const sections = SECTIONS.filter((s) => !s.superadmin || isSuper);
+  const isPlatform = user?.role === 'platform_superadmin';
+  const isSuper = user?.role === 'superadmin' || isPlatform;
+  const sections = SECTIONS.filter((s) => (!s.superadmin || isSuper) && (!s.platform || isPlatform));
   const active = (href: string) => (href === '/admin' ? pathname === '/admin' : pathname?.startsWith(href));
 
   return (

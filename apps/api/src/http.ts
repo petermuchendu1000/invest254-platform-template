@@ -51,6 +51,8 @@ export const ROLE_RANK: Readonly<Record<string, number>> = {
   marketer: 2,
   admin: 3,
   superadmin: 4,
+  // Cross-brand platform owner: outranks a per-brand superadmin and reaches the /platform console.
+  platform_superadmin: 5,
 };
 
 const MAX_BODY_BYTES = 1_000_000; // 1 MB cap on request bodies

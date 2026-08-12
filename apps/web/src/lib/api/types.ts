@@ -9,7 +9,7 @@ export interface Paginated<T> {
 export interface AuthResult {
   token: string;
   userId: string;
-  role: 'player' | 'marketer' | 'admin' | 'superadmin';
+  role: 'player' | 'marketer' | 'admin' | 'superadmin' | 'platform_superadmin';
 }
 
 export interface MeDto {

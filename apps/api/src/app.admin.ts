@@ -437,7 +437,10 @@ export function registerAdminRoutes(router: Router, deps: ApiDeps): void {
       userId: ctx.params.id!, winRate: null, houseEdge: null, tradeDurationS: null, maxWinMultiplier: null,
       minStakeCents: null, maxStakeCents: null, notes: null, updatedBy: null, updatedAtMs: null,
     });
-  router.post(`${BASE}/admin/users/:id/overrides`, auth, admin, async (ctx: Ctx) => {
+  // Writing a per-user override is a powerful statistical lever → superadmin-gated (docs/22 Task H).
+  // platform_superadmin (rank 5) also satisfies this. The RPC stamps the override with the target's
+  // brand (user_overrides.site_id) and writes an admin_actions audit row.
+  router.post(`${BASE}/admin/users/:id/overrides`, auth, superadmin, async (ctx: Ctx) => {
     const patch = parseOverridePatch(ctx);
     return domain(() => deps.admin.setUserOverrides(ctx.claims!.userId, ctx.claims!.role ?? "player", ctx.params.id!, patch));
   });

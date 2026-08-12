@@ -1,6 +1,6 @@
 import { rtp, type GameConfig, type Cents, type VersionedGameConfig } from "@invest254/shared";
 import type {
-  FairnessRecord, PaymentService, AuthService, AffiliateService, AdminService, NotificationService, Verifier,
+  FairnessRecord, PaymentService, AuthService, AffiliateService, AdminService, NotificationService, Verifier, PlatformService,
   Page, PageQuery, LedgerEntry, PositionRecord, PositionDetail, PositionListQuery, TransactionRecord, TxListQuery,
 } from "@invest254/engine";
 import { Router, ApiError, serverFrom, type Ctx } from "./http.js";
@@ -10,6 +10,7 @@ import { registerSiteRoutes } from "./app.site.js";
 import { registerAuthRoutes } from "./app.auth.js";
 import { registerAffiliateRoutes } from "./app.affiliate.js";
 import { registerAdminRoutes } from "./app.admin.js";
+import { registerPlatformRoutes } from "./app.platform.js";
 import { registerNotificationRoutes } from "./app.notifications.js";
 import { registerMarketerRoutes, type MarketerRepo } from "./app.marketers.js";
 import type { Server } from "node:http";
@@ -64,6 +65,8 @@ export interface ApiDeps {
     | "getGameConfig" | "updateGameConfig" | "getMpesaConfig" | "updateMpesaConfig" | "rtpMonitor" | "listSeeds" | "rotateSeed"
     | "listAffiliatePayouts" | "recordAction"
     | "adjustBalanceKind" | "clearBalance" | "getUserOverrides" | "setUserOverrides">;
+  /** Platform-superadmin console (docs/22 Task H): cross-brand onboarding + economy + KPIs. */
+  platform: Pick<PlatformService, "listSites" | "overview" | "createSite" | "updateSite" | "setSiteConfig">;
   /** Per-user sticky notifications: admin/system raise; player reads active + dismisses (J7). */
   notifications: Pick<NotificationService, "create" | "listActive" | "adminList" | "dismiss" | "resolve" | "resolveByCategory">;
   /** Marketer payments module (0033): create/credit/withdraw + admin-set Fuliza/airtime + statement. */
@@ -162,6 +165,7 @@ export function createRouter(deps: ApiDeps): Router {
   registerAuthRoutes(router, deps);
   registerAffiliateRoutes(router, deps);
   registerAdminRoutes(router, deps);
+  registerPlatformRoutes(router, deps);
   registerNotificationRoutes(router, deps);
   registerMarketerRoutes(router, deps);
   registerProtectedRoutes(router, deps);

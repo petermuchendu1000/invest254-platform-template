@@ -14,9 +14,9 @@ import { RegisterSW } from '@/components/RegisterSW';
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
 
-  // The admin console provides its own chrome (sidebar). Suppress the player
+  // The admin console + platform console provide their own chrome (sidebar). Suppress the player
   // top bar / bottom nav / footer there, but keep session bootstrap + SW.
-  if (pathname?.startsWith('/admin')) {
+  if (pathname?.startsWith('/admin') || pathname?.startsWith('/platform')) {
     return (
       <>
         {children}

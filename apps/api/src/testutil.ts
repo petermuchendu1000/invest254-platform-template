@@ -2,7 +2,7 @@ import type { AddressInfo } from "node:net";
 import { DEFAULT_CONFIG, type Cents } from "@invest254/shared";
 import {
   InMemoryEngagementRepository, InMemoryPaymentRepository, InMemoryGameRepository, StubDarajaClient,
-  InMemoryIdentityRepository, PaymentService, AuthService, AffiliateService, AdminService, InMemoryAdminRepository, maskHandle,
+  InMemoryIdentityRepository, PaymentService, AuthService, AffiliateService, AdminService, InMemoryAdminRepository, PlatformService, InMemoryPlatformRepository, maskHandle,
   NotificationService, InMemoryNotificationRepository,
   type FairnessRecord, type AuthClaims, type Verifier,
 } from "@invest254/engine";
@@ -180,6 +180,7 @@ export async function startTestApi(opts: TestApiOptions = {}): Promise<TestApi> 
   const auth = new AuthService(identity, { jwtSecret: "test-secret-which-is-long-enough-123456", jwtTtlSeconds: 3600 });
   const affiliate = new AffiliateService(identity, daraja);
   const admin = new AdminService(new InMemoryAdminRepository(identity, payRepo, engage, gameRepo));
+  const platform = new PlatformService(new InMemoryPlatformRepository());
   const notifications = new NotificationService(new InMemoryNotificationRepository());
 
   const deps: ApiDeps = {
@@ -187,6 +188,7 @@ export async function startTestApi(opts: TestApiOptions = {}): Promise<TestApi> 
     auth,
     affiliate,
     admin,
+    platform,
     notifications,
     marketers: makeInMemoryMarketerRepo(),
     config: () => DEFAULT_CONFIG,

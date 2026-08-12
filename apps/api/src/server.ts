@@ -1,6 +1,6 @@
 import {
   PgGameRepository, PgEngagementRepository, PgPaymentRepository, PgIdentityRepository,
-  PaymentService, AuthService, AffiliateService, AdminService, PgAdminRepository, makeDarajaClientFromConfig, loadDarajaConfigFromDb, makeVerifier,
+  PaymentService, AuthService, AffiliateService, AdminService, PgAdminRepository, PlatformService, PgPlatformRepository, makeDarajaClientFromConfig, loadDarajaConfigFromDb, makeVerifier,
   NotificationService, PgNotificationRepository,
   GameConfigStore,
   type GameRepository, type EngagementRepository, type PaymentRepository,
@@ -81,6 +81,7 @@ async function buildDeps(): Promise<ApiDeps> {
   });
   const affiliate = new AffiliateService(identity, daraja);
   const admin = new AdminService(new PgAdminRepository(q));
+  const platform = new PlatformService(new PgPlatformRepository(q));
   const notifications = new NotificationService(new PgNotificationRepository(q));
 
   return {
@@ -88,6 +89,7 @@ async function buildDeps(): Promise<ApiDeps> {
     auth,
     affiliate,
     admin,
+    platform,
     notifications,
     marketers: makePgMarketerRepo((sql, params) => q.query(sql, params ?? [])),
     config: () => gameConfig.active(),

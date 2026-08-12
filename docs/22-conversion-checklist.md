@@ -171,13 +171,28 @@ Files: `apps/web/src/lib/brand/*`, `app/layout.tsx`, `app/globals.css`, `lib/gam
   **Task G complete.**
 
 ## H. Platform superadmin console
-Files: `apps/web/src/app/admin/*`, new `app/platform/*`.
-- 🔲 Add `platform_superadmin` to the role rank; a site switcher in `AdminShell`.
-- 🔲 All-sites overview (per-site KPIs) at `/platform`.
-- 🔲 Site management (create/edit `sites` + `site_game_config`) — the brand-onboarding form.
-- 🔲 **Override console:** per-user win-rate control writing `user_overrides(site_id,…)` via the
-  existing `overrides.ts` path; confirm dialog + `admin_actions` audit; superadmin-gated.
-- **Done when:** you can create a brand, tune its economy, and override a user — all from one UI.
+Files: `packages/db/migrations/0052_platform_superadmin.sql`, `apps/engine/src/platform.ts`,
+`apps/api/src/app.platform.ts`, `apps/web/src/app/platform/*`, `apps/web/src/lib/platform/*`,
+`apps/web/src/components/admin/AdminShell.tsx`.
+- ✅ `platform_superadmin` role: added to `profiles_role_check` (0052) + `ROLE_RANK` (rank 5, above
+  the per-brand superadmin singleton). AdminShell admits it, treats it as ≥ superadmin, and shows a
+  Platform nav section (platform-only).
+- ✅ All-sites overview (per-brand KPIs) at `/platform`: `fn_platform_overview` (users, deposits,
+  withdrawals, GGR, open positions, bets per brand) → `GET /platform/overview` → a KPI table.
+- ✅ Site management (brand onboarding): `fn_platform_create_site` (site + default feasible economy),
+  `fn_platform_update_site` (branding), `fn_platform_set_site_config` (economy; the 0046 notify
+  hot-reloads the engine, the DB CHECK rejects an infeasible economy) → `POST /platform/sites`,
+  `PATCH /platform/sites/:id`, `PATCH /platform/sites/:id/config` → a create form + per-brand cards
+  on `/platform`. Every mutation is platform_superadmin-gated + writes an admin_actions audit row.
+- ✅ Override console: the per-user override WRITE (`POST /admin/users/:id/overrides`) is now
+  superadmin-gated; `fn_admin_set_user_overrides` stamps the override with the target's brand
+  (`user_overrides.site_id`) and also accepts `platform_superadmin`. Confirm + audit already present.
+- ✅ Tested: `packages/db/_testkit/e2e_platform_console.py` (18 scenarios: gating, onboard + default
+  economy, slug uniqueness, branding/economy edits, infeasible-economy rejection, per-brand KPI
+  isolation, override brand-stamping), `apps/api/src/app.platform.test.ts` (route gating, onboard →
+  list → overview, tune + validation, override superadmin gate). `next build` green (/platform route).
+- **Done when:** ✅ you can create a brand, tune its economy, and override a user — all from the one
+  admin/platform console UI. **Task H complete.**
 
 ## R. Reporting — cross-brand marketer rollup (per-site identity)
 Files: new `packages/db/migrations/00XX_marketer_global.sql`, admin reads.
