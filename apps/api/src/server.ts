@@ -6,7 +6,7 @@ import {
   type GameRepository, type EngagementRepository, type PaymentRepository,
   type Querier, type FairnessRecord, type ListenClient,
 } from "@invest254/engine";
-import { createApp, type ApiDeps, type WalletBalance, type BonusStatus } from "./app.js";
+import { createApp, type ApiDeps, type WalletBalance, type BonusStatus, type Brand } from "./app.js";
 import { makePgMarketerRepo } from "./marketers.pg.js";
 
 /**
@@ -104,6 +104,30 @@ async function buildDeps(): Promise<ApiDeps> {
         serverSeedHash: String(x.server_seed_hash),
         serverSeed: x.server_seed ?? null,
         revealedAt: x.revealed_at ? (x.revealed_at instanceof Date ? x.revealed_at.toISOString() : String(x.revealed_at)) : null,
+      };
+    },
+    brandByHost: async (host: string): Promise<Brand | null> => {
+      const h = host.trim().toLowerCase();
+      const r = await q.query(
+        `select id, slug, name, wordmark_text, logo_url, favicon_url, color_primary, color_bg,
+                color_accent, theme, currency, locale, licence_line, support_email
+           from sites
+          where status = 'active' and (lower(primary_domain) = $1 or lower(slug) = $1)
+          limit 1`,
+        [h],
+      );
+      if (!r.rows.length) return null;
+      const x = r.rows[0] as Record<string, unknown>;
+      return {
+        siteId: String(x.id), slug: String(x.slug), name: String(x.name),
+        wordmarkText: (x.wordmark_text as string | null) ?? null,
+        logoUrl: (x.logo_url as string | null) ?? null,
+        faviconUrl: (x.favicon_url as string | null) ?? null,
+        colorPrimary: String(x.color_primary), colorBg: String(x.color_bg), colorAccent: String(x.color_accent),
+        theme: String(x.theme) as "dark" | "light" | "auto",
+        currency: String(x.currency), locale: String(x.locale),
+        licenceLine: (x.licence_line as string | null) ?? null,
+        supportEmail: (x.support_email as string | null) ?? null,
       };
     },
     payments,
