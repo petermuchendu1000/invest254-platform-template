@@ -37,9 +37,18 @@ File: `packages/db/migrations/0047_site_money_rpcs.sql` (shipped) + more to exte
   stamped with the site; per-site `min` enforced; cross-site wallet blocked. Tested.
 - ✅ `fn_ensure_game_day` / `fn_reveal_game_day` — per-site (`on conflict (site_id, trade_date)`);
   reveal scoped to one brand. (Also fixes a latent break: 0045 dropped the old trade_date unique.) Tested.
-- 🔲 `fn_accrue_affiliate_commissions` / payout RPCs — group GGR by `(site_id, affiliate_id, period)`.
-- **Done when:** every money RPC on two sites never collides and every row shows the correct
-  `site_id`. Register/open/settle/enroll/deposit/withdraw/game-day are ✅ proven by the 38-scenario e2e.
+- ✅ `fn_accrue_affiliate_commissions` / payout RPCs — grouped/stamped by `(site_id, affiliate_id,
+  period)` (`0050_site_affiliate_accrual_payouts.sql`). Accrual takes an optional `p_site_id`
+  (null = all brands) and only ever credits an affiliate for GGR on THEIR OWN brand (join
+  `affiliate.site = position.site`); bucket unique is now `(site_id, affiliate_id, referred_user,
+  period)`. `fn_affiliate_request_payout` scopes available commission + the reservation to the
+  affiliate's brand and stamps the payout's `site_id`. Threaded through the engine
+  (`accrueCommissions(period, siteId?)`) + the admin accrue route (optional `site`). Tested:
+  `packages/db/_testkit/e2e_affiliate_sites.py` (21 adversarial scenarios: per-brand isolation,
+  the cross-brand join guard, idempotency, and the full scoped payout lifecycle).
+- **Done when:** ✅ every money RPC on two sites never collides and every row shows the correct
+  `site_id`. Register/open/settle/enroll/deposit/withdraw/game-day + affiliate accrual/payout are
+  proven by the 38- and 21-scenario e2e harnesses. **Task B complete.**
 
 ## C. Engine — multiplex by site
 Files: `apps/engine/src/sitecontext.ts` (✅ shipped), `server.ts`, `game.ts`, `daycontext.ts`,

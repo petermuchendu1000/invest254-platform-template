@@ -117,7 +117,11 @@ export function registerAffiliateRoutes(router: Router, deps: ApiDeps): void {
     const body = ctx.body && typeof ctx.body === "object" ? (ctx.body as Record<string, unknown>) : {};
     const period = body.date;
     if (typeof period !== "string") throw new ApiError("VALIDATION", "date (YYYY-MM-DD) is required", 400);
-    const r = await domain(() => deps.affiliate.accrueDaily(period));
-    return { period, buckets: r.buckets, totalCommissionCents: r.totalCommissionCents };
+    // Optional `site` (brand uuid) scopes the accrual to one brand; omit to accrue every brand
+    // (platform-wide cron). A site-scoped operator console (Task H) will pass its own brand here.
+    const site = body.site;
+    if (site !== undefined && typeof site !== "string") throw new ApiError("VALIDATION", "site must be a brand id string", 400);
+    const r = await domain(() => deps.affiliate.accrueDaily(period, site));
+    return { period, site: site ?? null, buckets: r.buckets, totalCommissionCents: r.totalCommissionCents };
   });
 }

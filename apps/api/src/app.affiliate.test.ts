@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { startTestApi, type TestApi } from "./testutil.js";
+import { startTestApi, TEST_ADMIN, type TestApi } from "./testutil.js";
 
 const json = (res: Response): Promise<any> => res.json() as Promise<any>;
 
@@ -102,6 +102,25 @@ test("POST /admin/affiliate/accrue: admin only, accrues 20% of referred GGR", as
     const body = await json(ok);
     assert.equal(body.buckets, 1);
     assert.equal(body.totalCommissionCents, 1500);
+  } finally { await api.close(); }
+});
+
+test("POST /admin/affiliate/accrue: optional `site` scopes the accrual and is validated (docs/22 Task B)", async () => {
+  const api = await startTestApi();
+  try {
+    const admin = `${TEST_ADMIN}:admin`;
+    // A brand id is accepted and echoed back (the site-scoped accrual path).
+    const scoped = await req(api, "POST", "/api/v1/admin/affiliate/accrue",
+      { token: admin, body: { date: "2026-06-10", site: "00000000-0000-0000-0000-000000000001" } });
+    assert.equal(scoped.status, 200);
+    assert.equal((await json(scoped)).site, "00000000-0000-0000-0000-000000000001");
+    // Omitting site => all-brands accrual (site echoed as null).
+    const all = await req(api, "POST", "/api/v1/admin/affiliate/accrue", { token: admin, body: { date: "2026-06-10" } });
+    assert.equal((await json(all)).site, null);
+    // A non-string site is rejected.
+    const bad = await req(api, "POST", "/api/v1/admin/affiliate/accrue", { token: admin, body: { date: "2026-06-10", site: 123 } });
+    assert.equal(bad.status, 400);
+    assert.equal((await json(bad)).error.code, "VALIDATION");
   } finally { await api.close(); }
 });
 

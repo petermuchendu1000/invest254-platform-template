@@ -102,8 +102,8 @@ export interface IdentityRepository {
 export interface AffiliateRepository {
   /** Idempotently enroll the user as an affiliate (marketer) with a stable referral code. Throws USER_NOT_FOUND. */
   enrollAffiliate(userId: string): Promise<AffiliateView>;
-  /** Accrue commission for one trading day (`YYYY-MM-DD`) across all referred players. Idempotent. */
-  accrueCommissions(period: string): Promise<AffiliateAccrualResult>;
+  /** Accrue commission for one trading day (`YYYY-MM-DD`). `siteId` scopes it to one brand (null = all brands). Idempotent. */
+  accrueCommissions(period: string, siteId?: string): Promise<AffiliateAccrualResult>;
   /** Marketer dashboard summary, or null if the user is not an enrolled affiliate. */
   affiliateSummary(userId: string): Promise<AffiliateSummary | null>;
   /** The affiliate's referred players (newest first, cursor-paginated). */
@@ -170,9 +170,9 @@ export class PgIdentityRepository implements IdentityRepository, AffiliateReposi
       };
     } catch (e) { mapPgError(e); }
   }
-  async accrueCommissions(period: string): Promise<AffiliateAccrualResult> {
+  async accrueCommissions(period: string, siteId?: string): Promise<AffiliateAccrualResult> {
     const r = await this.q.query(
-      "select buckets, total_commission from fn_accrue_affiliate_commissions($1)", [period]);
+      "select buckets, total_commission from fn_accrue_affiliate_commissions($1,$2)", [period, siteId ?? null]);
     const x = r.rows[0];
     return { buckets: Number(x.buckets), totalCommissionCents: Number(x.total_commission) };
   }
@@ -430,7 +430,9 @@ export class InMemoryIdentityRepository implements IdentityRepository, Affiliate
     }
     return { userId, referralCode: aff.referralCode, commissionRate: aff.commissionRate, status: aff.status, role: u.role };
   }
-  async accrueCommissions(period: string): Promise<AffiliateAccrualResult> {
+  async accrueCommissions(period: string, _siteId?: string): Promise<AffiliateAccrualResult> {
+    // In-memory affiliates are single-brand (one site per affiliate), so the site filter is a
+    // no-op here; per-site correctness is exercised against Postgres in the DB e2e harness.
     let buckets = 0; let total = 0;
     for (const [affUserId, aff] of this.affiliates) {
       const referred = this.referrals.filter((r) => r.affiliateId === affUserId).map((r) => r.referredUser);
