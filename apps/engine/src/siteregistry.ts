@@ -2,7 +2,7 @@ import { GameServer, type LoadOverride } from "./game.js";
 import { SeedManager, type SeedManagerOptions } from "./daycontext.js";
 import { RecoveryService, type RecoveryReport } from "./recovery.js";
 import type { GameRepository } from "./wallet.js";
-import type { ConfigProvider } from "./gameconfig.js";
+import { affectsPricing, type ConfigProvider } from "./gameconfig.js";
 
 /**
  * SiteRegistry — the multiplexed engine's per-brand runtime manager.
@@ -36,6 +36,8 @@ export interface SiteRegistryOptions {
   /** Optional per-brand master seed (from sites.master_seed_ref); falls back to `masterSeed`. */
   masterSeedFor?: (siteId: string) => string | undefined;
   seedManagerOpts?: SeedManagerOptions;
+  /** Surface live-config rebuild failures (defaults to console.error). */
+  onError?: (err: Error, ctx: string) => void;
 }
 
 export class SiteRegistry {
@@ -43,6 +45,11 @@ export class SiteRegistry {
   private readonly building = new Map<string, Promise<SiteRuntime>>();
 
   constructor(private readonly opts: SiteRegistryOptions) {}
+
+  private report(err: Error, ctx: string): void {
+    if (this.opts.onError) this.opts.onError(err, ctx);
+    else console.error(`[registry] ${ctx}:`, err.message);
+  }
 
   /** Get (or lazily build) a brand's runtime. Concurrent calls for the same brand coalesce. */
   async ensure(siteId: string): Promise<SiteRuntime> {
@@ -64,6 +71,24 @@ export class SiteRegistry {
         this.opts.loadOverride,
       );
       const rt: SiteRuntime = { siteId, seeds, game, config };
+
+      // Live config hot-reload (docs/22 Task C). When this brand's economy is edited, price the
+      // NEXT round under the new version by rebuilding the seed context, and re-arm the tick loop
+      // if the tick rate changed. Positions already in flight keep the version they opened with
+      // (SeedManager caches per (day, version)), so nothing in flight is disturbed. Non-pricing
+      // edits (stake bounds, min withdrawal) are read live by the GameServer, so we only rebuild
+      // seeds when `affectsPricing` — but always re-arm the tick loop, which is cheap.
+      config.subscribe?.((next, prev) => {
+        void (async () => {
+          try {
+            if (affectsPricing(prev, next)) await seeds.init();
+            game.applyTickRate();
+          } catch (err) {
+            this.report(err as Error, `config-reload ${siteId}`);
+          }
+        })();
+      });
+
       this.runtimes.set(siteId, rt);
       return rt;
     })();

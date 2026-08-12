@@ -63,11 +63,15 @@ Files: `apps/engine/src/sitecontext.ts` (✅ shipped), `server.ts`, `game.ts`, `
   by brand and recovers each under its own context. 
 - ✅ `server.ts` rewritten as the multiplexed entrypoint (Pg per-site config + in-memory dev
   fallback + per-brand UTC rotation); boot smoke-tested (in-memory → WS `hello`).
-- 🔲 `SiteGameConfigStore` — LISTEN `site_game_config_changed` for instant hot-reload (server.ts
-  currently reads a brand's config at first use + per-version for recovery; live push pending).
+- ✅ `SiteGameConfigStore` — per-brand LISTEN `site_game_config_changed` (payload-filtered to the
+  brand) + a poll fallback for instant hot-reload; historical versions from
+  `site_game_config_versions`; infeasible saves rejected (last good stays live). The `SiteRegistry`
+  subscribes and, on a pricing-affecting edit, rebuilds that brand's pricing seeds and re-arms the
+  tick loop (non-pricing edits — stake bounds — are read live). `server.ts` wires one store per
+  brand via `pool.connect()`. Tested (`sitegameconfig.test.ts`, `siteregistry.test.ts`).
 - **Done when:** ✅ two brands with different RTP/curve run in one process; per-brand isolation of
-  ticks/balances/settlement/stake-bounds proven; recovery replays each brand. (Live config push =
-  the one remaining sub-item.)
+  ticks/balances/settlement/stake-bounds proven; recovery replays each brand; a live config edit
+  re-prices only the edited brand's next round. **Task C complete.**
 
 ## D. Auth — put the site in the token
 Files: `apps/engine/src/authservice.ts`, `auth.ts`, `identity.ts`, `apps/api/src/app.auth.ts`.
