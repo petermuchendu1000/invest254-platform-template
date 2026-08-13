@@ -67,7 +67,8 @@ export interface ApiDeps {
     | "adjustBalanceKind" | "clearBalance" | "getUserOverrides" | "setUserOverrides"
     | "siteOfUser" | "siteOfTransaction">;
   /** Platform-superadmin console (docs/22 Task H): cross-brand onboarding + economy + KPIs. */
-  platform: Pick<PlatformService, "listSites" | "overview" | "createSite" | "updateSite" | "setSiteConfig">;
+  platform: Pick<PlatformService, "listSites" | "overview" | "createSite" | "updateSite" | "setSiteConfig"
+    | "marketerRollup" | "createMarketerGlobal" | "linkMarketer">;
   /** Per-user sticky notifications: admin/system raise; player reads active + dismisses (J7). */
   notifications: Pick<NotificationService, "create" | "listActive" | "adminList" | "dismiss" | "resolve" | "resolveByCategory">;
   /** Marketer payments module (0033): create/credit/withdraw + admin-set Fuliza/airtime + statement. */

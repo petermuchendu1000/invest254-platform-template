@@ -200,11 +200,23 @@ Files: `packages/db/migrations/0052_platform_superadmin.sql`, `apps/engine/src/p
   admin/platform console UI. **Task H complete.**
 
 ## R. Reporting — cross-brand marketer rollup (per-site identity)
-Files: new `packages/db/migrations/00XX_marketer_global.sql`, admin reads.
-- 🔲 Optional `marketer_global_id` linking a person's per-site `affiliates` rows (reporting only;
-  money stays per site).
-- 🔲 Platform report: marketer → per-site clients/GGR/commission + totals.
-- **Done when:** "which marketer brought which client on which site, and their total" is one view.
+Files: `packages/db/migrations/0053_marketer_global.sql`, `apps/engine/src/platform.ts`,
+`apps/api/src/app.platform.ts`, `apps/web/src/app/platform/page.tsx` + `lib/platform/*`.
+- ✅ Optional `marketer_global_id` on `affiliates` (nullable FK → new `marketer_globals`) links a
+  person's per-site affiliate rows. Reporting only — accrual/payouts stay strictly per site (0050
+  untouched). `fn_platform_create_marketer_global` + `fn_platform_link_marketer` (link/unlink),
+  both platform_superadmin-gated + audited (0053).
+- ✅ Platform report `fn_platform_marketer_rollup` → per (affiliate, site) clients / GGR / commission;
+  `GET /platform/marketers/rollup` folds it into one entry per marketer (grouped by global id, else
+  standalone) with the cross-brand totals. `POST /platform/marketers` + `PATCH
+  /platform/affiliates/:userId/marketer` manage identities/links. A read-only rollup table renders on
+  `/platform`.
+- ✅ Tested: `packages/db/_testkit/e2e_marketer_rollup.py` (21 scenarios: role gating, link
+  validation, per-brand facts + isolation, cross-brand totals, reporting-only invariant, unlink,
+  audit), `apps/api/src/app.platform.marketers.test.ts` (gating, grouped totals, link/unlink errors).
+  Suite 297/297 · tsc clean (engine/api + web) · `next build` green (/platform route).
+- **Done when:** ✅ "which marketer brought which client on which site, and their total" is one view.
+  **Task R complete.**
 
 ---
 

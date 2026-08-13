@@ -17,7 +17,7 @@ const post = (api: TestApi, path: string, token: string, body?: unknown) =>
   fetch(`${api.baseUrl}${path}`, {
     method: "POST",
     headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-    body: body === undefined ? undefined : JSON.stringify(body),
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
 
 const PLATFORM_ADMIN = `${TEST_ADMIN}:admin`;                 // no site claim -> all brands

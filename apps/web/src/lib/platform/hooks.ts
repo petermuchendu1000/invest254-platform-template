@@ -18,6 +18,12 @@ export function usePlatformSites() {
   return useQuery({ queryKey: ['platform', 'sites'], queryFn: () => platformApi.sites(t), enabled: !!t });
 }
 
+/** Cross-brand marketer rollup (docs/22 Task R): per marketer -> per-site clients/GGR/commission + totals. */
+export function usePlatformMarketerRollup() {
+  const t = useTok();
+  return useQuery({ queryKey: ['platform', 'marketers'], queryFn: () => platformApi.marketerRollup(t), enabled: !!t });
+}
+
 /** Invalidate both platform reads after any mutation so the console reflects the change. */
 function useInvalidate() {
   const qc = useQueryClient();

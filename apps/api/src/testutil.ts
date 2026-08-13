@@ -142,6 +142,8 @@ export interface TestApi {
   withdrawalSuccesses: Array<{ userId: string; amountCents: Cents }>;
   notifications: NotificationService;
   marketers: MarketerRepo;
+  /** The in-memory platform repo, so tests can seed brands + marketer rollup rows (Task R). */
+  platformRepo: InMemoryPlatformRepository;
   close(): Promise<void>;
 }
 
@@ -180,7 +182,8 @@ export async function startTestApi(opts: TestApiOptions = {}): Promise<TestApi> 
   const auth = new AuthService(identity, { jwtSecret: "test-secret-which-is-long-enough-123456", jwtTtlSeconds: 3600 });
   const affiliate = new AffiliateService(identity, daraja);
   const admin = new AdminService(new InMemoryAdminRepository(identity, payRepo, engage, gameRepo));
-  const platform = new PlatformService(new InMemoryPlatformRepository());
+  const platformRepo = new InMemoryPlatformRepository();
+  const platform = new PlatformService(platformRepo);
   const notifications = new NotificationService(new InMemoryNotificationRepository());
 
   const deps: ApiDeps = {
@@ -214,6 +217,7 @@ export async function startTestApi(opts: TestApiOptions = {}): Promise<TestApi> 
     deps, identity, engage, payRepo, gameRepo, daraja, fairness, bonus, withdrawalSuccesses,
     notifications,
     marketers: deps.marketers,
+    platformRepo,
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),
   };
 }

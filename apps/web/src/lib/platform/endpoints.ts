@@ -18,7 +18,19 @@ export interface SiteKpis {
 }
 export interface CreateSiteBody { slug: string; name: string; currency?: string | undefined; primaryDomain?: string | undefined }
 
-/** Platform-superadmin API surface (docs/22 Task H). All calls require a platform_superadmin token. */
+/** One brand's slice of a marketer's cross-brand rollup (docs/22 Task R). */
+export interface MarketerRollupSite {
+  affiliateUserId: string; siteId: string; siteSlug: string; siteName: string;
+  clients: number; ggrCents: number; commissionCents: number;
+}
+/** A marketer grouped across brands (by global identity when linked; else standalone). */
+export interface MarketerRollupGroup {
+  marketerGlobalId: string | null; label: string | null;
+  sites: MarketerRollupSite[];
+  totals: { clients: number; ggrCents: number; commissionCents: number };
+}
+
+/** Platform-superadmin API surface (docs/22 Task H + R). All calls require a platform_superadmin token. */
 export const platformApi = {
   overview: (t: string) => apiFetch<{ sites: SiteKpis[] }>('/platform/overview', { token: t }),
   sites: (t: string) => apiFetch<{ sites: SiteWithConfig[] }>('/platform/sites', { token: t }),
@@ -28,4 +40,6 @@ export const platformApi = {
     apiFetch<SiteRow>(`/platform/sites/${id}`, { method: 'PATCH', token: t, body: patch }),
   setConfig: (t: string, id: string, patch: Record<string, unknown>) =>
     apiFetch<SiteConfig>(`/platform/sites/${id}/config`, { method: 'PATCH', token: t, body: patch }),
+  // Task R — cross-brand marketer rollup (reporting only).
+  marketerRollup: (t: string) => apiFetch<{ marketers: MarketerRollupGroup[] }>('/platform/marketers/rollup', { token: t }),
 };

@@ -7,11 +7,12 @@ import { Input } from '@/components/ui/Input';
 import {
   usePlatformOverview,
   usePlatformSites,
+  usePlatformMarketerRollup,
   useCreateSite,
   useUpdateSite,
   useSetSiteConfig,
 } from '@/lib/platform/hooks';
-import type { SiteWithConfig, SiteKpis } from '@/lib/platform/endpoints';
+import type { SiteWithConfig, SiteKpis, MarketerRollupGroup } from '@/lib/platform/endpoints';
 
 const money = (cents: number, cur: string) => `${cur} ${(cents / 100).toLocaleString()}`;
 
@@ -122,6 +123,52 @@ function BrandCard({ site }: { site: SiteWithConfig }) {
   );
 }
 
+/** Cross-brand marketer rollup (Task R): who brought which clients on which site, and their total. */
+function MarketerRollup() {
+  const rollup = usePlatformMarketerRollup();
+  const groups: MarketerRollupGroup[] = rollup.data?.marketers ?? [];
+  return (
+    <Section title="Marketer rollup (cross-brand)">
+      <TableWrap>
+        <thead>
+          <tr>
+            <Th>Marketer</Th><Th>Brand</Th><Th>Clients</Th><Th>GGR</Th><Th>Commission</Th>
+          </tr>
+        </thead>
+        <tbody>
+          {groups.map((g) => {
+            const key = g.marketerGlobalId ?? g.sites[0]?.affiliateUserId ?? 'unknown';
+            const heading = g.label ?? `Unlinked · ${g.sites[0]?.affiliateUserId ?? ''}`;
+            return [
+              ...g.sites.map((s, i) => (
+                <tr key={`${key}-${s.siteId}-${s.affiliateUserId}`} className="border-t border-border">
+                  <Td>{i === 0 ? <span className="font-semibold text-fg">{heading}</span> : <span className="text-muted">↳</span>}</Td>
+                  <Td>{s.siteName} <span className="text-muted">· {s.siteSlug}</span></Td>
+                  <Td>{s.clients.toLocaleString()}</Td>
+                  <Td>{money(s.ggrCents, 'KES')}</Td>
+                  <Td>{money(s.commissionCents, 'KES')}</Td>
+                </tr>
+              )),
+              g.sites.length > 1 ? (
+                <tr key={`${key}-total`} className="border-t border-border bg-surface-2">
+                  <Td className="font-semibold text-fg">Total</Td>
+                  <Td className="text-muted">{g.sites.length} brands</Td>
+                  <Td className="font-semibold text-fg">{g.totals.clients.toLocaleString()}</Td>
+                  <Td className="font-semibold text-fg">{money(g.totals.ggrCents, 'KES')}</Td>
+                  <Td className="font-semibold text-fg">{money(g.totals.commissionCents, 'KES')}</Td>
+                </tr>
+              ) : null,
+            ];
+          })}
+          {groups.length === 0 ? (
+            <tr><Td className="text-muted">{rollup.isLoading ? 'Loading…' : 'No marketers yet.'}</Td></tr>
+          ) : null}
+        </tbody>
+      </TableWrap>
+    </Section>
+  );
+}
+
 export default function PlatformPage() {
   const overview = usePlatformOverview();
   const sites = usePlatformSites();
@@ -165,6 +212,8 @@ export default function PlatformPage() {
           {(sites.data?.sites ?? []).map((s) => <BrandCard key={s.siteId} site={s} />)}
         </div>
       </Section>
+
+      <MarketerRollup />
     </div>
   );
 }

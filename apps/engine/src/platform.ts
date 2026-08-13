@@ -27,12 +27,24 @@ export interface CreateSiteInput { slug: string; name: string; currency?: string
 /** A JSON patch of snake_case columns (mirrors the RPC jsonb contract). */
 export type JsonPatch = Record<string, unknown>;
 
+/** One (affiliate, site) row of the cross-brand marketer rollup (docs/22 Task R). A person spans
+ *  brands via `marketerGlobalId`; a null id is an unlinked (single-brand) marketer. */
+export interface MarketerRollupRow {
+  marketerGlobalId: string | null; label: string | null; affiliateUserId: string;
+  siteId: string; siteSlug: string; siteName: string;
+  clients: number; ggrCents: number; commissionCents: number;
+}
+
 export interface PlatformRepository {
   listSites(): Promise<SiteWithConfig[]>;
   createSite(actorId: string, actorRole: string, input: CreateSiteInput): Promise<string>;
   updateSite(actorId: string, actorRole: string, siteId: string, patch: JsonPatch): Promise<SiteRow>;
   setSiteConfig(actorId: string, actorRole: string, siteId: string, patch: JsonPatch): Promise<SiteConfigRow>;
   overview(actorRole: string): Promise<SiteKpis[]>;
+  // Task R — cross-brand marketer rollup (reporting only; money stays per site).
+  marketerRollup(actorRole: string): Promise<MarketerRollupRow[]>;
+  createMarketerGlobal(actorId: string, actorRole: string, label: string): Promise<string>;
+  linkMarketer(actorId: string, actorRole: string, affiliateUserId: string, globalId: string | null): Promise<void>;
 }
 
 const num = (v: unknown): number => (typeof v === "string" ? Number(v) : (v as number)) || 0;
@@ -92,6 +104,26 @@ export class PgPlatformRepository implements PlatformRepository {
       users: num(x.users), depositsCents: num(x.deposits_cents), withdrawalsCents: num(x.withdrawals_cents),
       ggrCents: num(x.ggr_cents), openPositions: num(x.open_positions), bets: num(x.bets),
     }));
+  }
+
+  async marketerRollup(actorRole: string): Promise<MarketerRollupRow[]> {
+    const r = await this.q.query("select * from fn_platform_marketer_rollup($1)", [actorRole]);
+    return r.rows.map((x: Record<string, unknown>) => ({
+      marketerGlobalId: x.marketer_global_id == null ? null : String(x.marketer_global_id),
+      label: x.label == null ? null : String(x.label),
+      affiliateUserId: String(x.affiliate_user_id),
+      siteId: String(x.site_id), siteSlug: String(x.site_slug), siteName: String(x.site_name),
+      clients: num(x.clients), ggrCents: num(x.ggr_cents), commissionCents: num(x.commission_cents),
+    }));
+  }
+
+  async createMarketerGlobal(actorId: string, actorRole: string, label: string): Promise<string> {
+    const r = await this.q.query("select fn_platform_create_marketer_global($1,$2,$3) as id", [actorId, actorRole, label]);
+    return String(r.rows[0].id);
+  }
+
+  async linkMarketer(actorId: string, actorRole: string, affiliateUserId: string, globalId: string | null): Promise<void> {
+    await this.q.query("select fn_platform_link_marketer($1,$2,$3,$4)", [actorId, actorRole, affiliateUserId, globalId]);
   }
 }
 
@@ -171,6 +203,49 @@ export class InMemoryPlatformRepository implements PlatformRepository {
     this.gate(actorRole);
     return [...this.sites.values()].map((s) => ({ siteId: s.siteId, slug: s.slug, name: s.name, status: s.status, ...this.kpis(s.siteId) }));
   }
+
+  // ── Task R: cross-brand marketer rollup (in-memory mirror for tests) ──
+  private readonly globals = new Map<string, { id: string; label: string }>();
+  /** Seeded affiliate rows (one per site). `seedMarketer` adds them; `linkMarketer` mutates the link. */
+  readonly marketers: Array<{
+    affiliateUserId: string; siteId: string; marketerGlobalId: string | null;
+    clients: number; ggrCents: number; commissionCents: number;
+  }> = [];
+
+  /** Test seam: register a per-site affiliate row with its client/GGR/commission facts. */
+  seedMarketer(row: { affiliateUserId: string; siteId: string; clients: number; ggrCents: number; commissionCents: number; marketerGlobalId?: string | null }): void {
+    this.marketers.push({ marketerGlobalId: row.marketerGlobalId ?? null, ...row });
+  }
+
+  async createMarketerGlobal(_actorId: string, actorRole: string, label: string): Promise<string> {
+    this.gate(actorRole);
+    if (!label || !label.trim()) throw new Error("INVALID_LABEL");
+    const id = randomUUID();
+    this.globals.set(id, { id, label: label.trim() });
+    return id;
+  }
+
+  async linkMarketer(_actorId: string, actorRole: string, affiliateUserId: string, globalId: string | null): Promise<void> {
+    this.gate(actorRole);
+    if (globalId !== null && !this.globals.has(globalId)) throw new Error("MARKETER_GLOBAL_NOT_FOUND");
+    const row = this.marketers.find((m) => m.affiliateUserId === affiliateUserId);
+    if (!row) throw new Error("NOT_AFFILIATE");
+    row.marketerGlobalId = globalId;
+  }
+
+  async marketerRollup(actorRole: string): Promise<MarketerRollupRow[]> {
+    this.gate(actorRole);
+    return this.marketers.map((m) => {
+      const site = this.sites.get(m.siteId);
+      return {
+        marketerGlobalId: m.marketerGlobalId,
+        label: m.marketerGlobalId ? (this.globals.get(m.marketerGlobalId)?.label ?? null) : null,
+        affiliateUserId: m.affiliateUserId,
+        siteId: m.siteId, siteSlug: site?.slug ?? "", siteName: site?.name ?? "",
+        clients: m.clients, ggrCents: m.ggrCents, commissionCents: m.commissionCents,
+      };
+    });
+  }
 }
 
 /** Thin service over the repo: input validation + a stable surface for the API + console. */
@@ -191,5 +266,17 @@ export class PlatformService {
   setSiteConfig(actorId: string, actorRole: string, siteId: string, patch: JsonPatch): Promise<SiteConfigRow> {
     if (!patch || typeof patch !== "object") throw new Error("INVALID_PATCH");
     return this.repo.setSiteConfig(actorId, actorRole, siteId, patch);
+  }
+
+  // ── Task R: cross-brand marketer rollup (reporting only) ──
+  marketerRollup(actorRole: string): Promise<MarketerRollupRow[]> { return this.repo.marketerRollup(actorRole); }
+  createMarketerGlobal(actorId: string, actorRole: string, label: string): Promise<string> {
+    if (typeof label !== "string" || !label.trim()) throw new Error("INVALID_LABEL");
+    return this.repo.createMarketerGlobal(actorId, actorRole, label.trim());
+  }
+  linkMarketer(actorId: string, actorRole: string, affiliateUserId: string, globalId: string | null): Promise<void> {
+    if (typeof affiliateUserId !== "string" || !affiliateUserId) throw new Error("INVALID_AFFILIATE");
+    if (globalId !== null && typeof globalId !== "string") throw new Error("INVALID_GLOBAL");
+    return this.repo.linkMarketer(actorId, actorRole, affiliateUserId, globalId);
   }
 }
