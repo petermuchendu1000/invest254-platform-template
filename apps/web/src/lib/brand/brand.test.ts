@@ -19,13 +19,29 @@ test('wsUrlForSite appends ?site, respects existing query, and no-ops on empty',
   assert.equal(wsUrlForSite('ws://h', 'a b'), 'ws://h?site=a%20b');
 });
 
-test('brandCssVars / brandRootStyle expose the three brand custom properties', () => {
-  const vars = brandCssVars(DEFAULT_BRAND);
-  assert.deepEqual(vars, {
+test('brandCssVars: 3 legacy vars without themeTokens; full contract with them', () => {
+  // A brand with no themeTokens exposes only the three legacy custom properties.
+  const legacy = brandCssVars({ ...DEFAULT_BRAND, themeTokens: null });
+  assert.deepEqual(legacy, {
     '--brand-primary': DEFAULT_BRAND.colorPrimary,
     '--brand-bg': DEFAULT_BRAND.colorBg,
     '--brand-accent': DEFAULT_BRAND.colorAccent,
   });
+  // DEFAULT_BRAND carries a full palette -> the complete --brand-* contract is emitted.
+  const t = DEFAULT_BRAND.themeTokens!;
+  const vars = brandCssVars(DEFAULT_BRAND);
+  assert.equal(vars['--brand-bg'], t.bg);
+  assert.equal(vars['--brand-surface'], t.surface);
+  assert.equal(vars['--brand-surface-2'], t.surface2);
+  assert.equal(vars['--brand-border'], t.border);
+  assert.equal(vars['--brand-fg'], t.fg);
+  assert.equal(vars['--brand-muted'], t.muted);
+  assert.equal(vars['--brand-primary'], t.brand);
+  assert.equal(vars['--brand-accent'], t.accent);
+  assert.equal(vars['--brand-up'], t.up);
+  assert.equal(vars['--brand-down'], t.down);
+  assert.equal(vars['--brand-warn'], t.warn);
+  assert.equal(vars['--brand-info'], t.info);
   assert.deepEqual(brandRootStyle(DEFAULT_BRAND), vars);
 });
 

@@ -45,6 +45,8 @@ export interface Brand {
   locale: string;
   licenceLine?: string | null;
   supportEmail?: string | null;
+  /** Full per-brand design-token palette (docs/22): overrides the fixed --pp-* tokens end-to-end. */
+  themeTokens?: Record<string, string> | null;
 }
 
 export interface ApiDeps {

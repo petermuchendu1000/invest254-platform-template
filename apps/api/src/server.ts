@@ -112,7 +112,7 @@ async function buildDeps(): Promise<ApiDeps> {
       const h = host.trim().toLowerCase();
       const r = await q.query(
         `select id, slug, name, wordmark_text, logo_url, favicon_url, color_primary, color_bg,
-                color_accent, theme, currency, locale, licence_line, support_email
+                color_accent, theme, currency, locale, licence_line, support_email, theme_tokens
            from sites
           where status = 'active' and (lower(primary_domain) = $1 or lower(slug) = $1)
           limit 1`,
@@ -130,6 +130,7 @@ async function buildDeps(): Promise<ApiDeps> {
         currency: String(x.currency), locale: String(x.locale),
         licenceLine: (x.licence_line as string | null) ?? null,
         supportEmail: (x.support_email as string | null) ?? null,
+        themeTokens: (x.theme_tokens as Record<string, string> | null) ?? null,
       };
     },
     payments,

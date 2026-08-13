@@ -27,6 +27,8 @@ export interface Brand {
   locale: string;
   licenceLine?: string | null;
   supportEmail?: string | null;
+  /** Full per-brand design-token palette; maps to every --pp-* token (docs/22). */
+  themeTokens?: Record<string, string> | null;
 }
 
 /** Last-resort brand so the UI always renders (used only if the API is unreachable). */
@@ -45,6 +47,12 @@ export const DEFAULT_BRAND: Brand = {
   locale: "en-KE",
   licenceLine: "Operated under licence.",
   supportEmail: null,
+  themeTokens: {
+    bg: "#0c100d", surface: "#151c17", surface2: "#202a24", border: "#35453b",
+    fg: "#f1f4f2", muted: "#92aa9b", brand: "#24db67", brandHover: "#1eb857",
+    accent: "#37e6d5", accentFg: "#0b0f14", up: "#56dc95", down: "#ea2f42",
+    warn: "#f6b128", info: "#5199ec",
+  },
 };
 
 /** Resolve the brand for a host by asking the API. Falls back to DEFAULT_BRAND on any error. */
@@ -62,13 +70,31 @@ export async function resolveBrand(apiBaseUrl: string, host: string): Promise<Br
   }
 }
 
-/** Map a brand to the CSS custom properties the design system reads. */
+/** Map a brand to the CSS custom properties the design system reads.
+ *  Always exposes the 3 legacy vars; when a full `themeTokens` palette is present it also emits the
+ *  complete --brand-* contract (bg/surface/border/fg/muted/up/down/warn/info/accent-fg/…) so the
+ *  whole UI — logo, marquee, live curve, buttons — re-skins per brand, not just the accent. */
 export function brandCssVars(b: Brand): Record<string, string> {
-  return {
+  const vars: Record<string, string> = {
     "--brand-primary": b.colorPrimary,
     "--brand-bg": b.colorBg,
     "--brand-accent": b.colorAccent,
   };
+  const t = b.themeTokens;
+  if (t) {
+    const map: Record<string, string> = {
+      bg: "--brand-bg", surface: "--brand-surface", surface2: "--brand-surface-2",
+      border: "--brand-border", fg: "--brand-fg", muted: "--brand-muted",
+      brand: "--brand-primary", brandHover: "--brand-primary-hover",
+      accent: "--brand-accent", accentFg: "--brand-accent-fg",
+      up: "--brand-up", down: "--brand-down", warn: "--brand-warn", info: "--brand-info",
+    };
+    for (const [k, cssVar] of Object.entries(map)) {
+      const v = t[k];
+      if (typeof v === "string" && v) vars[cssVar] = v;
+    }
+  }
+  return vars;
 }
 
 /**
