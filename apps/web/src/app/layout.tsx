@@ -55,7 +55,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   // before paint to avoid a flash. 'auto'/'dark' → dark-first; 'light' → light.
   const brandDefaultTheme = brand.theme === 'light' ? 'light' : 'dark';
   const initialClass = brandDefaultTheme === 'light' ? 'light' : 'dark';
-  const themeInit = `(function(){try{var d=${JSON.stringify(brandDefaultTheme)};var s=localStorage.getItem('pp-theme');var t=s||d;var e=document.documentElement;e.classList.remove('light','dark');e.classList.add(t==='light'?'light':'dark');}catch(e){}})();`;
+  const themeInit = `(function(){try{var d=${JSON.stringify(brandDefaultTheme)};var s=localStorage.getItem('pp-theme');var t=s||d;var e=document.documentElement;e.classList.remove('light','dark');e.classList.add(t==='light'?'light':'dark');var p=localStorage.getItem('pp-pnl');if(p==='classic')e.classList.add('pnl-classic');else e.classList.remove('pnl-classic');}catch(e){}})();`;
 
   return (
     <html lang="en" className={initialClass} data-brand={brand.slug} style={brandRootStyle(brand) as React.CSSProperties}>

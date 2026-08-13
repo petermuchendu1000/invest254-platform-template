@@ -11,8 +11,10 @@ import {
   useCreateSite,
   useUpdateSite,
   useSetSiteConfig,
+  useSetSiteTheme,
 } from '@/lib/platform/hooks';
 import type { SiteWithConfig, SiteKpis, MarketerRollupGroup } from '@/lib/platform/endpoints';
+import { deriveMinimalPalette } from '@/lib/brand/derivePalette';
 
 const money = (cents: number, cur: string) => `${cur} ${(cents / 100).toLocaleString()}`;
 
@@ -118,6 +120,63 @@ function BrandCard({ site }: { site: SiteWithConfig }) {
           <Button type="submit" size="sm" disabled={setConfig.isPending}>Save economy</Button>
           {setConfig.isError ? <span className="text-xs text-down">{(setConfig.error as Error).message}</span> : null}
         </form>
+      </div>
+      <PaletteEditor site={site} />
+    </div>
+  );
+}
+
+/** Palette editor (docs/22 Task G+): pick a seed colour → the minimal palette is derived client-side
+ *  (one hue → full brand-tinted ramp + graph gain/loss), previewed, and persisted via
+ *  fn_platform_set_site_theme. Onboarding a brand's look is then a single colour choice. */
+function PaletteEditor({ site }: { site: SiteWithConfig }) {
+  const setTheme = useSetSiteTheme();
+  const [seed, setSeed] = useState(site.colorPrimary || '#22c55e');
+  const [mode, setMode] = useState<'dark' | 'light'>(site.theme === 'light' ? 'light' : 'dark');
+  const tokens = deriveMinimalPalette(seed, mode);
+  const swatches: Array<[string, string]> = [
+    ['bg', 'bg'], ['surface', 'surf'], ['border', 'border'], ['muted', 'muted'], ['fg', 'fg'],
+    ['brand', 'brand'], ['accent', 'accent'], ['up', 'gain'], ['down', 'loss'],
+  ];
+  return (
+    <div className="mt-3 flex flex-col gap-2 border-t border-border pt-3">
+      <p className="text-xs font-semibold uppercase tracking-wide text-muted">Palette · one seed → derived (max 2–3 colours)</p>
+      <div className="flex flex-wrap items-center gap-3">
+        <label className="flex items-center gap-2 text-sm">
+          <span className="text-muted">Seed</span>
+          <input
+            type="color"
+            value={seed}
+            onChange={(e) => setSeed(e.target.value)}
+            className="h-8 w-10 cursor-pointer rounded border border-border bg-transparent"
+            aria-label="Brand seed colour"
+          />
+        </label>
+        <select
+          value={mode}
+          onChange={(e) => setMode(e.target.value as 'dark' | 'light')}
+          className="h-9 rounded-lg border border-border bg-surface-2 px-2 text-sm text-fg"
+          aria-label="Theme mode"
+        >
+          <option value="dark">dark</option>
+          <option value="light">light</option>
+        </select>
+        <span className="font-mono text-xs text-muted">{seed.toLowerCase()}</span>
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {swatches.map(([k, lab]) => (
+          <div key={k} className="flex flex-col items-center">
+            <span className="h-7 w-9 rounded border border-border" style={{ backgroundColor: tokens[k] }} />
+            <span className="mt-0.5 text-[9px] text-muted">{lab}</span>
+          </div>
+        ))}
+      </div>
+      <div className="flex items-center gap-3">
+        <Button type="button" size="sm" disabled={setTheme.isPending} onClick={() => setTheme.mutate({ id: site.siteId, tokens })}>
+          {setTheme.isPending ? 'Saving…' : 'Save palette'}
+        </Button>
+        {setTheme.isError ? <span className="text-xs text-down">{(setTheme.error as Error).message}</span> : null}
+        {setTheme.isSuccess ? <span className="text-xs text-up">Saved — reload the brand to apply.</span> : null}
       </div>
     </div>
   );

@@ -85,6 +85,18 @@ test("tune a brand: update branding + economy; validation is enforced", async ()
   } finally { await api.close(); }
 });
 
+test("set a brand palette (theme tokens) is platform_superadmin-gated", async () => {
+  const api = await startTestApi();
+  try {
+    const site = "00000000-0000-0000-0000-000000000001"; // default brand seeded in-memory
+    const tokens = { bg: "#0c100d", brand: "#2cdd6d", accent: "#67e997", up: "#2cdd6d", down: "#8fa396" };
+    assert.equal((await req(api, "PATCH", `/api/v1/platform/sites/${site}/theme`, { token: ADMIN, body: { tokens } })).status, 403, "admin rejected");
+    assert.equal((await req(api, "PATCH", `/api/v1/platform/sites/${site}/theme`, { body: { tokens } })).status, 401, "auth required");
+    assert.equal((await req(api, "PATCH", `/api/v1/platform/sites/${site}/theme`, { token: PLATFORM, body: { tokens } })).status, 200, "platform superadmin can set the palette");
+    assert.equal((await req(api, "PATCH", `/api/v1/platform/sites/${site}/theme`, { token: PLATFORM, body: { tokens: [1, 2] } })).status, 400, "non-object tokens rejected");
+  } finally { await api.close(); }
+});
+
 test("the per-user override write is superadmin-gated (docs/22 Task H)", async () => {
   const api = await startTestApi();
   try {

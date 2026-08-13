@@ -34,19 +34,71 @@ html.light {
 }
 
 /*
- * Brand skin (multi-tenant): brandRootStyle() sets --brand-primary/-accent on <html> from the
- * resolved brand, and these rules feed them into the accent + brand design tokens so the whole UI
- * re-skins per brand. Fallbacks keep the default look when no brand is set. Declared for BOTH
- * themes (html.light out-specifies :root, so the light theme needs its own mapping).
+ * Brand skin (multi-tenant): brandRootStyle() sets the --brand-* palette on <html> from the
+ * resolved brand (full themeTokens when present, else the 3 legacy colours). These rules feed EVERY
+ * --brand-* into its --pp-* design token so the whole UI — logo, marquee, live curve, buttons,
+ * cards — re-skins per brand. Fallbacks equal the default look so a brand-less render is unchanged.
+ * Declared for BOTH themes (html.light out-specifies :root, so light needs its own mapping).
+ * Semantic tokens (up/down/warn/info) stay in canonical hue bands for stable meaning across brands.
  */
 :root {
-  --pp-accent: var(--brand-accent, #00a859);
-  --pp-brand: var(--brand-primary, #43b02a);
+  --pp-bg:        var(--brand-bg,           #07090f);
+  --pp-surface:   var(--brand-surface,      #11161f);
+  --pp-surface-2: var(--brand-surface-2,    #1c2430);
+  --pp-border:    var(--brand-border,       #303945);
+  --pp-fg:        var(--brand-fg,           #e6edf3);
+  --pp-muted:     var(--brand-muted,        #8b949e);
+  --pp-up:        var(--brand-up,           #3fb950);
+  --pp-down:      var(--brand-down,         #e43d3f);
+  --pp-warn:      var(--brand-warn,         #e3b341);
+  --pp-info:      var(--brand-info,         #4493f8);
+  --pp-accent:    var(--brand-accent,       #00a859);
+  --pp-accent-fg: var(--brand-accent-fg,    #ffffff);
+  --pp-brand:     var(--brand-primary,      #43b02a);
 }
 html.light {
-  --pp-accent: var(--brand-accent, #00a859);
-  --pp-brand: var(--brand-primary, #43b02a);
+  --pp-bg:        var(--brand-bg,           #f6f8fa);
+  --pp-surface:   var(--brand-surface,      #ffffff);
+  --pp-surface-2: var(--brand-surface-2,    #eaeef2);
+  --pp-border:    var(--brand-border,       #d0d7de);
+  --pp-fg:        var(--brand-fg,           #1f2328);
+  --pp-muted:     var(--brand-muted,        #636c76);
+  --pp-up:        var(--brand-up,           #1a7f37);
+  --pp-down:      var(--brand-down,         #cf222e);
+  --pp-warn:      var(--brand-warn,         #9a6700);
+  --pp-info:      var(--brand-info,         #0969da);
+  --pp-accent:    var(--brand-accent,       #00a859);
+  --pp-accent-fg: var(--brand-accent-fg,    #ffffff);
+  --pp-brand:     var(--brand-primary,      #43b02a);
 }
+
+/*
+ * Brand TONAL RAMP (50 lightest → 950 darkest), derived from --pp-brand by perceptual (oklab)
+ * mixing with white/black. One hue → a full scale, so components snap to bg-brand-100 /
+ * text-brand-700 / border-brand-800 WITHOUT introducing new hues. Auto-adapts per brand + theme.
+ */
+:root {
+  --pp-brand-50:  color-mix(in oklab, white 88%, var(--pp-brand));
+  --pp-brand-100: color-mix(in oklab, white 78%, var(--pp-brand));
+  --pp-brand-200: color-mix(in oklab, white 60%, var(--pp-brand));
+  --pp-brand-300: color-mix(in oklab, white 40%, var(--pp-brand));
+  --pp-brand-400: color-mix(in oklab, white 18%, var(--pp-brand));
+  --pp-brand-500: var(--pp-brand);
+  --pp-brand-600: color-mix(in oklab, black 14%, var(--pp-brand));
+  --pp-brand-700: color-mix(in oklab, black 30%, var(--pp-brand));
+  --pp-brand-800: color-mix(in oklab, black 46%, var(--pp-brand));
+  --pp-brand-900: color-mix(in oklab, black 60%, var(--pp-brand));
+  --pp-brand-950: color-mix(in oklab, black 72%, var(--pp-brand));
+}
+
+/*
+ * Classic P/L colour mode (opt-in): default gain/loss are mono (vivid brand / muted neutral) for a
+ * calm 2–3 colour look; users who prefer conventional green/red toggle html.pnl-classic. It
+ * overrides ONLY the up/down semantic tokens, so CurveCanvas + TickerStrip switch automatically.
+ * Redundant position + sign cues remain (WCAG 1.4.1 safe).
+ */
+html.pnl-classic       { --pp-up: #2fb85f; --pp-down: #e5484d; }
+html.light.pnl-classic { --pp-up: #1a7f37; --pp-down: #cf222e; }
 
 html, body {
   height: 100%;
