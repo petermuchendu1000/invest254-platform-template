@@ -40,6 +40,8 @@ export const platformApi = {
     apiFetch<SiteRow>(`/platform/sites/${id}`, { method: 'PATCH', token: t, body: patch }),
   setConfig: (t: string, id: string, patch: Record<string, unknown>) =>
     apiFetch<SiteConfig>(`/platform/sites/${id}/config`, { method: 'PATCH', token: t, body: patch }),
+  setTheme: (t: string, id: string, tokens: Record<string, string>) =>
+    apiFetch<SiteRow>(`/platform/sites/${id}/theme`, { method: 'PATCH', token: t, body: { tokens } }),
   // Task R — cross-brand marketer rollup (reporting only).
   marketerRollup: (t: string) => apiFetch<{ marketers: MarketerRollupGroup[] }>('/platform/marketers/rollup', { token: t }),
 };

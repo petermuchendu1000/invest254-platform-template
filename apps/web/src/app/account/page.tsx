@@ -9,6 +9,7 @@ import { useSession } from '@/lib/auth/session';
 import { useAuthUi } from '@/lib/auth/ui';
 import { useAuthActions } from '@/lib/auth/useAuthActions';
 import { useHydrated } from '@/lib/useHydrated';
+import { PnlColorToggle } from '@/components/settings/PnlColorToggle';
 
 export default function AccountPage() {
   const hydrated = useHydrated();
@@ -42,6 +43,11 @@ export default function AccountPage() {
 
       <Card className="flex flex-col gap-3">
         <Row label="Username" value={`@${user.username}`} />
+      </Card>
+
+      <Card className="flex flex-col gap-3">
+        <h2 className="text-sm font-semibold tracking-tight">Preferences</h2>
+        <PnlColorToggle />
       </Card>
 
       <Card className="flex flex-col gap-3">

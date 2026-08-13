@@ -110,6 +110,14 @@ export function registerPlatformRoutes(router: Router, deps: ApiDeps): void {
     return domain(() => deps.platform.setSiteConfig(ctx.claims!.userId, ctx.claims!.role ?? "player", ctx.params.id!, patch));
   });
 
+  // Persist a brand's full design-token palette (from the console's seed-hue → derived palette).
+  router.patch(`${BASE}/platform/sites/:id/theme`, auth, platform, async (ctx: Ctx) => {
+    const body = asObject(ctx.body);
+    const tokens = body.tokens ?? body;
+    if (!tokens || typeof tokens !== "object" || Array.isArray(tokens)) throw new ApiError("VALIDATION", "tokens object is required", 400);
+    return domain(() => deps.platform.setSiteTheme(ctx.claims!.userId, ctx.claims!.role ?? "player", ctx.params.id!, tokens as Record<string, unknown>));
+  });
+
   // ── Task R: cross-brand marketer rollup (reporting only; money stays per site) ──
   // The one view: per marketer -> which clients on which site + the cross-brand total.
   router.get(`${BASE}/platform/marketers/rollup`, auth, platform, async (ctx: Ctx) => {

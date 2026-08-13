@@ -56,3 +56,13 @@ export function useSetSiteConfig() {
     onSuccess: invalidate,
   });
 }
+
+/** Persist a brand's full design-token palette (docs/22 Task G+). */
+export function useSetSiteTheme() {
+  const t = useTok();
+  const invalidate = useInvalidate();
+  return useMutation({
+    mutationFn: (v: { id: string; tokens: Record<string, string> }) => platformApi.setTheme(t, v.id, v.tokens),
+    onSuccess: invalidate,
+  });
+}

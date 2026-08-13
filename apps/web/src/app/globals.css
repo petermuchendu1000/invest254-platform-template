@@ -72,6 +72,34 @@ html.light {
   --pp-brand:     var(--brand-primary,      #43b02a);
 }
 
+/*
+ * Brand TONAL RAMP (50 lightest → 950 darkest), derived from --pp-brand by perceptual (oklab)
+ * mixing with white/black. One hue → a full scale, so components snap to bg-brand-100 /
+ * text-brand-700 / border-brand-800 WITHOUT introducing new hues. Auto-adapts per brand + theme.
+ */
+:root {
+  --pp-brand-50:  color-mix(in oklab, white 88%, var(--pp-brand));
+  --pp-brand-100: color-mix(in oklab, white 78%, var(--pp-brand));
+  --pp-brand-200: color-mix(in oklab, white 60%, var(--pp-brand));
+  --pp-brand-300: color-mix(in oklab, white 40%, var(--pp-brand));
+  --pp-brand-400: color-mix(in oklab, white 18%, var(--pp-brand));
+  --pp-brand-500: var(--pp-brand);
+  --pp-brand-600: color-mix(in oklab, black 14%, var(--pp-brand));
+  --pp-brand-700: color-mix(in oklab, black 30%, var(--pp-brand));
+  --pp-brand-800: color-mix(in oklab, black 46%, var(--pp-brand));
+  --pp-brand-900: color-mix(in oklab, black 60%, var(--pp-brand));
+  --pp-brand-950: color-mix(in oklab, black 72%, var(--pp-brand));
+}
+
+/*
+ * Classic P/L colour mode (opt-in): default gain/loss are mono (vivid brand / muted neutral) for a
+ * calm 2–3 colour look; users who prefer conventional green/red toggle html.pnl-classic. It
+ * overrides ONLY the up/down semantic tokens, so CurveCanvas + TickerStrip switch automatically.
+ * Redundant position + sign cues remain (WCAG 1.4.1 safe).
+ */
+html.pnl-classic       { --pp-up: #2fb85f; --pp-down: #e5484d; }
+html.light.pnl-classic { --pp-up: #1a7f37; --pp-down: #cf222e; }
+
 html, body {
   height: 100%;
 }

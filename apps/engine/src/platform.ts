@@ -45,6 +45,8 @@ export interface PlatformRepository {
   marketerRollup(actorRole: string): Promise<MarketerRollupRow[]>;
   createMarketerGlobal(actorId: string, actorRole: string, label: string): Promise<string>;
   linkMarketer(actorId: string, actorRole: string, affiliateUserId: string, globalId: string | null): Promise<void>;
+  /** Persist a brand's full design-token palette (docs/22 Task G+). platform_superadmin-gated. */
+  setSiteTheme(actorId: string, actorRole: string, siteId: string, tokens: JsonPatch): Promise<SiteRow>;
 }
 
 const num = (v: unknown): number => (typeof v === "string" ? Number(v) : (v as number)) || 0;
@@ -124,6 +126,12 @@ export class PgPlatformRepository implements PlatformRepository {
 
   async linkMarketer(actorId: string, actorRole: string, affiliateUserId: string, globalId: string | null): Promise<void> {
     await this.q.query("select fn_platform_link_marketer($1,$2,$3,$4)", [actorId, actorRole, affiliateUserId, globalId]);
+  }
+
+  async setSiteTheme(actorId: string, actorRole: string, siteId: string, tokens: JsonPatch): Promise<SiteRow> {
+    const r = await this.q.query("select * from fn_platform_set_site_theme($1,$2,$3,$4)",
+      [actorId, actorRole, siteId, JSON.stringify(tokens)]);
+    return mapSiteRow(r.rows[0] as Record<string, unknown>);
   }
 }
 
@@ -206,6 +214,7 @@ export class InMemoryPlatformRepository implements PlatformRepository {
 
   // ── Task R: cross-brand marketer rollup (in-memory mirror for tests) ──
   private readonly globals = new Map<string, { id: string; label: string }>();
+  private readonly themeTokens = new Map<string, Record<string, unknown>>();
   /** Seeded affiliate rows (one per site). `seedMarketer` adds them; `linkMarketer` mutates the link. */
   readonly marketers: Array<{
     affiliateUserId: string; siteId: string; marketerGlobalId: string | null;
@@ -246,6 +255,16 @@ export class InMemoryPlatformRepository implements PlatformRepository {
       };
     });
   }
+
+  async setSiteTheme(_actorId: string, actorRole: string, siteId: string, tokens: JsonPatch): Promise<SiteRow> {
+    this.gate(actorRole);
+    if (!tokens || typeof tokens !== "object") throw new Error("INVALID_PATCH");
+    const s = this.sites.get(siteId);
+    if (!s) throw new Error("SITE_NOT_FOUND");
+    this.themeTokens.set(siteId, tokens as Record<string, unknown>);
+    const { config, ...row } = s;
+    return { ...row };
+  }
 }
 
 /** Thin service over the repo: input validation + a stable surface for the API + console. */
@@ -278,5 +297,9 @@ export class PlatformService {
     if (typeof affiliateUserId !== "string" || !affiliateUserId) throw new Error("INVALID_AFFILIATE");
     if (globalId !== null && typeof globalId !== "string") throw new Error("INVALID_GLOBAL");
     return this.repo.linkMarketer(actorId, actorRole, affiliateUserId, globalId);
+  }
+  setSiteTheme(actorId: string, actorRole: string, siteId: string, tokens: JsonPatch): Promise<SiteRow> {
+    if (!tokens || typeof tokens !== "object" || Array.isArray(tokens)) throw new Error("INVALID_PATCH");
+    return this.repo.setSiteTheme(actorId, actorRole, siteId, tokens);
   }
 }
