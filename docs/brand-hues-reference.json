@@ -1,0 +1,1262 @@
+[
+ {
+  "name": "Arbitrum",
+  "domain": "arbitrum.io",
+  "dominant": {
+   "accent": "#12aaff",
+   "light": "#3b82f6",
+   "dark": "#05163d"
+  },
+  "seedHex": "#12aaff",
+  "hue": 202,
+  "family": "Blue"
+ },
+ {
+  "name": "Litecoin Project",
+  "domain": "litecoin.org",
+  "dominant": {
+   "accent": "#a5a8a9",
+   "light": "#88cbf5",
+   "dark": "#262626"
+  },
+  "seedHex": "#88cbf5",
+  "hue": 203,
+  "family": "Blue"
+ },
+ {
+  "name": "Messari",
+  "domain": "messari.io",
+  "dominant": {
+   "accent": "#0091EA",
+   "light": "#080A0C",
+   "dark": "#080A0C"
+  },
+  "seedHex": "#0091EA",
+  "hue": 203,
+  "family": "Blue"
+ },
+ {
+  "name": "HTX",
+  "domain": "htx.com",
+  "dominant": {
+   "accent": "#007cd6",
+   "light": "#e6a23c",
+   "dark": "#4d4d4d"
+  },
+  "seedHex": "#007cd6",
+  "hue": 205,
+  "family": "Blue"
+ },
+ {
+  "name": "Kraken",
+  "domain": "kraken.com",
+  "dominant": {
+   "accent": "#4c6f8c",
+   "light": "#fde87f",
+   "dark": "#2824b6"
+  },
+  "seedHex": "#4c6f8c",
+  "hue": 207,
+  "family": "Blue"
+ },
+ {
+  "name": "Ripple",
+  "domain": "ripple.com",
+  "dominant": {
+   "accent": "#008CFF",
+   "light": "#FFFFFF",
+   "dark": "#141A1F"
+  },
+  "seedHex": "#008CFF",
+  "hue": 207,
+  "family": "Blue"
+ },
+ {
+  "name": "Trust Wallet",
+  "domain": "trustwallet.com",
+  "dominant": {
+   "accent": "#2d9fff",
+   "light": "#ffffff",
+   "dark": "#313131"
+  },
+  "seedHex": "#2d9fff",
+  "hue": 207,
+  "family": "Blue"
+ },
+ {
+  "name": "GMX",
+  "domain": "gmx.io",
+  "dominant": {
+   "accent": "#1193fa",
+   "light": "#ffffff",
+   "dark": "#171827"
+  },
+  "seedHex": "#1193fa",
+  "hue": 207,
+  "family": "Blue"
+ },
+ {
+  "name": "OpenSea",
+  "domain": "opensea.io",
+  "dominant": {
+   "accent": "#2081E2",
+   "light": "#FFFFFF",
+   "dark": "#000000"
+  },
+  "seedHex": "#2081E2",
+  "hue": 210,
+  "family": "Blue"
+ },
+ {
+  "name": "Apple",
+  "domain": "apple.com",
+  "dominant": {
+   "accent": "#0066CC",
+   "light": "#FFFFFF",
+   "dark": "#1D1D1F"
+  },
+  "seedHex": "#0066CC",
+  "hue": 210,
+  "family": "Blue"
+ },
+ {
+  "name": "X",
+  "domain": "x.com",
+  "dominant": {
+   "accent": null,
+   "light": "#FFFFFF",
+   "dark": "#14171A"
+  },
+  "seedHex": "#14171A",
+  "hue": 210,
+  "family": "Blue"
+ },
+ {
+  "name": "Sui",
+  "domain": "sui.io",
+  "dominant": {
+   "accent": "#4da2ff",
+   "light": "#fe8bc2",
+   "dark": "#030f1c"
+  },
+  "seedHex": "#4da2ff",
+  "hue": 211,
+  "family": "Blue"
+ },
+ {
+  "name": "Exodus Communications",
+  "domain": "exodus.com",
+  "dominant": {
+   "accent": "#007BFF",
+   "light": "#ffffff",
+   "dark": "#1F2033"
+  },
+  "seedHex": "#007BFF",
+  "hue": 211,
+  "family": "Blue"
+ },
+ {
+  "name": "1inch",
+  "domain": "1inch.io",
+  "dominant": {
+   "accent": "#2F8AF5",
+   "light": "#ffffff",
+   "dark": "#06070A"
+  },
+  "seedHex": "#2F8AF5",
+  "hue": 212,
+  "family": "Blue"
+ },
+ {
+  "name": "dYdX",
+  "domain": "dydx.exchange",
+  "dominant": {
+   "accent": "#146dd9",
+   "light": "#ffffff",
+   "dark": "#30353b"
+  },
+  "seedHex": "#146dd9",
+  "hue": 213,
+  "family": "Blue"
+ },
+ {
+  "name": "Meta",
+  "domain": "meta.com",
+  "dominant": {
+   "accent": "#1877F2",
+   "light": "#FFFFFF",
+   "dark": "#1C1E21"
+  },
+  "seedHex": "#1877F2",
+  "hue": 214,
+  "family": "Blue"
+ },
+ {
+  "name": "Upbit",
+  "domain": "upbit.com",
+  "dominant": {
+   "accent": "#023f97",
+   "light": "#f4f5f8",
+   "dark": "#003597"
+  },
+  "seedHex": "#023f97",
+  "hue": 215,
+  "family": "Blue"
+ },
+ {
+  "name": "Crypto.com",
+  "domain": "crypto.com",
+  "dominant": {
+   "accent": "#002967",
+   "light": null,
+   "dark": null
+  },
+  "seedHex": "#002967",
+  "hue": 216,
+  "family": "Blue"
+ },
+ {
+  "name": "thirdweb",
+  "domain": "thirdweb.com",
+  "dominant": {
+   "accent": "#3385FF",
+   "light": "#FFFFFF",
+   "dark": "#000000"
+  },
+  "seedHex": "#3385FF",
+  "hue": 216,
+  "family": "Blue"
+ },
+ {
+  "name": "Sushi",
+  "domain": "sushi.com",
+  "dominant": {
+   "accent": "#3b82f6",
+   "light": "#dbdcde",
+   "dark": "#000002"
+  },
+  "seedHex": "#3b82f6",
+  "hue": 217,
+  "family": "Blue"
+ },
+ {
+  "name": "Google",
+  "domain": "google.com",
+  "dominant": {
+   "accent": "#4285F4",
+   "light": "#FFFFFF",
+   "dark": "#424242"
+  },
+  "seedHex": "#4285F4",
+  "hue": 217,
+  "family": "Blue"
+ },
+ {
+  "name": "Tezos",
+  "domain": "tezos.com",
+  "dominant": {
+   "accent": "#0d61ff",
+   "light": "#cbd5e0",
+   "dark": "#14266c"
+  },
+  "seedHex": "#0d61ff",
+  "hue": 219,
+  "family": "Blue"
+ },
+ {
+  "name": "Uber",
+  "domain": "uber.com",
+  "dominant": {
+   "accent": "#276ef1",
+   "light": "#ffffff",
+   "dark": "#000000"
+  },
+  "seedHex": "#276ef1",
+  "hue": 219,
+  "family": "Blue"
+ },
+ {
+  "name": "MEXC",
+  "domain": "mexc.com",
+  "dominant": {
+   "accent": "#1463fe",
+   "light": "#509ad0",
+   "dark": "#000000"
+  },
+  "seedHex": "#1463fe",
+  "hue": 220,
+  "family": "Blue"
+ },
+ {
+  "name": "Coinbase",
+  "domain": "coinbase.com",
+  "dominant": {
+   "accent": "#0052FF",
+   "light": "#FFFFFF",
+   "dark": "#0A0B0D"
+  },
+  "seedHex": "#0052FF",
+  "hue": 221,
+  "family": "Blue"
+ },
+ {
+  "name": "Cardano Community",
+  "domain": "cardano.org",
+  "dominant": {
+   "accent": "#0438B0",
+   "light": "#FFFFFF",
+   "dark": null
+  },
+  "seedHex": "#0438B0",
+  "hue": 222,
+  "family": "Blue"
+ },
+ {
+  "name": "Base",
+  "domain": "base.org",
+  "dominant": {
+   "accent": "#1652f0",
+   "light": "#FFFFFF",
+   "dark": "#111111"
+  },
+  "seedHex": "#1652f0",
+  "hue": 223,
+  "family": "Blue"
+ },
+ {
+  "name": "Fireblocks",
+  "domain": "fireblocks.com",
+  "dominant": {
+   "accent": "#184FDB",
+   "light": "#FFFFFF",
+   "dark": "#14223D"
+  },
+  "seedHex": "#184FDB",
+  "hue": 223,
+  "family": "Blue"
+ },
+ {
+  "name": "PayPal",
+  "domain": "paypal.com",
+  "dominant": {
+   "accent": "#002994",
+   "light": "#FFFFFF",
+   "dark": "#000000"
+  },
+  "seedHex": "#002994",
+  "hue": 223,
+  "family": "Blue"
+ },
+ {
+  "name": "CoinMarketCap",
+  "domain": "coinmarketcap.com",
+  "dominant": {
+   "accent": "#3861fb",
+   "light": "#f5b97f",
+   "dark": "#0d1421"
+  },
+  "seedHex": "#3861fb",
+  "hue": 227,
+  "family": "Blue"
+ },
+ {
+  "name": "\u2014 WalletConnect",
+  "domain": "walletconnect.com",
+  "dominant": {
+   "accent": "#5570ff",
+   "light": "#b2b7dc",
+   "dark": "#202020"
+  },
+  "seedHex": "#5570ff",
+  "hue": 230,
+  "family": "Blue"
+ },
+ {
+  "name": "Lido",
+  "domain": "lido.fi",
+  "dominant": {
+   "accent": "#5262ff",
+   "light": "#fff9f9",
+   "dark": "#000000"
+  },
+  "seedHex": "#5262ff",
+  "hue": 234,
+  "family": "Blue"
+ },
+ {
+  "name": "Revolut",
+  "domain": "revolut.com",
+  "dominant": {
+   "accent": "#1E36FE",
+   "light": "#ffffff",
+   "dark": "#191C1F"
+  },
+  "seedHex": "#1E36FE",
+  "hue": 234,
+  "family": "Blue"
+ },
+ {
+  "name": "Bitget",
+  "domain": "bitget.com",
+  "dominant": {
+   "accent": "#191f61",
+   "light": "#ffffff",
+   "dark": "#313131"
+  },
+  "seedHex": "#191f61",
+  "hue": 235,
+  "family": "Blue"
+ },
+ {
+  "name": "Discord",
+  "domain": "discord.com",
+  "dominant": {
+   "accent": "#5865f2",
+   "light": "#ffffff",
+   "dark": "#23272a"
+  },
+  "seedHex": "#5865f2",
+  "hue": 235,
+  "family": "Blue"
+ },
+ {
+  "name": "Alchemy",
+  "domain": "alchemy.com",
+  "dominant": {
+   "accent": "#363ff9",
+   "light": "#eff9ff",
+   "dark": "#020617"
+  },
+  "seedHex": "#363ff9",
+  "hue": 237,
+  "family": "Blue"
+ },
+ {
+  "name": "Stripe",
+  "domain": "stripe.com",
+  "dominant": {
+   "accent": "#635BFF",
+   "light": "#FFFFFF",
+   "dark": "#0A2540"
+  },
+  "seedHex": "#635BFF",
+  "hue": 243,
+  "family": "Blue"
+ },
+ {
+  "name": "Phantom",
+  "domain": "phantom.app",
+  "dominant": {
+   "accent": "#4E44CE",
+   "light": "#ffffff",
+   "dark": "#2C2D30"
+  },
+  "seedHex": "#4E44CE",
+  "hue": 244,
+  "family": "Blue"
+ },
+ {
+  "name": "Stellar Development Foundation",
+  "domain": "stellar.org",
+  "dominant": {
+   "accent": "#3e1bdb",
+   "light": "#ffffff",
+   "dark": "#090020"
+  },
+  "seedHex": "#3e1bdb",
+  "hue": 251,
+  "family": "Blue"
+ },
+ {
+  "name": "Binance",
+  "domain": "binance.com",
+  "dominant": {
+   "accent": "#F0B90A",
+   "light": "#ffffff",
+   "dark": "#1e2329"
+  },
+  "seedHex": "#F0B90A",
+  "hue": 46,
+  "family": "Gold"
+ },
+ {
+  "name": "curve.fi",
+  "domain": "curve.fi",
+  "dominant": {
+   "accent": "#ffc300",
+   "light": "#3162f4",
+   "dark": "#223996"
+  },
+  "seedHex": "#ffc300",
+  "hue": 46,
+  "family": "Gold"
+ },
+ {
+  "name": "Robinhood",
+  "domain": "robinhood.com",
+  "dominant": {
+   "accent": "#CCFF00",
+   "light": "#FFFFFF",
+   "dark": "#110E08"
+  },
+  "seedHex": "#CCFF00",
+  "hue": 72,
+  "family": "Green"
+ },
+ {
+  "name": "Consensys",
+  "domain": "consensys.net",
+  "dominant": {
+   "accent": "#C1FF14",
+   "light": "#ffffff",
+   "dark": "#121212"
+  },
+  "seedHex": "#C1FF14",
+  "hue": 76,
+  "family": "Green"
+ },
+ {
+  "name": "NVIDIA",
+  "domain": "nvidia.com",
+  "dominant": {
+   "accent": "#76B900",
+   "light": "#FFFFFF",
+   "dark": "#000000"
+  },
+  "seedHex": "#76B900",
+  "hue": 82,
+  "family": "Green"
+ },
+ {
+  "name": "CoinGecko",
+  "domain": "coingecko.com",
+  "dominant": {
+   "accent": "#8cc542",
+   "light": "#ffffff",
+   "dark": "#212d3b"
+  },
+  "seedHex": "#8cc542",
+  "hue": 86,
+  "family": "Green"
+ },
+ {
+  "name": "Wise",
+  "domain": "wise.com",
+  "dominant": {
+   "accent": "#9FE870",
+   "light": "#FFFFFF",
+   "dark": "#163300"
+  },
+  "seedHex": "#9FE870",
+  "hue": 96,
+  "family": "Green"
+ },
+ {
+  "name": "Trezor",
+  "domain": "trezor.io",
+  "dominant": {
+   "accent": "#89DB7F",
+   "light": "#FFFFFF",
+   "dark": "#171717"
+  },
+  "seedHex": "#89DB7F",
+  "hue": 113,
+  "family": "Green"
+ },
+ {
+  "name": "Safaricom",
+  "domain": "safaricom.co.ke",
+  "dominant": {
+   "accent": "#39b54a",
+   "light": "#e4eaf1",
+   "dark": "#000000"
+  },
+  "seedHex": "#39b54a",
+  "hue": 128,
+  "family": "Green"
+ },
+ {
+  "name": "Paystack",
+  "domain": "paystack.com",
+  "dominant": {
+   "accent": "#3BB75E",
+   "light": "#FFFFFF",
+   "dark": "#011B33"
+  },
+  "seedHex": "#3BB75E",
+  "hue": 137,
+  "family": "Green"
+ },
+ {
+  "name": "Cash App",
+  "domain": "cash.app",
+  "dominant": {
+   "accent": "#00d54b",
+   "light": "#ffffff",
+   "dark": "#000000"
+  },
+  "seedHex": "#00d54b",
+  "hue": 141,
+  "family": "Green"
+ },
+ {
+  "name": "Spotify",
+  "domain": "spotify.com",
+  "dominant": {
+   "accent": "#1ED760",
+   "light": "#FFFFFF",
+   "dark": "#191414"
+  },
+  "seedHex": "#1ED760",
+  "hue": 141,
+  "family": "Green"
+ },
+ {
+  "name": "Solana",
+  "domain": "solana.com",
+  "dominant": {
+   "accent": "#00ffa3",
+   "light": "#ffffff",
+   "dark": "#1b4e3f"
+  },
+  "seedHex": "#00ffa3",
+  "hue": 158,
+  "family": "Green"
+ },
+ {
+  "name": "NEAR Protocol",
+  "domain": "near.org",
+  "dominant": {
+   "accent": "#00EC97",
+   "light": "#FFFFFF",
+   "dark": "#262626"
+  },
+  "seedHex": "#00EC97",
+  "hue": 158,
+  "family": "Green"
+ },
+ {
+  "name": "Etherscan.Eth",
+  "domain": "etherscan.io",
+  "dominant": {
+   "accent": "#979695",
+   "light": "#ffffff",
+   "dark": "#313131"
+  },
+  "seedHex": "#979695",
+  "hue": 30,
+  "family": "Orange"
+ },
+ {
+  "name": "Flutterwave",
+  "domain": "flutterwave.com",
+  "dominant": {
+   "accent": "#FB9129",
+   "light": "#FFFFFF",
+   "dark": "#1D1D1D"
+  },
+  "seedHex": "#FB9129",
+  "hue": 30,
+  "family": "Orange"
+ },
+ {
+  "name": "Bybit",
+  "domain": "bybit.com",
+  "dominant": {
+   "accent": "#FF9C2E",
+   "light": "#ffffff",
+   "dark": "#000000"
+  },
+  "seedHex": "#FF9C2E",
+  "hue": 32,
+  "family": "Orange"
+ },
+ {
+  "name": "Blur",
+  "domain": "blur.io",
+  "dominant": {
+   "accent": "#ff8700",
+   "light": "#82b1ff",
+   "dark": "#080404"
+  },
+  "seedHex": "#ff8700",
+  "hue": 32,
+  "family": "Orange"
+ },
+ {
+  "name": "Bitcoin",
+  "domain": "bitcoin.org",
+  "dominant": {
+   "accent": "#ff9500",
+   "light": "#FFFFFF",
+   "dark": "#13161F"
+  },
+  "seedHex": "#ff9500",
+  "hue": 35,
+  "family": "Orange"
+ },
+ {
+  "name": "Axie Infinity",
+  "domain": "axieinfinity.com",
+  "dominant": {
+   "accent": "#FFB84D",
+   "light": "#F9F4D9",
+   "dark": "#111E5D"
+  },
+  "seedHex": "#FFB84D",
+  "hue": 36,
+  "family": "Orange"
+ },
+ {
+  "name": "MakerDAO",
+  "domain": "makerdao.com",
+  "dominant": {
+   "accent": "#fcc233",
+   "light": "#ffffff",
+   "dark": "#29b6a6"
+  },
+  "seedHex": "#fcc233",
+  "hue": 43,
+  "family": "Orange"
+ },
+ {
+  "name": "Slack",
+  "domain": "slack.com",
+  "dominant": {
+   "accent": "#611F69",
+   "light": "#FFFFFF",
+   "dark": "#1D1D1D"
+  },
+  "seedHex": "#611F69",
+  "hue": 294,
+  "family": "Pink"
+ },
+ {
+  "name": "Polkadot",
+  "domain": "polkadot.network",
+  "dominant": {
+   "accent": "#e6007a",
+   "light": "#ff99e5",
+   "dark": "#231f20"
+  },
+  "seedHex": "#e6007a",
+  "hue": 328,
+  "family": "Pink"
+ },
+ {
+  "name": "Uniswap",
+  "domain": "uniswap.org",
+  "dominant": {
+   "accent": "#ff007a",
+   "light": "#d973a3",
+   "dark": "#33363d"
+  },
+  "seedHex": "#ff007a",
+  "hue": 331,
+  "family": "Pink"
+ },
+ {
+  "name": "Klarna",
+  "domain": "klarna.com",
+  "dominant": {
+   "accent": "#FFA8CD",
+   "light": "#FFFFFF",
+   "dark": "#1D192A"
+  },
+  "seedHex": "#FFA8CD",
+  "hue": 334,
+  "family": "Pink"
+ },
+ {
+  "name": "MagicEdenUS",
+  "domain": "magiceden.io",
+  "dominant": {
+   "accent": "#e42575",
+   "light": "#da77f2",
+   "dark": "#1864ab"
+  },
+  "seedHex": "#e42575",
+  "hue": 335,
+  "family": "Pink"
+ },
+ {
+  "name": "OKX",
+  "domain": "okx.com",
+  "dominant": {
+   "accent": "#666666",
+   "light": "#ffffff",
+   "dark": "#000000"
+  },
+  "seedHex": "#666666",
+  "hue": 0,
+  "family": "Red"
+ },
+ {
+  "name": "Chipper",
+  "domain": "chipper.cash",
+  "dominant": {
+   "accent": null,
+   "light": "#f7f7f7",
+   "dark": null
+  },
+  "seedHex": "#f7f7f7",
+  "hue": 0,
+  "family": "Red"
+ },
+ {
+  "name": "Dune",
+  "domain": "dune.com",
+  "dominant": {
+   "accent": "#f98883",
+   "light": "#fec361",
+   "dark": "#0f0f0e"
+  },
+  "seedHex": "#f98883",
+  "hue": 3,
+  "family": "Red"
+ },
+ {
+  "name": "Cosmos",
+  "domain": "cosmos.network",
+  "dominant": {
+   "accent": "#fe412e",
+   "light": "#f5f5f5",
+   "dark": "#771900"
+  },
+  "seedHex": "#fe412e",
+  "hue": 5,
+  "family": "Red"
+ },
+ {
+  "name": "Starknet",
+  "domain": "starknet.io",
+  "dominant": {
+   "accent": "#ec796b",
+   "light": "#e8e8f7",
+   "dark": "#131365"
+  },
+  "seedHex": "#ec796b",
+  "hue": 7,
+  "family": "Red"
+ },
+ {
+  "name": "Infura",
+  "domain": "infura.io",
+  "dominant": {
+   "accent": "#eb693f",
+   "light": "#4196f1",
+   "dark": "#00349e"
+  },
+  "seedHex": "#eb693f",
+  "hue": 15,
+  "family": "Red"
+ },
+ {
+  "name": "Reddit",
+  "domain": "reddit.com",
+  "dominant": {
+   "accent": "#FF4500",
+   "light": "#FFFFFF",
+   "dark": "#000000"
+  },
+  "seedHex": "#FF4500",
+  "hue": 16,
+  "family": "Red"
+ },
+ {
+  "name": "Ledger",
+  "domain": "ledger.com",
+  "dominant": {
+   "accent": "#FF5300",
+   "light": "#F5F5F5",
+   "dark": "#000000"
+  },
+  "seedHex": "#FF5300",
+  "hue": 20,
+  "family": "Red"
+ },
+ {
+  "name": "Chainalysis",
+  "domain": "chainalysis.com",
+  "dominant": {
+   "accent": "#ff5300",
+   "light": "#fff7f0",
+   "dark": "#293a72"
+  },
+  "seedHex": "#ff5300",
+  "hue": 20,
+  "family": "Red"
+ },
+ {
+  "name": "Blockchain",
+  "domain": "blockchain.com",
+  "dominant": {
+   "accent": "#DA133E",
+   "light": "#ffffff",
+   "dark": "#000000"
+  },
+  "seedHex": "#DA133E",
+  "hue": 347,
+  "family": "Red"
+ },
+ {
+  "name": "TRON",
+  "domain": "tron.network",
+  "dominant": {
+   "accent": "#ea0029",
+   "light": "#ef5350",
+   "dark": "#000000"
+  },
+  "seedHex": "#ea0029",
+  "hue": 349,
+  "family": "Red"
+ },
+ {
+  "name": "Airbnb",
+  "domain": "airbnb.com",
+  "dominant": {
+   "accent": "#FF385C",
+   "light": "#FFFFFF",
+   "dark": "#222222"
+  },
+  "seedHex": "#FF385C",
+  "hue": 349,
+  "family": "Red"
+ },
+ {
+  "name": "Optimism",
+  "domain": "optimism.io",
+  "dominant": {
+   "accent": "#FF0421",
+   "light": "#fafaf9",
+   "dark": "#1b1b1b"
+  },
+  "seedHex": "#FF0421",
+  "hue": 353,
+  "family": "Red"
+ },
+ {
+  "name": "Avalanche",
+  "domain": "avax.network",
+  "dominant": {
+   "accent": "#ff394a",
+   "light": "#f5f5f5",
+   "dark": "#0a0a0a"
+  },
+  "seedHex": "#ff394a",
+  "hue": 355,
+  "family": "Red"
+ },
+ {
+  "name": "Netflix",
+  "domain": "netflix.com",
+  "dominant": {
+   "accent": "#E50914",
+   "light": "#FFFFFF",
+   "dark": "#000000"
+  },
+  "seedHex": "#E50914",
+  "hue": 357,
+  "family": "Red"
+ },
+ {
+  "name": "Tether",
+  "domain": "tether.to",
+  "dominant": {
+   "accent": "#26a17b",
+   "light": "#ffffff",
+   "dark": "#313131"
+  },
+  "seedHex": "#26a17b",
+  "hue": 161,
+  "family": "Teal"
+ },
+ {
+  "name": "Compound Labs",
+  "domain": "compound.finance",
+  "dominant": {
+   "accent": "#00D395",
+   "light": "#F9FAFB",
+   "dark": "#070A0E"
+  },
+  "seedHex": "#00D395",
+  "hue": 162,
+  "family": "Teal"
+ },
+ {
+  "name": "Aptos Labs",
+  "domain": "aptoslabs.com",
+  "dominant": {
+   "accent": "#2ed8a7",
+   "light": "#ffffff",
+   "dark": "#000000"
+  },
+  "seedHex": "#2ed8a7",
+  "hue": 163,
+  "family": "Teal"
+ },
+ {
+  "name": "Bitfinex",
+  "domain": "bitfinex.com",
+  "dominant": {
+   "accent": "#03ca9b",
+   "light": "#ffffff",
+   "dark": "#010d0d"
+  },
+  "seedHex": "#03ca9b",
+  "hue": 166,
+  "family": "Teal"
+ },
+ {
+  "name": "KuCoin",
+  "domain": "kucoin.com",
+  "dominant": {
+   "accent": "#24ae8f",
+   "light": "#ffffff",
+   "dark": "#00142a"
+  },
+  "seedHex": "#24ae8f",
+  "hue": 167,
+  "family": "Teal"
+ },
+ {
+  "name": "Bitstamp",
+  "domain": "bitstamp.net",
+  "dominant": {
+   "accent": "#003b2f",
+   "light": "#ffffff",
+   "dark": "#5c827a"
+  },
+  "seedHex": "#003b2f",
+  "hue": 168,
+  "family": "Teal"
+ },
+ {
+  "name": "Algorand",
+  "domain": "algorand.com",
+  "dominant": {
+   "accent": "#00bea5",
+   "light": "#ffffff",
+   "dark": "#242424"
+  },
+  "seedHex": "#00bea5",
+  "hue": 172,
+  "family": "Teal"
+ },
+ {
+  "name": "Gate.io",
+  "domain": "gate.io",
+  "dominant": {
+   "accent": "#88c7cc",
+   "light": "#fafbfd",
+   "dark": "#01505f"
+  },
+  "seedHex": "#88c7cc",
+  "hue": 184,
+  "family": "Teal"
+ },
+ {
+  "name": "PancakeSwap",
+  "domain": "pancakeswap.finance",
+  "dominant": {
+   "accent": "#3ed5e1",
+   "light": "#ffffff",
+   "dark": "#797196"
+  },
+  "seedHex": "#3ed5e1",
+  "hue": 184,
+  "family": "Teal"
+ },
+ {
+  "name": "Aave",
+  "domain": "aave.com",
+  "dominant": {
+   "accent": "#30bac6",
+   "light": null,
+   "dark": null
+  },
+  "seedHex": "#30bac6",
+  "hue": 185,
+  "family": "Teal"
+ },
+ {
+  "name": "Gemini",
+  "domain": "gemini.com",
+  "dominant": {
+   "accent": "#26ddf9",
+   "light": "#ffffff",
+   "dark": "#010304"
+  },
+  "seedHex": "#26ddf9",
+  "hue": 188,
+  "family": "Teal"
+ },
+ {
+  "name": "Synthetix \ufe0f",
+  "domain": "synthetix.io",
+  "dominant": {
+   "accent": "#00d1ff",
+   "light": "#33ebb7",
+   "dark": "#0c4e5e"
+  },
+  "seedHex": "#00d1ff",
+  "hue": 191,
+  "family": "Teal"
+ },
+ {
+  "name": "Mantle",
+  "domain": "mantle.xyz",
+  "dominant": {
+   "accent": "#40a6bf",
+   "light": "#ffffff",
+   "dark": "#000000"
+  },
+  "seedHex": "#40a6bf",
+  "hue": 192,
+  "family": "Teal"
+ },
+ {
+  "name": "Chainlink",
+  "domain": "chain.link",
+  "dominant": {
+   "accent": "#3f94b1",
+   "light": "#c0c0c0",
+   "dark": "#0a258a"
+  },
+  "seedHex": "#3f94b1",
+  "hue": 195,
+  "family": "Teal"
+ },
+ {
+  "name": "Plaid",
+  "domain": "plaid.com",
+  "dominant": {
+   "accent": "#109DD7",
+   "light": "#ffffff",
+   "dark": "#000000"
+  },
+  "seedHex": "#109DD7",
+  "hue": 197,
+  "family": "Teal"
+ },
+ {
+  "name": "Balancer",
+  "domain": "balancer.fi",
+  "dominant": {
+   "accent": "#40b8ed",
+   "light": "#ffffff",
+   "dark": "#3a4149"
+  },
+  "seedHex": "#40b8ed",
+  "hue": 198,
+  "family": "Teal"
+ },
+ {
+  "name": "Microsoft",
+  "domain": "microsoft.com",
+  "dominant": {
+   "accent": "#00A4EF",
+   "light": "#FFFFFF",
+   "dark": "#000000"
+  },
+  "seedHex": "#00A4EF",
+  "hue": 199,
+  "family": "Teal"
+ },
+ {
+  "name": "Hedera",
+  "domain": "hedera.com",
+  "dominant": {
+   "accent": "#8259EF",
+   "light": "#ffffff",
+   "dark": "#000000"
+  },
+  "seedHex": "#8259EF",
+  "hue": 256,
+  "family": "Violet"
+ },
+ {
+  "name": "Circle",
+  "domain": "circle.com",
+  "dominant": {
+   "accent": "#8656EF",
+   "light": "#FFFFFF",
+   "dark": "#1F1A31"
+  },
+  "seedHex": "#8656EF",
+  "hue": 259,
+  "family": "Violet"
+ },
+ {
+  "name": "Polygon",
+  "domain": "polygon.technology",
+  "dominant": {
+   "accent": "#7B3FE4",
+   "light": "#FFFFFF",
+   "dark": "#000000"
+  },
+  "seedHex": "#7B3FE4",
+  "hue": 262,
+  "family": "Violet"
+ },
+ {
+  "name": "Ethereum",
+  "domain": "ethereum.org",
+  "dominant": {
+   "accent": "#6C24E0",
+   "light": "#ffffff",
+   "dark": "#1A202C"
+  },
+  "seedHex": "#6C24E0",
+  "hue": 263,
+  "family": "Violet"
+ },
+ {
+  "name": "Twitch",
+  "domain": "twitch.tv",
+  "dominant": {
+   "accent": "#9147ff",
+   "light": "#FFFFFF",
+   "dark": "#0e0e10"
+  },
+  "seedHex": "#9147ff",
+  "hue": 264,
+  "family": "Violet"
+ },
+ {
+  "name": "Celestia \ud83e\udda3",
+  "domain": "celestia.org",
+  "dominant": {
+   "accent": "#6b17df",
+   "light": "#ffffff",
+   "dark": "#17141a"
+  },
+  "seedHex": "#6b17df",
+  "hue": 265,
+  "family": "Violet"
+ },
+ {
+  "name": "MoonPay \ud83d\udfe3",
+  "domain": "moonpay.com",
+  "dominant": {
+   "accent": "#7d00ff",
+   "light": "#ffffff",
+   "dark": "#1a1a1a"
+  },
+  "seedHex": "#7d00ff",
+  "hue": 269,
+  "family": "Violet"
+ },
+ {
+  "name": "MetaMask",
+  "domain": "metamask.io",
+  "dominant": {
+   "accent": "#3D065F",
+   "light": "#FFFFFF",
+   "dark": "#037DD6"
+  },
+  "seedHex": "#3D065F",
+  "hue": 277,
+  "family": "Violet"
+ }
+]

@@ -15,6 +15,7 @@ import {
 } from '@/lib/platform/hooks';
 import type { SiteWithConfig, SiteKpis, MarketerRollupGroup } from '@/lib/platform/endpoints';
 import { deriveMinimalPalette } from '@/lib/brand/derivePalette';
+import { groupedPresets, presetForSeed } from '@/lib/brand/presets';
 
 const money = (cents: number, cur: string) => `${cur} ${(cents / 100).toLocaleString()}`;
 
@@ -142,6 +143,32 @@ function PaletteEditor({ site }: { site: SiteWithConfig }) {
     <div className="mt-3 flex flex-col gap-2 border-t border-border pt-3">
       <p className="text-xs font-semibold uppercase tracking-wide text-muted">Palette · one seed → derived (max 2–3 colours)</p>
       <div className="flex flex-wrap items-center gap-3">
+        <label className="flex items-center gap-2 text-sm">
+          <span className="text-muted">Preset</span>
+          <select
+            value={presetForSeed(seed)?.label ?? ''}
+            onChange={(e) => {
+              const label = e.target.value;
+              const preset = groupedPresets()
+                .flatMap((g) => g.presets)
+                .find((p) => p.label === label);
+              if (preset) setSeed(preset.seed);
+            }}
+            className="h-9 rounded-lg border border-border bg-surface-2 px-2 text-sm text-fg"
+            aria-label="Brand theme preset"
+          >
+            <option value="">Custom…</option>
+            {groupedPresets().map(({ group, presets }) => (
+              <optgroup key={group} label={group}>
+                {presets.map((p) => (
+                  <option key={p.label} value={p.label}>
+                    {p.label}
+                  </option>
+                ))}
+              </optgroup>
+            ))}
+          </select>
+        </label>
         <label className="flex items-center gap-2 text-sm">
           <span className="text-muted">Seed</span>
           <input
