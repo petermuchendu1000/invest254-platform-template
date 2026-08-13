@@ -146,11 +146,20 @@ Files: `packages/db/migrations/0051_rls_site.sql`.
   Tested: `packages/db/_testkit/e2e_rls_sites.py` (18 scenarios: own-brand visible, a valid uid with
   the wrong brand claim sees nothing, symmetric brand isolation, cross-user isolation, legacy
   default-brand fallback).
-- 🔲 Admin RLS policies (`site_superadmin`/`finance_admin`/`support` scoped, `platform_superadmin`
-  global) land with the Task H role model. Today admin runs as service_role and is scoped in the
-  service layer (Task E admin-read threading), so no cross-brand admin read leaks via the app.
+- ✅ Admin RLS policies (`0056_rls_admin.sql`): `jwt_role()` reads the JWT `role` claim and
+  `is_site_admin(site_id)` gates a permissive `sel_admin` SELECT policy on every admin-read table
+  (profiles, wallets, ledger_entries, positions, transactions, bonuses, affiliates, referrals,
+  affiliate_commissions, affiliate_payouts, user_overrides, audit_log). A site-scoped admin
+  (`admin`/`superadmin`/`finance_admin`/`support`) reads ONLY rows of its JWT `site` brand;
+  `platform_superadmin` reads every brand. OR-ed with 0051's `sel_own`, so player/marketer tokens
+  are unaffected; the app still connects as service_role (RLS-bypassed) and stays authoritative.
+  Writes remain service_role-only (no authenticated write policies exist). Tested:
+  `packages/db/_testkit/e2e_rls_admin_sites.py` (21 scenarios: per-brand admin read isolation, the
+  site-claim-follows-scope invariant, platform cross-brand read, no leak to player/empty-role
+  tokens, and admin-only `user_overrides` scoping).
 - **Done when:** ✅ a brand's anon/authenticated client cannot read another brand's rows via
-  PostgREST; app-layer admin reads are site-scoped. (DB-role-based admin RLS is Task H.)
+  PostgREST; app-layer admin reads are site-scoped; **DB-role admin RLS is now enforced too
+  (0056).** **Task F complete.**
 
 ## G. Web — brand + site context end-to-end
 Files: `apps/web/src/lib/brand/*`, `app/layout.tsx`, `app/globals.css`, `lib/game/GameSocketProvider.tsx`,
