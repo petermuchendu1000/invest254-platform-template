@@ -9,7 +9,19 @@
   },
   "seedHex": "#12aaff",
   "hue": 202,
-  "family": "Blue"
+  "family": "Blue",
+  "fonts": [
+   {
+    "type": "title",
+    "name": "HelveticaLTStd-BlkCond",
+    "origin": "custom"
+   },
+   {
+    "type": "body",
+    "name": "ui-sans-serif",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "Litecoin Project",
@@ -21,7 +33,14 @@
   },
   "seedHex": "#88cbf5",
   "hue": 203,
-  "family": "Blue"
+  "family": "Blue",
+  "fonts": [
+   {
+    "type": "body",
+    "name": "Roboto",
+    "origin": "google"
+   }
+  ]
  },
  {
   "name": "Messari",
@@ -33,7 +52,19 @@
   },
   "seedHex": "#0091EA",
   "hue": 203,
-  "family": "Blue"
+  "family": "Blue",
+  "fonts": [
+   {
+    "type": "body",
+    "name": "Avenir",
+    "origin": "custom"
+   },
+   {
+    "type": "title",
+    "name": "Avenir",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "HTX",
@@ -45,7 +76,19 @@
   },
   "seedHex": "#007cd6",
   "hue": 205,
-  "family": "Blue"
+  "family": "Blue",
+  "fonts": [
+   {
+    "type": "body",
+    "name": "Roboto",
+    "origin": "google"
+   },
+   {
+    "type": "body",
+    "name": "sans-serif",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "Kraken",
@@ -57,7 +100,19 @@
   },
   "seedHex": "#4c6f8c",
   "hue": 207,
-  "family": "Blue"
+  "family": "Blue",
+  "fonts": [
+   {
+    "type": "title",
+    "name": "Grifo S",
+    "origin": "custom"
+   },
+   {
+    "type": "body",
+    "name": "Celias",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "Ripple",
@@ -69,7 +124,19 @@
   },
   "seedHex": "#008CFF",
   "hue": 207,
-  "family": "Blue"
+  "family": "Blue",
+  "fonts": [
+   {
+    "type": "title",
+    "name": "Ripple",
+    "origin": "custom"
+   },
+   {
+    "type": "body",
+    "name": "Ripple",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "Trust Wallet",
@@ -81,7 +148,14 @@
   },
   "seedHex": "#2d9fff",
   "hue": 207,
-  "family": "Blue"
+  "family": "Blue",
+  "fonts": [
+   {
+    "type": "body",
+    "name": "system-ui",
+    "origin": "system"
+   }
+  ]
  },
  {
   "name": "GMX",
@@ -93,7 +167,14 @@
   },
   "seedHex": "#1193fa",
   "hue": 207,
-  "family": "Blue"
+  "family": "Blue",
+  "fonts": [
+   {
+    "type": "body",
+    "name": "-apple-system",
+    "origin": "system"
+   }
+  ]
  },
  {
   "name": "OpenSea",
@@ -105,7 +186,19 @@
   },
   "seedHex": "#2081E2",
   "hue": 210,
-  "family": "Blue"
+  "family": "Blue",
+  "fonts": [
+   {
+    "type": "title",
+    "name": "__Inter_52bc3f",
+    "origin": "custom"
+   },
+   {
+    "type": "body",
+    "name": "__Inter_52bc3f",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "Apple",
@@ -117,7 +210,19 @@
   },
   "seedHex": "#0066CC",
   "hue": 210,
-  "family": "Blue"
+  "family": "Blue",
+  "fonts": [
+   {
+    "type": "title",
+    "name": "SF Pro Text",
+    "origin": "custom"
+   },
+   {
+    "type": "body",
+    "name": "SF Pro Text",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "X",
@@ -129,7 +234,19 @@
   },
   "seedHex": "#14171A",
   "hue": 210,
-  "family": "Blue"
+  "family": "Blue",
+  "fonts": [
+   {
+    "type": "body",
+    "name": "Times",
+    "origin": "custom"
+   },
+   {
+    "type": "title",
+    "name": "Twitter Chirp Extended Heavy",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "Sui",
@@ -141,7 +258,19 @@
   },
   "seedHex": "#4da2ff",
   "hue": 211,
-  "family": "Blue"
+  "family": "Blue",
+  "fonts": [
+   {
+    "type": "title",
+    "name": "Inter",
+    "origin": "google"
+   },
+   {
+    "type": "body",
+    "name": "Arial",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "Exodus Communications",
@@ -153,7 +282,19 @@
   },
   "seedHex": "#007BFF",
   "hue": 211,
-  "family": "Blue"
+  "family": "Blue",
+  "fonts": [
+   {
+    "type": "body",
+    "name": "Roboto",
+    "origin": "google"
+   },
+   {
+    "type": "title",
+    "name": "Roboto",
+    "origin": "google"
+   }
+  ]
  },
  {
   "name": "1inch",
@@ -165,7 +306,19 @@
   },
   "seedHex": "#2F8AF5",
   "hue": 212,
-  "family": "Blue"
+  "family": "Blue",
+  "fonts": [
+   {
+    "type": "body",
+    "name": "Roboto",
+    "origin": "google"
+   },
+   {
+    "type": "title",
+    "name": "Roboto",
+    "origin": "google"
+   }
+  ]
  },
  {
   "name": "dYdX",
@@ -177,7 +330,14 @@
   },
   "seedHex": "#146dd9",
   "hue": 213,
-  "family": "Blue"
+  "family": "Blue",
+  "fonts": [
+   {
+    "type": "body",
+    "name": "Roboto",
+    "origin": "google"
+   }
+  ]
  },
  {
   "name": "Meta",
@@ -189,7 +349,19 @@
   },
   "seedHex": "#1877F2",
   "hue": 214,
-  "family": "Blue"
+  "family": "Blue",
+  "fonts": [
+   {
+    "type": "title",
+    "name": "Optimistic Display Medium",
+    "origin": "custom"
+   },
+   {
+    "type": "body",
+    "name": "Helvetica",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "Upbit",
@@ -201,7 +373,14 @@
   },
   "seedHex": "#023f97",
   "hue": 215,
-  "family": "Blue"
+  "family": "Blue",
+  "fonts": [
+   {
+    "type": "body",
+    "name": "Roboto",
+    "origin": "google"
+   }
+  ]
  },
  {
   "name": "Crypto.com",
@@ -213,7 +392,19 @@
   },
   "seedHex": "#002967",
   "hue": 216,
-  "family": "Blue"
+  "family": "Blue",
+  "fonts": [
+   {
+    "type": "title",
+    "name": "Inter",
+    "origin": "google"
+   },
+   {
+    "type": "body",
+    "name": "Inter",
+    "origin": "google"
+   }
+  ]
  },
  {
   "name": "thirdweb",
@@ -225,7 +416,19 @@
   },
   "seedHex": "#3385FF",
   "hue": 216,
-  "family": "Blue"
+  "family": "Blue",
+  "fonts": [
+   {
+    "type": "body",
+    "name": "__Inter_0ec1f4",
+    "origin": "custom"
+   },
+   {
+    "type": "title",
+    "name": "__Inter_0ec1f4",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "Sushi",
@@ -237,7 +440,19 @@
   },
   "seedHex": "#3b82f6",
   "hue": 217,
-  "family": "Blue"
+  "family": "Blue",
+  "fonts": [
+   {
+    "type": "title",
+    "name": "sans-serif",
+    "origin": "custom"
+   },
+   {
+    "type": "body",
+    "name": "var(--font-sans)",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "Google",
@@ -249,7 +464,19 @@
   },
   "seedHex": "#4285F4",
   "hue": 217,
-  "family": "Blue"
+  "family": "Blue",
+  "fonts": [
+   {
+    "type": "title",
+    "name": "Google Sans",
+    "origin": "custom"
+   },
+   {
+    "type": "body",
+    "name": "Google Sans Text",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "Tezos",
@@ -261,7 +488,19 @@
   },
   "seedHex": "#0d61ff",
   "hue": 219,
-  "family": "Blue"
+  "family": "Blue",
+  "fonts": [
+   {
+    "type": "body",
+    "name": "var(--chakra-fonts-body)",
+    "origin": "custom"
+   },
+   {
+    "type": "title",
+    "name": "GT-Eesti-Regular",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "Uber",
@@ -273,7 +512,19 @@
   },
   "seedHex": "#276ef1",
   "hue": 219,
-  "family": "Blue"
+  "family": "Blue",
+  "fonts": [
+   {
+    "type": "title",
+    "name": "Uber Move Display",
+    "origin": "custom"
+   },
+   {
+    "type": "body",
+    "name": "Uber Move Text",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "MEXC",
@@ -285,7 +536,14 @@
   },
   "seedHex": "#1463fe",
   "hue": 220,
-  "family": "Blue"
+  "family": "Blue",
+  "fonts": [
+   {
+    "type": "body",
+    "name": "var(--font-family)",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "Coinbase",
@@ -297,7 +555,19 @@
   },
   "seedHex": "#0052FF",
   "hue": 221,
-  "family": "Blue"
+  "family": "Blue",
+  "fonts": [
+   {
+    "type": "body",
+    "name": "Coinbase Sans",
+    "origin": "custom"
+   },
+   {
+    "type": "title",
+    "name": "Coinbase Display",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "Cardano Community",
@@ -309,7 +579,19 @@
   },
   "seedHex": "#0438B0",
   "hue": 222,
-  "family": "Blue"
+  "family": "Blue",
+  "fonts": [
+   {
+    "type": "title",
+    "name": "Chivo",
+    "origin": "google"
+   },
+   {
+    "type": "body",
+    "name": "Chivo",
+    "origin": "google"
+   }
+  ]
  },
  {
   "name": "Base",
@@ -321,7 +603,19 @@
   },
   "seedHex": "#1652f0",
   "hue": 223,
-  "family": "Blue"
+  "family": "Blue",
+  "fonts": [
+   {
+    "type": "body",
+    "name": "Coinbase Display",
+    "origin": "custom"
+   },
+   {
+    "type": "title",
+    "name": "Coinbase Sans",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "Fireblocks",
@@ -333,7 +627,19 @@
   },
   "seedHex": "#184FDB",
   "hue": 223,
-  "family": "Blue"
+  "family": "Blue",
+  "fonts": [
+   {
+    "type": "title",
+    "name": "Sans Serif",
+    "origin": "custom"
+   },
+   {
+    "type": "body",
+    "name": "Figtree",
+    "origin": "google"
+   }
+  ]
  },
  {
   "name": "PayPal",
@@ -345,7 +651,19 @@
   },
   "seedHex": "#002994",
   "hue": 223,
-  "family": "Blue"
+  "family": "Blue",
+  "fonts": [
+   {
+    "type": "title",
+    "name": "Supreme LL Black",
+    "origin": "custom"
+   },
+   {
+    "type": "body",
+    "name": "Supreme LL Book",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "CoinMarketCap",
@@ -357,7 +675,19 @@
   },
   "seedHex": "#3861fb",
   "hue": 227,
-  "family": "Blue"
+  "family": "Blue",
+  "fonts": [
+   {
+    "type": "body",
+    "name": "Inter",
+    "origin": "google"
+   },
+   {
+    "type": "title",
+    "name": "SF Mono",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "\u2014 WalletConnect",
@@ -369,7 +699,19 @@
   },
   "seedHex": "#5570ff",
   "hue": 230,
-  "family": "Blue"
+  "family": "Blue",
+  "fonts": [
+   {
+    "type": "body",
+    "name": "var(--font-sans)",
+    "origin": "custom"
+   },
+   {
+    "type": "title",
+    "name": "var(--s-font-family-text)",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "Lido",
@@ -381,7 +723,14 @@
   },
   "seedHex": "#5262ff",
   "hue": 234,
-  "family": "Blue"
+  "family": "Blue",
+  "fonts": [
+   {
+    "type": "body",
+    "name": "var(--lido-ui-font-family)",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "Revolut",
@@ -393,7 +742,19 @@
   },
   "seedHex": "#1E36FE",
   "hue": 234,
-  "family": "Blue"
+  "family": "Blue",
+  "fonts": [
+   {
+    "type": "title",
+    "name": "Aeonik Pro",
+    "origin": "custom"
+   },
+   {
+    "type": "body",
+    "name": "Inter",
+    "origin": "google"
+   }
+  ]
  },
  {
   "name": "Bitget",
@@ -405,7 +766,19 @@
   },
   "seedHex": "#191f61",
   "hue": 235,
-  "family": "Blue"
+  "family": "Blue",
+  "fonts": [
+   {
+    "type": "title",
+    "name": "gilroy-regular",
+    "origin": "custom"
+   },
+   {
+    "type": "body",
+    "name": "system-ui",
+    "origin": "system"
+   }
+  ]
  },
  {
   "name": "Discord",
@@ -417,7 +790,19 @@
   },
   "seedHex": "#5865f2",
   "hue": 235,
-  "family": "Blue"
+  "family": "Blue",
+  "fonts": [
+   {
+    "type": "title",
+    "name": "Ginto Nord",
+    "origin": "custom"
+   },
+   {
+    "type": "body",
+    "name": "Whitney",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "Alchemy",
@@ -429,7 +814,19 @@
   },
   "seedHex": "#363ff9",
   "hue": 237,
-  "family": "Blue"
+  "family": "Blue",
+  "fonts": [
+   {
+    "type": "title",
+    "name": "var(--font-family-neue-montreal)",
+    "origin": "custom"
+   },
+   {
+    "type": "body",
+    "name": "var(--default-font-family",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "Stripe",
@@ -441,7 +838,19 @@
   },
   "seedHex": "#635BFF",
   "hue": 243,
-  "family": "Blue"
+  "family": "Blue",
+  "fonts": [
+   {
+    "type": "title",
+    "name": "Sohne Var",
+    "origin": "custom"
+   },
+   {
+    "type": "body",
+    "name": "Sohne Var",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "Phantom",
@@ -453,7 +862,19 @@
   },
   "seedHex": "#4E44CE",
   "hue": 244,
-  "family": "Blue"
+  "family": "Blue",
+  "fonts": [
+   {
+    "type": "body",
+    "name": "Circular Std",
+    "origin": "custom"
+   },
+   {
+    "type": "title",
+    "name": "Circular Std",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "Stellar Development Foundation",
@@ -465,7 +886,19 @@
   },
   "seedHex": "#3e1bdb",
   "hue": 251,
-  "family": "Blue"
+  "family": "Blue",
+  "fonts": [
+   {
+    "type": "title",
+    "name": "IBM Plex Sans",
+    "origin": "google"
+   },
+   {
+    "type": "body",
+    "name": "Arial",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "Binance",
@@ -477,7 +910,19 @@
   },
   "seedHex": "#F0B90A",
   "hue": 46,
-  "family": "Gold"
+  "family": "Gold",
+  "fonts": [
+   {
+    "type": "title",
+    "name": "Binance Nova",
+    "origin": "custom"
+   },
+   {
+    "type": "body",
+    "name": "Binance Nova",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "curve.fi",
@@ -489,7 +934,19 @@
   },
   "seedHex": "#ffc300",
   "hue": 46,
-  "family": "Gold"
+  "family": "Gold",
+  "fonts": [
+   {
+    "type": "title",
+    "name": "var(--font)",
+    "origin": "custom"
+   },
+   {
+    "type": "body",
+    "name": "var(--font)",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "Robinhood",
@@ -501,7 +958,19 @@
   },
   "seedHex": "#CCFF00",
   "hue": 72,
-  "family": "Green"
+  "family": "Green",
+  "fonts": [
+   {
+    "type": "title",
+    "name": "Phonic",
+    "origin": "custom"
+   },
+   {
+    "type": "body",
+    "name": "Capsule Sans Text",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "Consensys",
@@ -513,7 +982,19 @@
   },
   "seedHex": "#C1FF14",
   "hue": 76,
-  "family": "Green"
+  "family": "Green",
+  "fonts": [
+   {
+    "type": "title",
+    "name": "Atyp Display",
+    "origin": "custom"
+   },
+   {
+    "type": "body",
+    "name": "Atyp Text",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "NVIDIA",
@@ -525,7 +1006,19 @@
   },
   "seedHex": "#76B900",
   "hue": 82,
-  "family": "Green"
+  "family": "Green",
+  "fonts": [
+   {
+    "type": "title",
+    "name": "NVIDIA EMEA",
+    "origin": "custom"
+   },
+   {
+    "type": "body",
+    "name": "NVIDIA EMEA",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "CoinGecko",
@@ -537,7 +1030,14 @@
   },
   "seedHex": "#8cc542",
   "hue": 86,
-  "family": "Green"
+  "family": "Green",
+  "fonts": [
+   {
+    "type": "body",
+    "name": "system-ui",
+    "origin": "system"
+   }
+  ]
  },
  {
   "name": "Wise",
@@ -549,7 +1049,19 @@
   },
   "seedHex": "#9FE870",
   "hue": 96,
-  "family": "Green"
+  "family": "Green",
+  "fonts": [
+   {
+    "type": "title",
+    "name": "Wise Sans",
+    "origin": "custom"
+   },
+   {
+    "type": "body",
+    "name": "Inter",
+    "origin": "google"
+   }
+  ]
  },
  {
   "name": "Trezor",
@@ -561,7 +1073,19 @@
   },
   "seedHex": "#89DB7F",
   "hue": 113,
-  "family": "Green"
+  "family": "Green",
+  "fonts": [
+   {
+    "type": "title",
+    "name": "Satoshi Medium Font",
+    "origin": "custom"
+   },
+   {
+    "type": "body",
+    "name": "Satoshi Regular Font",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "Safaricom",
@@ -573,7 +1097,19 @@
   },
   "seedHex": "#39b54a",
   "hue": 128,
-  "family": "Green"
+  "family": "Green",
+  "fonts": [
+   {
+    "type": "title",
+    "name": "futurabold",
+    "origin": "custom"
+   },
+   {
+    "type": "body",
+    "name": "futuramedium",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "Paystack",
@@ -585,7 +1121,19 @@
   },
   "seedHex": "#3BB75E",
   "hue": 137,
-  "family": "Green"
+  "family": "Green",
+  "fonts": [
+   {
+    "type": "title",
+    "name": "Boing",
+    "origin": "custom"
+   },
+   {
+    "type": "body",
+    "name": "Graphik",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "Cash App",
@@ -597,7 +1145,19 @@
   },
   "seedHex": "#00d54b",
   "hue": 141,
-  "family": "Green"
+  "family": "Green",
+  "fonts": [
+   {
+    "type": "body",
+    "name": "Cash Sans",
+    "origin": "custom"
+   },
+   {
+    "type": "title",
+    "name": "Cash Sans",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "Spotify",
@@ -609,7 +1169,19 @@
   },
   "seedHex": "#1ED760",
   "hue": 141,
-  "family": "Green"
+  "family": "Green",
+  "fonts": [
+   {
+    "type": "title",
+    "name": "Spotify Mix",
+    "origin": "custom"
+   },
+   {
+    "type": "body",
+    "name": "Spotify Mix",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "Solana",
@@ -621,7 +1193,14 @@
   },
   "seedHex": "#00ffa3",
   "hue": 158,
-  "family": "Green"
+  "family": "Green",
+  "fonts": [
+   {
+    "type": "body",
+    "name": "Inter",
+    "origin": "google"
+   }
+  ]
  },
  {
   "name": "NEAR Protocol",
@@ -633,7 +1212,19 @@
   },
   "seedHex": "#00EC97",
   "hue": 158,
-  "family": "Green"
+  "family": "Green",
+  "fonts": [
+   {
+    "type": "title",
+    "name": "Fk grostek",
+    "origin": "custom"
+   },
+   {
+    "type": "body",
+    "name": "Fk grostek",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "Etherscan.Eth",
@@ -645,7 +1236,19 @@
   },
   "seedHex": "#979695",
   "hue": 30,
-  "family": "Orange"
+  "family": "Orange",
+  "fonts": [
+   {
+    "type": "body",
+    "name": "system-ui",
+    "origin": "system"
+   },
+   {
+    "type": "title",
+    "name": "var(--bs-font-sans-serif)",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "Flutterwave",
@@ -657,7 +1260,19 @@
   },
   "seedHex": "#FB9129",
   "hue": 30,
-  "family": "Orange"
+  "family": "Orange",
+  "fonts": [
+   {
+    "type": "body",
+    "name": "Moderat",
+    "origin": "custom"
+   },
+   {
+    "type": "title",
+    "name": "Millik",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "Bybit",
@@ -669,7 +1284,19 @@
   },
   "seedHex": "#FF9C2E",
   "hue": 32,
-  "family": "Orange"
+  "family": "Orange",
+  "fonts": [
+   {
+    "type": "body",
+    "name": "Inter",
+    "origin": "google"
+   },
+   {
+    "type": "title",
+    "name": "Inter",
+    "origin": "google"
+   }
+  ]
  },
  {
   "name": "Blur",
@@ -681,7 +1308,14 @@
   },
   "seedHex": "#ff8700",
   "hue": 32,
-  "family": "Orange"
+  "family": "Orange",
+  "fonts": [
+   {
+    "type": "body",
+    "name": "var(--blur-fonts-text)",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "Bitcoin",
@@ -693,7 +1327,19 @@
   },
   "seedHex": "#ff9500",
   "hue": 35,
-  "family": "Orange"
+  "family": "Orange",
+  "fonts": [
+   {
+    "type": "title",
+    "name": "Titillium Web",
+    "origin": "google"
+   },
+   {
+    "type": "body",
+    "name": "Titillium Web",
+    "origin": "google"
+   }
+  ]
  },
  {
   "name": "Axie Infinity",
@@ -705,7 +1351,19 @@
   },
   "seedHex": "#FFB84D",
   "hue": 36,
-  "family": "Orange"
+  "family": "Orange",
+  "fonts": [
+   {
+    "type": "body",
+    "name": "Work Sans",
+    "origin": "google"
+   },
+   {
+    "type": "title",
+    "name": "Rowdies",
+    "origin": "google"
+   }
+  ]
  },
  {
   "name": "MakerDAO",
@@ -717,7 +1375,8 @@
   },
   "seedHex": "#fcc233",
   "hue": 43,
-  "family": "Orange"
+  "family": "Orange",
+  "fonts": []
  },
  {
   "name": "Slack",
@@ -729,7 +1388,19 @@
   },
   "seedHex": "#611F69",
   "hue": 294,
-  "family": "Pink"
+  "family": "Pink",
+  "fonts": [
+   {
+    "type": "title",
+    "name": "Salesforce Avant Garde",
+    "origin": "custom"
+   },
+   {
+    "type": "body",
+    "name": "Salesforce Sans",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "Polkadot",
@@ -741,7 +1412,14 @@
   },
   "seedHex": "#e6007a",
   "hue": 328,
-  "family": "Pink"
+  "family": "Pink",
+  "fonts": [
+   {
+    "type": "body",
+    "name": "Work Sans",
+    "origin": "google"
+   }
+  ]
  },
  {
   "name": "Uniswap",
@@ -753,7 +1431,19 @@
   },
   "seedHex": "#ff007a",
   "hue": 331,
-  "family": "Pink"
+  "family": "Pink",
+  "fonts": [
+   {
+    "type": "title",
+    "name": "Inferi Normal",
+    "origin": "custom"
+   },
+   {
+    "type": "body",
+    "name": "georgia",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "Klarna",
@@ -765,7 +1455,19 @@
   },
   "seedHex": "#FFA8CD",
   "hue": 334,
-  "family": "Pink"
+  "family": "Pink",
+  "fonts": [
+   {
+    "type": "title",
+    "name": "Klarna Title",
+    "origin": "custom"
+   },
+   {
+    "type": "body",
+    "name": "system-ui",
+    "origin": "system"
+   }
+  ]
  },
  {
   "name": "MagicEdenUS",
@@ -777,7 +1479,19 @@
   },
   "seedHex": "#e42575",
   "hue": 335,
-  "family": "Pink"
+  "family": "Pink",
+  "fonts": [
+   {
+    "type": "title",
+    "name": "-apple-system",
+    "origin": "system"
+   },
+   {
+    "type": "body",
+    "name": "var(--mantine-font-family)",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "OKX",
@@ -789,7 +1503,14 @@
   },
   "seedHex": "#666666",
   "hue": 0,
-  "family": "Red"
+  "family": "Red",
+  "fonts": [
+   {
+    "type": "body",
+    "name": "OKXSans",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "Chipper",
@@ -801,7 +1522,14 @@
   },
   "seedHex": "#f7f7f7",
   "hue": 0,
-  "family": "Red"
+  "family": "Red",
+  "fonts": [
+   {
+    "type": "body",
+    "name": "graphik",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "Dune",
@@ -813,7 +1541,19 @@
   },
   "seedHex": "#f98883",
   "hue": 3,
-  "family": "Red"
+  "family": "Red",
+  "fonts": [
+   {
+    "type": "body",
+    "name": "var(--font-sans-app)",
+    "origin": "custom"
+   },
+   {
+    "type": "title",
+    "name": "var(--tiempos-headline-light)",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "Cosmos",
@@ -825,7 +1565,19 @@
   },
   "seedHex": "#fe412e",
   "hue": 5,
-  "family": "Red"
+  "family": "Red",
+  "fonts": [
+   {
+    "type": "title",
+    "name": "var(--ff-brand)",
+    "origin": "custom"
+   },
+   {
+    "type": "body",
+    "name": "Inter var",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "Starknet",
@@ -837,7 +1589,19 @@
   },
   "seedHex": "#ec796b",
   "hue": 7,
-  "family": "Red"
+  "family": "Red",
+  "fonts": [
+   {
+    "type": "title",
+    "name": "var(--chakra-fonts-heading)",
+    "origin": "custom"
+   },
+   {
+    "type": "body",
+    "name": "-apple-system",
+    "origin": "system"
+   }
+  ]
  },
  {
   "name": "Infura",
@@ -849,7 +1613,19 @@
   },
   "seedHex": "#eb693f",
   "hue": 15,
-  "family": "Red"
+  "family": "Red",
+  "fonts": [
+   {
+    "type": "title",
+    "name": "Akkurat Regular",
+    "origin": "custom"
+   },
+   {
+    "type": "body",
+    "name": "system-ui",
+    "origin": "system"
+   }
+  ]
  },
  {
   "name": "Reddit",
@@ -861,7 +1637,19 @@
   },
   "seedHex": "#FF4500",
   "hue": 16,
-  "family": "Red"
+  "family": "Red",
+  "fonts": [
+   {
+    "type": "title",
+    "name": "Reddit Display",
+    "origin": "custom"
+   },
+   {
+    "type": "body",
+    "name": "Reddit Sans",
+    "origin": "google"
+   }
+  ]
  },
  {
   "name": "Ledger",
@@ -873,7 +1661,19 @@
   },
   "seedHex": "#FF5300",
   "hue": 20,
-  "family": "Red"
+  "family": "Red",
+  "fonts": [
+   {
+    "type": "title",
+    "name": "HM-ALPHA-MONO",
+    "origin": "custom"
+   },
+   {
+    "type": "body",
+    "name": "Inter",
+    "origin": "google"
+   }
+  ]
  },
  {
   "name": "Chainalysis",
@@ -885,7 +1685,8 @@
   },
   "seedHex": "#ff5300",
   "hue": 20,
-  "family": "Red"
+  "family": "Red",
+  "fonts": []
  },
  {
   "name": "Blockchain",
@@ -897,7 +1698,19 @@
   },
   "seedHex": "#DA133E",
   "hue": 347,
-  "family": "Red"
+  "family": "Red",
+  "fonts": [
+   {
+    "type": "body",
+    "name": "Inter",
+    "origin": "google"
+   },
+   {
+    "type": "title",
+    "name": "Inter",
+    "origin": "google"
+   }
+  ]
  },
  {
   "name": "TRON",
@@ -909,7 +1722,19 @@
   },
   "seedHex": "#ea0029",
   "hue": 349,
-  "family": "Red"
+  "family": "Red",
+  "fonts": [
+   {
+    "type": "body",
+    "name": "Poppins",
+    "origin": "google"
+   },
+   {
+    "type": "title",
+    "name": "Avenir-Heavy",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "Airbnb",
@@ -921,7 +1746,19 @@
   },
   "seedHex": "#FF385C",
   "hue": 349,
-  "family": "Red"
+  "family": "Red",
+  "fonts": [
+   {
+    "type": "title",
+    "name": "Airbnb Cereal VF",
+    "origin": "custom"
+   },
+   {
+    "type": "body",
+    "name": "Airbnb Cereal VF",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "Optimism",
@@ -933,7 +1770,8 @@
   },
   "seedHex": "#FF0421",
   "hue": 353,
-  "family": "Red"
+  "family": "Red",
+  "fonts": []
  },
  {
   "name": "Avalanche",
@@ -945,7 +1783,19 @@
   },
   "seedHex": "#ff394a",
   "hue": 355,
-  "family": "Red"
+  "family": "Red",
+  "fonts": [
+   {
+    "type": "title",
+    "name": "var(--font-aeonik)",
+    "origin": "custom"
+   },
+   {
+    "type": "body",
+    "name": "Inter",
+    "origin": "google"
+   }
+  ]
  },
  {
   "name": "Netflix",
@@ -957,7 +1807,19 @@
   },
   "seedHex": "#E50914",
   "hue": 357,
-  "family": "Red"
+  "family": "Red",
+  "fonts": [
+   {
+    "type": "title",
+    "name": "Netflix Sans",
+    "origin": "custom"
+   },
+   {
+    "type": "body",
+    "name": "Helvetica Neue",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "Tether",
@@ -969,7 +1831,19 @@
   },
   "seedHex": "#26a17b",
   "hue": 161,
-  "family": "Teal"
+  "family": "Teal",
+  "fonts": [
+   {
+    "type": "body",
+    "name": "Inter",
+    "origin": "google"
+   },
+   {
+    "type": "title",
+    "name": "Inter",
+    "origin": "google"
+   }
+  ]
  },
  {
   "name": "Compound Labs",
@@ -981,7 +1855,19 @@
   },
   "seedHex": "#00D395",
   "hue": 162,
-  "family": "Teal"
+  "family": "Teal",
+  "fonts": [
+   {
+    "type": "title",
+    "name": "Haas Grot Disp R",
+    "origin": "custom"
+   },
+   {
+    "type": "body",
+    "name": "Haas Grot Text R",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "Aptos Labs",
@@ -993,7 +1879,19 @@
   },
   "seedHex": "#2ed8a7",
   "hue": 163,
-  "family": "Teal"
+  "family": "Teal",
+  "fonts": [
+   {
+    "type": "body",
+    "name": "var(--sans)",
+    "origin": "custom"
+   },
+   {
+    "type": "title",
+    "name": "var(--wide)",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "Bitfinex",
@@ -1005,7 +1903,19 @@
   },
   "seedHex": "#03ca9b",
   "hue": 166,
-  "family": "Teal"
+  "family": "Teal",
+  "fonts": [
+   {
+    "type": "body",
+    "name": "Inter",
+    "origin": "google"
+   },
+   {
+    "type": "title",
+    "name": "DIN Condensed",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "KuCoin",
@@ -1017,7 +1927,19 @@
   },
   "seedHex": "#24ae8f",
   "hue": 167,
-  "family": "Teal"
+  "family": "Teal",
+  "fonts": [
+   {
+    "type": "body",
+    "name": "Kufox Sans",
+    "origin": "custom"
+   },
+   {
+    "type": "title",
+    "name": "Kufox Sans",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "Bitstamp",
@@ -1029,7 +1951,19 @@
   },
   "seedHex": "#003b2f",
   "hue": 168,
-  "family": "Teal"
+  "family": "Teal",
+  "fonts": [
+   {
+    "type": "body",
+    "name": "Open Sans",
+    "origin": "google"
+   },
+   {
+    "type": "title",
+    "name": "JakartaSans",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "Algorand",
@@ -1041,7 +1975,14 @@
   },
   "seedHex": "#00bea5",
   "hue": 172,
-  "family": "Teal"
+  "family": "Teal",
+  "fonts": [
+   {
+    "type": "body",
+    "name": "sans-serif",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "Gate.io",
@@ -1053,7 +1994,19 @@
   },
   "seedHex": "#88c7cc",
   "hue": 184,
-  "family": "Teal"
+  "family": "Teal",
+  "fonts": [
+   {
+    "type": "title",
+    "name": "roboto",
+    "origin": "google"
+   },
+   {
+    "type": "body",
+    "name": "din",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "PancakeSwap",
@@ -1065,7 +2018,8 @@
   },
   "seedHex": "#3ed5e1",
   "hue": 184,
-  "family": "Teal"
+  "family": "Teal",
+  "fonts": []
  },
  {
   "name": "Aave",
@@ -1077,7 +2031,8 @@
   },
   "seedHex": "#30bac6",
   "hue": 185,
-  "family": "Teal"
+  "family": "Teal",
+  "fonts": []
  },
  {
   "name": "Gemini",
@@ -1089,7 +2044,19 @@
   },
   "seedHex": "#26ddf9",
   "hue": 188,
-  "family": "Teal"
+  "family": "Teal",
+  "fonts": [
+   {
+    "type": "body",
+    "name": "Inter",
+    "origin": "google"
+   },
+   {
+    "type": "title",
+    "name": "Inter",
+    "origin": "google"
+   }
+  ]
  },
  {
   "name": "Synthetix \ufe0f",
@@ -1101,7 +2068,19 @@
   },
   "seedHex": "#00d1ff",
   "hue": 191,
-  "family": "Teal"
+  "family": "Teal",
+  "fonts": [
+   {
+    "type": "title",
+    "name": "Geist",
+    "origin": "google"
+   },
+   {
+    "type": "body",
+    "name": "Arial",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "Mantle",
@@ -1113,7 +2092,14 @@
   },
   "seedHex": "#40a6bf",
   "hue": 192,
-  "family": "Teal"
+  "family": "Teal",
+  "fonts": [
+   {
+    "type": "body",
+    "name": "GT-Walsheim",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "Chainlink",
@@ -1125,7 +2111,14 @@
   },
   "seedHex": "#3f94b1",
   "hue": 195,
-  "family": "Teal"
+  "family": "Teal",
+  "fonts": [
+   {
+    "type": "body",
+    "name": "sans-serif",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "Plaid",
@@ -1137,7 +2130,19 @@
   },
   "seedHex": "#109DD7",
   "hue": 197,
-  "family": "Teal"
+  "family": "Teal",
+  "fonts": [
+   {
+    "type": "title",
+    "name": "Plaid Sans",
+    "origin": "custom"
+   },
+   {
+    "type": "body",
+    "name": "Cern",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "Balancer",
@@ -1149,7 +2154,19 @@
   },
   "seedHex": "#40b8ed",
   "hue": 198,
-  "family": "Teal"
+  "family": "Teal",
+  "fonts": [
+   {
+    "type": "title",
+    "name": "Tiempos Headline Medium",
+    "origin": "custom"
+   },
+   {
+    "type": "body",
+    "name": "-apple-system",
+    "origin": "system"
+   }
+  ]
  },
  {
   "name": "Microsoft",
@@ -1161,7 +2178,19 @@
   },
   "seedHex": "#00A4EF",
   "hue": 199,
-  "family": "Teal"
+  "family": "Teal",
+  "fonts": [
+   {
+    "type": "title",
+    "name": "Segoe UI",
+    "origin": "custom"
+   },
+   {
+    "type": "body",
+    "name": "Segoe UI",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "Hedera",
@@ -1173,7 +2202,19 @@
   },
   "seedHex": "#8259EF",
   "hue": 256,
-  "family": "Violet"
+  "family": "Violet",
+  "fonts": [
+   {
+    "type": "body",
+    "name": "Styrene A",
+    "origin": "custom"
+   },
+   {
+    "type": "title",
+    "name": "Styrene A",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "Circle",
@@ -1185,7 +2226,19 @@
   },
   "seedHex": "#8656EF",
   "hue": 259,
-  "family": "Violet"
+  "family": "Violet",
+  "fonts": [
+   {
+    "type": "title",
+    "name": "Circular",
+    "origin": "custom"
+   },
+   {
+    "type": "body",
+    "name": "Circular",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "Polygon",
@@ -1197,7 +2250,19 @@
   },
   "seedHex": "#7B3FE4",
   "hue": 262,
-  "family": "Violet"
+  "family": "Violet",
+  "fonts": [
+   {
+    "type": "title",
+    "name": "Polysans Slimwide",
+    "origin": "custom"
+   },
+   {
+    "type": "body",
+    "name": "Polysans",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "Ethereum",
@@ -1209,7 +2274,19 @@
   },
   "seedHex": "#6C24E0",
   "hue": 263,
-  "family": "Violet"
+  "family": "Violet",
+  "fonts": [
+   {
+    "type": "title",
+    "name": "Inter",
+    "origin": "google"
+   },
+   {
+    "type": "body",
+    "name": "Inter",
+    "origin": "google"
+   }
+  ]
  },
  {
   "name": "Twitch",
@@ -1221,7 +2298,19 @@
   },
   "seedHex": "#9147ff",
   "hue": 264,
-  "family": "Violet"
+  "family": "Violet",
+  "fonts": [
+   {
+    "type": "title",
+    "name": "Roobert",
+    "origin": "custom"
+   },
+   {
+    "type": "body",
+    "name": "Inter",
+    "origin": "google"
+   }
+  ]
  },
  {
   "name": "Celestia \ud83e\udda3",
@@ -1233,7 +2322,19 @@
   },
   "seedHex": "#6b17df",
   "hue": 265,
-  "family": "Violet"
+  "family": "Violet",
+  "fonts": [
+   {
+    "type": "body",
+    "name": "ui-sans-serif",
+    "origin": "custom"
+   },
+   {
+    "type": "title",
+    "name": "Ruberoid",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "MoonPay \ud83d\udfe3",
@@ -1245,7 +2346,14 @@
   },
   "seedHex": "#7d00ff",
   "hue": 269,
-  "family": "Violet"
+  "family": "Violet",
+  "fonts": [
+   {
+    "type": "body",
+    "name": "ui-sans-serif",
+    "origin": "custom"
+   }
+  ]
  },
  {
   "name": "MetaMask",
@@ -1257,6 +2365,18 @@
   },
   "seedHex": "#3D065F",
   "hue": 277,
-  "family": "Violet"
+  "family": "Violet",
+  "fonts": [
+   {
+    "type": "title",
+    "name": "MM Poly Variable",
+    "origin": "custom"
+   },
+   {
+    "type": "body",
+    "name": "MM Poly Variable",
+    "origin": "custom"
+   }
+  ]
  }
 ]

@@ -8,6 +8,7 @@ import {
   type BrandPreset,
 } from './presets.js';
 import { deriveMinimalPalette } from './derivePalette.js';
+import { BRAND_FONTS } from './fonts.js';
 
 // ---- colour helpers (local, dependency-free) ----------------------------------------------
 const HEX = /^#[0-9a-fA-F]{6}$/;
@@ -83,6 +84,17 @@ test('at least one mono preset exists (brands that want neutral chrome)', () => 
   const mono = BRAND_PRESETS.filter((p) => p.group === 'Mono');
   assert.ok(mono.length >= 1, 'expected a Mono preset');
   for (const p of mono) assert.ok(saturation(p.seed) < 0.2, `${p.label}: mono seed should be near-neutral`);
+});
+
+test('every preset has fonts from the curated set; title faces are distinctive', () => {
+  const allowed = new Set<string>(BRAND_FONTS as readonly string[]);
+  for (const p of BRAND_PRESETS) {
+    assert.ok(allowed.has(p.fontTitle), `${p.label}: fontTitle "${p.fontTitle}" not in BRAND_FONTS`);
+    assert.ok(allowed.has(p.fontBody), `${p.label}: fontBody "${p.fontBody}" not in BRAND_FONTS`);
+  }
+  // Title faces carry a brand's character, so they must be unique across the menu.
+  const titles = BRAND_PRESETS.map((p) => p.fontTitle);
+  assert.equal(new Set(titles).size, titles.length, 'title faces must be unique across presets');
 });
 
 // ---- grouping helpers -----------------------------------------------------------------------

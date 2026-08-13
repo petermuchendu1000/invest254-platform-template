@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { PageHeader, Section, TableWrap, Th, Td } from '@/components/admin/ui';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
@@ -16,6 +16,7 @@ import {
 import type { SiteWithConfig, SiteKpis, MarketerRollupGroup } from '@/lib/platform/endpoints';
 import { deriveMinimalPalette } from '@/lib/brand/derivePalette';
 import { groupedPresets, presetForSeed } from '@/lib/brand/presets';
+import { BRAND_FONTS, fontStack, googleFontsHref } from '@/lib/brand/fonts';
 
 const money = (cents: number, cur: string) => `${cur} ${(cents / 100).toLocaleString()}`;
 
@@ -134,7 +135,23 @@ function PaletteEditor({ site }: { site: SiteWithConfig }) {
   const setTheme = useSetSiteTheme();
   const [seed, setSeed] = useState(site.colorPrimary || '#22c55e');
   const [mode, setMode] = useState<'dark' | 'light'>(site.theme === 'light' ? 'light' : 'dark');
-  const tokens = deriveMinimalPalette(seed, mode);
+  const [fontTitle, setFontTitle] = useState<string>('Space Grotesk');
+  const [fontBody, setFontBody] = useState<string>('Inter');
+  // Colours derive from the seed; fonts are carried alongside so the saved theme re-skins BOTH
+  // the palette and the typography (persisted in theme_tokens, applied via --pp-font-*).
+  const tokens: Record<string, string> = { ...deriveMinimalPalette(seed, mode), fontTitle, fontBody };
+
+  // Load the previewed faces so the specimen below renders in-font (the /platform brand itself
+  // may not ship these fonts). Cleaned up whenever the selection changes.
+  useEffect(() => {
+    const href = googleFontsHref([fontTitle, fontBody]);
+    if (!href) return;
+    const el = document.createElement('link');
+    el.rel = 'stylesheet';
+    el.href = href;
+    document.head.appendChild(el);
+    return () => { el.remove(); };
+  }, [fontTitle, fontBody]);
   const swatches: Array<[string, string]> = [
     ['bg', 'bg'], ['surface', 'surf'], ['border', 'border'], ['muted', 'muted'], ['fg', 'fg'],
     ['brand', 'brand'], ['accent', 'accent'], ['up', 'gain'], ['down', 'loss'],
@@ -152,7 +169,7 @@ function PaletteEditor({ site }: { site: SiteWithConfig }) {
               const preset = groupedPresets()
                 .flatMap((g) => g.presets)
                 .find((p) => p.label === label);
-              if (preset) setSeed(preset.seed);
+              if (preset) { setSeed(preset.seed); setFontTitle(preset.fontTitle); setFontBody(preset.fontBody); }
             }}
             className="h-9 rounded-lg border border-border bg-surface-2 px-2 text-sm text-fg"
             aria-label="Brand theme preset"
@@ -189,6 +206,36 @@ function PaletteEditor({ site }: { site: SiteWithConfig }) {
           <option value="light">light</option>
         </select>
         <span className="font-mono text-xs text-muted">{seed.toLowerCase()}</span>
+      </div>
+      <div className="flex flex-wrap items-center gap-3">
+        <label className="flex items-center gap-2 text-sm">
+          <span className="text-muted">Heading</span>
+          <select
+            value={fontTitle}
+            onChange={(e) => setFontTitle(e.target.value)}
+            className="h-9 rounded-lg border border-border bg-surface-2 px-2 text-sm text-fg"
+            aria-label="Heading font"
+          >
+            {BRAND_FONTS.map((f) => (<option key={f} value={f}>{f}</option>))}
+          </select>
+        </label>
+        <label className="flex items-center gap-2 text-sm">
+          <span className="text-muted">Body</span>
+          <select
+            value={fontBody}
+            onChange={(e) => setFontBody(e.target.value)}
+            className="h-9 rounded-lg border border-border bg-surface-2 px-2 text-sm text-fg"
+            aria-label="Body font"
+          >
+            {BRAND_FONTS.map((f) => (<option key={f} value={f}>{f}</option>))}
+          </select>
+        </label>
+      </div>
+      <div className="rounded-lg border border-border p-2">
+        <div className="text-lg text-fg" style={{ fontFamily: fontStack(fontTitle) }}>BTC/KES 0.0737</div>
+        <div className="text-xs text-muted" style={{ fontFamily: fontStack(fontBody) }}>
+          The quick brown fox jumps over 12,345 — buy / sell
+        </div>
       </div>
       <div className="flex flex-wrap gap-1.5">
         {swatches.map(([k, lab]) => (
