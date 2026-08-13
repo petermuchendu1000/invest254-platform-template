@@ -13,7 +13,7 @@
   },
   "scripts": {
     "typecheck": "tsc -b && tsc -p apps/web/tsconfig.json --noEmit",
-    "test": "node --import tsx --test",
+    "test": "node --import tsx --test $(find packages apps -name '*.test.ts' -not -path '*/node_modules/*')",
     "engine": "tsx apps/engine/src/server.ts"
   },
   "devDependencies": {

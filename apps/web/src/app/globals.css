@@ -55,6 +55,11 @@ html.light {
   --pp-accent:    var(--brand-accent,       #00a859);
   --pp-accent-fg: var(--brand-accent-fg,    #ffffff);
   --pp-brand:     var(--brand-primary,      #43b02a);
+  /* Per-brand typography (theme-independent). brandCssVars() sets --brand-font-* to full stacks;
+     falls back to the system sans so a brand-less / font-less render is unchanged. Title falls
+     back to the body face. */
+  --pp-font-body:  var(--brand-font-body, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif);
+  --pp-font-title: var(--brand-font-title, var(--pp-font-body));
 }
 html.light {
   --pp-bg:        var(--brand-bg,           #f6f8fa);
@@ -107,7 +112,11 @@ body {
   background-color: var(--pp-bg);
   color: var(--pp-fg);
   -webkit-font-smoothing: antialiased;
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-family: var(--pp-font-body);
+}
+/* Headings take the brand's title face; falls back to the body face when a brand sets none. */
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--pp-font-title);
 }
 
 /* Respect the iOS/Android home-indicator inset for bottom-sticky UI. */

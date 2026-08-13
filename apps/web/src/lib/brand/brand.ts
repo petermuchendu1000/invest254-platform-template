@@ -12,6 +12,8 @@
  *   3. Hard-coded DEFAULT_BRAND (last resort so the app always renders).
  */
 
+import { fontStack } from './fonts.js';
+
 export interface Brand {
   siteId: string;
   slug: string;
@@ -55,6 +57,8 @@ export const DEFAULT_BRAND: Brand = {
     fg: "#f1f3f2", muted: "#94a89c", brand: "#2cdd6d", brandHover: "#1fbd59",
     accent: "#67e997", accentFg: "#0b0f14", up: "#2cdd6d", down: "#8fa396",
     warn: "#f6b128", info: "#5199ec",
+    // Typography: heading + body faces (free Google families). Applied via --pp-font-*.
+    fontTitle: "Space Grotesk", fontBody: "Inter",
   },
 };
 
@@ -96,6 +100,9 @@ export function brandCssVars(b: Brand): Record<string, string> {
       const v = t[k];
       if (typeof v === "string" && v) vars[cssVar] = v;
     }
+    // Typography tokens map to full font-family stacks (family + generic + system fallback).
+    if (typeof t.fontTitle === "string" && t.fontTitle) vars["--brand-font-title"] = fontStack(t.fontTitle);
+    if (typeof t.fontBody === "string" && t.fontBody) vars["--brand-font-body"] = fontStack(t.fontBody);
   }
   return vars;
 }
