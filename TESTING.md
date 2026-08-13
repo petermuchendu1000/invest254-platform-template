@@ -44,6 +44,11 @@ Reproduce:
 ```bash
 # start a local pg (see _testkit) then:
 python3 packages/db/_testkit/e2e_multitenant.py
+python3 packages/db/_testkit/e2e_rls_sites.py          # player/affiliate site RLS (0051)
+python3 packages/db/_testkit/e2e_rls_admin_sites.py    # admin site RLS (0056, docs/22 Task F)
+python3 packages/db/_testkit/e2e_platform_console.py
+python3 packages/db/_testkit/e2e_affiliate_sites.py
+python3 packages/db/_testkit/e2e_marketer_rollup.py
 ```
 
 ## Shared — per-site provably-fair seeds (`site.test.ts`)
