@@ -20,7 +20,7 @@ alter table public.sites add column if not exists theme_tokens jsonb;
 
 -- Seed the default brand (Invest254) with its full derived palette (green, analogous scheme).
 update public.sites
-   set theme_tokens = '{"bg":"#0c100d","surface":"#151c17","surface2":"#202a24","border":"#35453b","fg":"#f1f4f2","muted":"#92aa9b","brand":"#24db67","brandHover":"#1eb857","brandText":"#24db67","accent":"#37e6d5","accentFg":"#0b0f14","up":"#56dc95","down":"#ea2f42","warn":"#f6b128","info":"#5199ec"}'::jsonb
+   set theme_tokens = '{"bg":"#0c100d","surface":"#161d18","surface2":"#212c25","border":"#36453b","fg":"#f1f3f2","muted":"#94a89c","brand":"#2cdd6d","brandHover":"#1fbd59","brandText":"#2cdd6d","accent":"#67e997","accentFg":"#0b0f14","up":"#2cdd6d","down":"#8fa396","warn":"#f6b128","info":"#5199ec"}'::jsonb
  where id = '00000000-0000-0000-0000-000000000001' and theme_tokens is null;
 
 -- Persist a brand's palette from the platform console (platform_superadmin; audited). Additive RPC
