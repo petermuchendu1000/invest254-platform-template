@@ -117,8 +117,13 @@ Files: `apps/api/src/http.ts`, `app.ts`, `app.site.ts`, `app.auth.ts`, `server.t
   optional `site` claim — a site-operator token sees only its brand, a platform-admin token (no
   claim) sees all (forward-compatible with the Task H role model). null site → default brand
   everywhere, so single-tenant is unchanged. Tested (`app.admin.sites.test.ts`).
-  Remaining for Task H: admin *mutations* (adjust/clear/reset/role/config/overrides/seeds) gain
-  per-brand enforcement once the platform-superadmin vs site-admin roles exist.
+  ✅ Admin *mutation* write-path per-brand enforcement now lands too: `assertTargetSiteInScope`
+  (`http.ts`) rejects a site-scoped admin acting on another brand's target (403 `SITE_SCOPE_FORBIDDEN`);
+  a platform admin (no `site` claim) and `platform_superadmin` stay unrestricted. Target brand is
+  resolved by `AdminService.siteOfUser`/`siteOfTransaction` and `AffiliateService.siteOfPayout`
+  (null/legacy → default brand; unknown → the site-aware RPC remains the ultimate guard). Applied to
+  status/role/rate/adjust/clear/reset/overrides + the bulk handler (per-row) + withdrawal and
+  affiliate-payout approve/reject. Tested (`app.admin.writepath.test.ts`).
 - ✅ M-Pesa callback routes accept the `/s/<slug>` prefix and resolve the site (`app.payments.ts`):
   `POST /s/<slug>/deposits/mpesa/callback` and `.../withdrawals/mpesa/result/:txId` resolve the
   slug → `ctx.siteId` before the handler; unprefixed routes stay for the default brand.
@@ -128,7 +133,7 @@ Files: `apps/api/src/http.ts`, `app.ts`, `app.site.ts`, `app.auth.ts`, `server.t
   site-scoped route, legacy-token default-site fallback, and brand resolution by host/slug.
 - **Done when:** ✅ every player/affiliate list + admin list read is implicitly filtered to the
   caller's site; the brand route returns correct per-host branding. Player/affiliate/admin-read
-  threading + callback prefix + e2e ✅. (Admin write-path per-brand enforcement lands with Task H roles.)
+  threading + callback prefix + e2e ✅. Admin write-path per-brand enforcement ✅ (Task H roles).
 
 ## F. RLS — second dimension
 Files: `packages/db/migrations/0051_rls_site.sql`.

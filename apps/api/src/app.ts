@@ -57,14 +57,15 @@ export interface ApiDeps {
   /** Marketer enrollment, commission accrual, dashboard reads (I1/I2/I3) + payouts (I4). */
   affiliate: Pick<AffiliateService,
     "enroll" | "accrueDaily" | "summary" | "listReferrals" | "listCommissions"
-    | "requestPayout" | "approvePayout" | "completePayout" | "rejectPayout">;
+    | "requestPayout" | "approvePayout" | "completePayout" | "rejectPayout" | "siteOfPayout">;
   /** Admin back office (J2): dashboard reads, user status, commission rate, withdrawal queue, audit. */
   admin: Pick<AdminService,
     "overview" | "listUsers" | "getUserDetail" | "listUserActivity" | "setUserStatus" | "setCommissionRate" | "setUserRole" | "listWithdrawals" | "listTransactions" | "listAudit"
     | "adjustBalance" | "resetBalanceToLastFunded" | "listDeposits" | "depositsReconcile" | "reportDaily" | "reportByUser"
     | "getGameConfig" | "updateGameConfig" | "getMpesaConfig" | "updateMpesaConfig" | "rtpMonitor" | "listSeeds" | "rotateSeed"
     | "listAffiliatePayouts" | "recordAction"
-    | "adjustBalanceKind" | "clearBalance" | "getUserOverrides" | "setUserOverrides">;
+    | "adjustBalanceKind" | "clearBalance" | "getUserOverrides" | "setUserOverrides"
+    | "siteOfUser" | "siteOfTransaction">;
   /** Platform-superadmin console (docs/22 Task H): cross-brand onboarding + economy + KPIs. */
   platform: Pick<PlatformService, "listSites" | "overview" | "createSite" | "updateSite" | "setSiteConfig">;
   /** Per-user sticky notifications: admin/system raise; player reads active + dismisses (J7). */

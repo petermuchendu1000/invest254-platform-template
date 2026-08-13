@@ -87,4 +87,9 @@ export class AffiliateService {
   rejectPayout(payoutId: string, adminId: string): Promise<boolean> {
     return this.repo.rejectPayout(payoutId, adminId);
   }
+
+  /** Resolve the brand a payout belongs to (null = unknown) — admin write-path scope guard (Task H). */
+  siteOfPayout(payoutId: string): Promise<string | null> {
+    return this.repo.siteOfPayout(payoutId);
+  }
 }

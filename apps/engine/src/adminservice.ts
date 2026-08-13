@@ -141,4 +141,10 @@ export class AdminService {
   recordAction(actorId: string, actorRole: string, action: string, targetType: string, targetId: string | null, detail: unknown): Promise<void> {
     return this.repo.recordAction(actorId, actorRole, action, targetType, targetId, detail);
   }
+
+  // Write-path per-brand enforcement (docs/22 Task H): resolve the brand a mutation target belongs
+  // to (default when the row's site is null; null when the target is unknown) so the API can reject
+  // a site-scoped admin acting across brands.
+  siteOfUser(userId: string): Promise<string | null> { return this.repo.siteOfUser(userId); }
+  siteOfTransaction(txId: string): Promise<string | null> { return this.repo.siteOfTransaction(txId); }
 }

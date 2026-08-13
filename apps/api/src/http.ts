@@ -333,6 +333,37 @@ export function requireSite(defaultSiteId: string = DEFAULT_SITE_ID): Middleware
   };
 }
 
+/**
+ * Admin write-path per-brand enforcement (docs/22 Task H). The read side (Task E) already scopes
+ * every admin LIST to the token's optional `site` claim; this is the matching guard for MUTATIONS.
+ *
+ * `adminScopeSite` returns the brand a caller is restricted to when acting, or null for unrestricted:
+ *   - a platform_superadmin (rank 5) is cross-brand -> null (never restricted);
+ *   - a platform admin token carries NO `site` claim -> null (unchanged single-tenant behaviour);
+ *   - a site-scoped admin token carries a `site` claim -> that brand id.
+ */
+export function adminScopeSite(ctx: Ctx): string | null {
+  if (!ctx.claims) throw new ApiError("AUTH_REQUIRED", "authentication required", 401);
+  const platformRank = ROLE_RANK.platform_superadmin ?? Number.POSITIVE_INFINITY;
+  if ((ROLE_RANK[ctx.claims.role ?? "player"] ?? 0) >= platformRank) return null;
+  return ctx.claims.site ?? null;
+}
+
+/**
+ * Reject a site-scoped admin mutating a target in another brand. TOLERANT by design: an unrestricted
+ * caller (null scope) and an unresolved target (null site) both pass — the site-aware DB RPCs remain
+ * the ultimate guard, and some in-memory mirrors can't resolve a target's brand. Only a KNOWN
+ * cross-brand target is refused (SITE_SCOPE_FORBIDDEN, 403).
+ */
+export function assertTargetSiteInScope(ctx: Ctx, targetSite: string | null | undefined): void {
+  const scope = adminScopeSite(ctx);
+  if (scope === null) return;            // platform admin / platform_superadmin -> unrestricted
+  if (targetSite == null) return;        // unknown target -> defer to the RPC's own site guard
+  if (targetSite !== scope) {
+    throw new ApiError("SITE_SCOPE_FORBIDDEN", "SITE_SCOPE_FORBIDDEN: target belongs to another brand", 403);
+  }
+}
+
 /** Convenience: construct the Node server from a configured router. */
 export function serverFrom(router: Router): Server {
   return createServer(router.listener());

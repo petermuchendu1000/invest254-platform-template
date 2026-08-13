@@ -1,5 +1,5 @@
 import type { Cents } from "@invest254/shared";
-import { Router, ApiError, requireAuth, requireRole, requireSite, rateLimit, restrictToCidrs, type Ctx, type Middleware } from "./http.js";
+import { Router, ApiError, requireAuth, requireRole, requireSite, rateLimit, restrictToCidrs, assertTargetSiteInScope, type Ctx, type Middleware } from "./http.js";
 import type { ApiDeps } from "./app.js";
 
 /**
@@ -173,12 +173,17 @@ export function registerProtectedRoutes(router: Router, deps: ApiDeps): void {
   router.post(`${BASE}/s/:slug/withdrawals/mpesa/result/:txId`, darajaOnly, resolveSlug, b2cResult);
 
   // ── Admin: withdrawal moderation ──
+  // A site-scoped finance admin may only decide its own brand's withdrawals (docs/22 Task H); a
+  // platform admin / platform_superadmin is unrestricted. The target is a transaction id, so its
+  // brand is resolved via the AdminService (tolerant of an unknown tx — the RPC stays the guard).
   const admin = requireRole("admin");
   router.post(`${BASE}/admin/withdrawals/:id/approve`, auth, admin, async (ctx: Ctx) => {
+    assertTargetSiteInScope(ctx, await deps.admin.siteOfTransaction(ctx.params.id!));
     return domain(() => deps.payments.approveWithdrawal(ctx.params.id!, ctx.claims!.userId));
   });
 
   router.post(`${BASE}/admin/withdrawals/:id/reject`, auth, admin, async (ctx: Ctx) => {
+    assertTargetSiteInScope(ctx, await deps.admin.siteOfTransaction(ctx.params.id!));
     return domain(() => deps.payments.rejectWithdrawal(ctx.params.id!, ctx.claims!.userId));
   });
 }

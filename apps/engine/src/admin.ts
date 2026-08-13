@@ -242,6 +242,12 @@ export interface AdminRepository {
   unhideChat(actorId: string, actorRole: string, id: number): Promise<boolean>;
   /** Append an immutable audit row for an admin action whose mutation lives in another service/RPC (J6). */
   recordAction(actorId: string, actorRole: string, action: string, targetType: string, targetId: string | null, detail: unknown): Promise<void>;
+  // Admin write-path per-brand enforcement (docs/22 Task H): resolve the brand a mutation TARGET
+  // belongs to so the API can reject a site-scoped admin acting across brands. A null/legacy site
+  // normalizes to the default brand; an unknown target resolves to null (the site-aware RPC stays
+  // the ultimate guard, so a null never blocks).
+  siteOfUser(userId: string): Promise<string | null>;
+  siteOfTransaction(txId: string): Promise<string | null>;
 }
 
 const VALID_STATUS = ["active", "suspended", "banned"];
@@ -542,6 +548,17 @@ export class PgAdminRepository implements AdminRepository {
     if (!r.rows.length) return null;
     const x = r.rows[0];
     return { ...mapUserRow(x), referredBy: x.referred_by == null ? null : String(x.referred_by) };
+  }
+
+  // Write-path scope resolvers (docs/22 Task H): the brand a mutation target belongs to. A legacy
+  // null site normalizes to the default brand; a missing row yields null (RPC remains the guard).
+  async siteOfUser(userId: string): Promise<string | null> {
+    const r = await this.q.query("select site_id from profiles where id = $1", [userId]);
+    return r.rows.length ? String(r.rows[0].site_id ?? ADMIN_DEFAULT_SITE) : null;
+  }
+  async siteOfTransaction(txId: string): Promise<string | null> {
+    const r = await this.q.query("select site_id from transactions where id = $1", [txId]);
+    return r.rows.length ? String(r.rows[0].site_id ?? ADMIN_DEFAULT_SITE) : null;
   }
 
   async listUserActivity(userId: string, q: AdminUserActivityQuery): Promise<Page<AdminUserActivityRow>> {
@@ -1125,6 +1142,17 @@ export class InMemoryAdminRepository implements AdminRepository {
     const u = this.identity.adminUser(userId);
     if (!u) return null;
     return { ...(await this.memUserRow(u)), referredBy: u.referredBy };
+  }
+
+  // Write-path scope resolvers (docs/22 Task H) — mirror the Pg normalization: null/legacy site =>
+  // default brand; an unknown target => null (never blocks; the site-aware RPC is the real guard).
+  async siteOfUser(userId: string): Promise<string | null> {
+    const u = this.identity.adminUser(userId);
+    return u ? (u.siteId ?? ADMIN_DEFAULT_SITE) : null;
+  }
+  async siteOfTransaction(txId: string): Promise<string | null> {
+    const t = this.payments.adminTransactions().find((x) => x.txId === txId);
+    return t ? (t.siteId ?? ADMIN_DEFAULT_SITE) : null;
   }
 
   async listUserActivity(userId: string, q: AdminUserActivityQuery): Promise<Page<AdminUserActivityRow>> {

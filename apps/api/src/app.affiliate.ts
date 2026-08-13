@@ -1,4 +1,4 @@
-import { Router, ApiError, requireAuth, requireRole, requireSite, type Ctx } from "./http.js";
+import { Router, ApiError, requireAuth, requireRole, requireSite, assertTargetSiteInScope, type Ctx } from "./http.js";
 import type { PageQuery } from "@invest254/engine";
 import type { ApiDeps } from "./app.js";
 import { parseB2cResult } from "./app.payments.js";
@@ -95,6 +95,9 @@ export function registerAffiliateRoutes(router: Router, deps: ApiDeps): void {
   // are auditable alongside every other admin mutation.
   router.post(`${BASE}/admin/affiliate/payouts/:id/approve`, auth, admin, async (ctx: Ctx) =>
     domain(async () => {
+      // Per-brand write-path guard (docs/22 Task H): a site-scoped finance admin only decides its
+      // own brand's payouts. Tolerant of an unknown payout — the site-aware RPC remains the guard.
+      assertTargetSiteInScope(ctx, await deps.affiliate.siteOfPayout(ctx.params.id!));
       const res = await deps.affiliate.approvePayout(ctx.params.id!, ctx.claims!.userId);
       await deps.admin.recordAction(ctx.claims!.userId, ctx.claims!.role ?? "player", "affiliate.payout.approve", "affiliate_payout", ctx.params.id!, res);
       return res;
@@ -102,6 +105,7 @@ export function registerAffiliateRoutes(router: Router, deps: ApiDeps): void {
 
   router.post(`${BASE}/admin/affiliate/payouts/:id/reject`, auth, admin, async (ctx: Ctx) =>
     domain(async () => {
+      assertTargetSiteInScope(ctx, await deps.affiliate.siteOfPayout(ctx.params.id!));
       const rejected = await deps.affiliate.rejectPayout(ctx.params.id!, ctx.claims!.userId);
       await deps.admin.recordAction(ctx.claims!.userId, ctx.claims!.role ?? "player", "affiliate.payout.reject", "affiliate_payout", ctx.params.id!, { rejected });
       return { rejected };

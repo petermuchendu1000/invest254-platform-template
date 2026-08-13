@@ -124,6 +124,11 @@ export interface AffiliateRepository {
   completePayout(payoutId: string, resultCode: number, conversationId: string | null, receipt: string | null, resultDesc: string | null, raw: unknown): Promise<PayoutCompleteResult>;
   /** Admin rejects a pre-dispatch ('requested') payout, releasing its reservation. Idempotent. */
   rejectPayout(payoutId: string, adminId: string): Promise<boolean>;
+  /** Resolve the brand a payout belongs to (admin write-path scope guard, docs/22 Task H). A legacy
+   *  null site normalizes to the default brand; an unknown/untracked payout resolves to null — a
+   *  null never blocks, so the site-aware RPC remains the ultimate guard (the in-memory mirror does
+   *  not track a payout's site and always returns null). */
+  siteOfPayout(payoutId: string): Promise<string | null>;
 }
 
 /** Re-raise the bare error code the RPCs raise instead of the wrapped pg message. */
@@ -232,6 +237,10 @@ export class PgIdentityRepository implements IdentityRepository, AffiliateReposi
       const r = await this.q.query("select fn_affiliate_reject_payout($1,$2) as ok", [payoutId, adminId]);
       return Boolean(r.rows[0]?.ok);
     } catch (e) { mapPgError(e); }
+  }
+  async siteOfPayout(payoutId: string): Promise<string | null> {
+    const r = await this.q.query("select site_id from affiliate_payouts where id = $1", [payoutId]);
+    return r.rows.length ? String(r.rows[0].site_id ?? "00000000-0000-0000-0000-000000000001") : null;
   }
   async listReferrals(userId: string, q: PageQuery): Promise<Page<ReferralRecord>> {
     const limit = clampLimit(q.limit);
@@ -546,6 +555,9 @@ export class InMemoryIdentityRepository implements IdentityRepository, Affiliate
     for (const c of this.commissions) if (c.payoutId === payoutId && c.status === "accrued") c.payoutId = null; // release
     return true;
   }
+  // The in-memory mirror doesn't track a payout's brand, so it can't resolve one — return null,
+  // which the write-path guard treats as "don't block" (the site-aware RPC is the real guard).
+  async siteOfPayout(_payoutId: string): Promise<string | null> { return null; }
   private toProfile(u: MemUser): ProfileRow {
     return {
       userId: u.userId, username: u.username, phone: u.phone, role: u.role, status: u.status,
