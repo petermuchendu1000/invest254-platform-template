@@ -41,6 +41,17 @@ function relLum(hex: string): number {
   const lin = (v: number) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; };
   return 0.2126 * lin(parseInt(h.slice(0, 2), 16)) + 0.7152 * lin(parseInt(h.slice(2, 4), 16)) + 0.0722 * lin(parseInt(h.slice(4, 6), 16));
 }
+/** WCAG contrast ratio between two luminances (1..21). */
+function contrastOf(a: number, b: number): number {
+  const [hi, lo] = a >= b ? [a, b] : [b, a];
+  return (hi + 0.05) / (lo + 0.05);
+}
+/** Pick the ink (near-black or white) with the HIGHER contrast on `bg`. A luminance threshold
+ *  mis-picks for mid-tone fills, so always maximise; guarantees >= ~4.3:1 for any hue. */
+function readableInk(bg: string): string {
+  const l = relLum(bg);
+  return contrastOf(l, relLum('#0b0f14')) >= contrastOf(l, relLum('#ffffff')) ? '#0b0f14' : '#ffffff';
+}
 
 /** Derive the full minimal token set from a seed colour + theme mode. */
 export function deriveMinimalPalette(seedHex: string, mode: 'dark' | 'light' = 'dark'): ThemeTokens {
@@ -51,7 +62,7 @@ export function deriveMinimalPalette(seedHex: string, mode: 'dark' | 'light' = '
       bg: hsl(H, 0.16, 0.055), surface: hsl(H, 0.15, 0.10), surface2: hsl(H, 0.14, 0.15),
       border: hsl(H, 0.12, 0.24), muted: hsl(H, 0.10, 0.62), fg: hsl(H, 0.06, 0.95),
       brand, brandHover: hsl(H, 0.72, 0.43), brandText: brand,
-      accent, accentFg: relLum(accent) > 0.4 ? '#0b0f14' : '#ffffff',
+      accent, accentFg: readableInk(accent),
       up: brand, down: hsl(H, 0.10, 0.60), warn: hsl(40, 0.92, 0.56), info: hsl(212, 0.80, 0.62),
     };
   }
@@ -60,7 +71,7 @@ export function deriveMinimalPalette(seedHex: string, mode: 'dark' | 'light' = '
     bg: hsl(H, 0.30, 0.975), surface: '#ffffff', surface2: hsl(H, 0.22, 0.945),
     border: hsl(H, 0.20, 0.86), muted: hsl(H, 0.16, 0.40), fg: hsl(H, 0.30, 0.14),
     brand, brandHover: hsl(H, 0.68, 0.34), brandText: brand,
-    accent, accentFg: relLum(accent) > 0.4 ? '#0b0f14' : '#ffffff',
+    accent, accentFg: readableInk(accent),
     up: brand, down: hsl(H, 0.10, 0.52), warn: hsl(38, 0.95, 0.40), info: hsl(212, 0.82, 0.44),
   };
 }
