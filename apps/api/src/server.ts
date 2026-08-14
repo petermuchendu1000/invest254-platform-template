@@ -8,6 +8,7 @@ import {
 } from "@invest254/engine";
 import { createApp, type ApiDeps, type WalletBalance, type BonusStatus, type Brand } from "./app.js";
 import { makePgMarketerRepo } from "./marketers.pg.js";
+import { makePgSupportDeps } from "./support.pg.js";
 
 /**
  * Production bootstrap for the HTTP API. Wires the Postgres-backed repositories, the
@@ -83,6 +84,8 @@ async function buildDeps(): Promise<ApiDeps> {
   const admin = new AdminService(new PgAdminRepository(q));
   const platform = new PlatformService(new PgPlatformRepository(q));
   const notifications = new NotificationService(new PgNotificationRepository(q));
+  const support = makePgSupportDeps(q);
+  if (support) console.log("[api] support chat enabled (RAG over migration 0057)");
 
   return {
     verifier,
@@ -162,6 +165,9 @@ async function buildDeps(): Promise<ApiDeps> {
     positions: (userId, qy, siteId) => repo.listPositions(userId, qy, siteId),
     positionDetail: (userId, id, siteId) => repo.getPositionDetail(userId, id, siteId),
     transactions: (userId, qy, siteId) => payRepo.listTransactions(userId, qy, siteId),
+    // Support chat (docs/11, migration 0057): enabled only when the free embedder + LLM creds
+    // are configured; otherwise the /support routes stay unregistered (unchanged behaviour).
+    ...(support ? { support } : {}),
   };
 }
 

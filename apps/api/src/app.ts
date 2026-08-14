@@ -13,6 +13,7 @@ import { registerAdminRoutes } from "./app.admin.js";
 import { registerPlatformRoutes } from "./app.platform.js";
 import { registerNotificationRoutes } from "./app.notifications.js";
 import { registerMarketerRoutes, type MarketerRepo } from "./app.marketers.js";
+import { registerSupportRoutes, type SupportDeps } from "./app.support.js";
 import type { Server } from "node:http";
 
 /**
@@ -101,6 +102,13 @@ export interface ApiDeps {
   positions(userId: string, q: PositionListQuery, siteId?: string): Promise<Page<PositionRecord>>;
   positionDetail(userId: string, positionId: string, siteId?: string): Promise<PositionDetail | null>;
   transactions(userId: string, q: TxListQuery, siteId?: string): Promise<Page<TransactionRecord>>;
+
+  /**
+   * Support assistant (docs/11, migration 0057). Optional: when present, the RAG chat surface
+   * (`/support/*`) is wired. Grounded-answer logic is `answerSupportQuestion` in
+   * @invest254/shared; recording + retrieval + embedder + LLM are injected here.
+   */
+  support?: SupportDeps;
 }
 
 const BASE = "/api/v1";
@@ -174,6 +182,7 @@ export function createRouter(deps: ApiDeps): Router {
   registerMarketerRoutes(router, deps);
   registerProtectedRoutes(router, deps);
   registerHistoryRoutes(router, deps);
+  registerSupportRoutes(router, deps);
   return router;
 }
 
