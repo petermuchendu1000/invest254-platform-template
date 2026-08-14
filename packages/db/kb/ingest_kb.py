@@ -66,12 +66,33 @@ def embed(texts):
         _embedder = TextEmbedding(MODEL)
     return [list(map(float, v)) for v in _embedder.embed(list(texts))]
 
+def hash_embed(texts, dims: int = 384):
+    """Deterministic zero-model embedder for tests: token-hashed bag-of-words, L2-normalised.
+
+    Shares no code with the production model; it exists so e2e harnesses can validate the
+    pgvector plumbing (storage, cosine ordering, RLS) without loading the ONNX model.
+    """
+    import hashlib, math, re as _re
+    vecs = []
+    for text in texts:
+        v = [0.0] * dims
+        for tok in _re.findall(r"[a-z0-9]+", text.lower()):
+            h = int(hashlib.sha256(tok.encode()).hexdigest(), 16)
+            v[h % dims] += 1.0 if (h >> 64) & 1 == 0 else -1.0
+        norm = math.sqrt(sum(x * x for x in v)) or 1.0
+        vecs.append([x / norm for x in v])
+    return vecs
+
 def _vec_literal(v):
     return "[" + ",".join(f"{x:.6f}" for x in v) + "]"
 
-def ingest(conn, chunks, site_id=None, replace=True):
-    """Embed + insert chunks into kb_chunks. replace=True clears the same (site, source) set first."""
-    vecs = embed([c["content"] for c in chunks])
+def ingest(conn, chunks, site_id=None, replace=True, embed_fn=None):
+    """Embed + insert chunks into kb_chunks. replace=True clears the same (site, source) set first.
+
+    embed_fn defaults to the production bge-small embedder; tests inject hash_embed so the
+    heavy ONNX model never loads in constrained environments.
+    """
+    vecs = (embed_fn or embed)([c["content"] for c in chunks])
     with conn.cursor() as cur:
         if replace:
             srcs = sorted({c["source"] for c in chunks})
