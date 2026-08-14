@@ -9,6 +9,8 @@ import {
 import { createApp, type ApiDeps, type WalletBalance, type BonusStatus, type Brand } from "./app.js";
 import { makePgMarketerRepo } from "./marketers.pg.js";
 import { makePgSupportDeps } from "./support.pg.js";
+import { makeDomainProvisioner } from "./domains.js";
+import type { PlatformOnboardDeps, OnboardInput, OnboardResult } from "./app.platform.js";
 
 /**
  * Production bootstrap for the HTTP API. Wires the Postgres-backed repositories, the
@@ -86,6 +88,66 @@ async function buildDeps(): Promise<ApiDeps> {
   const notifications = new NotificationService(new PgNotificationRepository(q));
   const support = makePgSupportDeps(q);
   if (support) console.log("[api] support chat enabled (RAG over migration 0057)");
+
+  // Instant client onboarding: upsert the brand + economy (service_role SQL, works without the
+  // platform-console RPCs) and optionally provision its domain across Cloudflare + Namecheap.
+  const provisioner = makeDomainProvisioner();
+  if (provisioner) console.log(`[api] domain provisioning enabled (Cloudflare Pages project '${provisioner.pagesProject}')`);
+  const platformOnboard: PlatformOnboardDeps = {
+    domainConfigured: Boolean(provisioner),
+    async onboard(input: OnboardInput): Promise<OnboardResult> {
+      const f = {
+        name: input.name,
+        primary_domain: input.primaryDomain ? input.primaryDomain.trim().toLowerCase() : null,
+        currency: input.currency ?? "KES",
+        locale: input.locale ?? "en-KE",
+        theme: input.theme ?? "dark",
+        color_primary: input.colors?.primary ?? "#22c55e",
+        color_bg: input.colors?.bg ?? "#0a0a0a",
+        color_accent: input.colors?.accent ?? "#06b6d4",
+        wordmark_text: input.wordmarkText ?? input.primaryDomain ?? input.name,
+        licence_line: input.licenceLine ?? null,
+        support_email: input.supportEmail ?? null,
+        status: "active",
+      };
+      const existing = await q.query("select id from sites where slug = $1", [input.slug]);
+      let siteId: string;
+      if (existing.rows.length) {
+        siteId = String(existing.rows[0].id);
+        const sets = Object.keys(f).map((k, i) => `${k} = $${i + 2}`).join(", ");
+        await q.query(`update sites set ${sets}, updated_at = now() where id = $1`, [siteId, ...Object.values(f)]);
+      } else {
+        const cols = ["slug", ...Object.keys(f)];
+        const ph = cols.map((_, i) => `$${i + 1}`).join(", ");
+        const r = await q.query(`insert into sites (${cols.join(", ")}) values (${ph}) returning id`, [input.slug, ...Object.values(f)]);
+        siteId = String(r.rows[0].id);
+      }
+      const g = input.game ?? {};
+      await q.query(
+        `insert into site_game_config (site_id, house_edge, max_multiplier, min_stake, max_stake, min_withdrawal,
+           default_duration_s, tick_rate_ms, drift_bias, volatility, target_win_rate)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+         on conflict (site_id) do update set house_edge=excluded.house_edge, max_multiplier=excluded.max_multiplier,
+           min_stake=excluded.min_stake, max_stake=excluded.max_stake, min_withdrawal=excluded.min_withdrawal,
+           default_duration_s=excluded.default_duration_s, tick_rate_ms=excluded.tick_rate_ms, drift_bias=excluded.drift_bias,
+           volatility=excluded.volatility, target_win_rate=excluded.target_win_rate, version = site_game_config.version + 1, updated_at = now()`,
+        [siteId, g.houseEdge ?? 0.75, g.maxMultiplier ?? 5.0, g.minStake ?? 25000, g.maxStake ?? 5000000,
+         g.minWithdrawal ?? 25000, g.defaultDurationS ?? 10, g.tickRateMs ?? 150, g.driftBias ?? 0.30, g.volatility ?? 1.0, g.targetWinRate ?? 0.125],
+      );
+      const host = f.primary_domain;
+      const resolves = host
+        ? (await q.query("select 1 from sites where status='active' and lower(primary_domain)=$1 and id=$2", [host, siteId])).rows.length > 0
+        : false;
+      const brand = { siteId, slug: input.slug, name: f.name, primaryDomain: host, currency: f.currency, status: f.status, resolvesByHost: resolves };
+      let domainResult = null as OnboardResult["domain"];
+      if (input.provisionDomain && provisioner && host) domainResult = await provisioner.provision(host);
+      return { siteId, brand, domain: domainResult };
+    },
+    async domainStatus(d: string) {
+      if (!provisioner) throw new Error("NOT_CONFIGURED: domain provisioning is not configured");
+      return provisioner.status(d);
+    },
+  };
 
   return {
     verifier,
@@ -168,6 +230,7 @@ async function buildDeps(): Promise<ApiDeps> {
     // Support chat (docs/11, migration 0057): enabled only when the free embedder + LLM creds
     // are configured; otherwise the /support routes stay unregistered (unchanged behaviour).
     ...(support ? { support } : {}),
+    platformOnboard,
   };
 }
 

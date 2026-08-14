@@ -8,49 +8,96 @@ import {
   usePlatformOverview,
   usePlatformSites,
   usePlatformMarketerRollup,
-  useCreateSite,
+  useOnboardClient,
+  useDomainStatus,
   useUpdateSite,
   useSetSiteConfig,
   useSetSiteTheme,
 } from '@/lib/platform/hooks';
-import type { SiteWithConfig, SiteKpis, MarketerRollupGroup } from '@/lib/platform/endpoints';
+import type { SiteWithConfig, SiteKpis, MarketerRollupGroup, OnboardResult } from '@/lib/platform/endpoints';
 import { deriveMinimalPalette } from '@/lib/brand/derivePalette';
 import { groupedPresets, presetForSeed } from '@/lib/brand/presets';
 import { BRAND_FONTS, fontStack, googleFontsHref } from '@/lib/brand/fonts';
 
 const money = (cents: number, cur: string) => `${cur} ${(cents / 100).toLocaleString()}`;
 
-/** Onboard a new brand: slug + name (+ optional currency/domain) → site + default economy. */
-function CreateBrand() {
-  const create = useCreateSite();
+/** Instant client onboarding: brand + economy + (optional) domain provisioning, in one action. */
+function OnboardClient() {
+  const onboard = useOnboardClient();
   const [slug, setSlug] = useState('');
   const [name, setName] = useState('');
   const [currency, setCurrency] = useState('KES');
   const [primaryDomain, setDomain] = useState('');
+  const [supportEmail, setSupportEmail] = useState('');
+  const [colorPrimary, setColor] = useState('#22c55e');
+  const [provision, setProvision] = useState(true);
+  const [result, setResult] = useState<OnboardResult | null>(null);
+
+  const provisionedDomain = result?.domain?.domain ?? null;
+  const status = useDomainStatus(provisionedDomain);
 
   return (
-    <Section title="Onboard a brand">
+    <Section title="Onboard a client">
       <form
-        className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-4"
+        className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3"
         onSubmit={(e) => {
           e.preventDefault();
-          create.mutate(
-            { slug: slug.trim(), name: name.trim(), currency: currency.trim() || 'KES', primaryDomain: primaryDomain.trim() || undefined },
-            { onSuccess: () => { setSlug(''); setName(''); setDomain(''); } },
+          const dom = primaryDomain.trim();
+          const email = supportEmail.trim();
+          onboard.mutate(
+            {
+              slug: slug.trim(), name: name.trim(), currency: currency.trim() || 'KES',
+              ...(dom ? { primaryDomain: dom } : {}),
+              ...(email ? { supportEmail: email } : {}),
+              colors: { primary: colorPrimary },
+              provisionDomain: provision && Boolean(dom),
+            },
+            { onSuccess: (r) => setResult(r) },
           );
         }}
       >
-        <Input label="Slug" name="slug" value={slug} onChange={(e) => setSlug(e.target.value)} placeholder="brandb" required />
-        <Input label="Name" name="name" value={name} onChange={(e) => setName(e.target.value)} placeholder="Brand B" required />
+        <Input label="Brand name" name="name" value={name} onChange={(e) => setName(e.target.value)} placeholder="Tamu Traders" required />
+        <Input label="Slug" name="slug" value={slug} onChange={(e) => setSlug(e.target.value)} placeholder="tamutraders" required />
+        <Input label="Primary domain" name="primaryDomain" value={primaryDomain} onChange={(e) => setDomain(e.target.value)} placeholder="tamutraders.com" optional />
         <Input label="Currency" name="currency" value={currency} onChange={(e) => setCurrency(e.target.value)} />
-        <Input label="Primary domain" name="primaryDomain" value={primaryDomain} onChange={(e) => setDomain(e.target.value)} placeholder="brandb.example" optional />
-        <div className="sm:col-span-2 md:col-span-4">
-          <Button type="submit" disabled={create.isPending || !slug.trim() || !name.trim()}>
-            {create.isPending ? 'Creating…' : 'Create brand'}
+        <Input label="Support email" name="supportEmail" type="email" value={supportEmail} onChange={(e) => setSupportEmail(e.target.value)} placeholder="support@tamutraders.com" optional />
+        <label className="flex flex-col gap-1.5 text-sm">
+          <span className="font-medium text-fg">Brand colour</span>
+          <input type="color" value={colorPrimary} onChange={(e) => setColor(e.target.value)} className="h-12 w-full rounded-xl border border-border bg-surface-2" />
+        </label>
+        <label className="flex items-center gap-2 text-sm text-fg sm:col-span-2 md:col-span-3">
+          <input type="checkbox" checked={provision} onChange={(e) => setProvision(e.target.checked)} />
+          Provision the domain automatically (Cloudflare zone + DNS + SSL, Namecheap nameservers)
+        </label>
+        <div className="sm:col-span-2 md:col-span-3">
+          <Button type="submit" disabled={onboard.isPending || !slug.trim() || !name.trim()}>
+            {onboard.isPending ? 'Creating…' : 'Create client'}
           </Button>
-          {create.isError ? <span className="ml-3 text-sm text-down">{(create.error as Error).message}</span> : null}
+          {onboard.isError ? <span className="ml-3 text-sm text-down">{(onboard.error as Error).message}</span> : null}
         </div>
       </form>
+
+      {result ? (
+        <div className="mt-3 flex flex-col gap-2 rounded-2xl border border-border bg-surface p-4 text-sm">
+          <p className="text-fg">
+            <span className="font-semibold">{result.brand.name}</span> is live (site_id {result.brand.siteId.slice(0, 8)}).
+            {result.brand.primaryDomain ? <> Domain <span className="font-mono">{result.brand.primaryDomain}</span>.</> : null}
+            {' '}Brand resolves by host: {result.brand.resolvesByHost ? 'yes' : 'no'}.
+          </p>
+          {result.domain ? (
+            <div className="flex flex-col gap-1 text-muted">
+              <span>Nameservers set at the registrar: <span className="font-mono text-fg">{result.domain.nameServers.join(', ')}</span></span>
+              <span>{result.domain.note}</span>
+              <span>
+                Live status: zone <span className="font-mono text-fg">{status.data?.zoneStatus ?? result.domain.zoneStatus}</span>
+                {status.data ? <> · {status.data.active ? 'ACTIVE (SSL issued)' : 'provisioning… (auto-refreshing)'}</> : null}
+              </span>
+            </div>
+          ) : (
+            <span className="text-muted">No domain provisioning was requested. Add a primary domain and enable the toggle to auto-provision.</span>
+          )}
+        </div>
+      ) : null}
     </Section>
   );
 }
@@ -338,7 +385,7 @@ export default function PlatformPage() {
         </TableWrap>
       </Section>
 
-      <CreateBrand />
+      <OnboardClient />
 
       <Section title="Brands">
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">

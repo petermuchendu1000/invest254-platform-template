@@ -31,6 +31,21 @@ export interface MarketerRollupGroup {
 }
 
 /** Platform-superadmin API surface (docs/22 Task H + R). All calls require a platform_superadmin token. */
+export interface OnboardColors { primary?: string; bg?: string; accent?: string }
+export interface OnboardBody {
+  slug: string; name: string; primaryDomain?: string; currency?: string; supportEmail?: string;
+  colors?: OnboardColors; provisionDomain?: boolean;
+}
+export interface ProvisionResult {
+  domain: string; zoneId: string; nameServers: string[]; zoneStatus: string;
+  nameserversUpdated: boolean; pages: { name: string; status: string }[]; note: string;
+}
+export interface OnboardBrand {
+  siteId: string; slug: string; name: string; primaryDomain: string | null; currency: string; status: string; resolvesByHost: boolean;
+}
+export interface OnboardResult { siteId: string; brand: OnboardBrand; domain: ProvisionResult | null }
+export interface DomainStatus { domain: string; zoneStatus: string | null; pages: { name: string; status: string }[]; active: boolean }
+
 export const platformApi = {
   overview: (t: string) => apiFetch<{ sites: SiteKpis[] }>('/platform/overview', { token: t }),
   sites: (t: string) => apiFetch<{ sites: SiteWithConfig[] }>('/platform/sites', { token: t }),
@@ -44,4 +59,7 @@ export const platformApi = {
     apiFetch<SiteRow>(`/platform/sites/${id}/theme`, { method: 'PATCH', token: t, body: { tokens } }),
   // Task R — cross-brand marketer rollup (reporting only).
   marketerRollup: (t: string) => apiFetch<{ marketers: MarketerRollupGroup[] }>('/platform/marketers/rollup', { token: t }),
+  // Instant client onboarding (brand + economy + optional domain provisioning).
+  onboard: (t: string, body: OnboardBody) => apiFetch<OnboardResult>('/platform/onboard', { method: 'POST', token: t, body }),
+  domainStatus: (t: string, domain: string) => apiFetch<DomainStatus>('/platform/onboard/domain-status', { token: t, query: { domain } }),
 };
