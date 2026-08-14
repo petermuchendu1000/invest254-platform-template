@@ -51,7 +51,7 @@ CF_AI_API_TOKEN=<workers ai token>
 # CF_EMBED_MODEL defaults to @cf/baai/bge-small-en-v1.5
 
 # LLM — any OpenAI-compatible endpoint; Groq free tier by default
-SUPPORT_LLM_API_KEY=<groq api key>
+SUPPORT_LLM_API_KEY=<groq api key>   # or set GROQ_API_KEY (used as a fallback)
 # SUPPORT_LLM_BASE_URL defaults to https://api.groq.com/openai/v1
 # SUPPORT_LLM_MODEL   defaults to llama-3.1-8b-instant
 
@@ -62,6 +62,23 @@ SUPPORT_MSG_WINDOW_MS=10000
 ```
 
 The web widget calls the API at `NEXT_PUBLIC_API_BASE_URL`; no extra web config is required.
+
+> Note: Groq's free tier caps tokens-per-minute (e.g. 6000 TPM for `llama-3.1-8b-instant`). The
+> grounded prompt is bounded by `maxContextChars`; the per-IP rate limit keeps normal traffic under
+> the cap. For heavier volume, lower `topK`/context, use a smaller-context model, or a paid tier.
+> The adapters send an explicit `User-Agent` (Groq is fronted by Cloudflare, which blocks default
+> library agents).
+
+### Live validation
+
+`scripts/support_smoke.ts` wires the real production adapters (Postgres store + `fn_kb_search` +
+Cloudflare embedder + Groq LLM) to `answerSupportQuestion` and runs a few questions against the
+live knowledge base, records a transcript, escalates, and cleans up its test rows:
+
+```
+DATABASE_URL=... CF_ACCOUNT_ID=... CF_AI_API_TOKEN=... SUPPORT_LLM_API_KEY=... \
+  node --import tsx scripts/support_smoke.ts
+```
 
 ## 5. Ingesting the knowledge base
 

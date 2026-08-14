@@ -126,7 +126,7 @@ export function makeCloudflareEmbedder(): EmbedFn {
   return async (texts) => {
     const res = await fetch(url, {
       method: "POST",
-      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "user-agent": "invest254-support/1.0" },
       body: JSON.stringify({ text: texts }),
     });
     if (!res.ok) throw new Error(`EMBED_HTTP_${res.status}: ${(await res.text()).slice(0, 200)}`);
@@ -143,13 +143,13 @@ export function makeCloudflareEmbedder(): EmbedFn {
  */
 export function makeOpenAiCompatibleLlm(): LlmFn {
   const baseUrl = process.env.SUPPORT_LLM_BASE_URL ?? "https://api.groq.com/openai/v1";
-  const apiKey = process.env.SUPPORT_LLM_API_KEY;
+  const apiKey = process.env.SUPPORT_LLM_API_KEY ?? process.env.GROQ_API_KEY;
   const model = process.env.SUPPORT_LLM_MODEL ?? "llama-3.1-8b-instant";
-  if (!apiKey) throw new Error("SUPPORT: SUPPORT_LLM_API_KEY is required for the LLM adapter");
+  if (!apiKey) throw new Error("SUPPORT: SUPPORT_LLM_API_KEY (or GROQ_API_KEY) is required for the LLM adapter");
   return async (messages: LlmMessage[], opts) => {
     const res = await fetch(`${baseUrl.replace(/\/$/, "")}/chat/completions`, {
       method: "POST",
-      headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
+      headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json", "user-agent": "invest254-support/1.0" },
       body: JSON.stringify({
         model,
         messages,
@@ -184,7 +184,7 @@ export function makeBrandInfo(q: Querier): (siteId: string) => Promise<SupportBr
 export function makePgSupportDeps(q: Querier): SupportDeps | undefined {
   if (process.env.SUPPORT_CHAT_ENABLED === "false") return undefined;
   const haveEmbed = Boolean(process.env.CF_ACCOUNT_ID && process.env.CF_AI_API_TOKEN);
-  const haveLlm = Boolean(process.env.SUPPORT_LLM_API_KEY);
+  const haveLlm = Boolean(process.env.SUPPORT_LLM_API_KEY || process.env.GROQ_API_KEY);
   if (!haveEmbed || !haveLlm) return undefined;
   return {
     store: makePgSupportStore(q),
