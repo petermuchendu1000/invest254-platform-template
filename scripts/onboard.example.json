@@ -1,0 +1,25 @@
+{
+  "slug": "lucky7",
+  "name": "Lucky7",
+  "primaryDomain": "lucky7.co.ke",
+  "currency": "KES",
+  "locale": "en-KE",
+  "theme": "dark",
+  "colors": { "primary": "#f59e0b", "bg": "#0a0a0a", "accent": "#06b6d4" },
+  "wordmarkText": "lucky7.co.ke",
+  "licenceLine": "Lucky7 operates under licence (BCLB).",
+  "supportEmail": "support@lucky7.co.ke",
+  "game": {
+    "houseEdge": 0.75,
+    "maxMultiplier": 5.0,
+    "minStake": 25000,
+    "maxStake": 5000000,
+    "minWithdrawal": 25000,
+    "defaultDurationS": 10,
+    "tickRateMs": 150,
+    "driftBias": 0.30,
+    "volatility": 1.0,
+    "targetWinRate": 0.125
+  },
+  "verify": { "question": "How do I deposit money using M-Pesa?" }
+}
