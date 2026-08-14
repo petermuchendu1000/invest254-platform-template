@@ -1,6 +1,30 @@
 import { Router, ApiError, requireAuth, requireRole, type Ctx } from "./http.js";
 import type { MarketerRollupRow } from "@invest254/engine";
 import type { ApiDeps } from "./app.js";
+import type { ProvisionResult, DomainStatus } from "./domains.js";
+
+// ── Instant client onboarding (docs/21) — brand + economy + optional domain provisioning ──
+export interface OnboardColors { primary?: string; bg?: string; accent?: string }
+export interface OnboardGame {
+  houseEdge?: number; maxMultiplier?: number; minStake?: number; maxStake?: number; minWithdrawal?: number;
+  defaultDurationS?: number; tickRateMs?: number; driftBias?: number; volatility?: number; targetWinRate?: number;
+}
+export interface OnboardInput {
+  slug: string; name: string; primaryDomain?: string; currency?: string; locale?: string; theme?: string;
+  colors?: OnboardColors; wordmarkText?: string; licenceLine?: string; supportEmail?: string;
+  game?: OnboardGame; provisionDomain?: boolean;
+}
+export interface OnboardBrand {
+  siteId: string; slug: string; name: string; primaryDomain: string | null; currency: string;
+  status: string; resolvesByHost: boolean;
+}
+export interface OnboardResult { siteId: string; brand: OnboardBrand; domain: ProvisionResult | null }
+export interface PlatformOnboardDeps {
+  /** True when the Cloudflare + Namecheap secrets are present so a domain can be auto-provisioned. */
+  domainConfigured: boolean;
+  onboard(input: OnboardInput): Promise<OnboardResult>;
+  domainStatus(domain: string): Promise<DomainStatus>;
+}
 
 /**
  * Platform-superadmin console (docs/22 Task H) — cross-brand operations, gated to
@@ -80,6 +104,45 @@ function groupMarketerRollup(rows: MarketerRollupRow[]): MarketerGroup[] {
 export function registerPlatformRoutes(router: Router, deps: ApiDeps): void {
   const auth = requireAuth(deps.verifier);
   const platform = requireRole("platform_superadmin");
+
+  const SLUG_RE = /^[a-z0-9][a-z0-9-]{1,40}$/;
+
+  // Instant client onboarding: create/upsert the brand + economy and optionally provision its
+  // domain (Cloudflare zone + DNS + Pages custom domain, Namecheap nameservers) in one call.
+  router.post(`${BASE}/platform/onboard`, auth, platform, async (ctx: Ctx) => {
+    if (!deps.platformOnboard) throw new ApiError("NOT_CONFIGURED", "onboarding is not configured on this deployment", 503);
+    const b = asObject(ctx.body);
+    if (typeof b.slug !== "string" || !SLUG_RE.test(b.slug)) throw new ApiError("VALIDATION", "slug must be lowercase letters, digits and hyphens", 400);
+    if (typeof b.name !== "string" || !b.name.trim()) throw new ApiError("VALIDATION", "name is required", 400);
+    const str = (k: string): string | undefined => (typeof b[k] === "string" && (b[k] as string).trim() ? (b[k] as string).trim() : undefined);
+    const colors = (b.colors && typeof b.colors === "object" && !Array.isArray(b.colors)) ? b.colors as OnboardColors : undefined;
+    const game = (b.game && typeof b.game === "object" && !Array.isArray(b.game)) ? b.game as OnboardGame : undefined;
+    const primaryDomain = str("primaryDomain"), currency = str("currency"), locale = str("locale"), theme = str("theme");
+    const wordmarkText = str("wordmarkText"), licenceLine = str("licenceLine"), supportEmail = str("supportEmail");
+    const input: OnboardInput = {
+      slug: b.slug, name: b.name.trim(),
+      ...(primaryDomain ? { primaryDomain } : {}),
+      ...(currency ? { currency } : {}),
+      ...(locale ? { locale } : {}),
+      ...(theme ? { theme } : {}),
+      ...(wordmarkText ? { wordmarkText } : {}),
+      ...(licenceLine ? { licenceLine } : {}),
+      ...(supportEmail ? { supportEmail } : {}),
+      ...(colors ? { colors } : {}),
+      ...(game ? { game } : {}),
+      provisionDomain: b.provisionDomain === true,
+    };
+    const res = await domain(() => deps.platformOnboard!.onboard(input));
+    return { status: 201, body: res };
+  });
+
+  // Poll a domain's provisioning status (zone active + Pages custom domains validated).
+  router.get(`${BASE}/platform/onboard/domain-status`, auth, platform, async (ctx: Ctx) => {
+    if (!deps.platformOnboard) throw new ApiError("NOT_CONFIGURED", "onboarding is not configured on this deployment", 503);
+    const d = ctx.query.get("domain");
+    if (!d || !d.trim()) throw new ApiError("VALIDATION", "domain is required", 400);
+    return domain(() => deps.platformOnboard!.domainStatus(d.trim()));
+  });
 
   router.get(`${BASE}/platform/overview`, auth, platform, async (ctx: Ctx) =>
     ({ sites: await domain(() => deps.platform.overview(ctx.claims!.role ?? "player")) }));

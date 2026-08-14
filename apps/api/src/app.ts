@@ -14,6 +14,7 @@ import { registerPlatformRoutes } from "./app.platform.js";
 import { registerNotificationRoutes } from "./app.notifications.js";
 import { registerMarketerRoutes, type MarketerRepo } from "./app.marketers.js";
 import { registerSupportRoutes, type SupportDeps } from "./app.support.js";
+import type { PlatformOnboardDeps } from "./app.platform.js";
 import type { Server } from "node:http";
 
 /**
@@ -109,6 +110,12 @@ export interface ApiDeps {
    * @invest254/shared; recording + retrieval + embedder + LLM are injected here.
    */
   support?: SupportDeps;
+
+  /**
+   * Instant client onboarding (docs/21): create a brand + economy and optionally provision its
+   * domain across Cloudflare + Namecheap. Optional; when absent the /platform/onboard route 503s.
+   */
+  platformOnboard?: PlatformOnboardDeps;
 }
 
 const BASE = "/api/v1";

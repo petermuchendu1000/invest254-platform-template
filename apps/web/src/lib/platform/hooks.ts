@@ -1,7 +1,7 @@
 'use client';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { platformApi, type CreateSiteBody } from '@/lib/platform/endpoints';
+import { platformApi, type CreateSiteBody, type OnboardBody } from '@/lib/platform/endpoints';
 import { useSession } from '@/lib/auth/session';
 
 function useTok() {
@@ -37,6 +37,24 @@ export function useCreateSite() {
   const t = useTok();
   const invalidate = useInvalidate();
   return useMutation({ mutationFn: (body: CreateSiteBody) => platformApi.createSite(t, body), onSuccess: invalidate });
+}
+
+/** Instant client onboarding: brand + economy (+ optional domain provisioning) in one call. */
+export function useOnboardClient() {
+  const t = useTok();
+  const invalidate = useInvalidate();
+  return useMutation({ mutationFn: (body: OnboardBody) => platformApi.onboard(t, body), onSuccess: invalidate });
+}
+
+/** Poll a domain's provisioning status (zone active + Pages custom domains validated). */
+export function useDomainStatus(domain: string | null) {
+  const t = useTok();
+  return useQuery({
+    queryKey: ['platform', 'domain-status', domain],
+    queryFn: () => platformApi.domainStatus(t, domain as string),
+    enabled: !!t && !!domain,
+    refetchInterval: 15_000,
+  });
 }
 
 export function useUpdateSite() {

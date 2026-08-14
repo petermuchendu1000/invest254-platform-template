@@ -9,6 +9,7 @@ import {
 import { createApp, type ApiDeps, type WalletBalance, type Brand } from "./app.js";
 import type { MarketerRepo, MarketerRow, MarketerProfile, MarketerLedgerRow, WithdrawResult } from "./app.marketers.js";
 import type { SupportDeps, SupportStore, SupportConversation, SupportMessageRow } from "./app.support.js";
+import type { PlatformOnboardDeps, OnboardInput, OnboardResult } from "./app.platform.js";
 import type { EmbedFn, KbHit, LlmFn, LlmMessage, SupportBrandInfo } from "@invest254/shared";
 import { createHash } from "node:crypto";
 
@@ -282,6 +283,8 @@ export interface TestApi {
   platformRepo: InMemoryPlatformRepository;
   /** Support-chat fakes (seed KB, swap LLM, inspect recorded conversations/messages). */
   support: SupportHarness;
+  /** Instant-onboarding fake: recorded inputs + the in-memory deps. */
+  onboard: { calls: OnboardInput[]; deps: PlatformOnboardDeps };
   close(): Promise<void>;
 }
 
@@ -330,6 +333,28 @@ export async function startTestApi(opts: TestApiOptions = {}): Promise<TestApi> 
     return { name: b?.name ?? "Invest254", supportEmail: b?.supportEmail ?? null, currency: b?.currency ?? "KES" };
   });
 
+  // Instant-onboarding harness: an in-memory PlatformOnboardDeps that records inputs and returns
+  // a deterministic provision result (no real Cloudflare/Namecheap calls).
+  const onboardCalls: OnboardInput[] = [];
+  const onboardDeps: PlatformOnboardDeps = {
+    domainConfigured: true,
+    async onboard(input: OnboardInput): Promise<OnboardResult> {
+      onboardCalls.push(input);
+      const host = input.primaryDomain ? input.primaryDomain.trim().toLowerCase() : null;
+      const brand = {
+        siteId: `site-${input.slug}`, slug: input.slug, name: input.name, primaryDomain: host,
+        currency: input.currency ?? "KES", status: "active", resolvesByHost: Boolean(host),
+      };
+      const domain = input.provisionDomain && host
+        ? { domain: host, zoneId: "z-test", nameServers: ["a.ns.cloudflare.com", "b.ns.cloudflare.com"], zoneStatus: "pending", nameserversUpdated: true, pages: [{ name: host, status: "initializing" }, { name: `www.${host}`, status: "initializing" }], note: "test" }
+        : null;
+      return { siteId: brand.siteId, brand, domain };
+    },
+    async domainStatus(d: string) {
+      return { domain: d, zoneStatus: "pending", pages: [{ name: d, status: "initializing" }], active: false };
+    },
+  };
+
   const deps: ApiDeps = {
     verifier: stubVerifier(),
     auth,
@@ -350,6 +375,7 @@ export async function startTestApi(opts: TestApiOptions = {}): Promise<TestApi> 
     positionDetail: (userId, id, siteId) => gameRepo.getPositionDetail(userId, id, siteId),
     transactions: (userId, q, siteId) => payRepo.listTransactions(userId, q, siteId),
     support: support.deps,
+    platformOnboard: onboardDeps,
     ...opts.depsOverrides,
   };
 
@@ -364,6 +390,7 @@ export async function startTestApi(opts: TestApiOptions = {}): Promise<TestApi> 
     marketers: deps.marketers,
     platformRepo,
     support,
+    onboard: { calls: onboardCalls, deps: onboardDeps },
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),
   };
 }
