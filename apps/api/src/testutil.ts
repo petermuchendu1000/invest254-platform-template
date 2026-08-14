@@ -8,6 +8,9 @@ import {
 } from "@invest254/engine";
 import { createApp, type ApiDeps, type WalletBalance, type Brand } from "./app.js";
 import type { MarketerRepo, MarketerRow, MarketerProfile, MarketerLedgerRow, WithdrawResult } from "./app.marketers.js";
+import type { SupportDeps, SupportStore, SupportConversation, SupportMessageRow } from "./app.support.js";
+import type { EmbedFn, KbHit, LlmFn, LlmMessage, SupportBrandInfo } from "@invest254/shared";
+import { createHash } from "node:crypto";
 
 /** In-memory MarketerRepo mirroring the SQL RPCs (0033): overdraw guard, idempotency, initials. */
 export function makeInMemoryMarketerRepo(): MarketerRepo {
@@ -85,6 +88,139 @@ export function makeInMemoryMarketerRepo(): MarketerRepo {
   };
 }
 
+// ── Support-chat fakes (deterministic; no ONNX, no network) ─────────────────────────────
+const EMBED_DIMS = 384;
+/** Deterministic zero-model embedder: token-hashed bag-of-words, L2-normalised (mirrors the
+ *  Python `hash_embed` used by the DB e2e). Lexical, not semantic, but perfect for asserting
+ *  the retrieval pipeline (cosine ordering + scoping) with hand-crafted chunks. */
+export function makeHashEmbed(dims = EMBED_DIMS): EmbedFn {
+  return async (texts: string[]) =>
+    texts.map((t) => {
+      const v = new Array<number>(dims).fill(0);
+      for (const tok of t.toLowerCase().match(/[a-z0-9]+/g) ?? []) {
+        const h = createHash("sha256").update(tok).digest();
+        const idx = h.readUInt32BE(0) % dims;
+        v[idx]! += (h[8]! & 1) === 0 ? 1 : -1;
+      }
+      let norm = 0;
+      for (const x of v) norm += x * x;
+      norm = Math.sqrt(norm) || 1;
+      return v.map((x) => x / norm);
+    });
+}
+
+const dot = (a: number[], b: number[]): number => {
+  let s = 0;
+  const n = Math.min(a.length, b.length);
+  for (let i = 0; i < n; i++) s += a[i]! * b[i]!;
+  return s;
+};
+
+export interface SeedChunk { siteId: string | null; source: string; heading?: string | null; content: string; }
+
+export interface SupportHarness {
+  deps: SupportDeps;
+  store: SupportStore;
+  /** Seed KB chunks (site_id null = shared). Vectors are computed with the hash embedder. */
+  seedKb(chunks: SeedChunk[]): Promise<void>;
+  /** Swap the LLM at runtime (default echoes an em-dash answer that quotes the top context). */
+  setLlm(fn: LlmFn): void;
+  llmCalls: LlmMessage[][];
+  conversations: Map<string, SupportConversation>;
+  messages: Map<string, SupportMessageRow[]>;
+}
+
+/** Build the in-memory support deps: hash embedder, seedable KB, recording store, fake LLM. */
+export function makeSupportHarness(brandOf: (siteId: string) => SupportBrandInfo): SupportHarness {
+  const embed = makeHashEmbed();
+  const kb: Array<{ siteId: string | null; source: string; heading: string | null; content: string; vector: number[] }> = [];
+  const llmCalls: LlmMessage[][] = [];
+  let llm: LlmFn = async (messages) => {
+    // Default: quote the first context line and deliberately include an em dash so tests can
+    // prove the transport strips it. If no context, answer with an uncertain line.
+    const sys = messages[0]?.content ?? "";
+    const m = sys.match(/\n\[1\][^\n]*\n([^\n]+)/);
+    return m ? `Here is what I found \u2014 ${m[1]}` : "I am not certain about that, let me connect you with a human.";
+  };
+
+  const conversations = new Map<string, SupportConversation>();
+  const messages = new Map<string, SupportMessageRow[]>();
+  let cseq = 0, mseq = 0;
+  const now = () => new Date().toISOString();
+
+  const store: SupportStore = {
+    async start(siteId, opts) {
+      const id = `c0000000-0000-0000-0000-${String(++cseq).padStart(12, "0")}`;
+      conversations.set(id, {
+        id, siteId, userId: opts.userId ?? null, visitorId: opts.visitorId ?? null,
+        status: "open", escalated: false, contactEmail: null, contactPhone: null,
+        createdAt: now(), lastAt: now(),
+      });
+      messages.set(id, []);
+      return id;
+    },
+    async log(conversationId, role, content, sources, confidence) {
+      const conv = conversations.get(conversationId);
+      if (!conv) throw new Error("CONVERSATION_NOT_FOUND");
+      const id = `d0000000-0000-0000-0000-${String(++mseq).padStart(12, "0")}`;
+      (messages.get(conversationId) ?? []).push({
+        id, conversationId, siteId: conv.siteId, role, content, sources, confidence, createdAt: now(),
+      });
+      conv.lastAt = now();
+      return id;
+    },
+    async escalate(conversationId, contact) {
+      const conv = conversations.get(conversationId);
+      if (!conv) throw new Error("CONVERSATION_NOT_FOUND");
+      conv.escalated = true;
+      conv.status = "escalated";
+      conv.contactEmail = contact.email ?? conv.contactEmail;
+      conv.contactPhone = contact.phone ?? conv.contactPhone;
+      conv.lastAt = now();
+    },
+    async getConversation(conversationId) {
+      return conversations.get(conversationId) ?? null;
+    },
+    async listMessages(conversationId) {
+      return (messages.get(conversationId) ?? []).slice();
+    },
+    async listConversations(scope, opts) {
+      return [...conversations.values()]
+        .filter((c) => scope === null || c.siteId === scope)
+        .sort((a, b) => b.lastAt.localeCompare(a.lastAt))
+        .slice(0, opts.limit);
+    },
+  };
+
+  const searchKb = async (siteId: string, embedding: number[], k: number): Promise<KbHit[]> =>
+    kb
+      .filter((c) => c.siteId === null || c.siteId === siteId)
+      .map((c) => ({ source: c.source, heading: c.heading, content: c.content, distance: 1 - dot(c.vector, embedding) }))
+      .sort((a, b) => a.distance - b.distance)
+      .slice(0, k);
+
+  const deps: SupportDeps = {
+    store,
+    embed,
+    searchKb,
+    llm: (messages2, opts) => { llmCalls.push(messages2); return llm(messages2, opts); },
+    brandInfo: async (siteId) => brandOf(siteId),
+  };
+
+  return {
+    deps,
+    store,
+    async seedKb(chunks) {
+      const vectors = await embed(chunks.map((c) => c.content));
+      chunks.forEach((c, i) => kb.push({ siteId: c.siteId, source: c.source, heading: c.heading ?? null, content: c.content, vector: vectors[i]! }));
+    },
+    setLlm(fn) { llm = fn; },
+    llmCalls,
+    conversations,
+    messages,
+  };
+}
+
 /**
  * In-memory test harness: builds an app from REAL engine services backed by in-memory
  * repositories, listens on an ephemeral port, and returns the base URL + a close fn + the
@@ -144,6 +280,8 @@ export interface TestApi {
   marketers: MarketerRepo;
   /** The in-memory platform repo, so tests can seed brands + marketer rollup rows (Task R). */
   platformRepo: InMemoryPlatformRepository;
+  /** Support-chat fakes (seed KB, swap LLM, inspect recorded conversations/messages). */
+  support: SupportHarness;
   close(): Promise<void>;
 }
 
@@ -186,6 +324,12 @@ export async function startTestApi(opts: TestApiOptions = {}): Promise<TestApi> 
   const platform = new PlatformService(platformRepo);
   const notifications = new NotificationService(new InMemoryNotificationRepository());
 
+  // Support-chat harness: resolve brand facts from the seeded test brands (default fallback).
+  const support = makeSupportHarness((siteId) => {
+    const b = Object.values(TEST_BRANDS).find((x) => x.siteId === siteId);
+    return { name: b?.name ?? "Invest254", supportEmail: b?.supportEmail ?? null, currency: b?.currency ?? "KES" };
+  });
+
   const deps: ApiDeps = {
     verifier: stubVerifier(),
     auth,
@@ -205,6 +349,7 @@ export async function startTestApi(opts: TestApiOptions = {}): Promise<TestApi> 
     positions: (userId, q, siteId) => gameRepo.listPositions(userId, q, siteId),
     positionDetail: (userId, id, siteId) => gameRepo.getPositionDetail(userId, id, siteId),
     transactions: (userId, q, siteId) => payRepo.listTransactions(userId, q, siteId),
+    support: support.deps,
     ...opts.depsOverrides,
   };
 
@@ -218,6 +363,7 @@ export async function startTestApi(opts: TestApiOptions = {}): Promise<TestApi> 
     notifications,
     marketers: deps.marketers,
     platformRepo,
+    support,
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),
   };
 }
