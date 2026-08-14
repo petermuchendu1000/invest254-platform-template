@@ -78,7 +78,15 @@ The API/engine resolve `sites.master_seed_ref` → `process.env[that_name]`.
   and `…/s/lucky7/withdrawals/mpesa/result/:txId` (the `/s/<slug>` prefix resolves the site).
 
 ### Step 5 — Bootstrap the site's operator
-Register a normal account on `lucky7.co.ke`, then promote it (once) to the brand's admin:
+Register a normal account on `lucky7.co.ke`, then promote it (once) to the brand's admin.
+Fastest path is the reusable script (registers or resets, sets the role, verifies login):
+
+```
+DATABASE_URL=... node --import tsx scripts/make_operator.ts <phone> <password> [role] [siteId]
+# e.g. platform owner:  scripts/make_operator.ts 0798661061 '<pw>' platform_superadmin
+```
+
+Or by SQL:
 
 ```sql
 update public.profiles set role = 'site_superadmin'
