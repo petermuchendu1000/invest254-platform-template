@@ -10,6 +10,7 @@ import { WalletModal } from '@/components/wallet/WalletModal';
 import { SessionBootstrap } from '@/components/auth/SessionBootstrap';
 import { NotificationBanners } from '@/components/notifications/NotificationBanners';
 import { RegisterSW } from '@/components/RegisterSW';
+import { SupportWidget } from '@/components/support/SupportWidget';
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -44,6 +45,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <AuthModal />
         <WalletModal />
         <RegisterSW />
+        <SupportWidget />
       </div>
     );
   }
@@ -61,6 +63,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <AuthModal />
       <WalletModal />
       <RegisterSW />
+      <SupportWidget />
     </div>
   );
 }
