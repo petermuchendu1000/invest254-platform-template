@@ -35,6 +35,7 @@ const SECTIONS: NavSection[] = [
       { href: '/admin/finance', label: 'Finance', icon: <Icon d="M3 6h18M3 12h18M3 18h18M7 3v18" /> },
       { href: '/admin/affiliates', label: 'Affiliates', icon: <Icon d="M17 20h5v-2a4 4 0 00-3-3.87M9 20H4v-2a4 4 0 013-3.87m6-1.13a4 4 0 10-4 0m8-4a3 3 0 10-3-3" /> },
       { href: '/admin/marketers', label: 'Marketers', icon: <Icon d="M12 8c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4-1.79-4-4-4zm9 4h-2m-14 0H3m9-9V1m0 22v-2" /> },
+      { href: '/admin/support', label: 'Support', icon: <Icon d="M21 11.5a8.38 8.38 0 01-.9 3.8 8.5 8.5 0 01-7.6 4.7 8.38 8.38 0 01-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 01-.9-3.8 8.5 8.5 0 014.7-7.6 8.38 8.38 0 013.8-.9h.5a8.48 8.48 0 018 8v.5z" /> },
       { href: '/admin/reports', label: 'Reports', icon: <Icon d="M9 17v-6m4 6V7m4 10v-4M5 21h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v14a2 2 0 002 2z" /> },
       { href: '/admin/audit', label: 'Audit log', icon: <Icon d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /> },
     ],
