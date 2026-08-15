@@ -10,6 +10,10 @@ export interface SiteRow {
   primaryDomain: string | null; logoUrl: string | null; faviconUrl: string | null; wordmarkText: string | null;
   colorPrimary: string; colorBg: string; colorAccent: string; theme: string;
   currency: string; locale: string; licenceLine: string | null; supportEmail: string | null;
+  // Per-brand M-Pesa config (non-secret) + which secret refs are set + legal copy (docs/24).
+  mpesaEnv?: string | null; mpesaShortcode?: string | null; mpesaCallbackBase?: string | null; mpesaB2cInitiator?: string | null;
+  hasMpesaConsumerKey?: boolean; hasMpesaConsumerSecret?: boolean; hasMpesaPasskey?: boolean; hasMpesaB2cCredential?: boolean;
+  legalCopy?: Record<string, unknown> | null;
 }
 export interface SiteWithConfig extends SiteRow { config: SiteConfig }
 export interface SiteKpis {

@@ -358,6 +358,79 @@ function AuditSection({ site }: { site: SiteWithConfig }) {
   );
 }
 
+/** Per-brand M-Pesa config (non-secret). Secret values are infra-managed; live routing note below. */
+function PaymentsSection({ site }: { site: SiteWithConfig }) {
+  const update = useUpdateSite();
+  const toast = useToast();
+  const init = useMemo(() => ({
+    mpesa_env: site.mpesaEnv ?? 'sandbox', mpesa_shortcode: site.mpesaShortcode ?? '',
+    mpesa_callback_base: site.mpesaCallbackBase ?? '', mpesa_b2c_initiator: site.mpesaB2cInitiator ?? '',
+  }), [site]);
+  const [form, setForm] = useState(init);
+  useEffect(() => setForm(init), [init]);
+  const set = (k: keyof typeof init) => (e: { target: { value: string } }) => setForm((s) => ({ ...s, [k]: e.target.value }));
+  const patch = useMemo(() => Object.fromEntries(Object.entries(form).filter(([k, v]) => v !== (init as Record<string, string>)[k])), [form, init]);
+  const dirty = Object.keys(patch).length;
+  const secret = (label: string, present?: boolean) => (
+    <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${present ? 'bg-up/15 text-up' : 'bg-surface-2 text-muted'}`}>{label}: {present ? 'set' : 'unset'}</span>
+  );
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="rounded-brand border border-warn/40 bg-warn/5 p-3 text-xs text-muted">
+        Per-brand M-Pesa <strong>config</strong>. Secret values (consumer key/secret, passkey, B2C credential) are
+        infra-managed and shown as status only. Note: live STK/B2C routing currently uses the platform-wide config;
+        per-brand payment routing ships with secret-ref resolution (docs/22 Task B).
+      </div>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <label className="flex flex-col gap-1.5 text-sm"><span className="font-medium text-fg">Environment</span>
+          <select className="h-11 rounded-brand border border-border bg-surface-2 px-3 text-fg" value={form.mpesa_env} onChange={set('mpesa_env')}>
+            <option value="sandbox">sandbox</option><option value="production">production</option>
+          </select></label>
+        <Input label="Shortcode" name={`sc-${site.siteId}`} value={form.mpesa_shortcode} onChange={set('mpesa_shortcode')} />
+        <Input label="Callback base URL" name={`cb-${site.siteId}`} value={form.mpesa_callback_base} onChange={set('mpesa_callback_base')} hint="e.g. https://brand.com/mpesa" />
+        <Input label="B2C initiator" name={`b2c-${site.siteId}`} value={form.mpesa_b2c_initiator} onChange={set('mpesa_b2c_initiator')} />
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {secret('Consumer key', site.hasMpesaConsumerKey)}{secret('Consumer secret', site.hasMpesaConsumerSecret)}
+        {secret('Passkey', site.hasMpesaPasskey)}{secret('B2C credential', site.hasMpesaB2cCredential)}
+      </div>
+      <SaveBar dirty={dirty} saving={update.isPending} onSave={() => update.mutate({ id: site.siteId, patch }, {
+        onSuccess: () => toast.push({ tone: 'success', title: 'M-Pesa config saved' }),
+        onError: (e) => toast.push({ tone: 'error', title: 'Save failed', description: (e as Error).message }),
+      })} onReset={() => setForm(init)} />
+    </div>
+  );
+}
+
+/** Per-brand legal copy (terms, privacy, responsible gaming, about) — stored in sites.legal_copy. */
+function LegalSection({ site }: { site: SiteWithConfig }) {
+  const update = useUpdateSite();
+  const toast = useToast();
+  const lc = (site.legalCopy ?? {}) as Record<string, string>;
+  const init = useMemo(() => ({ terms: lc.terms ?? '', privacy: lc.privacy ?? '', responsible: lc.responsible ?? '', about: lc.about ?? '' }), [site]);
+  const [form, setForm] = useState(init);
+  useEffect(() => setForm(init), [init]);
+  const dirty = JSON.stringify(form) !== JSON.stringify(init);
+  const FIELDS: [keyof typeof init, string][] = [['terms', 'Terms & Conditions'], ['privacy', 'Privacy Policy'], ['responsible', 'Responsible Gaming'], ['about', 'About']];
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="grid grid-cols-1 gap-3">
+        {FIELDS.map(([k, label]) => (
+          <label key={k} className="flex flex-col gap-1.5 text-sm">
+            <span className="font-medium text-fg">{label}</span>
+            <textarea rows={3} className="rounded-brand border border-border bg-surface-2 p-2.5 text-sm text-fg outline-none focus:border-accent"
+              value={form[k]} onChange={(e) => setForm((s) => ({ ...s, [k]: e.target.value }))} />
+          </label>
+        ))}
+      </div>
+      <SaveBar dirty={dirty ? 1 : 0} saving={update.isPending} onSave={() => update.mutate({ id: site.siteId, patch: { legal_copy: { ...lc, ...form } } }, {
+        onSuccess: () => toast.push({ tone: 'success', title: 'Legal copy saved' }),
+        onError: (e) => toast.push({ tone: 'error', title: 'Save failed', description: (e as Error).message }),
+      })} onReset={() => setForm(init)} />
+    </div>
+  );
+}
+
 /** The full per-client management surface — expandable sections, each an independent form. */
 export function ClientDetail({ site }: { site: SiteWithConfig }) {
   return (
@@ -380,6 +453,12 @@ export function ClientDetail({ site }: { site: SiteWithConfig }) {
       </Expandable>
       <Expandable title="Economy" subtitle="Win rate, house edge, stakes, payouts — feasibility enforced">
         <EconomySection site={site} />
+      </Expandable>
+      <Expandable title="Payments · M-Pesa" subtitle="Per-brand M-Pesa config (non-secret) + credential status">
+        <PaymentsSection site={site} />
+      </Expandable>
+      <Expandable title="Legal" subtitle="Terms, privacy, responsible gaming, about — per brand">
+        <LegalSection site={site} />
       </Expandable>
       <Expandable title="Players" subtitle="Search, status, role and balance — for this brand's users">
         <PlayersSection site={site} />

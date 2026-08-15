@@ -13,6 +13,10 @@ export interface SiteRow {
   primaryDomain: string | null; logoUrl: string | null; faviconUrl: string | null; wordmarkText: string | null;
   colorPrimary: string; colorBg: string; colorAccent: string; theme: string;
   currency: string; locale: string; licenceLine: string | null; supportEmail: string | null;
+  // Per-brand M-Pesa config (non-secret) + which secret refs are configured + legal copy (docs/24).
+  mpesaEnv: string | null; mpesaShortcode: string | null; mpesaCallbackBase: string | null; mpesaB2cInitiator: string | null;
+  hasMpesaConsumerKey: boolean; hasMpesaConsumerSecret: boolean; hasMpesaPasskey: boolean; hasMpesaB2cCredential: boolean;
+  legalCopy: Record<string, unknown> | null;
 }
 export interface SiteConfigRow {
   houseEdge: number; maxMultiplier: number; minStakeCents: number; maxStakeCents: number; minWithdrawalCents: number;
@@ -59,6 +63,11 @@ function mapSiteRow(x: Record<string, unknown>): SiteRow {
     colorPrimary: String(x.color_primary), colorBg: String(x.color_bg), colorAccent: String(x.color_accent), theme: String(x.theme),
     currency: String(x.currency), locale: String(x.locale),
     licenceLine: (x.licence_line as string) ?? null, supportEmail: (x.support_email as string) ?? null,
+    mpesaEnv: (x.mpesa_env as string) ?? null, mpesaShortcode: (x.mpesa_shortcode as string) ?? null,
+    mpesaCallbackBase: (x.mpesa_callback_base as string) ?? null, mpesaB2cInitiator: (x.mpesa_b2c_initiator as string) ?? null,
+    hasMpesaConsumerKey: Boolean(x.mpesa_consumer_key_ref), hasMpesaConsumerSecret: Boolean(x.mpesa_consumer_secret_ref),
+    hasMpesaPasskey: Boolean(x.mpesa_passkey_ref), hasMpesaB2cCredential: Boolean(x.mpesa_b2c_credential_ref),
+    legalCopy: (x.legal_copy as Record<string, unknown>) ?? null,
   };
 }
 function mapConfigRow(x: Record<string, unknown>): SiteConfigRow {
@@ -173,7 +182,11 @@ export class InMemoryPlatformRepository implements PlatformRepository {
       siteId: id, slug, name, status: "active", primaryDomain: input.primaryDomain ?? null,
       logoUrl: null, faviconUrl: null, wordmarkText: null, colorPrimary: "#22c55e", colorBg: "#0a0a0a",
       colorAccent: "#06b6d4", theme: "dark", currency: input.currency ?? "KES", locale: "en-KE",
-      licenceLine: null, supportEmail: null, config: { ...DEFAULT_CONFIG },
+      licenceLine: null, supportEmail: null,
+      mpesaEnv: null, mpesaShortcode: null, mpesaCallbackBase: null, mpesaB2cInitiator: null,
+      hasMpesaConsumerKey: false, hasMpesaConsumerSecret: false, hasMpesaPasskey: false, hasMpesaB2cCredential: false,
+      legalCopy: null,
+      config: { ...DEFAULT_CONFIG },
     });
     return id;
   }
