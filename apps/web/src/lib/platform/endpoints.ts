@@ -73,13 +73,16 @@ export const platformApi = {
   onboard: (t: string, body: OnboardBody) => apiFetch<OnboardResult>('/platform/onboard', { method: 'POST', token: t, body }),
   domainStatus: (t: string, domain: string) => apiFetch<DomainStatus>('/platform/onboard/domain-status', { token: t, query: { domain } }),
   // Phase 2 — per-brand players + audit (cross-brand via explicit site id).
-  siteUsers: (t: string, id: string, params?: Record<string, string | undefined>) =>
-    apiFetch<Page<SiteUserRow>>(`/platform/sites/${id}/users`, { token: t, query: params }),
+  siteUsers: (t: string, id: string, params?: Record<string, string | undefined>) => {
+    const query: Record<string, string> = {};
+    if (params) for (const [k, v] of Object.entries(params)) if (v != null && v !== '') query[k] = v;
+    return apiFetch<Page<SiteUserRow>>(`/platform/sites/${id}/users`, { token: t, query });
+  },
   siteAudit: (t: string, id: string) => apiFetch<Page<AuditRow>>(`/platform/sites/${id}/audit`, { token: t }),
-  siteUserStatus: (t: string, id: string, uid: string, body: { status: string; reason?: string }) =>
+  siteUserStatus: (t: string, id: string, uid: string, body: { status: string; reason?: string | undefined }) =>
     apiFetch(`/platform/sites/${id}/users/${uid}/status`, { method: 'POST', token: t, body }),
   siteUserRole: (t: string, id: string, uid: string, body: { role: string }) =>
     apiFetch(`/platform/sites/${id}/users/${uid}/role`, { method: 'POST', token: t, body }),
-  siteUserBalance: (t: string, id: string, uid: string, body: { amountCents: number; reason?: string; kind?: string }) =>
+  siteUserBalance: (t: string, id: string, uid: string, body: { amountCents: number; reason?: string | undefined; kind?: string | undefined }) =>
     apiFetch(`/platform/sites/${id}/users/${uid}/balance`, { method: 'POST', token: t, body }),
 };
