@@ -257,8 +257,9 @@ function RoleManage({ id, current }: { id: string; current: string }) {
   const myRole = useSession((s) => s.user?.role);
   const [role, setRole] = useState(current);
 
-  // Role changes are sensitive — superadmin only (the API enforces this too).
-  if (myRole !== 'superadmin') return null;
+  // Role changes are sensitive — owner-tier only (the API enforces this too). platform_superadmin
+  // outranks superadmin, so it must pass this gate rather than be excluded by a strict ===.
+  if (myRole !== 'superadmin' && myRole !== 'platform_superadmin') return null;
 
   function run() {
     m.mutate(

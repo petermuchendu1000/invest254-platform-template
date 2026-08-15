@@ -42,7 +42,9 @@ function MpesaBody() {
   const update = useUpdateMpesaConfig();
   const toast = useToast();
   const role = useSession((s) => s.user?.role);
-  const canEdit = role === 'superadmin';
+  // Owner-tier edit: per-brand superadmin OR the higher cross-brand platform_superadmin (which the
+  // API's requireRole("superadmin") also admits by rank). Strict === locks the owner out of edits.
+  const canEdit = role === 'superadmin' || role === 'platform_superadmin';
 
   const cfg = cfgQ.data;
   const [env, setEnv] = useState('sandbox');

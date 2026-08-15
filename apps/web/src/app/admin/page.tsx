@@ -18,7 +18,9 @@ function isoDaysAgo(days: number): string {
 export default function AdminOverviewPage() {
   const o = useOverview();
   const rtp = useRtp();
-  const isSuper = useSession((s) => s.user?.role) === 'superadmin';
+  const myRole = useSession((s) => s.user?.role);
+  // Owner tier = superadmin OR the higher platform_superadmin (mirrors AdminShell/API hierarchy).
+  const isSuper = myRole === 'superadmin' || myRole === 'platform_superadmin';
 
   return (
     <>
