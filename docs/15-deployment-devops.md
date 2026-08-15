@@ -4,8 +4,11 @@
 | Env | Web | Engine/API | DB | M-Pesa |
 |-----|-----|-----------|----|--------|
 | local | Next dev | node dev + ws | Supabase local / branch | Daraja sandbox |
-| staging | Vercel preview | Fly/Render | Supabase staging project | Daraja sandbox |
-| production | Vercel | Fly/Render (≥2 instances) | Supabase prod | Daraja production |
+| staging | Cloudflare Pages (preview) | Fly.io | Supabase staging project | Daraja sandbox |
+| production | Cloudflare Pages (`invest254`) | Fly.io — API `invest254-api`, engine `invest254-engine-pm` | Supabase prod | Daraja production |
+
+> The production stack is **Cloudflare Pages + Fly.io + Supabase**. **HOSTING.md is the single
+> source of truth** for app names, URLs, deploy commands, and the legacy apps to avoid.
 
 ## 2. Repository layout (monorepo)
 ```

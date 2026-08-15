@@ -132,11 +132,12 @@ brand value in the app.
 serves them all):
 
 ```
-NEXT_PUBLIC_API_BASE_URL = https://<platform-api>.fly.dev/api/v1
-NEXT_PUBLIC_WS_URL       = wss://<platform-engine>.fly.dev
+NEXT_PUBLIC_API_BASE_URL = https://invest254-api.fly.dev/api/v1      # shared REST API (Fly: invest254-api)
+NEXT_PUBLIC_WS_URL       = wss://invest254-engine-pm.fly.dev         # shared WS engine (Fly: invest254-engine-pm)
 NEXT_PUBLIC_DEFAULT_SITE_SLUG = invest254   # fallback only; real brand resolved by host
 NODE_VERSION             = 20
 ```
+(See HOSTING.md for the canonical Fly app names and the legacy apps to avoid.)
 The brand itself is resolved at runtime by host via `GET /api/v1/site/brand?host=…`
 (`apps/web/src/lib/brand/brand.ts`), so adding a brand needs **no web rebuild**.
 

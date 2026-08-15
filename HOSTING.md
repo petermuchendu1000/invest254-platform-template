@@ -2,35 +2,49 @@
 
 > Read this end-to-end before changing anything deploy-related. It documents exactly how
 > the production hosting is wired, the non-obvious gotchas, and how to operate it.
-> **No secret values are in this file** — secrets live in Fly.io / Cloudflare only.
+> **No secret values are in this file** — secrets live in Fly.io / Cloudflare / Supabase only.
 
-_Last verified: 2026-06-29. All endpoints below were confirmed live._
+_Last verified: 2026-08-15 (live probes: API `/site/brand`, engine WS `hello`+ticks per brand,
+Fly app/IP list, Supabase `sites`). This is a **multi-tenant platform**: one API + one engine +
+one database + one web build serve **every brand domain** (see docs/20–22)._
 
 ---
 
 ## 0. TL;DR — the mental model
 
-This is an **npm-workspaces monorepo** with **three deployables on two platforms + one database**:
+This is an **npm-workspaces monorepo** with **three deployables on two platforms + one database**,
+serving **many brand domains from one shared deployment** (multi-tenant; a brand = a `sites` row +
+a domain):
 
-| Component | Code | Hosted on | Public URL |
-|-----------|------|-----------|------------|
-| Web frontend (Next.js 14) | `apps/web` | **Cloudflare Pages** | `https://invest254.com` (and `https://invest254.pages.dev`) |
-| REST API (Node HTTP) | `apps/api` | **Fly.io** app `invest254` | `https://invest254.fly.dev/api/v1` |
-| WebSocket game engine (Node `ws`) | `apps/engine` | **Fly.io** app `invest254-engine` | `wss://invest254-engine.fly.dev` |
-| Postgres database | `packages/db` (migrations) | **Supabase** | pooler host, project ref `yewujhbtfxeirhknckzg` (eu-west-1) |
+| Component | Code | Hosted on | Public URL(s) — CANONICAL |
+|-----------|------|-----------|---------------------------|
+| Web frontend (Next.js 14) | `apps/web` | **Cloudflare Pages** project `invest254` | every brand domain → one build: `invest254.com`, `tamutraders.com`, `lucky7.co.ke`, … (+ `invest254.pages.dev`) |
+| REST API (Node HTTP) | `apps/api` | **Fly.io** app **`invest254-api`** | **`https://invest254-api.fly.dev/api/v1`** |
+| WebSocket game engine (Node `ws`) | `apps/engine` | **Fly.io** app **`invest254-engine-pm`** | **`wss://invest254-engine-pm.fly.dev`** |
+| Postgres database | `packages/db` (migrations `0001`–`0057`) | **Supabase** | pooler host, project ref `yewujhbtfxeirhknckzg` (eu-west-1) |
 
-**The single most important fact (do not break this):**
-- `invest254.com` is **ONLY the frontend** (Cloudflare Pages).
-- The browser calls the **API** at `https://invest254.fly.dev/api/v1` and the **WebSocket** at `wss://invest254-engine.fly.dev`.
-- ❌ There is **no** `invest254.com/api`. Do **not** repoint the API host to `invest254.com` — that will break logins (it returns 404 because it's the static frontend).
+**The single most important facts (do not break these):**
+- A brand domain (e.g. `tamutraders.com`) is **ONLY the frontend** (Cloudflare Pages). Every brand
+  domain points at the **same** Pages project; the brand is resolved at request time by host.
+- The browser calls the **shared** API at `https://invest254-api.fly.dev/api/v1` and the **shared**
+  WebSocket at `wss://invest254-engine-pm.fly.dev` — these are the SAME for every brand. Only the
+  domain differs; the brand is carried by host / the JWT `site` claim / the WS `?site=`.
+- ❌ There is **no** `<brand>.com/api`. Do **not** repoint the API host to a brand domain — that host
+  is the static frontend and will 404.
+
+> ⚠️ **Legacy apps that must NOT be used** (they predate multi-tenancy and still respond, which is a
+> known source of confusion): `invest254` (`https://invest254.fly.dev` — old single-tenant API,
+> `/api/v1/site/brand` returns 404) and `invest254-engine` (`wss://invest254-engine.fly.dev` — old
+> single-tenant engine, ignores `?site=`). The live web does **not** use them. See §2.7.
 
 Data flow:
 ```
-Browser (https://invest254.com, Cloudflare Pages)
-   │   REST  → https://invest254.fly.dev/api/v1   (Fly app: invest254)
-   │   WS    → wss://invest254-engine.fly.dev      (Fly app: invest254-engine)
+Browser on ANY brand domain (Cloudflare Pages project "invest254")
+   │   REST  → https://invest254-api.fly.dev/api/v1      (Fly app: invest254-api)
+   │   WS    → wss://invest254-engine-pm.fly.dev/?site=… (Fly app: invest254-engine-pm)
    ▼
 Fly.io apps (Node via tsx)  ──SQL──►  Supabase Postgres (pooler, sslmode=no-verify)
+                                       one DB, every row tagged by site_id
 ```
 
 ---
@@ -40,15 +54,16 @@ Fly.io apps (Node via tsx)  ──SQL──►  Supabase Postgres (pooler, sslmo
 ```
 invest254/                      # npm workspaces, Node >=20, TypeScript ESM, source-first (tsx)
 ├── packages/
-│   ├── shared/                 # @invest254/shared — PRNG, curve, settlement, money, config
-│   └── db/migrations/          # 0001–0026 SQL migrations (idempotent)
+│   ├── shared/                 # @invest254/shared — PRNG, curve, settlement, money, site helpers
+│   └── db/migrations/          # 0001–0057 SQL migrations (idempotent), incl. multi-tenant 0044–0046
 ├── apps/
-│   ├── engine/                 # @invest254/engine — authoritative WS game server (port 8080)
+│   ├── engine/                 # @invest254/engine — authoritative multiplexed WS server (port 8080)
 │   ├── api/                    # @invest254/api — REST transport over engine services (port 8081)
 │   └── web/                    # @invest254/web — Next.js 14 frontend (→ Cloudflare Pages)
 ├── Dockerfile                  # backend image (engine + api), used by BOTH Fly apps
-├── fly.toml                    # Fly config for the API app  (app = "invest254")
-├── fly.engine.toml             # Fly config for the engine app (app = "invest254-engine")
+├── fly.api.toml                # Fly config for the API app    (app = "invest254-api")     ✅ CANONICAL
+├── fly.engine.toml             # Fly config for the engine app (app = "invest254-engine-pm") ✅ CANONICAL
+├── fly.toml                    # ⚠️ LEGACY (app = "invest254") — old single-tenant API; do NOT deploy with bare `fly deploy`
 ├── wrangler.toml               # Cloudflare Pages config (nodejs_compat, build output dir)
 └── apps/web/wrangler.toml      # local wrangler for `wrangler pages dev` (not used by CF build)
 ```
@@ -63,8 +78,8 @@ app = `node --import tsx src/server.ts`.
 ### 2.1 Two apps, one Docker image
 Both Fly apps build from the **same root `Dockerfile`**. Each app's `fly.*.toml` overrides the
 start command via `[processes]`:
-- `invest254`        → `npm -w @invest254/api start`     (REST, internal port **8081** → 443)
-- `invest254-engine` → `npm -w @invest254/engine start`  (WS,   internal port **8080** → 443)
+- **`invest254-api`**        → `npm -w @invest254/api start`     (REST, internal port **8081** → 443)
+- **`invest254-engine-pm`**  → `npm -w @invest254/engine start`  (WS,   internal port **8080** → 443)
 
 Region: **`jnb`** (Johannesburg — Fly's closest to Kenya). VM: `shared-cpu-1x`, 512 MB.
 
@@ -74,49 +89,68 @@ custom port (8080) would need a **paid dedicated IPv4**. Splitting into two apps
 API and the WS run on port **443** (different hostnames) over the free shared IPv4. Each app's
 `[http_service]` maps 443 → its internal port.
 
-### 2.3 Public IPs (gotcha)
-On first deploy the prompt *"allocate dedicated ipv4/ipv6?"* was answered **No**, which left the
-API app with **no IP at all** (it was unreachable). Fixed with:
-```bash
-fly ips allocate-v4 --shared -a invest254   # free shared IPv4 (443 only) — this is enough
-fly ips allocate-v6 -a invest254            # free dedicated IPv6
-```
-Current: `invest254` = shared IPv4 `66.241.124.119` + v6; `invest254-engine` = `66.241.125.119` + v6.
-**Do not buy a dedicated IPv4** — not needed for 443-only traffic.
+### 2.3 Public IPs
+Both apps ride Fly's **free shared IPv4** on 443 (no dedicated IPv4 needed) plus a dedicated IPv6.
+Current (verified 2026-08-15):
+- `invest254-api`       → v4 `66.241.125.32` (shared), v6 `2a09:8280:1::157:cd75:0`
+- `invest254-engine-pm` → v4 `66.241.125.5` (shared),  v6 `2a09:8280:1::15e:ac2b:0`
+
+If an app ever shows **no IP** (unreachable), allocate: `fly ips allocate-v4 --shared -a <app>` and
+`fly ips allocate-v6 -a <app>`. **Do not buy a dedicated IPv4** — not needed for 443-only traffic.
 
 ### 2.4 Secrets (set on BOTH apps via `fly secrets set -a <app> ...`)
 Names only (values live in Fly):
 - `DATABASE_URL` — Supabase **pooler** string, **must end with `?sslmode=no-verify`** (see §4.2)
 - `SUPABASE_JWT_SECRET` — HS256 secret the API signs tokens with and both apps verify with
-- `MASTER_SEED` — provably-fair daily server seed (hex)
-- (API only, optional until M-Pesa go-live) `MPESA_CONSUMER_KEY/SECRET`, `MPESA_SHORTCODE`, `MPESA_PASSKEY`
+- `MASTER_SEED` — platform provably-fair master seed (hex); per-brand seeds are derived from it + `site_id`
+- `CORS_ALLOWED_ORIGINS` (API, optional) — comma-separated; default `*`. When restricted, active brand
+  domains are still auto-allowed (see §6).
+- Support chat (API, optional): `CF_ACCOUNT_ID`, `CF_AI_API_TOKEN`, `GROQ_API_KEY` (or `SUPPORT_LLM_API_KEY`)
+- Domain onboarding automation (API, optional): `CF_DNS_API_TOKEN`/`CF_API_TOKEN`, `CF_PAGES_PROJECT`,
+  `NAMECHEAP_API_USER`/`NAMECHEAP_USERNAME`/`NAMECHEAP_API_KEY`/`NAMECHEAP_CLIENT_IP`
+- (API, until M-Pesa go-live) `MPESA_CONSUMER_KEY/SECRET`, `MPESA_SHORTCODE`, `MPESA_PASSKEY`
 
 > Fail-closed: when `DATABASE_URL` is set, a JWT verifier is **required** or the process throws on boot.
 
-### 2.5 Engine boot ordering (critical gotcha)
-`apps/engine/src/server.ts` does DB work **before** it opens the socket:
-```
-new SeedManager(...).init()      → queries DB (fn_ensure_game_day)
-new RecoveryService(...).recover()→ queries DB (scan open positions)
-new WebSocketServer({ port })     → only runs if the above succeed
-```
-So **any DB connection failure crashes the engine before it listens** (machine shows no listener
-/ gets suspended). The API does NOT query the DB on boot (its `/api/v1/health` route is static),
-which is why a broken DB made the API "look healthy" while the engine died. If the engine won't
-stay up, **check the DB connection first** (`fly logs -a invest254-engine`).
+### 2.5 Engine boot ordering + multi-brand resolution (critical gotchas)
+`apps/engine/src/server.ts` does DB work **before** it opens the socket (per-site seed init +
+crash recovery across all brands), so **any DB connection failure crashes the engine before it
+listens**. If the engine won't stay up, **check the DB connection first** (`fly logs -a invest254-engine-pm`).
 
-### 2.6 Common ops
+Brand resolution: a socket names its brand via `?site=<slug|domain|id>` (or Host); the engine binds
+it to that brand and the JWT `site` claim must match. The current code resolves brands **live** on a
+cache miss (`siteresolver.ts`), so a brand onboarded after boot works with **no restart**. ⚠️ If the
+running deploy predates that change, a brand added after the engine last booted returns
+`1008 "unknown site"` until you **restart the engine** (`fly machine restart <id> -a invest254-engine-pm`),
+which re-reads `sites` at boot. Deploy the current build to make restarts unnecessary.
+
+### 2.6 Common ops (use the -c flag — do NOT rely on bare `fly deploy`)
 ```bash
-fly deploy                       # deploy API (uses ./fly.toml)
-fly deploy -c fly.engine.toml    # deploy engine
-fly secrets set -a invest254 KEY="value"   # set secret (auto-redeploys)
-fly status  -a invest254 ; fly logs -a invest254
-fly status  -a invest254-engine ; fly logs -a invest254-engine
+fly deploy -c fly.api.toml               # deploy the REST API  → invest254-api
+fly deploy -c fly.engine.toml            # deploy the WS engine → invest254-engine-pm
+fly secrets set -a invest254-api KEY="value"          # set an API secret (auto-redeploys)
+fly status -a invest254-api ;        fly logs -a invest254-api
+fly status -a invest254-engine-pm ;  fly logs -a invest254-engine-pm
+fly machine restart <id> -a invest254-engine-pm       # rolling restart (per machine)
 ```
+> ⚠️ Bare `fly deploy` uses the root `fly.toml`, whose `app = "invest254"` targets the **legacy**
+> single-tenant API — not the live `invest254-api`. Always pass `-c fly.api.toml` / `-c fly.engine.toml`.
+
+### 2.7 Legacy / deprecated apps (do not use — decommission)
+| App | URL | What it is | Status |
+|-----|-----|------------|--------|
+| `invest254` | `https://invest254.fly.dev/api/v1` | OLD single-tenant API (no `/site/brand`, returns 404) | ⛔ legacy, orphaned |
+| `invest254-engine` | `wss://invest254-engine.fly.dev` | OLD single-tenant engine (ignores `?site=`, `hello site=""`) | ⛔ legacy, orphaned |
+
+The live web is baked to the **canonical** pair (`invest254-api`, `invest254-engine-pm`). The legacy
+apps still respond, which has caused confusion; they should be shut down once confirmed unused.
 
 ---
 
 ## 3. Cloudflare Pages — frontend (`apps/web`)
+
+One Pages **project `invest254`** builds once and serves **all** brand domains. Adding a brand is
+"data entry + DNS" (a `sites` row + a Pages custom domain), automated by onboarding — see docs/21.
 
 ### 3.1 Project build settings (monorepo)
 | Setting | Value |
@@ -132,18 +166,17 @@ fly status  -a invest254-engine ; fly logs -a invest254-engine
 
 ### 3.2 Environment variables (Production AND Preview)
 These are `NEXT_PUBLIC_*` → **inlined at BUILD time**. They must exist *before* a build, and a
-**rebuild is required** after changing them (setting them alone does nothing). If missing, the app
-falls back to `http://localhost:8081` / `ws://localhost:8080` (this happened once and broke login).
+**rebuild is required** after changing them. If missing, the app falls back to
+`http://localhost:8081` / `ws://localhost:8080` (which breaks login). Same values for every brand:
 ```
-NEXT_PUBLIC_API_BASE_URL = https://invest254.fly.dev/api/v1
-NEXT_PUBLIC_WS_URL       = wss://invest254-engine.fly.dev
+NEXT_PUBLIC_API_BASE_URL = https://invest254-api.fly.dev/api/v1
+NEXT_PUBLIC_WS_URL       = wss://invest254-engine-pm.fly.dev
 NODE_VERSION             = 20
 ```
 
 ### 3.3 Compatibility flags (via root `wrangler.toml`)
-`@cloudflare/next-on-pages` requires the `nodejs_compat` flag at runtime. The dashboard UI to set
-it kept throwing "An unknown error occurred", so it's set via the **root `wrangler.toml`** instead
-(Cloudflare reads it at deploy because Root directory = `/`):
+`@cloudflare/next-on-pages` requires the `nodejs_compat` flag at runtime, set via the **root
+`wrangler.toml`** (Cloudflare reads it because Root directory = `/`):
 ```toml
 name = "invest254"
 compatibility_date = "2024-09-23"
@@ -152,8 +185,15 @@ pages_build_output_dir = "apps/web/.vercel/output/static"
 ```
 While `wrangler.toml` manages config, the dashboard Runtime settings become read-only (expected).
 
-### 3.4 Redeploy
-Pages → **Deployments → Retry deployment** (or push to `main`; auto-deploys are enabled).
+### 3.4 Custom domains (per brand)
+Each brand's apex (and `www`) is attached to the Pages project as a **Custom domain** (Cloudflare
+CNAME-flattens the apex and issues SSL). The onboarding flow (docs/21, `scripts/onboard_client.ts` /
+`POST /platform/onboard`) can automate the zone + DNS + Pages custom-domain attach when a
+Pages-scoped Cloudflare token is configured. `www.<brand>` resolves to the same brand as the apex.
+
+### 3.5 Redeploy
+Pages → **Deployments → Retry deployment** (or push to `main`; auto-deploys are enabled). Note: a
+push to the connected repo's `main` triggers a production Pages rebuild.
 
 ---
 
@@ -163,43 +203,49 @@ Pages → **Deployments → Retry deployment** (or push to `main`; auto-deploys 
 - Project ref: `yewujhbtfxeirhknckzg`, region `eu-west-1`.
 - Use the **pooler** host `aws-0-eu-west-1.pooler.supabase.com`, user `postgres.<ref>`, db `postgres`.
 - Session pooler **port 5432** is fine for the long-running Fly servers (6543 transaction mode also works).
-- Migrations `0001–0026` are applied (21 public tables). Re-runnable (idempotent).
+- Migrations `0001`–`0057` are applied (incl. multi-tenant `0044` sites / `0045` site_id scoping /
+  `0046` per-site game config, and support-chat `0057`). Re-runnable (idempotent).
 
 ### 4.2 SSL gotcha (this caused the login 500)
 `node-postgres` verifies the TLS CA when the string says `sslmode=require`, and Supabase's chain
-fails Node's check → `Error: self-signed certificate in certificate chain`. The code calls
+fails Node's check → `self-signed certificate in certificate chain`. The code calls
 `new Pool({ connectionString })` with no `ssl` object, so the **connection string must use
-`?sslmode=no-verify`** (encrypted, but skips CA verification). This is required on BOTH Fly apps.
+`?sslmode=no-verify`** on BOTH Fly apps.
 - ✅ `...:5432/postgres?sslmode=no-verify`
-- ❌ `...:5432/postgres?sslmode=require`  (Node throws "self-signed certificate in certificate chain")
-- (psycopg2/libpq behaves differently — `require` works there but is irrelevant; the apps are Node.)
+- ❌ `...:5432/postgres?sslmode=require`
 - Future hardening (optional): bundle Supabase's CA cert and use full verification (needs a code change).
 
 ### 4.3 Superadmin bootstrap
-After registering through the app, promote the account:
+Roles are `player < marketer < admin < superadmin < platform_superadmin` (see `apps/api/src/http.ts`
+`ROLE_RANK`). The cross-brand platform owner is **`platform_superadmin`**; a per-brand owner is
+`superadmin` (scoped by the JWT `site` claim). Prefer the bootstrap script:
+```bash
+node --import tsx scripts/make_operator.ts   # promotes + verifies login mints the right role/site
+```
+Or by SQL (note the correct role names — NOT `super_admin`):
 ```sql
-update public.profiles set role = 'super_admin' where phone = '+2547XXXXXXXX';
+update public.profiles set role = 'platform_superadmin' where phone = '+2547XXXXXXXX';   -- platform owner
+-- per-brand owner: set role = 'superadmin' for the account whose profiles.site_id is that brand
 ```
 
 ### 4.4 PL/pgSQL "ambiguous column" gotcha
-RPCs declared `RETURNS TABLE(user_id ...)` create an output variable that collides with a
-`user_id` table column → `column reference "user_id" is ambiguous`. Fix by **qualifying table
-columns** (e.g. `wallets.user_id`) — do NOT rename the output columns (the engine reads them by
-name). `fn_admin_adjust_balance` was fixed this way; watch for the same pattern in other admin RPCs.
+RPCs declared `RETURNS TABLE(user_id ...)` collide with a `user_id` table column → qualify table
+columns (e.g. `wallets.user_id`); do NOT rename output columns (the engine reads them by name).
 
 ---
 
-## 5. DNS & domain (`invest254.com`)
+## 5. DNS & domains (multi-brand)
 
-- Registered at **Namecheap**; **nameservers moved to Cloudflare** (`lauryn.ns.cloudflare.com`,
-  `maciej.ns.cloudflare.com`) via Namecheap → Domain → NAMESERVERS → **Custom DNS**.
-  (This is the registrar nameserver setting — NOT the "Personal DNS Server / Custom Nameservers"
-  vanity-NS section, and NOT an A/CNAME record.)
-- The Namecheap parking `A` + `www` CNAME were deleted; the **email-forwarding MX (eforward1–5) +
-  SPF TXT were kept** so `@invest254.com` mail still works.
-- `invest254.com` (apex) is attached to the Pages project as a **Custom domain** (Cloudflare auto-
-  creates the record via CNAME-flattening and issues SSL).
-- `www.invest254.com` is **not set up yet** (TODO — add as a second custom domain + redirect to apex).
+Every brand domain is registered (Namecheap) and its **nameservers moved to Cloudflare**, then the
+apex + `www` are attached to the `invest254` Pages project (CNAME-flattened, auto-SSL). Keep any
+email-forwarding MX/SPF records when clearing registrar parking records.
+
+- Example (verified live): `tamutraders.com` → Cloudflare zone → Pages custom domain → resolves to
+  the Tamu Traders brand (`sites.primary_domain = tamutraders.com`, `site_id 47e2ab1f…`).
+- Onboarding automates zone creation + nameserver switch + DNS + Pages attach when the Cloudflare
+  (Pages+DNS) and Namecheap credentials are configured — see docs/21. Without them, the same steps
+  are done manually; the script prints the exact records.
+- `www.<brand>` should be added as a second custom domain (and folds to the apex brand server-side).
 
 ### Client-side DNS note
 Browsers cache negative (NXDOMAIN) answers. After DNS changes, Chrome may still fail while other
@@ -207,29 +253,37 @@ browsers work — fix with `chrome://net-internals/#dns` → "Clear host cache" 
 
 ---
 
-## 6. CORS
+## 6. CORS (multi-tenant, brand-aware)
 
 `apps/api/src/http.ts` applies CORS on every request and answers preflight before routing.
-`CORS_ALLOWED_ORIGINS` (comma-separated) defaults to `*` (echoes the request Origin back). Auth is a
-Bearer token (not cookies), so `*` is safe. Verified: `Access-Control-Allow-Origin: https://invest254.com`
-is returned. For defence-in-depth you may later set `CORS_ALLOWED_ORIGINS=https://invest254.com` on the API app.
+`CORS_ALLOWED_ORIGINS` (comma-separated) defaults to `*` (echoes the request Origin). Auth is a
+Bearer token (not cookies), so `*` is safe. **When you restrict the list** (defence-in-depth), the
+API additionally allows any **active brand domain** automatically (apex + `www`), backed by an
+in-memory, periodically-refreshed view of `sites` (`apps/api/src/cors.ts`) — so hardening CORS never
+locks a client out and you never have to hand-maintain the list as brands are onboarded.
 
 ---
 
-## 7. Current verified status (2026-06-29)
+## 7. Current verified status (2026-08-15)
 
-- ✅ `https://invest254.com` serves the frontend (Cloudflare Pages); bundle calls the correct fly.dev URLs.
-- ✅ `https://invest254.fly.dev/api/v1/health` → `200`; CORS allows `invest254.com`; login works against the real API.
-- ✅ `wss://invest254-engine.fly.dev` engine app deployed (region jnb).
-- ✅ Supabase reachable; migrations applied; `fn_admin_adjust_balance` ambiguity fixed (live + in repo).
+- ✅ Web (Cloudflare Pages `invest254`) serves brand domains; bundle is baked to
+  `https://invest254-api.fly.dev/api/v1` and `wss://invest254-engine-pm.fly.dev`.
+- ✅ `https://invest254-api.fly.dev/api/v1/health` → `200`; `/site/brand?host=tamutraders.com`
+  resolves the Tamu Traders brand.
+- ✅ `wss://invest254-engine-pm.fly.dev` streams `hello`+ticks per brand for `invest254`,
+  `tamutraders`, `lucky7` (region jnb).
+- ✅ Supabase reachable; migrations applied through `0057`; 3 active brands in `sites`.
 
 ### Outstanding / TODO
-1. Add `www.invest254.com` custom domain + `www → apex` redirect.
-2. (Security) Rotate the Supabase DB password (it was shared in chat) and update `DATABASE_URL` on both Fly apps.
-3. (Security) Optionally tighten `CORS_ALLOWED_ORIGINS` to `https://invest254.com`.
-4. (Hardening) Move DB TLS from `no-verify` to full CA verification (bundle Supabase CA; small code change).
-5. Configure M-Pesa Daraja secrets on the API app before real deposits/withdrawals.
-6. Engine machines can idle-suspend; confirm `auto_stop_machines="off"` keeps the game loop warm.
+1. **Decommission the legacy Fly apps** `invest254` and `invest254-engine` (see §2.7) once confirmed unused.
+2. Deploy the current engine build everywhere so new brands resolve live (no restart) — see §2.5.
+3. (Security) Rotate all credentials shared during development (Supabase DB password, Fly/Cloudflare/
+   Namecheap/Groq tokens, GitHub PAT) and update `DATABASE_URL` on both Fly apps.
+4. Add `www.<brand>` custom domains + `www → apex` redirects for each brand.
+5. (Hardening) Move DB TLS from `no-verify` to full CA verification (bundle Supabase CA; small code change).
+6. Configure M-Pesa Daraja secrets on the API app before real deposits/withdrawals.
+7. Consider stable custom API/WS hostnames (e.g. `api.invest254.com`, `ws.invest254.com`) to decouple
+   the web build from the Fly app names (which caused past confusion).
 
 ---
 
@@ -237,10 +291,12 @@ is returned. For defence-in-depth you may later set `CORS_ALLOWED_ORIGINS=https:
 
 | Question | Answer |
 |----------|--------|
-| Where do users go? | `https://invest254.com` (Cloudflare Pages) |
-| Where is the REST API? | `https://invest254.fly.dev/api/v1` (Fly `invest254`) |
-| Where is the WebSocket? | `wss://invest254-engine.fly.dev` (Fly `invest254-engine`) |
-| Where is the DB? | Supabase pooler, ref `yewujhbtfxeirhknckzg`, `?sslmode=no-verify` |
-| How does the frontend know the API URL? | `NEXT_PUBLIC_API_BASE_URL` baked at Cloudflare build time |
-| Why did login fail before? | (a) API had no IP, (b) frontend built with `localhost`, (c) DB used `sslmode=require` |
-| Can I point the API to invest254.com? | **No.** That host is the static frontend; use `invest254.fly.dev`. |
+| Where do users go? | Any brand domain (e.g. `https://tamutraders.com`) — all served by the one Cloudflare Pages project `invest254` |
+| Where is the REST API? | `https://invest254-api.fly.dev/api/v1` (Fly `invest254-api`) — shared by all brands |
+| Where is the WebSocket? | `wss://invest254-engine-pm.fly.dev` (Fly `invest254-engine-pm`) — shared by all brands |
+| Where is the DB? | Supabase pooler, ref `yewujhbtfxeirhknckzg`, `?sslmode=no-verify` (one DB, `site_id`-scoped) |
+| How does a brand get selected? | By host (`/site/brand?host=`), the JWT `site` claim, and the WS `?site=` |
+| How does the frontend know the API/WS URL? | `NEXT_PUBLIC_API_BASE_URL` / `NEXT_PUBLIC_WS_URL` baked at Cloudflare build time |
+| How do I deploy? | `fly deploy -c fly.api.toml` (API) and `fly deploy -c fly.engine.toml` (engine) — never bare `fly deploy` |
+| Which apps are legacy? | `invest254` (`invest254.fly.dev`) and `invest254-engine` (`invest254-engine.fly.dev`) — do not use (§2.7) |
+| A new brand can't reach the live market? | The engine must know it: current code resolves live; older deploys need `fly machine restart -a invest254-engine-pm` (§2.5) |

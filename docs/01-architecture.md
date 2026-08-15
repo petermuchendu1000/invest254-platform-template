@@ -67,7 +67,7 @@
 | DB/Auth | **Supabase (Postgres 15 + Auth)** | already connected |
 | Cache/state | **Redis** | round state, locks, rate limits |
 | Payments | **M-Pesa Daraja** | STK push + B2C |
-| Hosting | Vercel (web) + Fly.io/Render/Railway (engine+API) + Supabase cloud | |
+| Hosting | **Cloudflare Pages** (web) + **Fly.io** (engine + API) + **Supabase** (DB) — see HOSTING.md | actual production stack |
 | Infra-as-code | Docker + GitHub Actions | reproducible deploys |
 
 ## 4. Why an authoritative engine (not pure Supabase Realtime)
