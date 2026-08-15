@@ -46,6 +46,16 @@ export interface OnboardBrand {
 export interface OnboardResult { siteId: string; brand: OnboardBrand; domain: ProvisionResult | null }
 export interface DomainStatus { domain: string; zoneStatus: string | null; pages: { name: string; status: string }[]; active: boolean }
 
+/** Phase 2 (docs/24) — per-brand player management + audit. */
+export interface Page<T> { items: T[]; nextCursor?: string | null }
+export interface SiteUserRow {
+  userId: string; username: string; phone: string; role: string; status: string;
+  realBalanceCents: number; bonusBalanceCents: number; depositsCents: number; withdrawalsCents: number; betCount: number;
+}
+export interface AuditRow {
+  id: string; actorId: string; actorRole: string; action: string; targetType: string; targetId: string | null; detail: unknown; createdAtMs: number;
+}
+
 export const platformApi = {
   overview: (t: string) => apiFetch<{ sites: SiteKpis[] }>('/platform/overview', { token: t }),
   sites: (t: string) => apiFetch<{ sites: SiteWithConfig[] }>('/platform/sites', { token: t }),
@@ -62,4 +72,14 @@ export const platformApi = {
   // Instant client onboarding (brand + economy + optional domain provisioning).
   onboard: (t: string, body: OnboardBody) => apiFetch<OnboardResult>('/platform/onboard', { method: 'POST', token: t, body }),
   domainStatus: (t: string, domain: string) => apiFetch<DomainStatus>('/platform/onboard/domain-status', { token: t, query: { domain } }),
+  // Phase 2 — per-brand players + audit (cross-brand via explicit site id).
+  siteUsers: (t: string, id: string, params?: Record<string, string | undefined>) =>
+    apiFetch<Page<SiteUserRow>>(`/platform/sites/${id}/users`, { token: t, query: params }),
+  siteAudit: (t: string, id: string) => apiFetch<Page<AuditRow>>(`/platform/sites/${id}/audit`, { token: t }),
+  siteUserStatus: (t: string, id: string, uid: string, body: { status: string; reason?: string }) =>
+    apiFetch(`/platform/sites/${id}/users/${uid}/status`, { method: 'POST', token: t, body }),
+  siteUserRole: (t: string, id: string, uid: string, body: { role: string }) =>
+    apiFetch(`/platform/sites/${id}/users/${uid}/role`, { method: 'POST', token: t, body }),
+  siteUserBalance: (t: string, id: string, uid: string, body: { amountCents: number; reason?: string; kind?: string }) =>
+    apiFetch(`/platform/sites/${id}/users/${uid}/balance`, { method: 'POST', token: t, body }),
 };

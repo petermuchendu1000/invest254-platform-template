@@ -204,4 +204,68 @@ export function registerPlatformRoutes(router: Router, deps: ApiDeps): void {
     await domain(() => deps.platform.linkMarketer(ctx.claims!.userId, ctx.claims!.role ?? "player", ctx.params.userId!, raw ?? null));
     return { ok: true, affiliateUserId: ctx.params.userId, marketerGlobalId: raw ?? null };
   });
+
+  // ── Phase 2 (docs/24): per-brand PLAYER management + AUDIT, cross-brand via an explicit :id ──
+  // The platform_superadmin actor is unrestricted; the DB RPCs enforce owner-protection + validation
+  // (0058/0059). Reuse the existing site-scoped admin domain methods with the TARGET site/user.
+  const pageQ = (ctx: Ctx) => {
+    const n = Number(ctx.query.get("limit"));
+    return { limit: Number.isFinite(n) && n > 0 ? Math.min(Math.round(n), 200) : undefined, cursor: ctx.query.get("cursor") ?? undefined };
+  };
+  const actorOf = (ctx: Ctx) => [ctx.claims!.userId, ctx.claims!.role ?? "player"] as const;
+
+  // Players in a brand (reuses the site-scoped admin list with an explicit target site).
+  router.get(`${BASE}/platform/sites/:id/users`, auth, platform, async (ctx: Ctx) => {
+    const num = (k: string) => { const r = ctx.query.get(k); const n = r == null || r === "" ? NaN : Number(r); return Number.isFinite(n) && n >= 0 ? Math.round(n) : undefined; };
+    return deps.admin.listUsers({
+      ...pageQ(ctx),
+      role: ctx.query.get("role") ?? undefined,
+      status: ctx.query.get("status") ?? undefined,
+      q: ctx.query.get("q") ?? undefined,
+      minBalanceCents: num("minBalanceCents"), maxBalanceCents: num("maxBalanceCents"),
+      minDepositsCents: num("minDepositsCents"), minWithdrawalsCents: num("minWithdrawalsCents"),
+      minTurnoverCents: num("minTurnoverCents"), minBets: num("minBets"),
+      siteId: ctx.params.id,
+    });
+  });
+
+  router.get(`${BASE}/platform/sites/:id/users/:uid`, auth, platform, async (ctx: Ctx) =>
+    domain(() => deps.admin.getUserDetail(ctx.params.uid!)));
+
+  // Per-brand audit trail (admin_actions filtered by site).
+  router.get(`${BASE}/platform/sites/:id/audit`, auth, platform, async (ctx: Ctx) =>
+    deps.admin.listAudit(pageQ(ctx), ctx.params.id));
+
+  router.post(`${BASE}/platform/sites/:id/users/:uid/status`, auth, platform, async (ctx: Ctx) => {
+    const b = asObject(ctx.body);
+    const status = String(b.status ?? "");
+    if (!["active", "suspended", "banned"].includes(status)) throw new ApiError("VALIDATION", "status must be active|suspended|banned", 400);
+    const [a, r] = actorOf(ctx);
+    return domain(() => deps.admin.setUserStatus(a, r, ctx.params.uid!, status, typeof b.reason === "string" ? b.reason : ""));
+  });
+
+  router.post(`${BASE}/platform/sites/:id/users/:uid/role`, auth, platform, async (ctx: Ctx) => {
+    const b = asObject(ctx.body);
+    const role = String(b.role ?? "");
+    if (!["player", "marketer", "admin"].includes(role)) throw new ApiError("VALIDATION", "role must be player|marketer|admin", 400);
+    const [a, r] = actorOf(ctx);
+    return domain(() => deps.admin.setUserRole(a, r, ctx.params.uid!, role));
+  });
+
+  router.post(`${BASE}/platform/sites/:id/users/:uid/balance`, auth, platform, async (ctx: Ctx) => {
+    const b = asObject(ctx.body);
+    const amount = Number(b.amountCents);
+    if (!Number.isFinite(amount) || amount === 0) throw new ApiError("VALIDATION", "amountCents must be a non-zero integer", 400);
+    const reason = typeof b.reason === "string" ? b.reason : "";
+    const kind = b.kind === "bonus" ? "bonus" : b.kind === "real" ? "real" : undefined;
+    const [a, r] = actorOf(ctx);
+    if (kind) return domain(() => deps.admin.adjustBalanceKind(a, r, ctx.params.uid!, Math.round(amount), kind, reason));
+    return domain(() => deps.admin.adjustBalance(a, r, ctx.params.uid!, Math.round(amount), reason));
+  });
+
+  router.patch(`${BASE}/platform/sites/:id/users/:uid/overrides`, auth, platform, async (ctx: Ctx) => {
+    const patch = asObject(ctx.body);
+    const [a, r] = actorOf(ctx);
+    return domain(() => deps.admin.setUserOverrides(a, r, ctx.params.uid!, patch));
+  });
 }

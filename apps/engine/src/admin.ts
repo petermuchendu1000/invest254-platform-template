@@ -214,7 +214,7 @@ export interface AdminRepository {
   listWithdrawals(q: AdminWithdrawalListQuery): Promise<Page<AdminWithdrawalRow>>;
   /** Unified deposits + withdrawals feed for the Finance transactions explorer (newest-first, keyset). */
   listTransactions(q: AdminTransactionListQuery): Promise<Page<AdminTransactionRow>>;
-  listAudit(q: PageQuery): Promise<Page<AdminAuditRow>>;
+  listAudit(q: PageQuery, siteId?: string): Promise<Page<AdminAuditRow>>;
   adjustBalance(actorId: string, actorRole: string, targetId: string, amountCents: Cents, reason: string): Promise<AdjustBalanceResult>;
   /** Reset a user's real wallet to their most recent successful deposit amount (audited). */
   resetBalanceToLastFunded(actorId: string, actorRole: string, targetId: string, reason: string): Promise<ResetBalanceResult>;
@@ -657,15 +657,16 @@ export class PgAdminRepository implements AdminRepository {
     return pageFrom(rows, limit, (t) => `${t.createdAtMs}:${t.txId}`);
   }
 
-  async listAudit(q: PageQuery): Promise<Page<AdminAuditRow>> {
+  async listAudit(q: PageQuery, siteId?: string): Promise<Page<AdminAuditRow>> {
     const limit = clampLimit(q.limit);
     const cur = decodeKeyset(q.cursor);
     const r = await this.q.query(
       `select id, actor_id, actor_role, action, target_type, target_id, detail, created_at from admin_actions
         where ($1::timestamptz is null or (created_at, id) < ($1::timestamptz, $2::bigint))
+          and ($4::uuid is null or site_id = $4)
         order by created_at desc, id desc
         limit $3`,
-      [cur ? new Date(cur.tsMs).toISOString() : null, cur ? Number(cur.id) : null, limit + 1]);
+      [cur ? new Date(cur.tsMs).toISOString() : null, cur ? Number(cur.id) : null, limit + 1, siteId ?? null]);
     const rows: AdminAuditRow[] = r.rows.map((x) => ({
       id: String(x.id), actorId: String(x.actor_id), actorRole: String(x.actor_role), action: String(x.action),
       targetType: String(x.target_type), targetId: x.target_id == null ? null : String(x.target_id), detail: x.detail, createdAtMs: ms(x.created_at),
@@ -1248,7 +1249,7 @@ export class InMemoryAdminRepository implements AdminRepository {
     return memKeyset(rows, q);
   }
 
-  async listAudit(q: PageQuery): Promise<Page<AdminAuditRow>> {
+  async listAudit(q: PageQuery, _siteId?: string): Promise<Page<AdminAuditRow>> {
     const rows = this.audit.map((a) => ({
       id: String(a.id), actorId: a.actorId, actorRole: a.actorRole, action: a.action,
       targetType: a.targetType, targetId: a.targetId, detail: a.detail, createdAtMs: a.createdAtMs,

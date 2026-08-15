@@ -5,8 +5,8 @@ import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { useToast } from '@/lib/toast/ToastProvider';
 import { checkFeasible } from '@invest254/shared/config';
-import { useUpdateSite, useSetSiteConfig, useSetSiteTheme } from '@/lib/platform/hooks';
-import type { SiteWithConfig, SiteConfig } from '@/lib/platform/endpoints';
+import { useUpdateSite, useSetSiteConfig, useSetSiteTheme, usePlatformSiteUsers, usePlatformSiteAudit, usePlatformUserAction } from '@/lib/platform/hooks';
+import type { SiteWithConfig, SiteConfig, SiteUserRow, AuditRow } from '@/lib/platform/endpoints';
 import { deriveMinimalPalette } from '@/lib/brand/derivePalette';
 import { groupedPresets, presetForSeed } from '@/lib/brand/presets';
 import { BRAND_FONTS, googleFontsHref } from '@/lib/brand/fonts';
@@ -245,6 +245,119 @@ const StatusPill = ({ status }: { status: string }) => (
   <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${status === 'active' ? 'bg-up/20 text-up' : status === 'paused' ? 'bg-warn/20 text-warn' : 'bg-surface-2 text-muted'}`}>{status}</span>
 );
 
+const kes = (c: number) => `KES ${(c / 100).toLocaleString()}`;
+
+/** Players in a brand — searchable table + an actions panel for the selected player. */
+function PlayersSection({ site }: { site: SiteWithConfig }) {
+  const [q, setQ] = useState('');
+  const [statusF, setStatusF] = useState('');
+  const params = useMemo(() => ({ q: q.trim() || undefined, status: statusF || undefined, limit: '50' }), [q, statusF]);
+  const users = usePlatformSiteUsers(site.siteId, params);
+  const action = usePlatformUserAction(site.siteId);
+  const toast = useToast();
+  const [sel, setSel] = useState<SiteUserRow | null>(null);
+  const rows = users.data?.items ?? [];
+
+  const [amt, setAmt] = useState('');
+  const [dir, setDir] = useState<'credit' | 'debit'>('credit');
+  const [reason, setReason] = useState('');
+
+  function run(v: Parameters<typeof action.mutate>[0], ok: string) {
+    action.mutate(v, {
+      onSuccess: () => { toast.push({ tone: 'success', title: ok }); setAmt(''); setReason(''); },
+      onError: (e) => toast.push({ tone: 'error', title: 'Action failed', description: (e as Error).message }),
+    });
+  }
+  const pill = (s: string) => `rounded-full px-2 py-0.5 text-xs font-semibold ${s === 'active' ? 'bg-up/20 text-up' : s === 'suspended' ? 'bg-warn/20 text-warn' : 'bg-down/20 text-down'}`;
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search phone / username…" className="h-9 w-56 max-w-full rounded-lg border border-border bg-surface-2 px-3 text-sm text-fg outline-none focus:border-accent" />
+        <select value={statusF} onChange={(e) => setStatusF(e.target.value)} className="h-9 rounded-lg border border-border bg-surface-2 px-2 text-sm text-fg">
+          <option value="">All statuses</option><option value="active">Active</option><option value="suspended">Suspended</option><option value="banned">Banned</option>
+        </select>
+        <span className="text-xs text-muted">{rows.length} shown</span>
+      </div>
+      <div className="table-wrapper overflow-x-auto rounded-brand border border-border">
+        <table className="w-full min-w-[640px] text-sm">
+          <thead><tr className="text-left text-xs uppercase tracking-wide text-muted">
+            <th className="px-3 py-2">Player</th><th className="px-3 py-2">Role</th><th className="px-3 py-2">Status</th><th className="px-3 py-2">Balance</th><th className="px-3 py-2">Deposits</th><th className="px-3 py-2">Bets</th>
+          </tr></thead>
+          <tbody>
+            {rows.map((u) => (
+              <tr key={u.userId} onClick={() => setSel(u)} className={`cursor-pointer border-t border-border hover:bg-surface-2 ${sel?.userId === u.userId ? 'bg-surface-2' : ''}`}>
+                <td className="px-3 py-2"><span className="font-medium text-fg">@{u.username}</span> <span className="text-muted">{u.phone}</span></td>
+                <td className="px-3 py-2 text-muted">{u.role}</td>
+                <td className="px-3 py-2"><span className={pill(u.status)}>{u.status}</span></td>
+                <td className="px-3 py-2 tabular-nums">{kes(u.realBalanceCents)}</td>
+                <td className="px-3 py-2 tabular-nums">{kes(u.depositsCents)}</td>
+                <td className="px-3 py-2 tabular-nums">{u.betCount.toLocaleString()}</td>
+              </tr>
+            ))}
+            {rows.length === 0 ? <tr><td className="px-3 py-3 text-muted" colSpan={6}>{users.isLoading ? 'Loading…' : 'No players.'}</td></tr> : null}
+          </tbody>
+        </table>
+      </div>
+
+      {sel ? (
+        <div className="flex flex-col gap-3 rounded-brand border border-border bg-surface-2 p-3">
+          <div className="flex items-center justify-between">
+            <span className="text-sm font-semibold text-fg">Manage @{sel.username} <span className="font-normal text-muted">{sel.phone}</span></span>
+            <button className="text-xs text-muted hover:text-fg" onClick={() => setSel(null)}>close ✕</button>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs text-muted">Status:</span>
+            <Button size="sm" variant="outline" disabled={action.isPending} onClick={() => run({ kind: 'status', uid: sel.userId, status: 'active', reason: 'platform console' }, 'Activated')}>Activate</Button>
+            <Button size="sm" variant="outline" disabled={action.isPending} onClick={() => run({ kind: 'status', uid: sel.userId, status: 'suspended', reason: 'platform console' }, 'Suspended')}>Suspend</Button>
+            <Button size="sm" variant="down" disabled={action.isPending} onClick={() => run({ kind: 'status', uid: sel.userId, status: 'banned', reason: 'platform console' }, 'Banned')}>Ban</Button>
+            <span className="ml-2 text-xs text-muted">Role:</span>
+            <select defaultValue={sel.role} onChange={(e) => run({ kind: 'role', uid: sel.userId, role: e.target.value }, `Role → ${e.target.value}`)} className="h-8 rounded-lg border border-border bg-surface px-2 text-sm text-fg">
+              <option value="player">player</option><option value="marketer">marketer</option><option value="admin">admin</option>
+            </select>
+          </div>
+          <div className="flex flex-wrap items-end gap-2">
+            <label className="flex flex-col gap-1 text-xs text-muted">Amount (KES)
+              <input value={amt} onChange={(e) => setAmt(e.target.value)} type="number" className="h-9 w-28 rounded-lg border border-border bg-surface px-2 text-sm text-fg" /></label>
+            <select value={dir} onChange={(e) => setDir(e.target.value as 'credit' | 'debit')} className="h-9 rounded-lg border border-border bg-surface px-2 text-sm text-fg"><option value="credit">credit +</option><option value="debit">debit −</option></select>
+            <input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="reason (required)" className="h-9 w-48 rounded-lg border border-border bg-surface px-2 text-sm text-fg" />
+            <Button size="sm" disabled={action.isPending || !amt || !reason.trim()} onClick={() => {
+              const cents = Math.round(Number(amt) * 100) * (dir === 'debit' ? -1 : 1);
+              if (Number.isFinite(cents) && cents !== 0) run({ kind: 'balance', uid: sel.userId, amountCents: cents, reason: reason.trim() }, 'Balance adjusted');
+            }}>Adjust balance</Button>
+          </div>
+        </div>
+      ) : <p className="text-xs text-muted">Select a player to manage status, role and balance.</p>}
+    </div>
+  );
+}
+
+/** A brand's recent admin actions (audit trail). */
+function AuditSection({ site }: { site: SiteWithConfig }) {
+  const audit = usePlatformSiteAudit(site.siteId);
+  const rows: AuditRow[] = audit.data?.items ?? [];
+  return (
+    <div className="table-wrapper overflow-x-auto rounded-brand border border-border">
+      <table className="w-full min-w-[640px] text-sm">
+        <thead><tr className="text-left text-xs uppercase tracking-wide text-muted">
+          <th className="px-3 py-2">When</th><th className="px-3 py-2">Actor</th><th className="px-3 py-2">Action</th><th className="px-3 py-2">Target</th>
+        </tr></thead>
+        <tbody>
+          {rows.map((a) => (
+            <tr key={a.id} className="border-t border-border">
+              <td className="px-3 py-2 whitespace-nowrap text-muted">{new Date(a.createdAtMs).toLocaleString()}</td>
+              <td className="px-3 py-2 text-muted">{a.actorRole}</td>
+              <td className="px-3 py-2 font-medium text-fg">{a.action}</td>
+              <td className="px-3 py-2 text-muted">{a.targetType}{a.targetId ? ` · ${a.targetId.slice(0, 8)}` : ''}</td>
+            </tr>
+          ))}
+          {rows.length === 0 ? <tr><td className="px-3 py-3 text-muted" colSpan={4}>{audit.isLoading ? 'Loading…' : 'No audit entries.'}</td></tr> : null}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 /** The full per-client management surface — expandable sections, each an independent form. */
 export function ClientDetail({ site }: { site: SiteWithConfig }) {
   return (
@@ -267,6 +380,12 @@ export function ClientDetail({ site }: { site: SiteWithConfig }) {
       </Expandable>
       <Expandable title="Economy" subtitle="Win rate, house edge, stakes, payouts — feasibility enforced">
         <EconomySection site={site} />
+      </Expandable>
+      <Expandable title="Players" subtitle="Search, status, role and balance — for this brand's users">
+        <PlayersSection site={site} />
+      </Expandable>
+      <Expandable title="Audit trail" subtitle="Recent admin actions on this brand">
+        <AuditSection site={site} />
       </Expandable>
     </div>
   );

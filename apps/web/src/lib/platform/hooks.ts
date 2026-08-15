@@ -112,3 +112,41 @@ export function useApplySiteTheme() {
     onSuccess: invalidate,
   });
 }
+
+/** Phase 2 — players in a brand (searchable). */
+export function usePlatformSiteUsers(id: string, params?: Record<string, string | undefined>) {
+  const t = useTok();
+  return useQuery({
+    queryKey: ['platform', 'site-users', id, params],
+    queryFn: () => platformApi.siteUsers(t, id, params),
+    enabled: !!t && !!id,
+  });
+}
+
+/** Phase 2 — a brand's audit trail. */
+export function usePlatformSiteAudit(id: string) {
+  const t = useTok();
+  return useQuery({
+    queryKey: ['platform', 'site-audit', id],
+    queryFn: () => platformApi.siteAudit(t, id),
+    enabled: !!t && !!id,
+  });
+}
+
+/** Phase 2 — player actions (status / role / balance) for a brand; refreshes the players list. */
+export function usePlatformUserAction(id: string) {
+  const t = useTok();
+  const qc = useQueryClient();
+  const refresh = () => { void qc.invalidateQueries({ queryKey: ['platform', 'site-users', id] }); void qc.invalidateQueries({ queryKey: ['platform', 'site-audit', id] }); };
+  return useMutation({
+    mutationFn: async (v:
+      | { kind: 'status'; uid: string; status: string; reason?: string }
+      | { kind: 'role'; uid: string; role: string }
+      | { kind: 'balance'; uid: string; amountCents: number; reason?: string; balanceKind?: string }) => {
+      if (v.kind === 'status') return platformApi.siteUserStatus(t, id, v.uid, { status: v.status, reason: v.reason });
+      if (v.kind === 'role') return platformApi.siteUserRole(t, id, v.uid, { role: v.role });
+      return platformApi.siteUserBalance(t, id, v.uid, { amountCents: v.amountCents, reason: v.reason, kind: v.balanceKind });
+    },
+    onSuccess: refresh,
+  });
+}
