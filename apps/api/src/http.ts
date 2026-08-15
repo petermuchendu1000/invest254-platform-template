@@ -58,12 +58,18 @@ export const ROLE_RANK: Readonly<Record<string, number>> = {
 const MAX_BODY_BYTES = 1_000_000; // 1 MB cap on request bodies
 
 /**
- * CORS. The player web app is served from a different origin (e.g. the Vercel/web domain)
- * than this API, so every browser request is preceded by a CORS preflight. Without these
+ * CORS. The player web app is served from a different origin (e.g. the Cloudflare Pages / brand
+ * domains) than this API, so every browser request is preceded by a CORS preflight. Without these
  * headers the browser blocks the response and EVERY call (register/login/wallet/...) fails
  * silently in the UI while curl and the test suite still pass. Allowed origins come from
  * `CORS_ALLOWED_ORIGINS` (comma-separated); default `*`. Auth is via a Bearer token (not
  * cookies), so `*` is safe; set explicit origins in production for defence-in-depth.
+ *
+ * Multi-tenant (GAP 3): the platform serves MANY brand domains from ONE API, and brands are added
+ * continuously, so a static allowlist can never keep up. When `CORS_ALLOWED_ORIGINS` is restricted
+ * (not `*`), the router is additionally given a `corsAllowOrigin` predicate (wired in server.ts to
+ * a cache of ACTIVE brand domains from the `sites` table), so every onboarded client's origin —
+ * apex and `www.` — is allowed automatically without a redeploy, while unknown origins stay blocked.
  */
 const CORS_ORIGINS = (process.env.CORS_ALLOWED_ORIGINS ?? "*")
   .split(",")
@@ -71,10 +77,26 @@ const CORS_ORIGINS = (process.env.CORS_ALLOWED_ORIGINS ?? "*")
   .filter(Boolean);
 const CORS_ALLOW_ALL = CORS_ORIGINS.includes("*");
 
-function applyCors(req: IncomingMessage, res: ServerResponse): void {
+/**
+ * Pure CORS origin decision (exported for testing). An origin is allowed when the allowlist is `*`,
+ * when it is explicitly listed, or when the injected `brandAllows` predicate accepts it (an active
+ * brand domain). The predicate is defensive: a throw is treated as "not allowed".
+ */
+export function isOriginAllowed(
+  origin: string | undefined,
+  opts: { allowAll: boolean; allowList: readonly string[]; brandAllows?: (origin: string) => boolean },
+): boolean {
+  if (!origin) return false;
+  if (opts.allowAll) return true;
+  if (opts.allowList.includes(origin)) return true;
+  try { return opts.brandAllows?.(origin) === true; } catch { return false; }
+}
+
+function applyCors(req: IncomingMessage, res: ServerResponse, brandAllows?: (origin: string) => boolean): void {
   const origin = req.headers["origin"];
-  if (typeof origin === "string" && (CORS_ALLOW_ALL || CORS_ORIGINS.includes(origin))) {
-    res.setHeader("Access-Control-Allow-Origin", origin);
+  const o = typeof origin === "string" ? origin : undefined;
+  if (o && isOriginAllowed(o, { allowAll: CORS_ALLOW_ALL, allowList: CORS_ORIGINS, ...(brandAllows ? { brandAllows } : {}) })) {
+    res.setHeader("Access-Control-Allow-Origin", o);
     res.setHeader("Vary", "Origin");
   } else if (CORS_ALLOW_ALL) {
     res.setHeader("Access-Control-Allow-Origin", "*");
@@ -176,8 +198,18 @@ function compile(path: string): { regex: RegExp; keys: string[] } {
   return { regex: new RegExp(`^${pattern}/?$`), keys };
 }
 
+export interface RouterOptions {
+  /** Extra CORS allowance beyond CORS_ALLOWED_ORIGINS — e.g. an active-brand-domain predicate. */
+  corsAllowOrigin?: (origin: string) => boolean;
+}
+
 export class Router {
   private readonly routes: Route[] = [];
+  private readonly corsAllowOrigin?: (origin: string) => boolean;
+
+  constructor(opts: RouterOptions = {}) {
+    if (opts.corsAllowOrigin) this.corsAllowOrigin = opts.corsAllowOrigin;
+  }
 
   private add(method: string, path: string, chain: Array<Middleware | Handler>): this {
     const { regex, keys } = compile(path);
@@ -200,7 +232,7 @@ export class Router {
     const method = (req.method ?? "GET").toUpperCase();
     const url = new URL(req.url ?? "/", "http://localhost");
     const path = url.pathname;
-    applyCors(req, res);
+    applyCors(req, res, this.corsAllowOrigin);
     applySecurityHeaders(res);
     // Answer the CORS preflight before any routing/auth so browser write calls succeed.
     if (method === "OPTIONS") {

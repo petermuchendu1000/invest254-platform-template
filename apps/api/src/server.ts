@@ -8,6 +8,7 @@ import {
 } from "@invest254/engine";
 import { createApp, type ApiDeps, type WalletBalance, type BonusStatus, type Brand } from "./app.js";
 import { normalizeHost } from "@invest254/shared";
+import { BrandOriginAllowlist } from "./cors.js";
 import { makePgMarketerRepo } from "./marketers.pg.js";
 import { makePgSupportDeps } from "./support.pg.js";
 import { makeDomainProvisioner } from "./domains.js";
@@ -150,6 +151,17 @@ async function buildDeps(): Promise<ApiDeps> {
     },
   };
 
+  // Multi-tenant CORS (GAP 3): allow every ACTIVE brand domain automatically. Cached in memory and
+  // refreshed from `sites`, so the preflight decision is synchronous and hardening
+  // CORS_ALLOWED_ORIGINS never locks a client out. Seeded once here before the server accepts traffic.
+  const brandCors = new BrandOriginAllowlist(async () => {
+    const r = await q.query(
+      "select primary_domain from sites where status = 'active' and primary_domain is not null", []);
+    return r.rows.map((x: Record<string, unknown>) => String(x.primary_domain));
+  });
+  await brandCors.init();
+  console.log(`[api] CORS: ${brandCors.size} active brand origin(s) allowed dynamically`);
+
   return {
     verifier,
     auth,
@@ -157,6 +169,7 @@ async function buildDeps(): Promise<ApiDeps> {
     admin,
     platform,
     notifications,
+    corsAllowOrigin: (origin: string) => brandCors.allows(origin),
     marketers: makePgMarketerRepo((sql, params) => q.query(sql, params ?? [])),
     config: () => gameConfig.active(),
     fairnessById: async (gameDayId: number): Promise<FairnessRecord | null> => {

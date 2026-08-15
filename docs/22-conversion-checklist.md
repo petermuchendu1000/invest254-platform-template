@@ -115,6 +115,13 @@ Files: `apps/api/src/http.ts`, `app.ts`, `app.site.ts`, `app.auth.ts`, `server.t
   same brand instead of `www.` silently falling back to the default (GAP 4); `brandByHost` also
   matches a www-stored `primary_domain`. Tested (host, slug case-insensitive, www apex+mixed-case,
   400 missing, 404 unknown; `normalizeHost` unit-tested in `site.test.ts`).
+- ✅ Multi-tenant CORS (GAP 3, `http.ts` + `cors.ts`): the shared API serves many brand domains,
+  so a static `CORS_ALLOWED_ORIGINS` can't keep up. When that list is restricted (not `*`), the
+  router also consults a `corsAllowOrigin` predicate backed by `BrandOriginAllowlist` — an in-memory,
+  periodically-refreshed set of ACTIVE brand domains from `sites` — so every onboarded client's
+  origin (apex + `www.`) is allowed without a redeploy, unknown origins stay blocked, and the
+  preflight decision stays synchronous. Tested: `cors.test.ts` (pure `isOriginAllowed` matrix +
+  allowlist refresh/add/fail-safe/www-fold).
 - ✅ Brand-scoped auth: `register`/`login` resolve the brand from the explicit `site` ref the web
   sends (`useAuthActions` → `useBrand().slug`), with `host` as a backward-compatible fallback, and
   pass `site_id`, returning the session's `site`; identity is isolated per brand. Without this the

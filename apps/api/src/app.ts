@@ -88,6 +88,13 @@ export interface ApiDeps {
   fairnessById(gameDayId: number): Promise<FairnessRecord | null>;
   /** Public brand resolution (docs/22 Task E): host (or slug) → the `sites` brand DTO, or null. */
   brandByHost(host: string): Promise<Brand | null>;
+  /**
+   * Optional multi-tenant CORS allowance (docs/22, GAP 3): given a request `Origin`, return true if
+   * it belongs to an ACTIVE brand domain. Consulted only when `CORS_ALLOWED_ORIGINS` is restricted
+   * (not `*`); wired in server.ts to a cached, periodically-refreshed view of `sites`, so every
+   * onboarded client's origin is allowed without a redeploy.
+   */
+  corsAllowOrigin?: (origin: string) => boolean;
 
   // ── E2: player + payments + admin ──
   /** Deposit/withdrawal orchestration over the atomic 0014 RPCs + Daraja. */
@@ -178,7 +185,7 @@ export function registerPublicRoutes(router: Router, deps: ApiDeps): void {
 
 /** Build the configured API router. */
 export function createRouter(deps: ApiDeps): Router {
-  const router = new Router();
+  const router = new Router(deps.corsAllowOrigin ? { corsAllowOrigin: deps.corsAllowOrigin } : {});
   registerPublicRoutes(router, deps);
   registerSiteRoutes(router, deps);
   registerAuthRoutes(router, deps);
