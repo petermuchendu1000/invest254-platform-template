@@ -11,6 +11,7 @@ import { SessionBootstrap } from '@/components/auth/SessionBootstrap';
 import { NotificationBanners } from '@/components/notifications/NotificationBanners';
 import { RegisterSW } from '@/components/RegisterSW';
 import { SupportWidget } from '@/components/support/SupportWidget';
+import { env } from '@/lib/env';
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -45,7 +46,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <AuthModal />
         <WalletModal />
         <RegisterSW />
-        <SupportWidget />
+        {env.supportChatEnabled && <SupportWidget />}
       </div>
     );
   }
@@ -63,7 +64,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <AuthModal />
       <WalletModal />
       <RegisterSW />
-      <SupportWidget />
+      {env.supportChatEnabled && <SupportWidget />}
     </div>
   );
 }
