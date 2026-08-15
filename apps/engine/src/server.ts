@@ -83,7 +83,11 @@ if (usingDb) {
   const liveLookup: SiteLookup = async (ref) => {
     const r = await q.query(
       `select id, master_seed_ref from sites
-        where status = 'active' and (lower(slug) = $1 or lower(primary_domain) = $1 or lower(id::text) = $1)
+        where status = 'active'
+          and (lower(slug) = $1
+               or lower(primary_domain) = $1
+               or regexp_replace(lower(primary_domain), '^www\\.', '') = $1
+               or lower(id::text) = $1)
         limit 1`,
       [ref],
     );

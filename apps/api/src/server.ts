@@ -7,6 +7,7 @@ import {
   type Querier, type FairnessRecord, type ListenClient,
 } from "@invest254/engine";
 import { createApp, type ApiDeps, type WalletBalance, type BonusStatus, type Brand } from "./app.js";
+import { normalizeHost } from "@invest254/shared";
 import { makePgMarketerRepo } from "./marketers.pg.js";
 import { makePgSupportDeps } from "./support.pg.js";
 import { makeDomainProvisioner } from "./domains.js";
@@ -174,12 +175,16 @@ async function buildDeps(): Promise<ApiDeps> {
       };
     },
     brandByHost: async (host: string): Promise<Brand | null> => {
-      const h = host.trim().toLowerCase();
+      const h = normalizeHost(host);
+      if (!h) return null;
       const r = await q.query(
         `select id, slug, name, wordmark_text, logo_url, favicon_url, color_primary, color_bg,
                 color_accent, theme, currency, locale, licence_line, support_email, theme_tokens
            from sites
-          where status = 'active' and (lower(primary_domain) = $1 or lower(slug) = $1)
+          where status = 'active'
+            and (lower(slug) = $1
+                 or lower(primary_domain) = $1
+                 or regexp_replace(lower(primary_domain), '^www\\.', '') = $1)
           limit 1`,
         [h],
       );

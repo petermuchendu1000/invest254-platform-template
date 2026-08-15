@@ -18,9 +18,10 @@
  * capability is purely additive: refs unknown at boot now resolve live instead of being rejected.
  */
 
+import { normalizeHost } from "@invest254/shared";
+
 /** Resolve a normalized brand ref (slug|domain|id, lower-cased, trimmed) to a site_id, or null. */
 export type SiteLookup = (ref: string) => Promise<string | null>;
-
 export interface SiteResolverOptions {
   /** Boot-time aliases: ref (slug|domain|id, any case) → site_id. */
   aliases?: Iterable<readonly [string, string]>;
@@ -33,7 +34,7 @@ export interface SiteResolverOptions {
 }
 
 function norm(s: string): string {
-  return s.trim().toLowerCase();
+  return normalizeHost(s);
 }
 
 export class SiteResolver {

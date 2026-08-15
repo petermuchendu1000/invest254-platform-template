@@ -64,3 +64,30 @@ export function siteCommitment(seed: string): string {
   if (!seed) throw new Error("seed is required");
   return createHash("sha256").update(seed).digest("hex");
 }
+
+/**
+ * Normalize a host / brand reference for site resolution — the single source of truth used by the
+ * API brand resolver (`brandByHost`), the engine's connection resolver (`siteresolver.ts`) and the
+ * test fakes, so every layer treats a domain identically.
+ *
+ * Rules (idempotent): lower-case, trim, tolerate a full origin/URL being passed (strip
+ * `scheme://`, any userinfo, path and `:port`), drop a trailing FQDN dot, and treat `www.<apex>`
+ * as `<apex>`. WHY the `www.` fold (GAP 4): brands are onboarded with their apex as
+ * `sites.primary_domain`, but visitors (and CORS `Origin`s) arrive on both the apex and `www.`; an
+ * exact match left `www.tamutraders.com` unresolved, silently falling back to the default brand.
+ *
+ * Slugs and UUIDs pass through unchanged (they contain no dots, ports or `www.` prefix), so this is
+ * safe to apply to any `?site=` / host reference, not only domains.
+ */
+export function normalizeHost(host: string | null | undefined): string {
+  if (!host) return "";
+  let h = host.trim().toLowerCase();
+  if (!h) return "";
+  h = h.replace(/^[a-z][a-z0-9+.-]*:\/\//, ""); // strip scheme:// if a full origin was passed
+  h = h.split("/")[0] ?? "";                     // drop any path
+  h = h.split("@").pop() ?? "";                  // drop userinfo
+  h = h.split(":")[0] ?? "";                     // drop :port
+  h = h.replace(/\.$/, "");                       // drop trailing FQDN dot
+  h = h.replace(/^www\./, "");                    // fold www.<apex> -> <apex>
+  return h;
+}

@@ -1,5 +1,5 @@
 import type { AddressInfo } from "node:net";
-import { DEFAULT_CONFIG, type Cents } from "@invest254/shared";
+import { DEFAULT_CONFIG, normalizeHost, type Cents } from "@invest254/shared";
 import {
   InMemoryEngagementRepository, InMemoryPaymentRepository, InMemoryGameRepository, StubDarajaClient,
   InMemoryIdentityRepository, PaymentService, AuthService, AffiliateService, AdminService, InMemoryAdminRepository, PlatformService, InMemoryPlatformRepository, maskHandle,
@@ -260,10 +260,13 @@ export const TEST_BRANDS: Record<string, Brand> = {
     theme: "light", currency: "KES", locale: "en-KE", licenceLine: null, supportEmail: "support@brandb.example",
   },
 };
-/** Resolve a brand by primary host or slug (mirrors the Pg resolver in server.ts). */
+/** Resolve a brand by primary host or slug (mirrors the Pg resolver in server.ts, incl. www-fold). */
 export function resolveTestBrand(hostOrSlug: string): Brand | null {
-  const k = hostOrSlug.trim().toLowerCase();
-  return TEST_BRANDS[k] ?? Object.values(TEST_BRANDS).find((b) => b.slug === k) ?? null;
+  const k = normalizeHost(hostOrSlug);
+  if (!k) return null;
+  for (const b of Object.values(TEST_BRANDS)) if (b.slug === k) return b;
+  for (const [host, b] of Object.entries(TEST_BRANDS)) if (normalizeHost(host) === k) return b;
+  return null;
 }
 
 export interface TestApi {

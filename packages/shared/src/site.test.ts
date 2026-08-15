@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { deriveSiteDaySeed, siteCommitment } from "./site.js";
+import { deriveSiteDaySeed, siteCommitment, normalizeHost } from "./site.js";
 import { deriveDaySeed, commitment } from "./seed.js";
 
 const MASTER = "platform-master-seed-abc";
@@ -53,4 +53,35 @@ test("guards: empty master/site and bad date/version throw", () => {
 test("site version 0 differs from the single-tenant (no-site) day seed", () => {
   // A brand's seed must never collide with the legacy single-tenant lineage.
   assert.notEqual(deriveSiteDaySeed(MASTER, SITE_A, DAY, 0), deriveDaySeed(MASTER, DAY, 0));
+});
+
+// ── normalizeHost (GAP 4) ──────────────────────────────────────────────────────────────────────
+test("normalizeHost folds www., lower-cases, trims, and strips port/scheme/path/userinfo", () => {
+  assert.equal(normalizeHost("tamutraders.com"), "tamutraders.com");
+  assert.equal(normalizeHost("www.tamutraders.com"), "tamutraders.com", "www.<apex> -> <apex>");
+  assert.equal(normalizeHost("WWW.TamuTraders.COM"), "tamutraders.com", "case-insensitive");
+  assert.equal(normalizeHost("  www.tamutraders.com  "), "tamutraders.com", "trims");
+  assert.equal(normalizeHost("tamutraders.com:8443"), "tamutraders.com", "drops :port");
+  assert.equal(normalizeHost("https://www.tamutraders.com"), "tamutraders.com", "strips scheme");
+  assert.equal(normalizeHost("https://www.tamutraders.com/login?x=1"), "tamutraders.com", "strips path/query");
+  assert.equal(normalizeHost("user@www.tamutraders.com"), "tamutraders.com", "strips userinfo");
+  assert.equal(normalizeHost("tamutraders.com."), "tamutraders.com", "strips trailing FQDN dot");
+});
+
+test("normalizeHost only folds a LEADING www. label and leaves slugs/ids/other labels intact", () => {
+  assert.equal(normalizeHost("wwwx.com"), "wwwx.com", "www must be its own label");
+  assert.equal(normalizeHost("api.www.example.com"), "api.www.example.com", "inner www. is untouched");
+  assert.equal(normalizeHost("www.www.example.com"), "www.example.com", "only the leading label folds");
+  assert.equal(normalizeHost("brandb"), "brandb", "slug unchanged");
+  assert.equal(normalizeHost("22222222-2222-2222-2222-222222222222"), "22222222-2222-2222-2222-222222222222", "uuid unchanged");
+});
+
+test("normalizeHost handles empty/nullish and is idempotent", () => {
+  assert.equal(normalizeHost(""), "");
+  assert.equal(normalizeHost("   "), "");
+  assert.equal(normalizeHost(null), "");
+  assert.equal(normalizeHost(undefined), "");
+  const once = normalizeHost("HTTPS://WWW.Brand.CO:443/x");
+  assert.equal(once, "brand.co");
+  assert.equal(normalizeHost(once), "brand.co", "idempotent");
 });

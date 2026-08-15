@@ -110,7 +110,11 @@ Files: `apps/api/src/http.ts`, `app.ts`, `app.site.ts`, `app.auth.ts`, `server.t
   `AUTH_SITE_MISMATCH`). Surfaced by `GET /site/me`. Tested (`app.site.test.ts`).
 - ✅ `GET /site/brand?host=` (public, `app.site.ts`): host/slug → the `sites` brand DTO the web
   resolver (`apps/web/src/lib/brand/brand.ts`) renders — Pg query in `server.ts`, in-memory in
-  `testutil.ts`. Tested (host, slug case-insensitive, 400 missing, 404 unknown).
+  `testutil.ts`. Host normalization is centralized in `normalizeHost` (`packages/shared/src/site.ts`)
+  and folds `www.<apex>` → `<apex>` (+ case/port/scheme), so both the apex and `www.` resolve the
+  same brand instead of `www.` silently falling back to the default (GAP 4); `brandByHost` also
+  matches a www-stored `primary_domain`. Tested (host, slug case-insensitive, www apex+mixed-case,
+  400 missing, 404 unknown; `normalizeHost` unit-tested in `site.test.ts`).
 - ✅ Brand-scoped auth: `register`/`login` resolve the brand from the explicit `site` ref the web
   sends (`useAuthActions` → `useBrand().slug`), with `host` as a backward-compatible fallback, and
   pass `site_id`, returning the session's `site`; identity is isolated per brand. Without this the

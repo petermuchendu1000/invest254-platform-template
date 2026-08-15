@@ -187,3 +187,31 @@ test("E2E routing: GET /site/brand resolves by host and by slug, case-insensitiv
     assert.equal((await get(api, "/api/v1/site/brand?host=nope.example")).status, 404, "unknown host → 404");
   } finally { await api.close(); }
 });
+
+// ── GAP 4: www. resolves to the same brand (both the public brand route and the auth path) ───────
+test("E2E routing: www.<domain> resolves to the same brand as the apex (public brand route)", async () => {
+  const api = await startTestApi();
+  try {
+    const apex = await json(await get(api, "/api/v1/site/brand?host=brandb.example"));
+    const www = await json(await get(api, "/api/v1/site/brand?host=www.brandb.example"));
+    assert.equal(apex.siteId, SITE_B);
+    assert.equal(www.siteId, SITE_B, "www.brandb.example resolves to Brand B, not the default");
+    assert.equal(www.name, "Brand B");
+
+    const mixed = await json(await get(api, "/api/v1/site/brand?host=WWW.BrandB.Example"));
+    assert.equal(mixed.siteId, SITE_B, "www + mixed case still resolves");
+  } finally { await api.close(); }
+});
+
+test("E2E auth: registering on www.<domain> scopes the account to the apex brand", async () => {
+  const api = await startTestApi();
+  try {
+    // The web sends `site`, but the legacy `host` fallback must also fold www so a www visitor is
+    // never silently pooled into the default brand.
+    const r = await req(api, "POST", "/api/v1/auth/register",
+      { body: { phone: "0712009001", username: "wwwuser", password: "Password1", host: "www.brandb.example" } });
+    assert.equal(r.status, 201);
+    const b = await json(r);
+    assert.equal(b.site, SITE_B, "www host resolves to Brand B on register");
+  } finally { await api.close(); }
+});
