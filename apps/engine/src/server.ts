@@ -5,6 +5,7 @@ import {
 import { StaticConfigProvider, SiteGameConfigStore, type ConfigProvider, type ListenClient } from "./gameconfig.js";
 import { PgUserOverridesRepository, type UserOverridesRepository } from "./overrides.js";
 import { SiteRegistry } from "./siteregistry.js";
+import { SiteResolver, type SiteLookup } from "./siteresolver.js";
 import { startMultiEngine } from "./multiengine.js";
 import { makeVerifier } from "./auth.js";
 import { DEFAULT_VERSIONED_CONFIG } from "@invest254/shared";
@@ -38,8 +39,11 @@ let repo: GameRepository;
 let overridesRepo: UserOverridesRepository | undefined;
 let configFor: (siteId: string) => ConfigProvider | Promise<ConfigProvider>;
 let masterSeedFor: ((siteId: string) => string | undefined) | undefined;
-/** host/slug/id -> siteId resolution table, refreshed at boot from `sites`. */
+/** host/slug/id -> siteId resolution table, seeded at boot from `sites`. */
 const siteAliases = new Map<string, string>();
+/** Brand resolver: fast alias cache + (with a DB) a live lookup so brands onboarded AFTER boot
+ *  resolve without a restart (GAP 2). Assigned in both the Pg and in-memory branches below. */
+let resolver: SiteResolver;
 
 if (usingDb) {
   const { Pool } = await import("pg");
@@ -72,13 +76,33 @@ if (usingDb) {
     await store.init();
     return store;
   };
-  console.log(`[engine] multi-tenant: ${siteAliases.size} alias(es) for active brands; store=postgres`);
+  // Live resolution for a brand ONBOARDED AFTER boot (GAP 2): on an alias miss, look the ref up in
+  // `sites` (active only) by slug/domain/id. On a hit we also pick up that brand's dedicated master
+  // seed if its env var is present (else the shared platform seed, decorrelated per site_id). The
+  // SiteResolver caches the hit (and short-negative-caches misses), so this runs once per new brand.
+  const liveLookup: SiteLookup = async (ref) => {
+    const r = await q.query(
+      `select id, master_seed_ref from sites
+        where status = 'active' and (lower(slug) = $1 or lower(primary_domain) = $1 or lower(id::text) = $1)
+        limit 1`,
+      [ref],
+    );
+    if (!r.rows.length) return null;
+    const row = r.rows[0] as { id: string; master_seed_ref: string | null };
+    const id = String(row.id);
+    const seedRef = row.master_seed_ref ? String(row.master_seed_ref) : "";
+    if (seedRef && process.env[seedRef]) masterRefBySite.set(id, process.env[seedRef]!);
+    return id;
+  };
+  resolver = new SiteResolver({ aliases: siteAliases, lookup: liveLookup });
+  console.log(`[engine] multi-tenant: ${siteAliases.size} alias(es) for active brands; store=postgres (live brand resolution on)`);
 } else {
   const mem = new InMemoryGameRepository();
   repo = mem;
   siteAliases.set(DEFAULT_SITE, DEFAULT_SITE);
   siteAliases.set("default", DEFAULT_SITE);
   configFor = () => new StaticConfigProvider(DEFAULT_VERSIONED_CONFIG);
+  resolver = new SiteResolver({ aliases: siteAliases }); // no live lookup in dev — a miss stays a miss
   console.log("[engine] no DATABASE_URL — in-memory single default brand (dev)");
 }
 
@@ -96,13 +120,14 @@ for (const [siteId, rep] of recovered) {
   console.log(`[engine] recovery ${siteId}: scanned=${rep.scanned} settled=${rep.settled} rearmed=${rep.rearmed} noop=${rep.noop} failed=${rep.failed}`);
 }
 
-/** Resolve a connection's brand from `?site=` (slug|domain|id) then Host, then the default. */
-function resolveSite(req: IncomingMessage): string {
+/** Resolve a connection's brand from `?site=` (slug|domain|id) then Host, then the default. Async
+ *  because a brand onboarded after boot is resolved via a live `sites` lookup (GAP 2). */
+async function resolveSite(req: IncomingMessage): Promise<string> {
   const url = new URL(req.url ?? "/", "http://localhost");
   const q = url.searchParams.get("site");
-  if (q && siteAliases.has(q)) return siteAliases.get(q)!;
   const host = (req.headers["host"] ?? "").toString().split(":")[0]!;
-  if (host && siteAliases.has(host)) return siteAliases.get(host)!;
+  const id = (await resolver.resolve(q)) ?? (await resolver.resolve(host));
+  if (id) return id;
   if (!usingDb) return DEFAULT_SITE;
   throw new Error(`unresolved site (site=${q ?? ""} host=${host})`);
 }

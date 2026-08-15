@@ -23,8 +23,12 @@ export interface MultiEngineOptions {
   registry: SiteRegistry;
   repo: GameRepository;
   verifier: Verifier | null;
-  /** Resolve the brand id for a new connection (from `?site=` / host). Throw to reject. */
-  resolveSite: (req: IncomingMessage) => string;
+  /**
+   * Resolve the brand id for a new connection (from `?site=` / host). May be async so the engine
+   * can resolve a brand ONBOARDED AFTER boot via a live lookup (GAP 2). Return the site_id, or
+   * throw/reject to reject the connection.
+   */
+  resolveSite: (req: IncomingMessage) => string | Promise<string>;
   onlineFloor?: number;
   /** Dev/test only: ensure a just-authenticated user has a wallet/balance (in-memory seeding). */
   devSeedBalance?: (siteId: string, userId: string) => Promise<void> | void;
@@ -79,7 +83,7 @@ export async function startMultiEngine(opts: MultiEngineOptions): Promise<MultiE
   wss.on("connection", (ws, req) => {
     void (async () => {
       let siteId: string;
-      try { siteId = opts.resolveSite(req); } catch { try { ws.close(1008, "unknown site"); } catch { /* ignore */ } return; }
+      try { siteId = await opts.resolveSite(req); } catch { try { ws.close(1008, "unknown site"); } catch { /* ignore */ } return; }
       let rt;
       try { rt = await ensureSite(siteId); } catch (err) { report(err as Error, "ensureSite"); try { ws.close(1011); } catch { /* ignore */ } return; }
 

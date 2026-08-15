@@ -121,6 +121,55 @@ test("multiplex: auth, open, settle are fully isolated between brands", async ()
   } finally { a.close(); b.close(); await handle.close(); }
 });
 
+test("multiplex: resolveSite may be async — a brand resolved LIVE (onboarded after boot) still streams", async () => {
+  // GAP 2: the boot alias map does not know this brand; an async resolver (mimicking a live `sites`
+  // lookup) resolves it on connect, and the registry builds its runtime on demand. Proves the
+  // `await opts.resolveSite(req)` path end-to-end: resolve → ensure → hello + ticks.
+  const repo = new InMemoryGameRepository();
+  const registry = new SiteRegistry({
+    masterSeed: "platform-master-test",
+    repo,
+    configFor: (siteId) => new StaticConfigProvider(CONFIGS[siteId] ?? cfgA),
+    seedManagerOpts: { calibrationSamples: 4000 },
+  });
+  let lookups = 0;
+  const handle = await startMultiEngine({
+    port: 0,
+    registry,
+    repo,
+    verifier: null,
+    resolveSite: async (req) => {
+      const u = new URL(req.url ?? "/", "http://x");
+      const s = u.searchParams.get("site");
+      await sleep(5);            // simulate a DB round-trip
+      lookups++;
+      if (s === SITE_A) return SITE_A;
+      throw new Error("unknown site");
+    },
+    onError: () => { /* quiet */ },
+  });
+  const port = (handle.wss.address() as any).port as number;
+  const known = new Client(`ws://127.0.0.1:${port}/?site=${SITE_A}`);
+  // Capture the close code from construction time — the server rejects the unknown brand within
+  // ~5ms, so the listener must be attached before that (not after the known-brand assertions).
+  const unknown = new Client(`ws://127.0.0.1:${port}/?site=${SITE_B}`);
+  let unknownCloseCode = -1;
+  unknown.ws.on("close", (code: number) => { unknownCloseCode = code; });
+  unknown.ws.on("error", () => { /* expected: connection rejected */ });
+  try {
+    await known.open();
+    const hello = await known.waitFor("hello");
+    assert.equal(hello.data.site, SITE_A, "async-resolved brand connects and streams");
+    await sleep(300);
+    assert.ok(known.of("tick").length >= 2, "live-resolved brand receives ticks");
+    assert.ok(lookups >= 1, "the async resolver was awaited");
+
+    // an unresolved brand is cleanly rejected (async throw → close 1008), not left hanging
+    assert.equal(unknown.of("hello").length, 0, "unknown brand never gets a hello");
+    assert.equal(unknownCloseCode, 1008, "unknown brand connection is closed with 1008");
+  } finally { known.close(); unknown.close(); await handle.close(); }
+});
+
 test("multiplex: per-brand stake bounds are enforced independently", async () => {
   const { handle, url } = await boot();
   const b = new Client(url(SITE_B));

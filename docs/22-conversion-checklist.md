@@ -69,6 +69,12 @@ Files: `apps/engine/src/sitecontext.ts` (✅ shipped), `server.ts`, `game.ts`, `
   `?site=`/Host), verifies the JWT `site` claim matches (`AUTH_SITE_MISMATCH`), and fans out
   `tick/online/balance/position_*` **per brand**. Proven by a real two-client integration test
   (`multiengine.test.ts`): decorrelated ticks, isolated auth/open/settle, per-brand stake bounds.
+- ✅ Live brand resolution (`siteresolver.ts`, GAP 2): `resolveSite` is async; the boot alias map
+  is the fast path, but a ref unknown at boot (a brand ONBOARDED AFTER the engine started) is looked
+  up live in `sites` (active only, by slug/domain/id), cached, and served with NO restart — a short
+  negative cache + in-flight coalescing protect the DB. Previously such a connection threw
+  `unresolved site` until a redeploy. Tested: `siteresolver.test.ts` (cache/negative-cache/coalesce/
+  add) + `multiengine.test.ts` async-resolver stream + 1008 reject of a truly-unknown brand.
 - ✅ `RecoveryService` gained a `siteId` filter; `SiteRegistry.recoverAll()` groups open positions
   by brand and recovers each under its own context. 
 - ✅ `server.ts` rewritten as the multiplexed entrypoint (Pg per-site config + in-memory dev
