@@ -2,35 +2,37 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Dark-first design tokens. Light theme overrides under .light on <html>. */
+/* Dark-first design tokens. Light theme overrides under .light on <html>.
+ * Two-layer model (docs/22): neutral near-black chrome + FIXED semantic up=green/down=red
+ * (CoinMarketCap #16C784 / #EA3943); the brand hue only skins --pp-brand/--pp-accent. */
 :root {
-  --pp-bg: #07090f;
-  --pp-surface: #11161f;
-  --pp-surface-2: #1c2430;
-  --pp-border: #303945;
-  --pp-fg: #e6edf3;
-  --pp-muted: #8b949e;
-  --pp-up: #3fb950;
-  --pp-down: #e43d3f;
-  --pp-accent: #00a859;
-  --pp-accent-fg: #ffffff;
-  --pp-brand: #43b02a;
-  --pp-warn: #e3b341;
+  --pp-bg: #0B0E11;
+  --pp-surface: #151A21;
+  --pp-surface-2: #1E252E;
+  --pp-border: #2A323D;
+  --pp-fg: #EEF2F6;
+  --pp-muted: #8B97A7;
+  --pp-up: #16C784;
+  --pp-down: #EA3943;
+  --pp-accent: #16C784;
+  --pp-accent-fg: #0B0F14;
+  --pp-brand: #2CDD6D;
+  --pp-warn: #F0B90B;
 }
 
 html.light {
-  --pp-bg: #f6f8fa;
-  --pp-surface: #ffffff;
-  --pp-surface-2: #eaeef2;
-  --pp-border: #d0d7de;
-  --pp-fg: #1f2328;
-  --pp-muted: #636c76;
-  --pp-up: #1a7f37;
-  --pp-down: #cf222e;
-  --pp-accent: #00a859;
-  --pp-accent-fg: #ffffff;
-  --pp-brand: #43b02a;
-  --pp-warn: #9a6700;
+  --pp-bg: #F7F9FB;
+  --pp-surface: #FFFFFF;
+  --pp-surface-2: #EEF2F6;
+  --pp-border: #DCE3EB;
+  --pp-fg: #0B0E11;
+  --pp-muted: #5B6673;
+  --pp-up: #0F9D63;
+  --pp-down: #CF2E3B;
+  --pp-accent: #0F9D63;
+  --pp-accent-fg: #FFFFFF;
+  --pp-brand: #16A34A;
+  --pp-warn: #B45309;
 }
 
 /*
@@ -42,19 +44,19 @@ html.light {
  * Semantic tokens (up/down/warn/info) stay in canonical hue bands for stable meaning across brands.
  */
 :root {
-  --pp-bg:        var(--brand-bg,           #07090f);
-  --pp-surface:   var(--brand-surface,      #11161f);
-  --pp-surface-2: var(--brand-surface-2,    #1c2430);
-  --pp-border:    var(--brand-border,       #303945);
-  --pp-fg:        var(--brand-fg,           #e6edf3);
-  --pp-muted:     var(--brand-muted,        #8b949e);
-  --pp-up:        var(--brand-up,           #3fb950);
-  --pp-down:      var(--brand-down,         #e43d3f);
-  --pp-warn:      var(--brand-warn,         #e3b341);
-  --pp-info:      var(--brand-info,         #4493f8);
-  --pp-accent:    var(--brand-accent,       #00a859);
-  --pp-accent-fg: var(--brand-accent-fg,    #ffffff);
-  --pp-brand:     var(--brand-primary,      #43b02a);
+  --pp-bg:        var(--brand-bg,           #0B0E11);
+  --pp-surface:   var(--brand-surface,      #151A21);
+  --pp-surface-2: var(--brand-surface-2,    #1E252E);
+  --pp-border:    var(--brand-border,       #2A323D);
+  --pp-fg:        var(--brand-fg,           #EEF2F6);
+  --pp-muted:     var(--brand-muted,        #8B97A7);
+  --pp-up:        var(--brand-up,           #16C784);
+  --pp-down:      var(--brand-down,         #EA3943);
+  --pp-warn:      var(--brand-warn,         #F0B90B);
+  --pp-info:      var(--brand-info,         #3B82F6);
+  --pp-accent:    var(--brand-accent,       #16C784);
+  --pp-accent-fg: var(--brand-accent-fg,    #0B0F14);
+  --pp-brand:     var(--brand-primary,      #2CDD6D);
   /* Per-brand typography (theme-independent). brandCssVars() sets --brand-font-* to full stacks;
      falls back to the system sans so a brand-less / font-less render is unchanged. Title falls
      back to the body face. */
@@ -62,19 +64,19 @@ html.light {
   --pp-font-title: var(--brand-font-title, var(--pp-font-body));
 }
 html.light {
-  --pp-bg:        var(--brand-bg,           #f6f8fa);
-  --pp-surface:   var(--brand-surface,      #ffffff);
-  --pp-surface-2: var(--brand-surface-2,    #eaeef2);
-  --pp-border:    var(--brand-border,       #d0d7de);
-  --pp-fg:        var(--brand-fg,           #1f2328);
-  --pp-muted:     var(--brand-muted,        #636c76);
-  --pp-up:        var(--brand-up,           #1a7f37);
-  --pp-down:      var(--brand-down,         #cf222e);
-  --pp-warn:      var(--brand-warn,         #9a6700);
-  --pp-info:      var(--brand-info,         #0969da);
-  --pp-accent:    var(--brand-accent,       #00a859);
-  --pp-accent-fg: var(--brand-accent-fg,    #ffffff);
-  --pp-brand:     var(--brand-primary,      #43b02a);
+  --pp-bg:        var(--brand-bg,           #F7F9FB);
+  --pp-surface:   var(--brand-surface,      #FFFFFF);
+  --pp-surface-2: var(--brand-surface-2,    #EEF2F6);
+  --pp-border:    var(--brand-border,       #DCE3EB);
+  --pp-fg:        var(--brand-fg,           #0B0E11);
+  --pp-muted:     var(--brand-muted,        #5B6673);
+  --pp-up:        var(--brand-up,           #0F9D63);
+  --pp-down:      var(--brand-down,         #CF2E3B);
+  --pp-warn:      var(--brand-warn,         #B45309);
+  --pp-info:      var(--brand-info,         #2563EB);
+  --pp-accent:    var(--brand-accent,       #0F9D63);
+  --pp-accent-fg: var(--brand-accent-fg,    #FFFFFF);
+  --pp-brand:     var(--brand-primary,      #16A34A);
 }
 
 /*
@@ -97,13 +99,11 @@ html.light {
 }
 
 /*
- * Classic P/L colour mode (opt-in): default gain/loss are mono (vivid brand / muted neutral) for a
- * calm 2–3 colour look; users who prefer conventional green/red toggle html.pnl-classic. It
- * overrides ONLY the up/down semantic tokens, so CurveCanvas + TickerStrip switch automatically.
- * Redundant position + sign cues remain (WCAG 1.4.1 safe).
+ * Semantic P/L colour is ALWAYS ON (docs/22 branding): up=green (gain/rising/above the 0-line),
+ * down=red (loss/falling/below it) — CoinMarketCap #16C784 / #EA3943 — regardless of brand hue.
+ * CurveCanvas clips at the 0-axis so the curve is green above the baseline and red below it, and
+ * TickerStrip/deltas read the same tokens. Redundant position + sign/arrow cues remain (WCAG 1.4.1).
  */
-html.pnl-classic       { --pp-up: #2fb85f; --pp-down: #e5484d; }
-html.light.pnl-classic { --pp-up: #1a7f37; --pp-down: #cf222e; }
 
 html, body {
   height: 100%;

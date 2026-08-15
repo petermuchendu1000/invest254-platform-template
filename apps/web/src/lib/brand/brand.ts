@@ -56,13 +56,13 @@ export const DEFAULT_BRAND: Brand = {
   licenceLine: "Operated under licence.",
   supportEmail: null,
   themeTokens: {
-    // Minimal palette: ONE brand hue + a brand-tinted neutral ramp. Depth comes from
-    // lightness/chroma/opacity, not extra hues. Graph gain = vivid brand, loss = muted neutral
-    // of the same hue (differentiated by chroma + position + sign). warn/info are sparse signals.
-    bg: "#0c100d", surface: "#161d18", surface2: "#212c25", border: "#36453b",
-    fg: "#f1f3f2", muted: "#94a89c", brand: "#2cdd6d", brandHover: "#1fbd59",
-    accent: "#67e997", accentFg: "#0b0f14", up: "#2cdd6d", down: "#8fa396",
-    warn: "#f6b128", info: "#5199ec",
+    // Two-layer model (docs/22): NEUTRAL near-black chrome + FIXED semantic colours (brand-agnostic,
+    // so gain/rising is always green and loss/falling always red), plus the brand's own identity hue
+    // for logo/CTAs/accent only. Semantic pair = CoinMarketCap (#16C784 / #EA3943).
+    bg: "#0B0E11", surface: "#151A21", surface2: "#1E252E", border: "#2A323D",
+    fg: "#EEF2F6", muted: "#8B97A7", brand: "#2CDD6D", brandHover: "#1FBD59",
+    accent: "#67E997", accentFg: "#0B0F14", up: "#16C784", down: "#EA3943",
+    warn: "#F0B90B", info: "#3B82F6",
     // Typography: heading + body faces (free Google families). Applied via --pp-font-*.
     fontTitle: "Space Grotesk", fontBody: "Inter",
   },

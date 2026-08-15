@@ -16,11 +16,11 @@ function readColors(): Colors {
   const cs = getComputedStyle(document.documentElement);
   const g = (name: string, fallback: string) => cs.getPropertyValue(name).trim() || fallback;
   return {
-    up: g('--pp-up', '#22e07e'),
-    down: g('--pp-down', '#ff5470'),
-    border: g('--pp-border', '#262a33'),
-    muted: g('--pp-muted', '#8b909a'),
-    axis: g('--pp-muted', '#8b909a'),
+    up: g('--pp-up', '#16C784'),
+    down: g('--pp-down', '#EA3943'),
+    border: g('--pp-border', '#2A323D'),
+    muted: g('--pp-muted', '#8B97A7'),
+    axis: g('--pp-muted', '#8B97A7'),
   };
 }
 

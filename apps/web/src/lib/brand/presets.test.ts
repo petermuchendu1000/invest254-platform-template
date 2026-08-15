@@ -129,7 +129,7 @@ test('presetForSeed: case-insensitive match; undefined for unknown', () => {
 
 // ---- derived palette validity ---------------------------------------------------------------
 for (const mode of ['dark', 'light'] as const) {
-  test(`every preset derives a valid, accessible, mono-P/L palette (${mode})`, () => {
+  test(`every preset derives a valid, accessible, semantic-P/L palette (${mode})`, () => {
     for (const p of BRAND_PRESETS) {
       const t = deriveMinimalPalette(p.seed, mode) as Record<string, string>;
       // Asserting accessor: narrows `string | undefined` (noUncheckedIndexedAccess) to `string`
@@ -153,14 +153,15 @@ for (const mode of ['dark', 'light'] as const) {
       const accFg = contrast(tok('accentFg'), tok('accent'));
       assert.ok(accFg >= 3, `${p.label}/${mode}: accentFg/accent contrast ${accFg.toFixed(2)} < 3`);
 
-      // 4. mono-P/L invariant: gain == brand, loss is a LOW-CHROMA neutral of the same hue
-      //    (this is what keeps the graph calm + colourblind-safe; not a second hue).
-      assert.equal(tok('up'), tok('brand'), `${p.label}/${mode}: gain must equal brand (mono default)`);
-      assert.ok(
-        saturation(tok('down')) < saturation(tok('brand')),
-        `${p.label}/${mode}: loss must be less saturated than brand`,
-      );
-      assert.ok(saturation(tok('down')) <= 0.25, `${p.label}/${mode}: loss should read as a neutral`);
+      // 4. semantic-P/L invariant (docs/22): gain/loss are the FIXED CoinMarketCap pair, identical
+      //    for EVERY brand (brand-independent), so a falling price is always red — never the brand
+      //    hue or a neutral. Colourblind safety comes from position + sign/arrow cues, not the mono.
+      const SEM = mode === 'dark'
+        ? { up: '#16C784', down: '#EA3943' }
+        : { up: '#0F9D63', down: '#CF2E3B' };
+      assert.equal(tok('up').toUpperCase(), SEM.up, `${p.label}/${mode}: gain must be the semantic green`);
+      assert.equal(tok('down').toUpperCase(), SEM.down, `${p.label}/${mode}: loss must be the semantic red`);
+      assert.notEqual(tok('up').toUpperCase(), tok('brand').toUpperCase(), `${p.label}/${mode}: gain must not collapse into the brand hue`);
     }
   });
 }

@@ -1,7 +1,9 @@
 /**
- * Minimal-palette derivation (client mirror of the Python colour engine). ONE brand hue → a full
- * brand-tinted neutral ramp + graph gain/loss, all from lightness/chroma of that single hue. Used
- * by the /platform palette editor to preview + persist a brand's theme from just a seed colour.
+ * Minimal-palette derivation (client mirror of the colour engine). Two-layer model (docs/22):
+ * the NEUTRAL chrome (near-black bg + layered surfaces) and the SEMANTIC colours (green gain /
+ * red loss / amber warn / blue info) are FIXED per mode and brand-independent; only the brand
+ * IDENTITY (brand/brandHover/accent) derives from the single seed hue. Used by the /platform
+ * palette editor to preview + persist a brand's theme from just a seed colour.
  */
 export type ThemeTokens = Record<string, string>;
 
@@ -53,25 +55,32 @@ function readableInk(bg: string): string {
   return contrastOf(l, relLum('#0b0f14')) >= contrastOf(l, relLum('#ffffff')) ? '#0b0f14' : '#ffffff';
 }
 
-/** Derive the full minimal token set from a seed colour + theme mode. */
+/** Derive the full minimal token set from a seed colour + theme mode.
+ *
+ * TWO-LAYER MODEL (docs/22 branding): a money product must read universally, so the SEMANTIC layer
+ * (up=green gain/rising, down=red loss/falling, warn=amber, info=blue) and the NEUTRAL layer
+ * (near-black background + layered surfaces, à la Binance/Coinbase/TradingView) are FIXED per mode —
+ * they never bend to the brand. Only the IDENTITY layer (brand/brandHover/accent) derives from the
+ * single seed hue, so a brand skins its logo/CTAs/links without ever making a falling price look
+ * "neutral". Colours from CoinMarketCap's palette (up #16C784 / down #EA3943). */
+const SEMANTIC = {
+  dark:  { up: '#16C784', down: '#EA3943', warn: '#F0B90B', info: '#3B82F6' },
+  light: { up: '#0F9D63', down: '#CF2E3B', warn: '#B45309', info: '#2563EB' },
+} as const;
+const NEUTRAL = {
+  dark:  { bg: '#0B0E11', surface: '#151A21', surface2: '#1E252E', border: '#2A323D', muted: '#8B97A7', fg: '#EEF2F6' },
+  light: { bg: '#F7F9FB', surface: '#FFFFFF', surface2: '#EEF2F6', border: '#DCE3EB', muted: '#5B6673', fg: '#0B0E11' },
+} as const;
+
 export function deriveMinimalPalette(seedHex: string, mode: 'dark' | 'light' = 'dark'): ThemeTokens {
   const [H] = hexToHsl(seedHex);
-  if (mode === 'dark') {
-    const brand = hsl(H, 0.72, 0.52), accent = hsl(H, 0.75, 0.66);
-    return {
-      bg: hsl(H, 0.16, 0.055), surface: hsl(H, 0.15, 0.10), surface2: hsl(H, 0.14, 0.15),
-      border: hsl(H, 0.12, 0.24), muted: hsl(H, 0.10, 0.62), fg: hsl(H, 0.06, 0.95),
-      brand, brandHover: hsl(H, 0.72, 0.43), brandText: brand,
-      accent, accentFg: readableInk(accent),
-      up: brand, down: hsl(H, 0.10, 0.60), warn: hsl(40, 0.92, 0.56), info: hsl(212, 0.80, 0.62),
-    };
-  }
-  const brand = hsl(H, 0.68, 0.42), accent = hsl(H, 0.70, 0.34);
+  const brand      = mode === 'dark' ? hsl(H, 0.72, 0.55) : hsl(H, 0.62, 0.42);
+  const brandHover = mode === 'dark' ? hsl(H, 0.72, 0.46) : hsl(H, 0.62, 0.34);
+  const accent     = mode === 'dark' ? hsl(H, 0.78, 0.66) : hsl(H, 0.66, 0.50);
   return {
-    bg: hsl(H, 0.30, 0.975), surface: '#ffffff', surface2: hsl(H, 0.22, 0.945),
-    border: hsl(H, 0.20, 0.86), muted: hsl(H, 0.16, 0.40), fg: hsl(H, 0.30, 0.14),
-    brand, brandHover: hsl(H, 0.68, 0.34), brandText: brand,
+    ...NEUTRAL[mode],
+    brand, brandHover, brandText: brand,
     accent, accentFg: readableInk(accent),
-    up: brand, down: hsl(H, 0.10, 0.52), warn: hsl(38, 0.95, 0.40), info: hsl(212, 0.82, 0.44),
+    ...SEMANTIC[mode],
   };
 }

@@ -2,10 +2,10 @@
  * Curated brand-theme presets for the /platform palette editor.
  *
  * DESIGN CONTRACT: a brand theme is ONE seed hue. `deriveMinimalPalette(seed, mode)`
- * (see ./derivePalette) expands that single hue into the whole token set — background,
- * surfaces, border, text, brand, accent and the mono gain/loss graph colours. So a preset
- * only needs to carry its seed; picking one in the editor sets the seed and the full palette
- * re-derives live. This keeps every client on the "max 2–3 colours, one hue" principle.
+ * (see ./derivePalette) uses that hue ONLY for the brand identity (brand/accent); the neutral
+ * near-black chrome and the semantic gain/loss (green/red) graph colours are fixed and
+ * brand-independent. So a preset only needs to carry its seed; picking one in the editor sets the
+ * seed and re-derives the identity layer live, while gain stays green and loss stays red.
  *
  * The seeds are public brand hues (a colour is not ownable), chosen to be iconic and spaced
  * around the hue wheel so distinct clients stay visually distinguishable — not a raw dump of
