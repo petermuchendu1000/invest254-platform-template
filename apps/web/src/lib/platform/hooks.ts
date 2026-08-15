@@ -3,6 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { platformApi, type CreateSiteBody, type OnboardBody } from '@/lib/platform/endpoints';
 import { useSession } from '@/lib/auth/session';
+import type { SiteTheme } from '@/lib/brand/siteThemes';
 
 function useTok() {
   return useSession((s) => s.token) as string;
@@ -81,6 +82,28 @@ export function useSetSiteTheme() {
   const invalidate = useInvalidate();
   return useMutation({
     mutationFn: (v: { id: string; tokens: Record<string, string> }) => platformApi.setTheme(t, v.id, v.tokens),
+    onSuccess: invalidate,
+  });
+}
+
+/**
+ * Apply a COMPLETE curated site theme (one of the 56 mirrors in lib/brand/siteThemes) to a client in
+ * one action: writes the full token palette (theme_tokens) AND the mode + legacy colour_* columns so
+ * the whole brand re-skins. Both are platform_superadmin writes; served live on the next /site/brand
+ * fetch (colours instant; radius/mono/heading render once the web build carries the token contract).
+ */
+export function useApplySiteTheme() {
+  const t = useTok();
+  const invalidate = useInvalidate();
+  return useMutation({
+    mutationFn: async (v: { id: string; theme: SiteTheme }) => {
+      const tk = v.theme.tokens as unknown as Record<string, string>;
+      // Mode + legacy colours first (identity columns), then the full token palette.
+      await platformApi.updateSite(t, v.id, {
+        theme: v.theme.mode, color_primary: tk.brand, color_bg: tk.bg, color_accent: tk.accent,
+      });
+      return platformApi.setTheme(t, v.id, tk);
+    },
     onSuccess: invalidate,
   });
 }

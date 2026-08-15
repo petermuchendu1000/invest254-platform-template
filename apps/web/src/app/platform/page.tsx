@@ -18,6 +18,7 @@ import type { SiteWithConfig, SiteKpis, MarketerRollupGroup, OnboardResult } fro
 import { deriveMinimalPalette } from '@/lib/brand/derivePalette';
 import { groupedPresets, presetForSeed } from '@/lib/brand/presets';
 import { BRAND_FONTS, fontStack, googleFontsHref } from '@/lib/brand/fonts';
+import { ThemeGallery } from '@/components/platform/ThemeGallery';
 
 const money = (cents: number, cur: string) => `${cur} ${(cents / 100).toLocaleString()}`;
 
@@ -170,6 +171,7 @@ function BrandCard({ site }: { site: SiteWithConfig }) {
           {setConfig.isError ? <span className="text-xs text-down">{(setConfig.error as Error).message}</span> : null}
         </form>
       </div>
+      <ThemeGallery site={site} />
       <PaletteEditor site={site} />
     </div>
   );
