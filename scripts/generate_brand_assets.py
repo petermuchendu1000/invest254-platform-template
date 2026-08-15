@@ -1,110 +1,90 @@
 #!/usr/bin/env python3
 """
-Autonomous per-client brand-asset generator (docs/24 — logo + favicon pipeline).
+Theme-AWARE per-client favicon generator (docs/24 §13).
 
-Generates a UNIQUE, professional brand MARK for each client with Cloudflare Workers AI
-(@cf/black-forest-labs/flux-1-schnell — server-side, uses the platform's existing Cloudflare
-creds, no third-party key), builds an optimised favicon + logo tile, and writes them to
-`sites.favicon_url` / `sites.logo_url` as compact PNG data URIs. Served LIVE by GET /site/brand
-(no redeploy). The mark is a self-contained rounded tile, so it reads on BOTH light and dark themes;
-the app renders the wordmark text itself in the theme foreground colour (Logo component), so the
-full lockup is theme-responsive without baking text into the image.
-
-Design rationale (docs/24 §6.2): mark-only (no baked text) => light/dark responsive; data-URI
-storage => zero infra / no R2 egress dependency / instant. For very large asset sets, swap the
-`store_*` calls for an R2/S3 upload from the Fly API (which can reach R2) and store the URL instead.
+Generates each client's favicon as an SVG derived FROM ITS THEME TOKENS (colours) + slug (shape),
+so the tab icon always matches the brand's current theme — regenerate after any theme change and it
+tracks. Pure vector => crisp at every size (16px -> 512px). Writes sites.favicon_url (SVG data URI)
+and clears sites.logo_url so the app renders the live, theme-driven inline mark (which recolours
+instantly with the theme + light/dark). Mirrors apps/web/src/lib/brand/mark.ts EXACTLY, so a
+backfill here and an in-console "apply theme" produce the identical icon.
 
 Usage:
-  CF_ACCOUNT_ID=... CF_WORKERS_AI_KEY=... DATABASE_URL=... \
-    python3 scripts/generate_brand_assets.py --slug tamutraders          # one client
-  ... python3 scripts/generate_brand_assets.py --all                     # every client missing assets
-  ... python3 scripts/generate_brand_assets.py --all --force             # regenerate everyone
+  DATABASE_URL=... python3 scripts/generate_brand_assets.py --all         # backfill every client
+  DATABASE_URL=... python3 scripts/generate_brand_assets.py --slug lucky7  # one client
 
-Env:
-  CF_ACCOUNT_ID       Cloudflare account id (Workers AI)
-  CF_WORKERS_AI_KEY   Cloudflare Workers AI API token
-  DATABASE_URL        Postgres (Supabase) connection string
+Note: an optional AI raster logo (Cloudflare Workers AI / Ideogram / Recraft) can be uploaded per
+client as a `logo_url` OVERRIDE for a bespoke mark; it is intentionally NOT the default because a
+baked raster cannot be theme-aware. The default mark is the vector above.
 """
-import argparse, base64, io, json, os, sys, urllib.request
-
-FLUX = "@cf/black-forest-labs/flux-1-schnell"
+import argparse, base64, os, sys
 
 
-def _cf(account: str, key: str, prompt: str, steps: int = 8):
-    req = urllib.request.Request(
-        f"https://api.cloudflare.com/client/v4/accounts/{account}/ai/run/{FLUX}",
-        data=json.dumps({"prompt": prompt, "steps": steps}).encode(),
-        method="POST",
-        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-    )
-    with urllib.request.urlopen(req, timeout=120) as r:
-        return json.loads(r.read())["result"]["image"]
+def mark_variant(seed: str, variants: int = 4) -> int:
+    x = 0
+    for ch in seed:
+        x = (x * 31 + ord(ch)) & 0xFFFFFFFF
+    return x % variants
 
 
-def _darken(hex_: str, f: float = 0.55) -> str:
-    h = hex_.lstrip("#"); r, g, b = (int(h[i:i + 2], 16) for i in (0, 2, 4))
-    return "#%02X%02X%02X" % (int(r * f), int(g * f), int(b * f))
+def _inner(variant: int, ink: str) -> str:
+    fill = f'style="fill:{ink}"'
+    stroke = f'style="fill:none;stroke:{ink}" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round"'
+    if variant == 1:
+        return f'<path {fill} d="M32 15 L48 33 L39 33 L39 49 L25 49 L25 33 L16 33 Z"/>'
+    if variant == 2:
+        return f'<g {stroke}><path d="M19 37 L32 24 L45 37"/><path d="M19 47 L32 34 L45 47"/></g>'
+    if variant == 3:
+        return (f'<g {stroke}><polyline points="16,44 27,33 35,39 46,22"/></g>'
+                f'<path {fill} d="M39 20 L49 19 L48 29 Z"/>')
+    return ('<g ' + fill + '>'
+            '<rect x="16" y="35" width="8" height="12" rx="2.5"/>'
+            '<rect x="28" y="28" width="8" height="19" rx="2.5"/>'
+            '<rect x="40" y="19" width="8" height="28" rx="2.5"/></g>')
 
 
-def _prompt(name: str, brand_hex: str) -> str:
-    initial = (name.strip()[:1] or "X").upper()
+def build_mark_svg(c1: str, c2: str, ink: str, variant: int, size: int = 64) -> str:
+    gid = f"ppm-{variant}"
     return (
-        f"Professional flat vector app icon logo for a crypto trading brand named '{name}'. "
-        f"A bold abstract geometric mark combining the letter '{initial}' with a rising chart "
-        f"candlestick/arrow motif. Gradient from {brand_hex} to {_darken(brand_hex)}. Rounded-square "
-        f"tile, crisp clean edges, centered, minimal, premium fintech aesthetic like Binance or "
-        f"Coinbase app icon. No text, no words, no letters other than the stylised '{initial}'. "
-        f"Solid background."
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="{size}" height="{size}" role="img">'
+        f'<defs><linearGradient id="{gid}" x1="0" y1="0" x2="1" y2="1">'
+        f'<stop offset="0" style="stop-color:{c1}"/><stop offset="1" style="stop-color:{c2}"/>'
+        f'</linearGradient></defs>'
+        f'<rect x="2" y="2" width="60" height="60" rx="15" fill="url(#{gid})"/>'
+        + _inner(variant, ink) + '</svg>'
     )
 
 
-def _rounded(im, rad: float = 0.22):
-    from PIL import Image, ImageDraw
-    S = im.size[0]; m = Image.new("L", (S, S), 0); d = ImageDraw.Draw(m)
-    d.rounded_rectangle([0, 0, S - 1, S - 1], radius=int(S * rad), fill=255)
-    out = Image.new("RGBA", (S, S), (0, 0, 0, 0)); out.paste(im.convert("RGB"), (0, 0), m); return out
-
-
-def _data_uri(im, size: int) -> str:
-    from PIL import Image
-    r = _rounded(im).resize((size, size), Image.LANCZOS)
-    buf = io.BytesIO(); r.save(buf, format="PNG", optimize=True)
-    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
-
-
-def generate_for(name: str, brand_hex: str, account: str, key: str):
-    """Return (favicon_data_uri, logo_data_uri) for a brand."""
-    from PIL import Image
-    b64 = _cf(account, key, _prompt(name, brand_hex))
-    im = Image.open(io.BytesIO(base64.b64decode(b64)))
-    return _data_uri(im, 64), _data_uri(im, 96)
+def favicon_data_uri(tokens: dict, seed: str) -> str:
+    c1 = tokens.get("brand") or "#3861FB"
+    c2 = tokens.get("accent") or tokens.get("brandHover") or c1
+    ink = tokens.get("accentFg") or "#FFFFFF"
+    svg = build_mark_svg(c1, c2, ink, mark_variant(seed))
+    return "data:image/svg+xml;base64," + base64.b64encode(svg.encode()).decode()
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--slug"); ap.add_argument("--all", action="store_true"); ap.add_argument("--force", action="store_true")
+    ap.add_argument("--slug"); ap.add_argument("--all", action="store_true")
     a = ap.parse_args()
-    acc, key, dburl = os.environ.get("CF_ACCOUNT_ID"), os.environ.get("CF_WORKERS_AI_KEY"), os.environ.get("DATABASE_URL")
-    if not (acc and key and dburl):
-        sys.exit("CF_ACCOUNT_ID, CF_WORKERS_AI_KEY and DATABASE_URL are required")
+    dburl = os.environ.get("DATABASE_URL")
+    if not dburl:
+        sys.exit("DATABASE_URL is required")
     import psycopg2
     conn = psycopg2.connect(dburl); conn.autocommit = False; cur = conn.cursor()
-
     if a.slug:
-        cur.execute("select slug, name, color_primary, logo_url from sites where slug=%s", [a.slug])
+        cur.execute("select slug, name, theme_tokens, color_primary from sites where slug=%s", [a.slug])
     elif a.all:
-        cur.execute("select slug, name, color_primary, logo_url from sites")
+        cur.execute("select slug, name, theme_tokens, color_primary from sites")
     else:
         sys.exit("pass --slug <slug> or --all")
-    rows = cur.fetchall()
-    for slug, name, brand_hex, logo in rows:
-        if logo and not a.force:
-            print(f"skip {slug} (already has assets; use --force)"); continue
-        fav, lg = generate_for(name, brand_hex or "#3861FB", acc, key)
-        cur.execute("update sites set favicon_url=%s, logo_url=%s, updated_at=now() where slug=%s", [fav, lg, slug])
-        print(f"generated + stored assets for {slug} ({name})")
+    for slug, name, tokens, color_primary in cur.fetchall():
+        tk = tokens or {"brand": color_primary}
+        fav = favicon_data_uri(tk, slug)
+        cur.execute("update sites set favicon_url=%s, logo_url='', updated_at=now() where slug=%s", [fav, slug])
+        print(f"themed favicon set for {slug} ({name}) - variant {mark_variant(slug)}")
     conn.commit(); conn.close()
-    print("done — live on next /site/brand fetch")
+    print("done - live on next /site/brand fetch; recolours on any theme change")
 
 
 if __name__ == "__main__":

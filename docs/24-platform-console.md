@@ -379,29 +379,30 @@ feasibility enforced; audit rows written; owner-protection intact; UI passes bui
 
 ---
 
-## 13. IMPLEMENTED — Logo & favicon pipeline (autonomous, Workers AI)
+## 13. IMPLEMENTED — Logo & favicon pipeline (THEME-AWARE vector)
 
-**Status: shipped.** `scripts/generate_brand_assets.py` generates a unique, professional brand MARK
-per client using **Cloudflare Workers AI** (`@cf/black-forest-labs/flux-1-schnell`) — server-side,
-using the platform's existing Cloudflare account (no fal/replicate key), so it runs autonomously.
+**Status: shipped.** Logo and favicon are **generated from the design tokens**, so they recolour
+whenever the theme changes — the hard requirement a baked AI raster cannot meet.
 
-- **Engine decision:** evaluated fal (Ideogram 3 / Recraft V3 — best quality but needs a new
-  account/key) vs Cloudflare Workers AI (Flux, already-owned creds, callable from Fly). Chose Workers
-  AI for autonomy with zero new credentials; Ideogram/Recraft remain a future "premium mark" upgrade.
-- **Light/dark responsive:** the mark is a self-contained rounded tile (reads on any theme); the app
-  renders the wordmark text in the theme foreground colour (`Logo` component), so the lockup adapts
-  to light/dark with no baked-in text and no second asset.
-- **Storage decision:** assets are stored as compact PNG **data URIs** in `sites.favicon_url` /
-  `sites.logo_url` (favicon 64px ≈ 2–4 KB, logo 96px ≈ 4–8 KB). Zero infra, no R2 egress dependency,
-  served LIVE by `GET /site/brand` with **no redeploy**. (For very large asset libraries, swap to an
-  R2/S3 upload from the Fly API — which can reach R2 — and store the URL instead.)
-- **Applied live** to the 3 current clients (tamutraders, lucky7, invest254) and verified via the
-  live API. Idempotent; `--force` regenerates; `--all` backfills any client missing assets.
+- **One mark generator** — `apps/web/src/lib/brand/mark.ts` (`buildMarkSvg`, `markVariant`,
+  `faviconDataUri`). The SHAPE is chosen per client from a hash of the slug (4 professional marks:
+  ascending bars, up-arrow, double-chevron, rising-line); the COLOURS always come from the theme.
+- **In-app logo** — `Logo`/`LogoMark` render the mark **inline with CSS variables**
+  (`var(--pp-brand/--pp-accent/--pp-accent-fg)`), so it recolours **instantly** on theme change and
+  light/dark, and is pure vector (crisp at any phone/desktop size). Unique gradient id per instance
+  via `useId()`.
+- **Favicon** — the SAME mark with the theme colours **baked** into an SVG data URI stored in
+  `sites.favicon_url` (SVG scales 16px→512px). It is **regenerated on every theme apply**:
+  `useApplySiteTheme` calls `faviconDataUri(tokens, slug)` and writes `favicon_url` (and clears
+  `logo_url` so the live inline mark is used). Served live by `GET /site/brand` — no redeploy.
+- **Backfill / regenerate** — `scripts/generate_brand_assets.py` mirrors `mark.ts` EXACTLY
+  (deterministic), so `--all` backfills every client's themed favicon from its current tokens.
+  Applied live + verified for the 3 current clients (favicon gradient == current theme brand/accent).
+- **Custom override** — a brand may still upload a bespoke raster `logo_url` (e.g. AI-generated via
+  Cloudflare Workers AI / Ideogram 3 / Recraft V3); the `Logo` component uses it only when it is a
+  non-SVG URL. This is opt-in; the theme-aware vector is the default because it must track the theme.
 
-**Automate at client creation (options):**
-1. Call the generator from the `/platform/onboard` flow (best; needs a Fly API deploy to add the
-   Workers AI call + DB write in TS — mirror `generate_for()`), OR
-2. Run this script on a schedule/trigger that scans for `logo_url IS NULL` and backfills — fully
-   autonomous, no API deploy. Recommended interim until the onboarding TS integration ships.
-
-Env: `CF_ACCOUNT_ID`, `CF_WORKERS_AI_KEY`, `DATABASE_URL` (set as Fly secrets for the API path).
+**Sizing (all surfaces):** SVG favicon covers desktop tabs + Android/Chrome at every density. For
+iOS apple-touch-icon and PWA 192/512 (which need PNG), rasterise the mark to PNG at apply time
+(canvas) and add `apple`/`icon` sizes in `layout.tsx` metadata — a follow-up that needs the PNGs
+stored (small column or R2). The visible tab favicon + in-app logo are fully theme-aware today.

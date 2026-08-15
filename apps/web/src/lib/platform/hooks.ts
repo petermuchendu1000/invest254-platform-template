@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { platformApi, type CreateSiteBody, type OnboardBody } from '@/lib/platform/endpoints';
 import { useSession } from '@/lib/auth/session';
 import type { SiteTheme } from '@/lib/brand/siteThemes';
+import { faviconDataUri } from '@/lib/brand/mark';
 
 function useTok() {
   return useSession((s) => s.token) as string;
@@ -96,11 +97,15 @@ export function useApplySiteTheme() {
   const t = useTok();
   const invalidate = useInvalidate();
   return useMutation({
-    mutationFn: async (v: { id: string; theme: SiteTheme }) => {
+    mutationFn: async (v: { id: string; slug: string; theme: SiteTheme }) => {
       const tk = v.theme.tokens as unknown as Record<string, string>;
-      // Mode + legacy colours first (identity columns), then the full token palette.
+      // Regenerate the THEME-AWARE favicon from this theme's colours (shape seeded by slug), and
+      // clear any stale raster logo so the app renders the live token-driven mark. Then mode +
+      // colours, then the full token palette.
+      const favicon = faviconDataUri(tk, v.slug || v.id);
       await platformApi.updateSite(t, v.id, {
         theme: v.theme.mode, color_primary: tk.brand, color_bg: tk.bg, color_accent: tk.accent,
+        favicon_url: favicon, logo_url: '',
       });
       return platformApi.setTheme(t, v.id, tk);
     },

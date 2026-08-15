@@ -79,7 +79,7 @@ export function ThemeGallery({ site }: { site: SiteWithConfig }) {
     setPendingId(t.id);
     setAppliedLabel(null);
     apply.mutate(
-      { id: site.siteId, theme: t },
+      { id: site.siteId, slug: site.slug, theme: t },
       {
         onSuccess: () => { setAppliedLabel(t.label); setPendingId(null); },
         onError: () => setPendingId(null),
