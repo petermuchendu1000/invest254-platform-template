@@ -10,6 +10,8 @@ export interface AuthResult {
   token: string;
   userId: string;
   role: 'player' | 'marketer' | 'admin' | 'superadmin' | 'platform_superadmin';
+  /** The brand (site_id) this token is scoped to, echoed when the account is brand-scoped. */
+  site?: string;
 }
 
 export interface MeDto {

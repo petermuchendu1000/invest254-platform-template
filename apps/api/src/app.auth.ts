@@ -70,15 +70,31 @@ function optionalString(body: Record<string, unknown>, key: string): string | un
 }
 
 /**
- * Resolve the brand a public auth call belongs to (docs/22 Task E). The frontend (which already
- * resolved its brand via GET /site/brand) passes its `host` in the body (or `?host=`); we map it
- * to a `site_id` so register/login are brand-scoped. No hint → undefined → the default site
- * (unchanged single-tenant behaviour), so existing callers keep working.
+ * Resolve the brand a public auth call belongs to (docs/22 Task E). The frontend already resolved
+ * its brand server-side (GET /site/brand, one deployment serves many domains) and passes it back
+ * explicitly as `site` (the brand slug — or domain/id, anything the sites resolver matches) on the
+ * register/login body. We map that reference to a `site_id` so the account + the issued token's
+ * `site` claim bind to the correct brand.
+ *
+ * WHY THIS EXISTS (GAP 1): the API is a SINGLE shared host (e.g. invest254-api.fly.dev); a browser
+ * on tamutraders.com never reveals that brand to the API on its own. Without an explicit brand
+ * reference, register/login fell through to the default site, so EVERY brand's players pooled into
+ * site #1 — a silent multi-tenant isolation break. The web now always sends `site` (see
+ * apps/web/src/lib/auth/useAuthActions.ts).
+ *
+ * Resolution priority: explicit `site` (body or `?site=`) > `host` (body or `?host=`, kept for
+ * API/curl callers + backward compatibility). Whatever is supplied is validated against the sites
+ * table by brandByHost (ACTIVE brands only), so an unknown/inactive reference resolves to nothing
+ * and falls back to the default site — client input is never trusted blindly. No hint → undefined →
+ * the default site (unchanged single-tenant behaviour), so existing callers keep working.
  */
 async function resolveSiteId(ctx: Ctx, body: Record<string, unknown>, deps: ApiDeps): Promise<string | undefined> {
-  const host = (optionalString(body, "host") ?? ctx.query.get("host") ?? undefined)?.trim().toLowerCase();
-  if (!host) return undefined;
-  const brand = await deps.brandByHost(host);
+  const ref = (
+    optionalString(body, "site") ?? ctx.query.get("site") ??
+    optionalString(body, "host") ?? ctx.query.get("host") ?? undefined
+  )?.trim().toLowerCase();
+  if (!ref) return undefined;
+  const brand = await deps.brandByHost(ref);
   return brand?.siteId;
 }
 

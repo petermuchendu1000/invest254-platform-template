@@ -4,21 +4,27 @@ import { api, type RegisterInput } from '@/lib/api/endpoints';
 import { ApiError } from '@/lib/api/client';
 import { useSession } from '@/lib/auth/session';
 import { roleFromToken } from '@/lib/auth/token';
+import { useBrand } from '@/lib/brand/BrandProvider';
 
 export function useAuthActions() {
   const setToken = useSession((s) => s.setToken);
   const setUser = useSession((s) => s.setUser);
   const reset = useSession((s) => s.reset);
+  // The brand this request/host resolved to (SSR-injected via BrandProvider). Every auth call
+  // carries it so the shared API scopes the account + token to the right brand (GAP 1 fix). The
+  // API is one host for all domains, so without this a player on any brand pools into site #1.
+  const brand = useBrand();
 
   async function login(phone: string, password: string) {
-    const res = await api.login({ phone, password });
+    const res = await api.login({ phone, password, site: brand.slug });
     setToken(res.token);
     setUser(await api.me(res.token));
     return res;
   }
 
   async function register(input: RegisterInput) {
-    const res = await api.register(input);
+    // Respect an explicit site if a caller ever sets one; otherwise bind to the resolved brand.
+    const res = await api.register({ ...input, site: input.site ?? brand.slug });
     setToken(res.token);
     setUser(await api.me(res.token));
     return res;

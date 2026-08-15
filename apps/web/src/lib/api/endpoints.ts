@@ -26,6 +26,12 @@ export interface RegisterInput {
   username: string;
   password: string;
   referral_code?: string;
+  /**
+   * The brand the player is signing up on (brand slug). One deployment serves many domains, so the
+   * shared API cannot infer the brand from its own host — the web sends it explicitly to scope the
+   * new account + its token's `site` claim to this brand (injected in useAuthActions from useBrand).
+   */
+  site?: string;
 }
 
 export interface PageParams {
@@ -50,7 +56,7 @@ export const api = {
 
   // Auth & profile
   register: (body: RegisterInput) => apiFetch<AuthResult>('/auth/register', { method: 'POST', body }),
-  login: (body: { phone: string; password: string }) =>
+  login: (body: { phone: string; password: string; site?: string }) =>
     apiFetch<AuthResult>('/auth/login', { method: 'POST', body }),
   me: (token: string) => apiFetch<MeDto>('/auth/me', { token }),
   refreshToken: (token: string) => apiFetch<AuthResult>('/auth/refresh', { method: 'POST', token }),

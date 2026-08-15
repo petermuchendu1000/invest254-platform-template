@@ -91,8 +91,9 @@ Files: `apps/engine/src/authservice.ts`, `auth.ts`, `identity.ts`, `apps/api/src
   + live-DB verified (4-arg→default site, 5-arg→brand; site-scoped login).
 - ✅ Verifier (`auth.ts`) surfaces `claims.site`; the multiplex WS `AUTH_SITE_MISMATCH` guard now
   runs on real tokens.
-- ✅ API resolves the brand from the request `host` and passes it into `register`/`login`
-  (`resolveSiteId` in `app.auth.ts`); the returned session carries `site`. Landed with Task E.
+- ✅ API resolves the brand from an explicit `site` ref (slug/domain) the web sends — falling back
+  to the request `host` — and passes it into `register`/`login` (`resolveSiteId` in `app.auth.ts`);
+  the returned session carries `site`. Landed with Task E; brand ref made explicit in GAP-1 fix.
 - **Done when:** ✅ a token minted for Brand A carries `site=A` and login is per-brand (proven);
   the API host→site resolution is wired (Task E). **Task D complete.**
 
@@ -104,9 +105,12 @@ Files: `apps/api/src/http.ts`, `app.ts`, `app.site.ts`, `app.auth.ts`, `server.t
 - ✅ `GET /site/brand?host=` (public, `app.site.ts`): host/slug → the `sites` brand DTO the web
   resolver (`apps/web/src/lib/brand/brand.ts`) renders — Pg query in `server.ts`, in-memory in
   `testutil.ts`. Tested (host, slug case-insensitive, 400 missing, 404 unknown).
-- ✅ Brand-scoped auth: `register`/`login` resolve the brand from the request `host` and pass
-  `site_id`, returning the session's `site`; identity is isolated per brand. Tested (two-brand
-  register + login isolation).
+- ✅ Brand-scoped auth: `register`/`login` resolve the brand from the explicit `site` ref the web
+  sends (`useAuthActions` → `useBrand().slug`), with `host` as a backward-compatible fallback, and
+  pass `site_id`, returning the session's `site`; identity is isolated per brand. Without this the
+  shared API host cannot infer a caller's brand, so every brand's players pooled into site #1 (GAP
+  1). Tested end-to-end (`app.auth.site.e2e.test.ts`): slug/domain/case-insensitive resolution,
+  claim stamping, per-site identity, wrong-brand login rejection, unknown-ref fallback, host compat.
 - ✅ Thread `ctx.siteId` into every service/repository call. **Player money core:** history reads
   (`/wallet/ledger`, `/positions`, `/positions/:id`, `/transactions`) + wallet/deposits/withdrawals
   run under `requireSite` and pass `ctx.siteId` into the site-aware RPCs + site-filtered wallet
