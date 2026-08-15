@@ -57,8 +57,12 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   const brandDefaultTheme = brand.theme === 'light' ? 'light' : 'dark';
   const initialClass = brandDefaultTheme === 'light' ? 'light' : 'dark';
   const themeInit = `(function(){try{var d=${JSON.stringify(brandDefaultTheme)};var s=localStorage.getItem('pp-theme');var t=s||d;var e=document.documentElement;e.classList.remove('light','dark');e.classList.add(t==='light'?'light':'dark');var p=localStorage.getItem('pp-pnl');if(p==='classic')e.classList.add('pnl-classic');else e.classList.remove('pnl-classic');}catch(e){}})();`;
-  // Load the brand's title + body faces from Google Fonts (empty when the brand sets no fonts).
-  const fontHref = googleFontsHref([brand.themeTokens?.fontTitle ?? '', brand.themeTokens?.fontBody ?? '']);
+  // Load the brand's title + body + mono faces from Google Fonts (empty when the brand sets none).
+  const fontHref = googleFontsHref([
+    brand.themeTokens?.fontTitle ?? '',
+    brand.themeTokens?.fontBody ?? '',
+    brand.themeTokens?.fontMono ?? '',
+  ]);
 
   return (
     <html lang="en" className={initialClass} data-brand={brand.slug} data-brand-resolved={String(brand.resolved ?? false)} style={brandRootStyle(brand) as React.CSSProperties}>

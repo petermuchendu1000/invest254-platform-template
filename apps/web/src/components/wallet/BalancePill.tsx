@@ -58,7 +58,7 @@ export function BalancePill() {
       onClick={openWithdraw}
       aria-label="Open wallet"
       className={cn(
-        'inline-flex items-center gap-1.5 rounded-full border border-border bg-surface px-3 py-1.5 text-sm font-semibold tabular-nums text-fg transition hover:border-accent',
+        'inline-flex items-center gap-1.5 rounded-full border border-border bg-surface px-3 py-1.5 font-mono text-sm font-semibold tabular-nums text-fg transition hover:border-accent',
         bump && 'pp-balance-bump',
       )}
     >

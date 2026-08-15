@@ -79,7 +79,7 @@ export function PriceHeader() {
 
       {/* Row 2: hero price + % change — the emotional anchor. */}
       <div className="mt-1.5 flex items-baseline gap-2">
-        <span className={cn('text-3xl font-bold leading-none tabular-nums', up ? 'text-up' : 'text-down')}>
+        <span className={cn('font-mono text-3xl font-bold leading-none tabular-nums', up ? 'text-up' : 'text-down')}>
           {value !== null ? fmt(value) : '—'}
         </span>
         {value !== null ? (

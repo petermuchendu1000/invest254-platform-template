@@ -39,8 +39,8 @@ function Pill({ a }: { a: Asset }) {
   return (
     <div className="flex shrink-0 items-center gap-1.5 px-3 py-1.5 text-xs">
       <span className="font-semibold text-fg">{a.sym}</span>
-      <span className="tabular-nums text-muted">{fmtPrice(a.price)}</span>
-      <span className={cn('tabular-nums', up ? 'text-up' : 'text-down')}>
+      <span className="font-mono tabular-nums text-muted">{fmtPrice(a.price)}</span>
+      <span className={cn('font-mono tabular-nums', up ? 'text-up' : 'text-down')}>
         {up ? '+' : ''}
         {a.pct.toFixed(2)}%
       </span>

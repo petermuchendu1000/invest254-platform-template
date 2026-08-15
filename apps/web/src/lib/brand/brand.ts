@@ -63,8 +63,10 @@ export const DEFAULT_BRAND: Brand = {
     fg: "#EEF2F6", muted: "#8B97A7", brand: "#2CDD6D", brandHover: "#1FBD59",
     accent: "#67E997", accentFg: "#0B0F14", up: "#16C784", down: "#EA3943",
     warn: "#F0B90B", info: "#3B82F6",
-    // Typography: heading + body faces (free Google families). Applied via --pp-font-*.
-    fontTitle: "Space Grotesk", fontBody: "Inter",
+    // Typography: heading + body + mono (numbers) faces + heading weight. Applied via --pp-font-*
+    // / --pp-heading-weight. Shape: corner radius applied via --pp-radius (rounded-brand).
+    fontTitle: "Space Grotesk", fontBody: "Inter", fontMono: "JetBrains Mono",
+    headingWeight: "700", radius: "12px",
   },
   resolved: false,
 };
@@ -119,6 +121,13 @@ export function brandCssVars(b: Brand): Record<string, string> {
     // Typography tokens map to full font-family stacks (family + generic + system fallback).
     if (typeof t.fontTitle === "string" && t.fontTitle) vars["--brand-font-title"] = fontStack(t.fontTitle);
     if (typeof t.fontBody === "string" && t.fontBody) vars["--brand-font-body"] = fontStack(t.fontBody);
+    // Mono face powers money/price displays (tabular). Falls back to the body face in globals.css
+    // when a brand sets none, so a brand using proportional numbers just inherits its body font.
+    if (typeof t.fontMono === "string" && t.fontMono) vars["--brand-font-mono"] = fontStack(t.fontMono);
+    // Heading weight + corner radius are the brand's TYPE-WEIGHT and SHAPE language (a sharp,
+    // heavy exchange like Binance vs a soft, medium fintech like Coinbase). Passed through raw.
+    if (typeof t.headingWeight === "string" && t.headingWeight) vars["--brand-heading-weight"] = t.headingWeight;
+    if (typeof t.radius === "string" && t.radius) vars["--brand-radius"] = t.radius;
   }
   return vars;
 }

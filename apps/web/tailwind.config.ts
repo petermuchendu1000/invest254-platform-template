@@ -31,7 +31,16 @@ const config: Config = {
         warn: 'var(--pp-warn)',
         info: 'var(--pp-info)',
       },
-      borderRadius: { xl: '0.875rem', '2xl': '1.25rem' },
+      // Per-brand type: `font-title` (headings), `font-body` (prose), `font-mono` (money/prices).
+      // All resolve to the resolved brand's faces via the --pp-font-* custom properties.
+      fontFamily: {
+        title: 'var(--pp-font-title)',
+        body: 'var(--pp-font-body)',
+        mono: 'var(--pp-font-mono)',
+      },
+      // `rounded-brand` = the brand's corner radius (sharp exchange vs soft fintech). Legacy
+      // xl/2xl kept for any component not yet migrated.
+      borderRadius: { xl: '0.875rem', '2xl': '1.25rem', brand: 'var(--pp-radius)' },
       boxShadow: { glow: '0 0 24px -6px var(--pp-accent)' },
       maxWidth: { app: '80rem' },
     },

@@ -37,7 +37,7 @@ export const Input = React.forwardRef<HTMLInputElement, InputProps>(function Inp
       ) : null}
       <span
         className={cn(
-          'group flex items-center rounded-xl border bg-surface-2 transition',
+          'group flex items-center rounded-brand border bg-surface-2 transition',
           'focus-within:ring-2 focus-within:ring-accent focus-within:border-accent',
           error ? 'border-down' : 'border-border',
         )}
@@ -49,7 +49,7 @@ export const Input = React.forwardRef<HTMLInputElement, InputProps>(function Inp
           id={inputId}
           ref={ref}
           className={cn(
-            'h-12 w-full rounded-xl bg-transparent px-3.5 text-fg outline-none placeholder:text-muted',
+            'h-12 w-full rounded-brand bg-transparent px-3.5 text-fg outline-none placeholder:text-muted',
             leading ? 'pl-2.5' : undefined,
             trailing ? 'pr-1.5' : undefined,
             className,

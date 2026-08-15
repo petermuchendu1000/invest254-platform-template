@@ -34,9 +34,13 @@ test('at least 50 site themes, all well-formed and accessible', () => {
     assert.ok(t.mode === 'dark' || t.mode === 'light', `${t.id}: bad mode ${t.mode}`);
     const tk = t.tokens as unknown as Record<string, string>;
     for (const k of TOKEN_KEYS) assert.match(tk[k]!, HEX, `${t.id}: ${k}=${tk[k]} must be #RRGGBB`);
-    for (const f of [t.tokens.fontTitle, t.tokens.fontBody]) {
+    // Typography: title + body + mono faces must all be in the curated (loadable) set.
+    for (const f of [t.tokens.fontTitle, t.tokens.fontBody, t.tokens.fontMono]) {
       assert.ok(fonts.has(f), `${t.id}: font "${f}" not in BRAND_FONTS`);
     }
+    // Shape + type-weight language: a numeric heading weight and a CSS length radius.
+    assert.match(t.tokens.headingWeight, /^[1-9]00$/, `${t.id}: headingWeight ${t.tokens.headingWeight} must be 100..900`);
+    assert.match(t.tokens.radius, /^(0|\d+px|\d*\.?\d+rem)$/, `${t.id}: radius ${t.tokens.radius} must be a CSS length`);
     // WCAG: body text readable on bg, and accent label readable on accent fill.
     assert.ok(contrast(tk.bg!, tk.fg!) >= 4.5, `${t.id}: fg/bg contrast ${contrast(tk.bg!, tk.fg!).toFixed(2)} < 4.5`);
     assert.ok(contrast(tk.accent!, tk.accentFg!) >= 3, `${t.id}: accentFg/accent ${contrast(tk.accent!, tk.accentFg!).toFixed(2)} < 3`);
