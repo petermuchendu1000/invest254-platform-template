@@ -63,7 +63,7 @@ invest254/                      # npm workspaces, Node >=20, TypeScript ESM, sou
 ├── Dockerfile                  # backend image (engine + api), used by BOTH Fly apps
 ├── fly.api.toml                # Fly config for the API app    (app = "invest254-api")     ✅ CANONICAL
 ├── fly.engine.toml             # Fly config for the engine app (app = "invest254-engine-pm") ✅ CANONICAL
-├── fly.toml                    # ⚠️ LEGACY (app = "invest254") — old single-tenant API; do NOT deploy with bare `fly deploy`
+│                               #   (the old root fly.toml, app="invest254", has been REMOVED — it targeted the legacy app)
 ├── wrangler.toml               # Cloudflare Pages config (nodejs_compat, build output dir)
 └── apps/web/wrangler.toml      # local wrangler for `wrangler pages dev` (not used by CF build)
 ```
@@ -133,8 +133,9 @@ fly status -a invest254-api ;        fly logs -a invest254-api
 fly status -a invest254-engine-pm ;  fly logs -a invest254-engine-pm
 fly machine restart <id> -a invest254-engine-pm       # rolling restart (per machine)
 ```
-> ⚠️ Bare `fly deploy` uses the root `fly.toml`, whose `app = "invest254"` targets the **legacy**
-> single-tenant API — not the live `invest254-api`. Always pass `-c fly.api.toml` / `-c fly.engine.toml`.
+> ⚠️ There is intentionally **no root `fly.toml`** (it used to target the legacy `invest254` app).
+> Always deploy with an explicit config: `-c fly.api.toml` (API) or `-c fly.engine.toml` (engine).
+> A bare `fly deploy` will now error (no config) rather than silently deploy to the wrong app.
 
 ### 2.7 Legacy / deprecated apps (do not use — decommission)
 | App | URL | What it is | Status |
