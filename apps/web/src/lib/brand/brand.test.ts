@@ -76,11 +76,41 @@ test('resolveBrand merges the API brand over defaults, keying by host', async ()
 
 test('resolveBrand falls back to DEFAULT_BRAND on a non-ok response or a network error', async () => {
   const orig = globalThis.fetch;
+  const origWarn = console.warn;
+  console.warn = (() => { /* silence expected fallback warnings */ }) as typeof console.warn;
   try {
     globalThis.fetch = (async () => ({ ok: false, json: async () => ({}) } as Response)) as typeof fetch;
     assert.deepEqual(await resolveBrand('https://api', 'x'), DEFAULT_BRAND);
 
     globalThis.fetch = (async () => { throw new Error('offline'); }) as typeof fetch;
     assert.deepEqual(await resolveBrand('https://api', 'x'), DEFAULT_BRAND);
-  } finally { globalThis.fetch = orig; }
+  } finally { globalThis.fetch = orig; console.warn = origWarn; }
+});
+
+test('resolveBrand flags resolved and warns loudly on a fallback (GAP 5 visibility)', async () => {
+  const origFetch = globalThis.fetch;
+  const origWarn = console.warn;
+  const warnings: string[] = [];
+  console.warn = ((...a: unknown[]) => { warnings.push(a.map(String).join(' ')); }) as typeof console.warn;
+  try {
+    // success → resolved:true, no warning
+    globalThis.fetch = (async () => ({ ok: true, json: async () => ({ siteId: 'S', slug: 'brandb', name: 'Brand B' }) } as Response)) as typeof fetch;
+    const ok = await resolveBrand('https://api', 'brandb.example');
+    assert.equal(ok.resolved, true);
+    assert.equal(warnings.length, 0, 'no warning on a clean resolve');
+
+    // 404 (host has no active brand) → resolved:false, still renders fallback, warns with host+status
+    globalThis.fetch = (async () => ({ ok: false, status: 404, json: async () => ({}) } as Response)) as typeof fetch;
+    const miss = await resolveBrand('https://api', 'tamutraders.com');
+    assert.equal(miss.resolved, false);
+    assert.equal(miss.slug, DEFAULT_BRAND.slug, 'still renders the fallback brand (resilience)');
+    assert.ok(warnings.some((w) => w.includes('tamutraders.com') && w.includes('404')), 'warns with host + status');
+
+    // network error → resolved:false, warns with host + reason
+    warnings.length = 0;
+    globalThis.fetch = (async () => { throw new Error('offline'); }) as typeof fetch;
+    const errd = await resolveBrand('https://api', 'brandb.example');
+    assert.equal(errd.resolved, false);
+    assert.ok(warnings.some((w) => w.includes('brandb.example') && w.toLowerCase().includes('offline')), 'warns on network error');
+  } finally { globalThis.fetch = origFetch; console.warn = origWarn; }
 });

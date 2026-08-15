@@ -190,7 +190,11 @@ Files: `apps/web/src/lib/brand/*`, `app/layout.tsx`, `app/globals.css`, `lib/gam
   before paint. `generateMetadata`/`generateViewport` derive title/description/icons/theme-colour
   from the brand, and a `BrandProvider` (`lib/brand/BrandProvider.tsx`) hands the brand to every
   client component. `Logo` renders the brand logo/wordmark; `Footer` renders the brand name +
-  licence line + support email.
+  licence line + support email. Fallback is now OBSERVABLE (GAP 5): when the API is unreachable or
+  the host has no active brand, `resolveBrand` still returns the default so the app renders, but
+  marks `resolved:false`, logs a warning with the host (SSR logs/monitoring), and the layout emits
+  `data-brand-resolved="false"` on `<html>` — so a misconfigured client domain no longer silently
+  serves the default brand unnoticed.
 - ✅ WS carries the site: `GameSocketProvider` connects to `wsUrlForSite(env.wsUrl, brand.siteId)`
   (`?site=<siteId>`), so the multiplexed engine binds the socket to the brand at connect (before the
   token) and the post-auth JWT `site` claim must then match. REST carries the site implicitly via the
@@ -199,7 +203,7 @@ Files: `apps/web/src/lib/brand/*`, `app/layout.tsx`, `app/globals.css`, `lib/gam
   `--pp-brand` and `--brand-accent` → `--pp-accent` (both themes, with default fallbacks), so the
   whole design system re-skins per brand from the vars the layout sets.
 - ✅ Tested: `lib/brand/brand.test.ts` (wsUrlForSite query composition, brandCssVars/rootStyle,
-  brandWordmark fallback, resolveBrand fetch-merge + non-ok/network fallback). `next build` green
+  brandWordmark fallback, resolveBrand fetch-merge + non-ok/network fallback + resolved flag/warning). `next build` green
   (all routes SSR per-request for per-brand rendering; server/client boundaries valid).
 - **Done when:** ✅ two domains on one deployment render two distinct brands (colours, logo/wordmark,
   title/favicon/theme-colour, licence) with no rebuild — brand is DB data served by `/site/brand`.

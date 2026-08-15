@@ -61,7 +61,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   const fontHref = googleFontsHref([brand.themeTokens?.fontTitle ?? '', brand.themeTokens?.fontBody ?? '']);
 
   return (
-    <html lang="en" className={initialClass} data-brand={brand.slug} style={brandRootStyle(brand) as React.CSSProperties}>
+    <html lang="en" className={initialClass} data-brand={brand.slug} data-brand-resolved={String(brand.resolved ?? false)} style={brandRootStyle(brand) as React.CSSProperties}>
       <head>
         {fontHref ? (
           <>
