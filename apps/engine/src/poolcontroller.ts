@@ -1,6 +1,6 @@
 import {
   decidePoolOutcome, poolLiveMultiplier, DEFAULT_POOL_KNOBS,
-  type PoolDecision, type PoolKnobs,
+  type PoolDecision, type PoolKnobs, type PlayerSession,
 } from "@invest254/shared";
 import type { Querier } from "./wallet.js";
 
@@ -38,6 +38,9 @@ export interface PoolRepo {
   release(positionId: string): Promise<number>;
   saveDecision(d: StoredDecision): Promise<void>;
   getDecision(positionId: string): Promise<StoredDecision | null>;
+  /** Optional: seed a player's session from today's settled trades (durable across restarts).
+   *  When absent, sessions start empty in memory. */
+  sessionSeed?(siteId: string, userId: string, day: string): Promise<PlayerSession>;
 }
 
 export class PoolController {
@@ -47,17 +50,39 @@ export class PoolController {
     private readonly now: () => number = () => Date.now(),
   ) {}
 
+  /** Per-player session state, keyed `${eatDay}:${userId}` so it resets each EAT day. */
+  private readonly sessions = new Map<string, PlayerSession>();
+  private async getSession(siteId: string, userId: string, day: string): Promise<PlayerSession> {
+    const key = `${day}:${userId}`;
+    let s = this.sessions.get(key);
+    if (!s) {
+      s = this.repo.sessionSeed ? await this.repo.sessionSeed(siteId, userId, day)
+                                : { stakedCents: 0, returnedCents: 0, trades: 0, wins: 0, lossStreak: 0 };
+      this.sessions.set(key, s);
+    }
+    return s;
+  }
+  /** Update a player's session at settle: win -> returned/wins up, streak reset; loss -> streak up. */
+  settleSession(userId: string, day: string, result: "win" | "loss", payoutCents: number): void {
+    const key = `${day}:${userId}`;
+    const s = this.sessions.get(key);
+    if (!s) return; // no session in memory (e.g. recovered after restart) -> DB seed rebuilds it next time
+    if (result === "win") { s.returnedCents += payoutCents; s.wins += 1; s.lossStreak = 0; }
+    else s.lossStreak += 1;
+  }
+
   /** Decide + atomically reserve a pool-eligible trade's outcome. Persists the decision. */
   async decideReserve(a: {
-    siteId: string; stakeCents: number; positionId: string; nonce: number;
+    siteId: string; userId: string; stakeCents: number; positionId: string; nonce: number;
     openedAtMs: number; maxMultiplier: number; serverSeed: string;
   }): Promise<PoolOutcome> {
     const day = eatDay(a.openedAtMs);
     const st = await this.repo.poolState(a.siteId, day);
+    const session = await this.getSession(a.siteId, a.userId, day);
     const knobs: PoolKnobs = { ...this.knobs, maxMultiplier: a.maxMultiplier };
     const decision = decidePoolOutcome({
       stakeCents: a.stakeCents, pool: st, dayFraction: eatDayFraction(a.openedAtMs),
-      knobs, serverSeed: a.serverSeed, nonce: a.nonce,
+      knobs, serverSeed: a.serverSeed, nonce: a.nonce, session,
     });
     let result = decision.result, multiplier = decision.multiplier, payoutCents = decision.payoutCents;
     if (result === "win") {
@@ -70,6 +95,8 @@ export class PoolController {
         payoutCents = reserved; multiplier = reserved / a.stakeCents;
       }
     }
+    // Advance the session by THIS trade (prior state fed the decision above).
+    session.trades += 1; session.stakedCents += a.stakeCents;
     await this.repo.saveDecision({
       positionId: a.positionId, siteId: a.siteId, poolDay: day,
       result, multiplier, payoutCents, seed: a.serverSeed, nonce: a.nonce,
@@ -130,6 +157,25 @@ export class PgPoolRepo implements PoolRepo {
       result: x.decided_result, multiplier: n(x.decided_multiplier), payoutCents: n(x.decided_payout_cents),
       seed: String(x.decision_seed), nonce: n((x.pacing_snapshot ?? {}).nonce),
     };
+  }
+  async sessionSeed(siteId: string, userId: string, day: string): Promise<PlayerSession> {
+    const r = await this.q.query(
+      `select coalesce(sum(stake),0) staked, coalesce(sum(payout),0) returned,
+              count(*) trades, count(*) filter (where result='win') wins
+         from positions
+        where site_id=$1 and user_id=$2 and status='settled'
+          and (opened_at at time zone 'Africa/Nairobi')::date = $3::date`,
+      [siteId, userId, day]);
+    const x = r.rows[0] ?? {};
+    const s = await this.q.query(
+      `select result from positions
+        where site_id=$1 and user_id=$2 and status='settled'
+          and (opened_at at time zone 'Africa/Nairobi')::date = $3::date
+        order by opened_at desc limit 25`,
+      [siteId, userId, day]);
+    let streak = 0;
+    for (const row of s.rows) { if (row.result === "loss") streak++; else break; }
+    return { stakedCents: n(x.staked), returnedCents: n(x.returned), trades: n(x.trades), wins: n(x.wins), lossStreak: streak };
   }
 }
 

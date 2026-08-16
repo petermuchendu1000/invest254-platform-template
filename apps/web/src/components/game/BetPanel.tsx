@@ -160,7 +160,7 @@ export function BetPanel() {
               : 'Auto-sells at expiry'}
         </Button>
         <p className="text-center text-[11px] text-muted">
-          Only winning positions can be cashed out early; losses settle at the timer.
+          Trades settle automatically at the timer.
         </p>
       </Card>
     );

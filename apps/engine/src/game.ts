@@ -5,6 +5,7 @@ import {
 import type { GameRepository } from "./wallet.js";
 import { overrideAffectsPricing, userSettlement, type UserOverride } from "./overrides.js";
 import type { PoolController } from "./poolcontroller.js";
+import { eatDay as poolEatDay } from "./poolcontroller.js";
 
 /** Pool-brain integration (docs/25). When `enabled()` and the player is not a marketer, the
  *  controller decides the outcome + budget instead of the statistical settlement. Optional: when
@@ -203,7 +204,7 @@ export class GameServer {
         configVersion: ctx.configVersion, siteId: ctx.siteId ?? null,
       });
       const po = await this.pool.controller.decideReserve({
-        siteId: ctx.siteId ?? "", stakeCents: input.stakeCents,
+        siteId: ctx.siteId ?? "", userId: input.userId, stakeCents: input.stakeCents,
         positionId, nonce, openedAtMs, maxMultiplier: this.cfg.maxMultiplier, serverSeed: ctx.seed,
       });
       const payoutCents = po.result === "win" ? po.payoutCents : 0;
@@ -273,11 +274,14 @@ export class GameServer {
     const result: "win" | "loss" = payoutCents > 0 ? "win" : "loss";
     try {
       const { newBalance } = await this.repo.settlePosition({ positionId: p.id, exitRate: p.outcome.exitRate, result, multiplier, payoutCents });
-      // docs/25: commit the pool reservation (reserved -> paid) for a settled pool win. Budget stays
-      // protected even if this is deferred (the reservation already reduced available), so best-effort.
-      if (p.poolControlled && this.pool && result === "win") {
-        try { await this.pool.controller.commit(p.id); }
-        catch (err) { this.emitError(err as Error, `pool commit ${p.id}`); }
+      // docs/25: update the player's engagement session (win -> returned/streak; loss -> streak) and
+      // commit the pool reservation for a settled win. Budget stays protected even if commit defers.
+      if (p.poolControlled && this.pool) {
+        this.pool.controller.settleSession(p.userId, poolEatDay(p.openedAtMs), result, payoutCents);
+        if (result === "win") {
+          try { await this.pool.controller.commit(p.id); }
+          catch (err) { this.emitError(err as Error, `pool commit ${p.id}`); }
+        }
       }
       const tau = this.getActiveContext().settlement.params[p.direction].tau;
       const presentation = presentOutcome({ result, multiplier, signedMove: p.outcome.signedMove, tau });

@@ -26,17 +26,32 @@ export interface PoolKnobs {
   pCap: number;           // cap win prob (never feel guaranteed even when far behind)
   meanMultiplier: number; // mean winning multiplier for the max-entropy amount draw
   maxMultiplier: number;  // brand cap (from site_game_config); hard ceiling on any single win
+  // ── per-player engagement (docs/25): hook early, suppress once up, relieve long loss streaks,
+  //    cap wins-per-session so the budget SPREADS, and cap any one player's take (no scoop). ──
+  hookTrades: number;     // first N trades of a session get the hook boost
+  hookBoost: number;      // added win-prob during the hook (motivational early wins)
+  maxWinsSession: number; // a player wins at most this many times per session -> spread + net loss
+  upSuppress: number;     // multiply win-prob when the player is net-up (pull them back to a loss)
+  maxLossStreak: number;  // anti-churn: after this many losses, relieve with a likely win
+  reliefProb: number;     // the relieved win-prob
+  playerShare: number;    // no single player may win more than this fraction of the day's pool
 }
 export const DEFAULT_POOL_KNOBS: PoolKnobs = {
-  p0: 0.15, gain: 6, pFloor: 0.01, pCap: 0.5, meanMultiplier: 1.9, maxMultiplier: 5,
+  p0: 0.18, gain: 5, pFloor: 0.01, pCap: 0.8, meanMultiplier: 1.8, maxMultiplier: 5,
+  hookTrades: 2, hookBoost: 0.45, maxWinsSession: 2, upSuppress: 0.12,
+  maxLossStreak: 4, reliefProb: 0.8, playerShare: 0.15,
 };
+
+/** A player's running session (per EAT day). The engine keeps this per user; NULL fields default to 0. */
+export interface PlayerSession { stakedCents: number; returnedCents: number; trades: number; wins: number; lossStreak: number; }
+export const EMPTY_SESSION: PlayerSession = { stakedCents: 0, returnedCents: 0, trades: 0, wins: 0, lossStreak: 0 };
 
 export interface PoolDecision {
   result: "win" | "loss";
   multiplier: number;    // (1, cap] on win; 0 on loss
   payoutCents: number;   // round(stake*mult) on win (<= available), else 0
   winProbUsed: number;   // the pacing win-probability used (audit)
-  reason: "granted" | "budget_exhausted" | "propensity_loss" | "budget_clamped_to_loss";
+  reason: "granted" | "budget_exhausted" | "propensity_loss" | "budget_clamped_to_loss" | "session_win_cap";
 }
 
 export function available(pool: PoolState): number {
@@ -56,6 +71,27 @@ export function winProbability(pool: PoolState, dayFraction: number, k: PoolKnob
 }
 
 /**
+ * Per-player engagement win probability (docs/25). Shapes each player's SESSION so it feels alive
+ * yet nets a loss over ~4-5 trades (redeposit pressure), within the global budget pace:
+ *   - HOOK: the first `hookTrades` get a boost (motivational early wins).
+ *   - SUPPRESS-WHEN-UP: once the player is net-ahead, win-prob is cut hard (pull them back to a loss).
+ *   - ANTI-CHURN: a long loss streak (>= maxLossStreak) is relieved with a likely win (unless they've
+ *     already had their session wins) so nobody rage-quits on an endless losing run.
+ *   - PACING: the whole thing is scaled by the global budget pace so the day's pool isn't front-loaded.
+ * (A player who has hit `maxWinsSession` is hard-stopped in decidePoolOutcome so the budget SPREADS.)
+ */
+export function sessionWinProbability(s: PlayerSession, pool: PoolState, dayFraction: number, k: PoolKnobs): number {
+  if (pool.amountCents <= 0) return 0;
+  let p = k.p0;
+  if (s.trades < k.hookTrades) p += k.hookBoost;
+  if (s.returnedCents > s.stakedCents) p *= k.upSuppress;              // net-up -> steer to a loss
+  if (s.lossStreak >= k.maxLossStreak && s.wins < k.maxWinsSession) p = Math.max(p, k.reliefProb);
+  const pace = (paceTarget(pool.amountCents, dayFraction) - pool.paidCents) / pool.amountCents;
+  p *= Math.max(0, Math.min(3, 1 + k.gain * pace));
+  return Math.min(k.pCap, Math.max(k.pFloor, p));
+}
+
+/**
  * Decide a pool-eligible trade. Deterministic in (serverSeed, nonce). A win requires the propensity
  * draw to clear the pacing probability AND the drawn payout to fit the remaining budget; a payout
  * that would breach the budget is shrunk to fit, and if that leaves no real profit it becomes a loss.
@@ -63,23 +99,29 @@ export function winProbability(pool: PoolState, dayFraction: number, k: PoolKnob
  */
 export function decidePoolOutcome(args: {
   stakeCents: number; pool: PoolState; dayFraction: number; knobs?: PoolKnobs;
-  serverSeed: string; nonce: number;
+  serverSeed: string; nonce: number; session?: PlayerSession;
 }): PoolDecision {
   const k = args.knobs ?? DEFAULT_POOL_KNOBS;
+  const s = args.session;
   const avail = available(args.pool);
-  const p = winProbability(args.pool, args.dayFraction, k);
+  const p = s ? sessionWinProbability(s, args.pool, args.dayFraction, k)
+              : winProbability(args.pool, args.dayFraction, k);
   const rng = new SeededRng(args.serverSeed, `pool:${args.nonce}`);
   const roll = rng.next();                             // consume 1st: propensity
-  const draw = winMultiplier(rng, k.meanMultiplier, k.maxMultiplier); // consume 2nd: amount (always drawn -> stable stream)
+  const draw = winMultiplier(rng, k.meanMultiplier, k.maxMultiplier); // consume 2nd: amount (stable stream)
   if (avail <= 0) return { result: "loss", multiplier: 0, payoutCents: 0, winProbUsed: p, reason: "budget_exhausted" };
-  if (roll >= p)  return { result: "loss", multiplier: 0, payoutCents: 0, winProbUsed: p, reason: "propensity_loss" };
+  // Spread: a player who already had their session wins steps aside so the budget reaches others.
+  if (s && s.wins >= k.maxWinsSession) return { result: "loss", multiplier: 0, payoutCents: 0, winProbUsed: p, reason: "session_win_cap" };
+  if (roll >= p) return { result: "loss", multiplier: 0, payoutCents: 0, winProbUsed: p, reason: "propensity_loss" };
   let mult = draw;
   let payout = Math.round(args.stakeCents * mult);
-  if (payout > avail) {                                // clamp the win to the remaining budget
-    payout = avail;
-    mult = payout / args.stakeCents;
-    if (!(mult > 1)) return { result: "loss", multiplier: 0, payoutCents: 0, winProbUsed: p, reason: "budget_clamped_to_loss" };
+  // caps: global remaining budget AND the per-player no-scoop share (fraction of the day's pool).
+  const playerCap = s ? Math.max(0, Math.floor(k.playerShare * args.pool.amountCents) - s.returnedCents) : avail;
+  payout = Math.min(payout, avail, playerCap);
+  if (payout <= args.stakeCents) {                     // clamp left no real profit -> loss
+    return { result: "loss", multiplier: 0, payoutCents: 0, winProbUsed: p, reason: "budget_clamped_to_loss" };
   }
+  mult = payout / args.stakeCents;
   return { result: "win", multiplier: mult, payoutCents: payout, winProbUsed: p, reason: "granted" };
 }
 
