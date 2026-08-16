@@ -98,7 +98,7 @@ export default function LegalPage() {
               items={[
                 'Eligibility: you are 18+, legally able to enter a contract, and not in a jurisdiction where this service is prohibited.',
                 'Account: one account per person. Keep your password secret; you are responsible for activity on your account.',
-                'Fair play: outcomes are determined by an authoritative, provably-fair game engine. Manipulation, bots, exploits, or collusion result in closure and forfeiture.',
+                'Fair play: outcomes are determined by the operator\'s authoritative game engine. Manipulation, bots, exploits, or collusion result in closure and forfeiture.',
                 'Settlement: trade results, profit and loss, and your balance are decided solely by the server. The on-screen curve is a real-time view of that server truth.',
                 'Deposits & withdrawals: handled via M-Pesa. Withdrawals may be reviewed before payout. We may request verification to comply with the law.',
                 'Suspension: we may suspend or close accounts for fraud, abuse, or legal reasons.',

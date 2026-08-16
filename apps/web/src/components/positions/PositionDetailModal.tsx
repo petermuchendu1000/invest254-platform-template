@@ -74,37 +74,6 @@ export function PositionDetailModal({ id, onClose }: { id: string | null; onClos
             <Row label="Opened">{formatDateTime(data.openedAt)}</Row>
             {data.settledAt !== null ? <Row label="Settled">{formatDateTime(data.settledAt)}</Row> : null}
 
-            <div className="mt-3 rounded-xl border border-border bg-surface-2/40 p-3">
-              <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">
-                Provable fairness
-              </p>
-              {data.fairness ? (
-                <div className="flex flex-col gap-1">
-                  <Row label="Trade date">{data.fairness.tradeDate}</Row>
-                  <div className="py-1.5 text-sm">
-                    <span className="text-muted">Server seed hash</span>
-                    <p className="mt-0.5 break-all font-mono text-[11px] text-fg">
-                      {data.fairness.serverSeedHash}
-                    </p>
-                  </div>
-                  <div className="py-1.5 text-sm">
-                    <span className="text-muted">Server seed</span>
-                    {data.fairness.serverSeed ? (
-                      <p className="mt-0.5 break-all font-mono text-[11px] text-fg">
-                        {data.fairness.serverSeed}
-                      </p>
-                    ) : (
-                      <p className="mt-0.5 text-xs text-muted">
-                        Revealed after the trading day rotates.
-                      </p>
-                    )}
-                  </div>
-                </div>
-              ) : (
-                <p className="text-xs text-muted">No fairness record for this position.</p>
-              )}
-            </div>
-
             <Button variant="secondary" fullWidth className="mt-4" onClick={onClose}>
               Done
             </Button>
