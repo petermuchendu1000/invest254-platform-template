@@ -7,6 +7,7 @@ import type {
   AdminDepositRow, AdminDepositListQuery, AdminDepositsReconcile,
   ReportRange, DailyReportRow, UserReportRow,
   GameConfigRow, GameConfigPatch, RtpMonitor, AdminSeedRow, SeedRotateResult,
+  WithdrawalPoolRow,
   MpesaConfigRow, MpesaConfigPatch, SetUserRoleResult,
   AdminPayoutRow, AdminPayoutListQuery, AdminChatModRow,
   AdminUserActivityRow, AdminUserActivityQuery,
@@ -103,6 +104,13 @@ export class AdminService {
    *  live in the repo/RPC. siteId scopes the write to the operator's brand (the table the engine reads). */
   updateGameConfig(actorId: string, actorRole: string, patch: GameConfigPatch, siteId?: string): Promise<GameConfigRow> {
     return this.repo.updateGameConfig(actorId, actorRole, patch, siteId);
+  }
+
+  /** docs/25 Phase 1 — read a brand's daily withdrawal-pool budget (EAT day). */
+  getWithdrawalPool(siteId: string, tradeDay: string): Promise<WithdrawalPoolRow> { return this.repo.getWithdrawalPool(siteId, tradeDay); }
+  /** docs/25 Phase 1 — superadmin sets a brand's daily withdrawal-pool budget (guards + audit in repo/RPC). */
+  setWithdrawalPool(actorId: string, actorRole: string, siteId: string, tradeDay: string, amountCents: number): Promise<WithdrawalPoolRow> {
+    return this.repo.setWithdrawalPool(actorId, actorRole, siteId, tradeDay, amountCents);
   }
 
   /** Admin-visible M-Pesa config (secrets masked). */

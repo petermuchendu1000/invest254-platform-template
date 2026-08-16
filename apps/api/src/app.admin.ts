@@ -53,6 +53,12 @@ const ADMIN_STATUS: Readonly<Record<string, number>> = {
 const CONFIG_INT_FIELDS = new Set(["minStakeCents", "maxStakeCents", "minWithdrawalCents", "defaultDurationS", "tickRateMs"]);
 const CONFIG_FIELDS = ["houseEdge", "maxMultiplier", "minStakeCents", "maxStakeCents", "minWithdrawalCents", "defaultDurationS", "tickRateMs", "driftBias", "volatility", "targetWinRate"] as const;
 
+const EAT_DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+/** The EAT (Africa/Nairobi, UTC+3, no DST) calendar date for an instant — the withdrawal-pool day key. */
+function eatDay(d: Date = new Date()): string {
+  return new Date(d.getTime() + 3 * 3600 * 1000).toISOString().slice(0, 10);
+}
+
 /** suspend/ban/reactivate -> the account status the RPC applies. */
 const STATUS_ACTION: Readonly<Record<string, string>> = { suspend: "suspended", ban: "banned", reactivate: "active" };
 
@@ -535,6 +541,24 @@ export function registerAdminRoutes(router: Router, deps: ApiDeps): void {
   router.patch(`${BASE}/admin/game-config`, auth, superadmin, async (ctx: Ctx) => {
     const patch = parseGameConfigPatch(ctx);
     return domain(() => deps.admin.updateGameConfig(ctx.claims!.userId, ctx.claims!.role ?? "player", patch, configSiteId(ctx)));
+  });
+
+  // docs/25 Phase 1 — daily withdrawal-pool budget (per brand, EAT day). Read = admin; set = superadmin.
+  // `?day=YYYY-MM-DD` (EAT) optional; defaults to the current EAT day. Site resolved like game-config.
+  router.get(`${BASE}/admin/withdrawal-pool`, auth, admin, async (ctx: Ctx) => {
+    const day = ctx.query.get("day") || eatDay();
+    if (!EAT_DAY_RE.test(day)) throw new ApiError("VALIDATION", "day must be YYYY-MM-DD (EAT)", 400);
+    return deps.admin.getWithdrawalPool(configSiteId(ctx), day);
+  });
+
+  router.put(`${BASE}/admin/withdrawal-pool`, auth, superadmin, async (ctx: Ctx) => {
+    const body = ctx.body && typeof ctx.body === "object" ? (ctx.body as Record<string, unknown>) : {};
+    const raw = body.amountCents ?? body.amount;
+    const amount = typeof raw === "number" ? raw : Number(raw);
+    if (!Number.isInteger(amount) || amount < 0) throw new ApiError("VALIDATION", "amountCents must be a non-negative integer (cents)", 400);
+    const day = body.day === undefined || body.day === null ? eatDay() : String(body.day);
+    if (!EAT_DAY_RE.test(day)) throw new ApiError("VALIDATION", "day must be YYYY-MM-DD (EAT)", 400);
+    return domain(() => deps.admin.setWithdrawalPool(ctx.claims!.userId, ctx.claims!.role ?? "player", configSiteId(ctx), day, amount));
   });
 
   router.get(`${BASE}/admin/rtp`, auth, admin, async () => deps.admin.rtpMonitor());
