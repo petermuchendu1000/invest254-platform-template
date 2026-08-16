@@ -229,6 +229,17 @@ export interface GameConfigPatch {
   volatility?: number;
   targetWinRate?: number;
 }
+/** docs/25: a brand's daily withdrawal-pool budget (EAT day). availableCents = amount - paid - reserved. */
+export interface WithdrawalPoolRow {
+  siteId: string;
+  tradeDay: string;
+  amountCents: Cents;
+  paidCents: Cents;
+  reservedCents: Cents;
+  availableCents: Cents;
+  setBy: string | null;
+  updatedAtMs: number;
+}
 export interface AdminSeedRow {
   gameDayId: number | null;
   tradeDate: string;

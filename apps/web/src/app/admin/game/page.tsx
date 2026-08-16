@@ -19,7 +19,7 @@ import { checkFeasible } from '@invest254/shared/config';
 const fmtPct = (x: number): string => (Number.isFinite(x) ? (x * 100).toFixed(2) : '—');
 const fmtMult = (x: number): string => (Number.isFinite(x) ? x.toFixed(2) : '—');
 import { PageHeader, Section, TableWrap, Th, Td, Empty, ConfirmButton } from '@/components/admin/ui';
-import { useGameConfig, useUpdateGameConfig, useSeeds, useRotateSeed } from '@/lib/admin/hooks';
+import { useGameConfig, useUpdateGameConfig, useWithdrawalPool, useSetWithdrawalPool } from '@/lib/admin/hooks';
 import { SuperadminOnly } from '@/components/admin/SuperadminOnly';
 import type { GameConfigPatch, GameConfigRow } from '@/lib/admin/types';
 
@@ -201,78 +201,76 @@ function GameBody() {
         )}
       </Section>
 
-      <SeedsSection />
+      <WithdrawalPoolSection />
     </>
   );
 }
 
-function SeedsSection() {
-  const seedsQ = useSeeds();
-  const rotate = useRotateSeed();
-  const toast = useToast();
-  const today = new Date().toISOString().slice(0, 10);
-  const [tradeDate, setTradeDate] = useState(today);
-  const rows = seedsQ.data?.items ?? [];
+function poolKes(c: number | undefined): string {
+  return 'KES ' + ((c ?? 0) / 100).toLocaleString('en-KE');
+}
 
-  function runRotate() {
-    rotate.mutate(tradeDate, {
-      onSuccess: (r) => toast.push({ tone: 'success', title: 'Seed rotated', description: `${r.tradeDate} now at version ${r.seedVersion}.` }),
-      onError: (e) => toast.push({ tone: 'error', title: 'Rotate failed', description: e instanceof ApiError ? e.message : 'Try again.' }),
+function WithdrawalPoolSection() {
+  const poolQ = useWithdrawalPool();
+  const setPool = useSetWithdrawalPool();
+  const toast = useToast();
+  const [amountKes, setAmountKes] = useState('');
+  const p = poolQ.data;
+  useEffect(() => { if (p) setAmountKes(String((p.amountCents / 100))); }, [p?.amountCents]);
+
+  function save() {
+    const kes = Number(amountKes);
+    if (!Number.isFinite(kes) || kes < 0) { toast.push({ tone: 'error', title: 'Invalid amount', description: 'Enter a non-negative KES amount.' }); return; }
+    setPool.mutate({ amountCents: Math.round(kes * 100) }, {
+      onSuccess: () => toast.push({ tone: 'success', title: 'Daily pool set', description: `KES ${kes.toLocaleString('en-KE')} for today (EAT).` }),
+      onError: (e) => toast.push({ tone: 'error', title: 'Save failed', description: e instanceof ApiError ? e.message : 'Try again.' }),
     });
   }
 
   return (
-    <Section title="Provably-fair seeds">
+    <Section title="Daily withdrawal pool">
       <div className="flex flex-col gap-3 rounded-2xl border border-border bg-surface p-4">
         <p className="text-sm text-muted">
-          Each trading day commits a hashed server seed, revealed after settlement. Rotate only if a seed is suspected compromised before reveal.
+          The maximum total winnings the house will pay out today (EAT midnight–midnight). Winnings can never exceed
+          this; the engine paces it across the day. Set it every day — with no budget set, players cannot win.
         </p>
-        <div className="flex flex-wrap items-end gap-3">
-          <div className="w-44">
-            <Input type="date" label="Trade date" value={tradeDate} onChange={(e) => setTradeDate(e.target.value)} />
-          </div>
-          <ConfirmButton
-            label="Rotate seed"
-            confirmLabel="Confirm rotate"
-            variant="outline"
-            busy={rotate.isPending}
-            onConfirm={runRotate}
-          />
-        </div>
+        {poolQ.isLoading ? (
+          <Skeleton className="h-24 w-full" />
+        ) : (
+          <>
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <div className="rounded-xl border border-border bg-surface-2 p-3">
+                <p className="text-[11px] uppercase tracking-wide text-muted">Budget</p>
+                <p className="mt-0.5 font-mono text-sm text-fg">{poolKes(p?.amountCents)}</p>
+              </div>
+              <div className="rounded-xl border border-border bg-surface-2 p-3">
+                <p className="text-[11px] uppercase tracking-wide text-muted">Paid today</p>
+                <p className="mt-0.5 font-mono text-sm text-fg">{poolKes(p?.paidCents)}</p>
+              </div>
+              <div className="rounded-xl border border-border bg-surface-2 p-3">
+                <p className="text-[11px] uppercase tracking-wide text-muted">Reserved</p>
+                <p className="mt-0.5 font-mono text-sm text-fg">{poolKes(p?.reservedCents)}</p>
+              </div>
+              <div className="rounded-xl border border-border bg-surface-2 p-3">
+                <p className="text-[11px] uppercase tracking-wide text-muted">Available</p>
+                <p className="mt-0.5 font-mono text-sm text-up">{poolKes(p?.availableCents)}</p>
+              </div>
+            </div>
+            <div className="flex flex-wrap items-end gap-3">
+              <div className="w-48">
+                <Input label="Set today's budget (KES)" inputMode="decimal" value={amountKes}
+                  onChange={(e) => setAmountKes(e.target.value.replace(/[^0-9.]/g, ''))} />
+              </div>
+              <ConfirmButton label="Set daily pool" confirmLabel="Confirm" busy={setPool.isPending} onConfirm={save} />
+            </div>
+            {p?.updatedAtMs ? (
+              <p className="text-xs text-muted">
+                Updated {formatRelativeTime(p.updatedAtMs)} ago{p.setBy ? ` by ${p.setBy.slice(0, 8)}…` : ''}.
+              </p>
+            ) : null}
+          </>
+        )}
       </div>
-
-      {seedsQ.isLoading ? (
-        <Skeleton className="h-40 w-full" />
-      ) : rows.length === 0 ? (
-        <Empty title="No seeds yet" description="Seeds appear once the first trading day is committed." />
-      ) : (
-        <TableWrap>
-          <thead>
-            <tr className="border-b border-border">
-              <Th>Trade date</Th>
-              <Th>Version</Th>
-              <Th>Server seed hash</Th>
-              <Th>Revealed</Th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((s) => (
-              <tr key={`${s.tradeDate}-${s.seedVersion}`} className="border-b border-border last:border-0">
-                <Td className="whitespace-nowrap font-medium">{s.tradeDate}</Td>
-                <Td className="tabular-nums">v{s.seedVersion}</Td>
-                <Td className="max-w-[280px] truncate font-mono text-xs text-muted">{s.serverSeedHash ?? '—'}</Td>
-                <Td className="text-xs">
-                  {s.revealed ? (
-                    <span className="text-up">Revealed{s.revealedAtMs ? ` ${formatRelativeTime(s.revealedAtMs)} ago` : ''}</span>
-                  ) : (
-                    <span className="text-warn">Committed</span>
-                  )}
-                </Td>
-              </tr>
-            ))}
-          </tbody>
-        </TableWrap>
-      )}
     </Section>
   );
 }

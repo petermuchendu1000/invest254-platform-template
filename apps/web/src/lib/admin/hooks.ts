@@ -268,6 +268,20 @@ export function useSeeds() {
   const t = useTok();
   return useQuery({ queryKey: ['admin', 'seeds'], queryFn: () => adminApi.seeds(t), enabled: !!t });
 }
+
+// ── docs/25: daily withdrawal-pool budget ──
+export function useWithdrawalPool(day?: string) {
+  const t = useTok();
+  return useQuery({ queryKey: ['admin', 'withdrawal-pool', day ?? 'today'], queryFn: () => adminApi.withdrawalPool(t, day), enabled: !!t });
+}
+export function useSetWithdrawalPool() {
+  const t = useTok();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { amountCents: number; day?: string }) => adminApi.setWithdrawalPool(t, v.amountCents, v.day),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['admin', 'withdrawal-pool'] }),
+  });
+}
 export function useRotateSeed() {
   const t = useTok();
   const qc = useQueryClient();

@@ -30,6 +30,7 @@ import type {
   RtpMonitor,
   AdminSeedRow,
   SeedRotateResult,
+  WithdrawalPoolRow,
   SetUserRoleResult,
   SetUserStatusResult,
   UserReportRow,
@@ -148,6 +149,12 @@ export const adminApi = {
   seeds: (t: string, limit = 30) => apiFetch<{ items: AdminSeedRow[] }>('/admin/seeds', { token: t, query: { limit } }),
   rotateSeed: (t: string, tradeDate: string) =>
     apiFetch<SeedRotateResult>('/admin/seeds/rotate', { method: 'POST', token: t, body: { tradeDate } }),
+
+  // docs/25: daily withdrawal-pool budget (per brand, EAT day). Read = admin; set = superadmin.
+  withdrawalPool: (t: string, day?: string) =>
+    apiFetch<WithdrawalPoolRow>('/admin/withdrawal-pool', day ? { token: t, query: { day } } : { token: t }),
+  setWithdrawalPool: (t: string, amountCents: number, day?: string) =>
+    apiFetch<WithdrawalPoolRow>('/admin/withdrawal-pool', { method: 'PUT', token: t, body: day ? { amountCents, day } : { amountCents } }),
 
   // Fly.io machine restart (superadmin only)
   flyStatus: (t: string) => apiFetch<{ configured: boolean; apps: string[]; app: string }>('/admin/fly/status', { token: t }),
