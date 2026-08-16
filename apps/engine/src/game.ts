@@ -4,6 +4,12 @@ import {
 } from "@invest254/shared";
 import type { GameRepository } from "./wallet.js";
 import { overrideAffectsPricing, userSettlement, type UserOverride } from "./overrides.js";
+import type { PoolController } from "./poolcontroller.js";
+
+/** Pool-brain integration (docs/25). When `enabled()` and the player is not a marketer, the
+ *  controller decides the outcome + budget instead of the statistical settlement. Optional: when
+ *  absent (default / non-pool brands), the engine behaves exactly as before. */
+export interface PoolIntegration { enabled: () => boolean; controller: PoolController; }
 
 /** Async provider of a user's admin overrides (null = none). Injected so the money engine stays testable. */
 export type LoadOverride = (userId: string) => Promise<UserOverride | null>;
@@ -16,6 +22,8 @@ export interface Position {
   sellable: boolean;
   gameDayId: number | null;               // the day whose seed determined this outcome
   configVersion: number;                  // the game_config version that priced this outcome
+  nonce: number;                          // per-position seed nonce (engagement + pool path/decision)
+  poolControlled: boolean;                // docs/25: outcome decided by the pool controller, not the curve
 }
 export interface SettledEvent { position: Position; lockedMultiplier: number; payoutCents: number; pnlCents: number; balance: number; mode: "auto" | "manual"; presentation: OutcomePresentation; }
 export interface UpdateEvent { positionId: string; liveMultiplier: number; livePnlCents: number; secondsLeft: number; sellable: boolean; }
@@ -66,6 +74,8 @@ export class GameServer {
     private readonly now: () => number = () => Date.now(),
     /** Optional per-user admin overrides (J8): win rate / max multiplier / duration / stake bounds. */
     private readonly loadOverride?: LoadOverride,
+    /** Optional pool-brain integration (docs/25). Governs non-marketer trades when enabled. */
+    private readonly pool?: PoolIntegration,
   ) {}
 
   /** Per-user pricing settlements, cached by (configVersion, gameDay, winRate, maxMultiplier). */
@@ -147,16 +157,27 @@ export class GameServer {
   }
 
   private liveMultiplier(p: Position, g: number, settlement: SettlementEngine): number {
+    if (p.poolControlled && this.pool) {
+      const ctx = this.getActiveContext();
+      // Seeded reversing path to the decided endpoint (green->red on a loss, red->green on a win).
+      return this.pool.controller.live(
+        { result: p.outcome.result, multiplier: p.outcome.multiplier, payoutCents: p.outcome.payoutCents },
+        ctx.seed ?? "", p.nonce, g);
+    }
     if (p.outcome.result === "win") return settlement.liveWinMultiplier(p.outcome.multiplier, g);
     const x = Math.min(1, Math.max(0, g));
     return 1 - x * x * x * (x * (x * 6 - 15) + 10);
   }
 
   /** Open a position: outcome committed in memory; stake+position+ledger persisted atomically by the repo. */
-  async openPosition(input: { userId: string; stakeCents: number; direction: Direction; durationS?: number }): Promise<{ position: Position; balance: number }> {
-    // Per-user admin overrides (J8): forced auto-sell duration, per-user stake bounds, and a
-    // per-user pricing settlement (win rate / max multiplier). NULL fields fall back to global.
-    const ov = this.loadOverride ? await this.loadOverride(input.userId) : null;
+  async openPosition(input: { userId: string; stakeCents: number; direction: Direction; durationS?: number; role?: string }): Promise<{ position: Position; balance: number }> {
+    // docs/25: when the brand is in pool mode, NON-marketer trades are governed by the pool
+    // controller (not the curve) and admin overrides are IGNORED for them (decision E). Marketers
+    // keep the statistical path WITH their overrides and are pool-exempt (decision F).
+    const isMarketer = input.role === "marketer";
+    const poolActive = this.pool?.enabled() ?? false;
+    const poolPath = poolActive && !isMarketer;
+    const ov = (this.loadOverride && (!poolActive || isMarketer)) ? await this.loadOverride(input.userId) : null;
     const durationS = input.durationS ?? ov?.tradeDurationS ?? this.cfg.defaultDurationS;
     const minStake = ov?.minStakeCents ?? this.cfg.minStakeCents;
     const maxStake = ov?.maxStakeCents ?? this.cfg.maxStakeCents;
@@ -168,10 +189,39 @@ export class GameServer {
     const openedAtMs = this.now();
     const entryT = (openedAtMs - ctx.dayStartMs) / 1000;
     const nonce = (nonceCounter = (nonceCounter + 1) % Number.MAX_SAFE_INTEGER);
-    // Variable-ratio win sizing: same win/loss decision and same RTP as the calibrated
-    // engine, but winning multipliers are spread (frequent small wins, rare bigger ones)
-    // via a deterministic per-position draw. Requires the day seed; falls back to the
-    // plain calibrated settle when no seed is attached (local dev without a DB).
+
+    // ── Pool path (docs/25): stake is debited + position row created first (as always), THEN the
+    //    controller decides+reserves keyed by the real position id. The shared curve entry/exit rate
+    //    remain as cosmetic backdrop; the win/loss/amount come from the pool controller. SELL is
+    //    disabled in pool mode (decision B), so the position is not sellable. ──
+    if (poolPath && this.pool && ctx.seed) {
+      const entryRate = ctx.curve.rate(entryT);
+      const exitRate = ctx.curve.rate(entryT + durationS);
+      const { positionId, newBalance } = await this.repo.openPosition({
+        userId: input.userId, stakeCents: input.stakeCents, direction: input.direction,
+        entryRate, durationS, gameDayId: ctx.gameDayId, nonce, openedAtMs,
+        configVersion: ctx.configVersion, siteId: ctx.siteId ?? null,
+      });
+      const po = await this.pool.controller.decideReserve({
+        siteId: ctx.siteId ?? "", stakeCents: input.stakeCents,
+        positionId, nonce, openedAtMs, maxMultiplier: this.cfg.maxMultiplier, serverSeed: ctx.seed,
+      });
+      const payoutCents = po.result === "win" ? po.payoutCents : 0;
+      const outcome: Outcome = {
+        result: po.result, multiplier: po.result === "win" ? po.multiplier : 0,
+        payoutCents, pnlCents: payoutCents - input.stakeCents, entryRate, exitRate, signedMove: 0,
+      };
+      const p: Position = {
+        id: positionId, userId: input.userId, stakeCents: input.stakeCents, direction: input.direction,
+        durationS, openedAtMs, expiresAtMs: openedAtMs + durationS * 1000, entryT, outcome,
+        status: "open", sellable: false, gameDayId: ctx.gameDayId, configVersion: ctx.configVersion,
+        nonce, poolControlled: true,
+      };
+      this.positions.set(positionId, p);
+      return { position: p, balance: newBalance };
+    }
+
+    // ── Statistical path (pool off, or marketers) — unchanged behaviour ──
     const engine = this.settlementFor(ctx, ov);
     const outcome = ctx.seed
       ? engine.settleVariable(input.stakeCents, input.direction, entryT, nonce, ctx.seed)
@@ -181,7 +231,7 @@ export class GameServer {
       entryRate: outcome.entryRate, durationS, gameDayId: ctx.gameDayId, nonce, openedAtMs,
       configVersion: ctx.configVersion, siteId: ctx.siteId ?? null,
     });
-    const p: Position = { id: positionId, userId: input.userId, stakeCents: input.stakeCents, direction: input.direction, durationS, openedAtMs, expiresAtMs: openedAtMs + durationS * 1000, entryT, outcome, status: "open", sellable: outcome.result === "win", gameDayId: ctx.gameDayId, configVersion: ctx.configVersion };
+    const p: Position = { id: positionId, userId: input.userId, stakeCents: input.stakeCents, direction: input.direction, durationS, openedAtMs, expiresAtMs: openedAtMs + durationS * 1000, entryT, outcome, status: "open", sellable: outcome.result === "win", gameDayId: ctx.gameDayId, configVersion: ctx.configVersion, nonce, poolControlled: false };
     this.positions.set(positionId, p);
     return { position: p, balance: newBalance };
   }
@@ -200,6 +250,9 @@ export class GameServer {
   }
 
   async sell(positionId: string, userId: string): Promise<SettledEvent> {
+    // docs/25 decision B: manual SELL is disabled brand-wide in pool mode (a player must not cash
+    // the green peak of a trade the controller decided will lose). Pool trades auto-settle at expiry.
+    if (this.pool?.enabled()) throw new Error("SELL_DISABLED: manual sell is disabled in pool mode");
     const p = this.positions.get(positionId);
     if (!p || p.userId !== userId) throw new Error("POSITION_NOT_FOUND");
     if (p.status !== "open") throw new Error("ALREADY_SETTLED");
@@ -220,6 +273,12 @@ export class GameServer {
     const result: "win" | "loss" = payoutCents > 0 ? "win" : "loss";
     try {
       const { newBalance } = await this.repo.settlePosition({ positionId: p.id, exitRate: p.outcome.exitRate, result, multiplier, payoutCents });
+      // docs/25: commit the pool reservation (reserved -> paid) for a settled pool win. Budget stays
+      // protected even if this is deferred (the reservation already reduced available), so best-effort.
+      if (p.poolControlled && this.pool && result === "win") {
+        try { await this.pool.controller.commit(p.id); }
+        catch (err) { this.emitError(err as Error, `pool commit ${p.id}`); }
+      }
       const tau = this.getActiveContext().settlement.params[p.direction].tau;
       const presentation = presentOutcome({ result, multiplier, signedMove: p.outcome.signedMove, tau });
       const e: SettledEvent = { position: p, lockedMultiplier: multiplier, payoutCents, pnlCents: payoutCents - p.stakeCents, balance: newBalance, mode, presentation };

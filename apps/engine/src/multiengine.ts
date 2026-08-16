@@ -45,6 +45,7 @@ export async function startMultiEngine(opts: MultiEngineOptions): Promise<MultiE
   const perSiteUser = new Map<string, Map<string, Set<WebSocket>>>();
   const siteOf = new WeakMap<WebSocket, string>();
   const userOf = new WeakMap<WebSocket, string>();
+  const roleOf = new WeakMap<WebSocket, string>();   // docs/25: role governs pool exemption (marketers)
   const wired = new Set<string>(); // sites whose GameServer fan-out is already subscribed
   const report = (e: Error, c: string) => (opts.onError ? opts.onError(e, c) : console.error(`[engine] ${c}:`, e.message));
 
@@ -99,19 +100,23 @@ export async function startMultiEngine(opts: MultiEngineOptions): Promise<MultiE
           switch (msg.type) {
             case "auth": {
               let userId: string;
+              let role = "player";
               if (opts.verifier) {
                 let claims;
                 try { claims = await opts.verifier(String(msg.data?.token ?? "")); }
                 catch { return send(ws, "error", { code: "AUTH_INVALID" }); }
                 userId = claims.userId;
+                role = (claims as { role?: string }).role ?? "player";
                 // A token minted for another brand must not drive this socket's brand.
                 const tokenSite = (claims as { site?: string }).site;
                 if (tokenSite && tokenSite !== siteId) return send(ws, "error", { code: "AUTH_SITE_MISMATCH" });
               } else {
                 userId = String(msg.data?.userId ?? "");
+                role = String(msg.data?.role ?? "player");
                 if (!userId) return send(ws, "error", { code: "AUTH_REQUIRED" });
               }
               userOf.set(ws, userId);
+              roleOf.set(ws, role);
               const um = perSiteUser.get(siteId) ?? perSiteUser.set(siteId, new Map()).get(siteId)!;
               (um.get(userId) ?? um.set(userId, new Set()).get(userId)!).add(ws);
               if (opts.devSeedBalance) await opts.devSeedBalance(siteId, userId);
@@ -121,6 +126,7 @@ export async function startMultiEngine(opts: MultiEngineOptions): Promise<MultiE
               const userId = userOf.get(ws); if (!userId) return send(ws, "error", { code: "AUTH_REQUIRED" });
               const { position: p, balance } = await rt.game.openPosition({
                 userId, stakeCents: Number(msg.data.stakeCents), direction: msg.data.direction as Direction, durationS: msg.data.durationS,
+                role: roleOf.get(ws) ?? "player",
               });
               send(ws, "position_opened", { positionId: p.id, entryRate: p.outcome.entryRate, direction: p.direction, stakeCents: p.stakeCents, durationS: p.durationS, expiresAtMs: p.expiresAtMs });
               return send(ws, "balance", { real: balance, currency: "KES" });

@@ -3,6 +3,7 @@ import { SeedManager, type SeedManagerOptions } from "./daycontext.js";
 import { RecoveryService, type RecoveryReport } from "./recovery.js";
 import type { GameRepository } from "./wallet.js";
 import { affectsPricing, type ConfigProvider } from "./gameconfig.js";
+import type { PoolController } from "./poolcontroller.js";
 
 /**
  * SiteRegistry — the multiplexed engine's per-brand runtime manager.
@@ -36,6 +37,10 @@ export interface SiteRegistryOptions {
   /** Optional per-brand master seed (from sites.master_seed_ref); falls back to `masterSeed`. */
   masterSeedFor?: (siteId: string) => string | undefined;
   seedManagerOpts?: SeedManagerOptions;
+  /** docs/25: shared pool controller (stateless bar its repo; site passed per-call). When set, a
+   *  brand whose poolModeFor(siteId) is true has its non-marketer trades governed by the controller. */
+  poolController?: PoolController;
+  poolModeFor?: (siteId: string) => boolean;
   /** Surface live-config rebuild failures (defaults to console.error). */
   onError?: (err: Error, ctx: string) => void;
 }
@@ -69,6 +74,9 @@ export class SiteRegistry {
         () => config.active(),
         this.opts.now,
         this.opts.loadOverride,
+        this.opts.poolController
+          ? { enabled: () => (this.opts.poolModeFor?.(siteId) ?? false), controller: this.opts.poolController }
+          : undefined,
       );
       const rt: SiteRuntime = { siteId, seeds, game, config };
 
@@ -113,7 +121,7 @@ export class SiteRegistry {
     const out = new Map<string, RecoveryReport>();
     for (const siteId of siteIds) {
       const rt = await this.ensure(siteId);
-      const rec = new RecoveryService(this.opts.repo, rt.seeds, rt.game, this.opts.now, this.opts.loadOverride, siteId);
+      const rec = new RecoveryService(this.opts.repo, rt.seeds, rt.game, this.opts.now, this.opts.loadOverride, siteId, this.opts.poolController);
       out.set(siteId, await rec.recover());
     }
     return out;

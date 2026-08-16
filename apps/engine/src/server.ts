@@ -4,6 +4,7 @@ import {
 } from "./wallet.js";
 import { StaticConfigProvider, SiteGameConfigStore, type ConfigProvider, type ListenClient } from "./gameconfig.js";
 import { PgUserOverridesRepository, type UserOverridesRepository } from "./overrides.js";
+import { PoolController, PgPoolRepo } from "./poolcontroller.js";
 import { SiteRegistry } from "./siteregistry.js";
 import { SiteResolver, type SiteLookup } from "./siteresolver.js";
 import { startMultiEngine } from "./multiengine.js";
@@ -39,6 +40,9 @@ let repo: GameRepository;
 let overridesRepo: UserOverridesRepository | undefined;
 let configFor: (siteId: string) => ConfigProvider | Promise<ConfigProvider>;
 let masterSeedFor: ((siteId: string) => string | undefined) | undefined;
+// docs/25: pool controller (shared; site passed per-call) + per-brand pool_mode flag. Only in DB mode.
+let poolController: PoolController | undefined;
+const poolModeBySite = new Map<string, boolean>();
 /** host/slug/id -> siteId resolution table, seeded at boot from `sites`. */
 const siteAliases = new Map<string, string>();
 /** Brand resolver: fast alias cache + (with a DB) a live lookup so brands onboarded AFTER boot
@@ -55,7 +59,7 @@ if (usingDb) {
   // Resolve aliases (slug + primary_domain -> id) for active brands so a connection can name its
   // site by slug or host, not just uuid.
   const rows = (await q.query(
-    "select id, slug, primary_domain, master_seed_ref from sites where status = 'active'", [])).rows;
+    "select id, slug, primary_domain, master_seed_ref, pool_mode from sites where status = 'active'", [])).rows;
   const masterRefBySite = new Map<string, string>();
   for (const r of rows) {
     const id = String(r.id);
@@ -63,8 +67,11 @@ if (usingDb) {
     if (r.slug) siteAliases.set(String(r.slug), id);
     if (r.primary_domain) siteAliases.set(String(r.primary_domain), id);
     if (r.master_seed_ref && process.env[String(r.master_seed_ref)]) masterRefBySite.set(id, process.env[String(r.master_seed_ref)]!);
+    if (r.pool_mode === true) poolModeBySite.set(id, true);
   }
   masterSeedFor = (siteId) => masterRefBySite.get(siteId);
+  poolController = new PoolController(new PgPoolRepo(q));
+  console.log(`[engine] pool controller ready; pool_mode brands: ${[...poolModeBySite.keys()].length}`);
 
   // Each brand gets its own live store: LISTEN site_game_config_changed (filtered to the brand's
   // payload) + a poll fallback, with historical versions resolved from site_game_config_versions.
@@ -116,6 +123,7 @@ const registry = new SiteRegistry({
   configFor,
   ...(masterSeedFor ? { masterSeedFor } : {}),
   ...(overridesRepo ? { loadOverride: (uid: string) => overridesRepo!.getForUser(uid) } : {}),
+  ...(poolController ? { poolController, poolModeFor: (siteId: string) => poolModeBySite.get(siteId) === true } : {}),
 });
 
 // Deterministic crash recovery across every brand with open positions, before accepting traffic.
