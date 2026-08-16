@@ -16,6 +16,20 @@ export function useAffiliateSummary(enabled: boolean) {
   });
 }
 
+/** Realtime marketer performance — same summary, but polled every 5s while the live HUD is open. */
+export function useMarketerLiveSummary(enabled: boolean) {
+  const token = useSession((s) => s.token);
+  return useQuery({
+    queryKey: ['affiliate', 'summary', 'live'],
+    queryFn: () => api.affiliateSummary(token as string),
+    enabled: !!token && enabled,
+    retry: false,
+    refetchInterval: enabled ? 5000 : false,
+    refetchIntervalInBackground: false,
+    staleTime: 0,
+  });
+}
+
 export function useAffiliateReferrals(enabled: boolean) {
   const token = useSession((s) => s.token);
   return useInfiniteQuery({

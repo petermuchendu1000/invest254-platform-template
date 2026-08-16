@@ -2,7 +2,7 @@ import {
   PgGameRepository, PgEngagementRepository, PgPaymentRepository, PgIdentityRepository,
   PaymentService, AuthService, AffiliateService, AdminService, PgAdminRepository, PlatformService, PgPlatformRepository, makeDarajaClientFromConfig, loadDarajaConfigFromDb, makeVerifier,
   NotificationService, PgNotificationRepository,
-  GameConfigStore, mapConfigRow,
+  GameConfigStore, mapConfigRow, makePgPools,
   type GameRepository, type EngagementRepository, type PaymentRepository,
   type Querier, type FairnessRecord, type ListenClient,
 } from "@invest254/engine";
@@ -33,14 +33,17 @@ async function buildDeps(): Promise<ApiDeps> {
   if (!usingDb) throw new Error("DATABASE_URL is required to run the API server");
 
   const { Pool } = await import("pg");
-  const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+  // Split pools (docs/25 Phase 5): queries via the TRANSACTION pooler (:6543); the single
+  // game_config LISTEN connection via the SESSION pooler (:5432). See makePgPools.
+  const { queryPool, listenPool } = makePgPools(Pool, (m) => console.log(`[api] ${m}`));
+  const pool = queryPool;
   const q = pool as unknown as Querier;
 
   // Live game configuration for the public GET /game/config. Same store the WS engine uses,
   // so the limits the browser validates against are the limits the engine enforces.
   const gameConfig = new GameConfigStore(q, {
     pollMs: Number(process.env.CONFIG_POLL_MS ?? 15_000),
-    connect: async () => (await pool.connect()) as unknown as ListenClient,
+    connect: async () => (await listenPool.connect()) as unknown as ListenClient,
     onError: (err: Error, ctx: string) => console.error(`[api] config ${ctx}:`, err.message),
   });
   await gameConfig.init();

@@ -11,6 +11,7 @@ import { SessionBootstrap } from '@/components/auth/SessionBootstrap';
 import { NotificationBanners } from '@/components/notifications/NotificationBanners';
 import { RegisterSW } from '@/components/RegisterSW';
 import { SupportWidget } from '@/components/support/SupportWidget';
+import { MarketerHUD } from '@/components/marketer/MarketerHUD';
 import { env } from '@/lib/env';
 
 export function AppShell({ children }: { children: React.ReactNode }) {
@@ -47,6 +48,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <WalletModal />
         <RegisterSW />
         {env.supportChatEnabled && <SupportWidget />}
+        <MarketerHUD />
       </div>
     );
   }
@@ -65,6 +67,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <WalletModal />
       <RegisterSW />
       {env.supportChatEnabled && <SupportWidget />}
+      <MarketerHUD />
     </div>
   );
 }

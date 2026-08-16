@@ -301,6 +301,11 @@ export function useReportUsers(range: { from?: string; to?: string }) {
   const t = useTok();
   return useQuery({ queryKey: ['admin', 'report-users', range], queryFn: () => adminApi.reportUsers(t, range), enabled: !!t });
 }
+/** Single-day (EAT) comprehensive stats for the calendar day-explorer. */
+export function useReportDay(date: string) {
+  const t = useTok();
+  return useQuery({ queryKey: ['admin', 'report-day', date], queryFn: () => adminApi.reportDay(t, date), enabled: !!t });
+}
 export function useAudit() {
   const t = useTok();
   return useInfiniteQuery({

@@ -6,7 +6,7 @@ import { Skeleton } from '@/components/ui/Skeleton';
 import { Money } from '@/components/ui/Money';
 import { useSession } from '@/lib/auth/session';
 import { PageHeader, StatCard, Section, TableWrap, Th, Td, Empty } from '@/components/admin/ui';
-import { AreaChart, GroupedBars, ChartCard, LegendDot, kesCompact, type Point } from '@/components/admin/charts';
+import { AreaChart, GroupedBars, ChartCard, LegendDot, KpiCard, Donut, kesCompact, type Point } from '@/components/admin/charts';
 import { useOverview, useRtp, useReportDaily } from '@/lib/admin/hooks';
 
 function isoDaysAgo(days: number): string {
@@ -199,6 +199,16 @@ function TrendsSection() {
   const sum = (pts: Point[]) => pts.reduce((s, p) => s + p.value, 0);
   const ggrTotal = sum(ggr);
 
+  // Trend delta: second half vs first half of the window (a quick "is it growing?" signal).
+  const deltaPct = (pts: Point[]): number | null => {
+    if (pts.length < 4) return null;
+    const mid = Math.floor(pts.length / 2);
+    const a = sum(pts.slice(0, mid));
+    const b = sum(pts.slice(mid));
+    if (a === 0) return b > 0 ? 100 : null;
+    return ((b - a) / Math.abs(a)) * 100;
+  };
+
   return (
     <Section title="Trends — last 30 days">
       {q.isLoading ? (
@@ -208,37 +218,53 @@ function TrendsSection() {
       ) : rows.length === 0 ? (
         <Empty title="No activity yet" description="Charts populate as deposits, trades and payouts accrue." />
       ) : (
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-          <ChartCard
-            title="Deposits vs withdrawals"
-            readout={`${kesCompact(sum(deposits))} in`}
-            legend={
-              <>
-                <LegendDot tone="up" label="Deposits" />
-                <LegendDot tone="down" label="Withdrawals" />
-              </>
-            }
-          >
-            <GroupedBars
-              a={{ label: 'Deposits', points: deposits, tone: 'up' }}
-              b={{ label: 'Withdrawals', points: withdrawals, tone: 'down' }}
-            />
-          </ChartCard>
+        <div className="flex flex-col gap-3">
+          {/* KPI sparkline row — the four numbers an owner scans first, mobile-first (2-up, then 4-up). */}
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+            <KpiCard label="Deposits" value={kesCompact(sum(deposits))} series={deposits} tone="up" deltaPct={deltaPct(deposits)} />
+            <KpiCard label="Withdrawals" value={kesCompact(sum(withdrawals))} series={withdrawals} tone="down" deltaPct={deltaPct(withdrawals)} />
+            <KpiCard label="Turnover" value={kesCompact(sum(turnover))} series={turnover} tone="accent" deltaPct={deltaPct(turnover)} />
+            <KpiCard label="Net revenue (GGR)" value={kesCompact(ggrTotal)} series={ggr} tone={ggrTotal >= 0 ? 'up' : 'down'} deltaPct={deltaPct(ggr)} />
+          </div>
 
-          <ChartCard title="Turnover" readout={kesCompact(sum(turnover))}>
-            <AreaChart points={turnover} tone="accent" />
-          </ChartCard>
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+            <ChartCard
+              title="Deposits vs withdrawals"
+              readout={`${kesCompact(sum(deposits))} in`}
+              legend={
+                <>
+                  <LegendDot tone="up" label="Deposits" />
+                  <LegendDot tone="down" label="Withdrawals" />
+                </>
+              }
+            >
+              <GroupedBars
+                a={{ label: 'Deposits', points: deposits, tone: 'up' }}
+                b={{ label: 'Withdrawals', points: withdrawals, tone: 'down' }}
+              />
+            </ChartCard>
 
-          <ChartCard title="Net revenue (GGR)" readout={kesCompact(ggrTotal)}>
-            <AreaChart points={ggr} tone={ggrTotal >= 0 ? 'up' : 'down'} />
-          </ChartCard>
+            <ChartCard title="Cash flow split" readout={`net ${kesCompact(sum(deposits) - sum(withdrawals))}`}>
+              <div className="flex justify-center py-1">
+                <Donut
+                  segments={[
+                    { label: 'Deposits', value: sum(deposits), tone: 'up' },
+                    { label: 'Withdrawals', value: sum(withdrawals), tone: 'down' },
+                  ]}
+                  centerLabel="net in"
+                  centerValue={kesCompact(sum(deposits) - sum(withdrawals))}
+                />
+              </div>
+            </ChartCard>
 
-          <ChartCard
-            title="Withdrawals"
-            readout={`${kesCompact(sum(withdrawals))} out`}
-          >
-            <AreaChart points={withdrawals} tone="down" />
-          </ChartCard>
+            <ChartCard title="Turnover" readout={kesCompact(sum(turnover))}>
+              <AreaChart points={turnover} tone="accent" />
+            </ChartCard>
+
+            <ChartCard title="Net revenue (GGR)" readout={kesCompact(ggrTotal)}>
+              <AreaChart points={ggr} tone={ggrTotal >= 0 ? 'up' : 'down'} />
+            </ChartCard>
+          </div>
         </div>
       )}
     </Section>

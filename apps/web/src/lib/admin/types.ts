@@ -216,6 +216,9 @@ export interface GameConfigRow {
   requiredMeanWinMultiplier: number;
   updatedBy: string | null;
   updatedAtMs: number;
+  /** When true, the daily withdrawal pool governs payouts and the win-shaping knobs
+   *  (win rate, drift bias, volatility) are display-only — the pool controller decides wins. */
+  poolMode: boolean;
 }
 export interface GameConfigPatch {
   houseEdge?: number;
@@ -269,6 +272,26 @@ export interface UserReportRow {
   withdrawalsCents: Cents;
   turnoverCents: Cents;
   ggrCents: Cents;
+}
+/** GET /admin/reports/day — comprehensive single-day (EAT) operator stats for the calendar explorer. */
+export interface AdminDayReport {
+  date: string;
+  newRegistrants: number;
+  newMarketers: number;
+  activePlayers: number;
+  depositors: number;
+  firstTimeDepositors: number;
+  deposits: { count: number; amountCents: Cents };
+  withdrawals: { count: number; amountCents: Cents };
+  pendingWithdrawals: { count: number; amountCents: Cents };
+  settledPositions: number;
+  winningPositions: number;
+  turnoverCents: Cents;
+  payoutCents: Cents;
+  ggrCents: Cents;
+  commissionAccruedCents: Cents;
+  poolBudgetCents: Cents;
+  poolPaidCents: Cents;
 }
 
 export interface AdminAuditRow {

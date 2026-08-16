@@ -26,16 +26,19 @@ import type { GameConfigPatch, GameConfigRow } from '@/lib/admin/types';
 // Editable engine knobs. `kes` fields are cents edited in KES; `pct` fields are fractions
 // (0–1) edited as a percentage (0–100) so an operator types "75", not "0.75".
 type FieldKey = keyof GameConfigPatch;
-const FIELDS: { key: FieldKey; label: string; hint: string; kes?: boolean; pct?: boolean; step?: string }[] = [
-  { key: 'targetWinRate', label: 'Win rate (%)', hint: 'Share of rounds a player wins. Type a percentage — e.g. 75 means players win 75% of the time.', pct: true, step: '1' },
-  { key: 'houseEdge', label: 'House edge (%)', hint: 'The house margin. Type a percentage — e.g. 10. Players get back 100% − house edge over time.', pct: true, step: '0.5' },
+// `cosmetic: true` marks a knob that the daily withdrawal pool makes DISPLAY-ONLY when a brand is in
+// pool mode: the pool controller decides and paces wins against the budget, so these values no longer
+// drive outcomes (they're kept for when pool mode is off).
+const FIELDS: { key: FieldKey; label: string; hint: string; kes?: boolean; pct?: boolean; step?: string; cosmetic?: boolean }[] = [
+  { key: 'targetWinRate', label: 'Win rate (%)', hint: 'Share of rounds a player wins. Type a percentage — e.g. 75 means players win 75% of the time.', pct: true, step: '1', cosmetic: true },
+  { key: 'houseEdge', label: 'House edge (%)', hint: 'The house margin. Type a percentage — e.g. 10. Players get back 100% − house edge over time.', pct: true, step: '0.5', cosmetic: true },
   { key: 'minStakeCents', label: 'Min stake (KES)', hint: 'Smallest stake a player can place', kes: true, step: '1' },
   { key: 'maxStakeCents', label: 'Max stake (KES)', hint: 'Largest stake a player can place', kes: true, step: '1' },
   { key: 'minWithdrawalCents', label: 'Min withdrawal (KES)', hint: 'Smallest amount a player can withdraw. Requests below this are rejected.', kes: true, step: '1' },
   { key: 'defaultDurationS', label: 'Round duration (s)', hint: 'How long a round lasts, in seconds (1–3600)', step: '1' },
-  { key: 'maxMultiplier', label: 'Max payout multiple (×)', hint: 'Hard cap on a single winning round payout', step: '0.1' },
-  { key: 'driftBias', label: 'Drift bias (advanced)', hint: 'Directional bias of the price walk (−1 to 1). Leave as-is unless you know why.', step: '0.001' },
-  { key: 'volatility', label: 'Volatility (advanced)', hint: 'Amplitude of price movement (> 0). Leave as-is unless you know why.', step: '0.001' },
+  { key: 'maxMultiplier', label: 'Max payout multiple (×)', hint: 'Hard cap on a single winning round payout', step: '0.1', cosmetic: true },
+  { key: 'driftBias', label: 'Drift bias (advanced)', hint: 'Directional bias of the price walk (−1 to 1). Leave as-is unless you know why.', step: '0.001', cosmetic: true },
+  { key: 'volatility', label: 'Volatility (advanced)', hint: 'Amplitude of price movement (> 0). Leave as-is unless you know why.', step: '0.001', cosmetic: true },
   { key: 'tickRateMs', label: 'Tick rate (ms) (advanced)', hint: 'Price update interval, 50–60000 ms', step: '10' },
 ];
 
@@ -148,19 +151,37 @@ function GameBody() {
                 </span>
               </span>
             </div>
+            {cfg.poolMode ? (
+              <div className="rounded-xl border border-accent/40 bg-accent/5 p-3 text-xs text-muted">
+                <span className="font-semibold text-fg">Pool mode is ON.</span> Payouts are governed by the{' '}
+                <span className="font-medium text-fg">Daily withdrawal pool</span> below — the pool controller decides and
+                paces wins against the day&apos;s budget. Win rate, house edge, max multiple, drift bias and volatility
+                are <span className="font-medium text-fg">display-only</span> and do not affect outcomes while pool mode is
+                on. Stake/withdrawal limits and round duration still apply.
+              </div>
+            ) : null}
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              {FIELDS.map((f) => (
-                <Input
-                  key={f.key}
-                  type="number"
-                  inputMode="decimal"
-                  step={f.step}
-                  label={f.label}
-                  hint={f.hint}
-                  value={form[f.key] ?? ''}
-                  onChange={(e) => setForm((s) => ({ ...s, [f.key]: e.target.value }))}
-                />
-              ))}
+              {FIELDS.map((f) => {
+                const displayOnly = cfg.poolMode && f.cosmetic;
+                return (
+                  <div key={f.key} className="flex flex-col gap-1">
+                    <Input
+                      type="number"
+                      inputMode="decimal"
+                      step={f.step}
+                      label={f.label}
+                      hint={displayOnly ? `${f.hint} — display-only in pool mode.` : f.hint}
+                      value={form[f.key] ?? ''}
+                      onChange={(e) => setForm((s) => ({ ...s, [f.key]: e.target.value }))}
+                    />
+                    {displayOnly ? (
+                      <span className="inline-flex w-fit items-center gap-1 rounded-full bg-surface-2 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted">
+                        Pool mode · display only
+                      </span>
+                    ) : null}
+                  </div>
+                );
+              })}
             </div>
             {dirtyCount > 0 && preview ? (
               <div

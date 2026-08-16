@@ -99,6 +99,28 @@ export interface ReportRange { from?: string | undefined; to?: string | undefine
 export interface DailyReportRow { date: string; depositsCents: Cents; withdrawalsCents: Cents; turnoverCents: Cents; ggrCents: Cents; }
 /** Per-user finance totals over the report window (J4). */
 export interface UserReportRow { userId: string; username: string; depositsCents: Cents; withdrawalsCents: Cents; turnoverCents: Cents; ggrCents: Cents; }
+/** A single calendar day (EAT) of comprehensive operator stats — the "day explorer" the admin
+ *  reaches by picking a date on the calendar. Registrations are keyed by profile creation date,
+ *  cash by transaction date, game facts by the position's trade date, pool by trade_day. */
+export interface AdminDayReport {
+  date: string;
+  newRegistrants: number;          // players who registered that day
+  newMarketers: number;            // marketers who enrolled that day
+  activePlayers: number;           // distinct players who settled a trade that day
+  depositors: number;              // distinct users with a successful deposit that day
+  firstTimeDepositors: number;     // depositors whose FIRST-ever successful deposit was that day
+  deposits: { count: number; amountCents: Cents };
+  withdrawals: { count: number; amountCents: Cents };
+  pendingWithdrawals: { count: number; amountCents: Cents };
+  settledPositions: number;
+  winningPositions: number;
+  turnoverCents: Cents;
+  payoutCents: Cents;              // total winnings credited to players that day
+  ggrCents: Cents;                 // turnover − payout (net gaming revenue)
+  commissionAccruedCents: Cents;   // affiliate commission accrued for that day
+  poolBudgetCents: Cents;          // withdrawal-pool budget set for that day (all brands)
+  poolPaidCents: Cents;            // withdrawal-pool winnings committed that day
+}
 
 // ── J5: game configuration, RTP monitor, seed rotation ─────────────────────────────────────────
 /** The live game_config singleton as the admin panel sees it (J5). */
@@ -113,6 +135,10 @@ export interface GameConfigRow {
   /** RTP / targetWinRate — must sit in (1, maxMultiplier] for the calibrator to solve. */
   requiredMeanWinMultiplier: number;
   updatedBy: string | null; updatedAtMs: number;
+  /** When true (sites.pool_mode) the daily withdrawal pool governs payouts, so the win-shaping knobs
+   *  (targetWinRate, driftBias, volatility, and effectively houseEdge/maxMultiplier) are DISPLAY-ONLY
+   *  — the pool controller decides and paces wins against the budget, not these values. */
+  poolMode: boolean;
 }
 /** Partial game_config edit (J5). Only provided keys change; the rest are left untouched. */
 export interface GameConfigPatch {
@@ -234,6 +260,7 @@ export interface AdminRepository {
   depositsReconcile(staleMinutes: number): Promise<AdminDepositsReconcile>;
   reportDaily(range: ReportRange): Promise<DailyReportRow[]>;
   reportByUser(range: ReportRange): Promise<UserReportRow[]>;
+  reportDay(date: string): Promise<AdminDayReport>;
   // J5 — game config + RTP monitor + seed rotation (superadmin mutations guarded in the RPC/mirror)
   // siteId scopes the read/write to a brand's `site_game_config` (the table the ENGINE prices from).
   // Omitted => the default site. This is the fix for the control-plane/data-plane split (0061).
@@ -312,6 +339,7 @@ function mapGameConfigRow(x: any): GameConfigRow {
     rtpTarget: 1 - houseEdge, version: Number(x.version ?? 0),
     requiredMeanWinMultiplier: targetWinRate > 0 ? (1 - houseEdge) / targetWinRate : Number.POSITIVE_INFINITY,
     updatedBy: x.updated_by == null ? null : String(x.updated_by), updatedAtMs: ms(x.updated_at),
+    poolMode: x.pool_mode === true,
   };
 }
 
@@ -337,6 +365,7 @@ function defaultGameConfigRow(): GameConfigRow {
     targetWinRate: c.targetWinRate, rtpTarget: 1 - c.houseEdge, version: 1,
     requiredMeanWinMultiplier: (1 - c.houseEdge) / c.targetWinRate,
     updatedBy: null, updatedAtMs: Date.now(),
+    poolMode: false,
   };
 }
 
@@ -852,6 +881,80 @@ export class PgAdminRepository implements AdminRepository {
     }));
   }
 
+  async reportDay(date: string): Promise<AdminDayReport> {
+    const r = await this.q.query(
+      `with
+       reg as (
+         select
+           count(*) filter (where role = 'player')   as new_players,
+           count(*) filter (where role = 'marketer')  as new_marketers
+         from profiles where created_at::date = $1::date
+       ),
+       tx as (
+         select
+           count(*) filter (where kind='deposit'    and status='success')            as dep_n,
+           coalesce(sum(amount) filter (where kind='deposit'    and status='success'),0) as dep_c,
+           count(*) filter (where kind='withdrawal' and status='success')            as wd_n,
+           coalesce(sum(amount) filter (where kind='withdrawal' and status='success'),0) as wd_c,
+           count(*) filter (where kind='withdrawal' and status in ('pending','processing')) as pend_n,
+           coalesce(sum(amount) filter (where kind='withdrawal' and status in ('pending','processing')),0) as pend_c,
+           count(distinct user_id) filter (where kind='deposit' and status='success') as depositors
+         from transactions where created_at::date = $1::date
+       ),
+       ftd as (
+         select count(*) as n from (
+           select user_id, min(created_at::date) as first_dep
+             from transactions where kind='deposit' and status='success' group by user_id
+         ) f where f.first_dep = $1::date
+       ),
+       g as (
+         select
+           count(*)                                   as settled,
+           count(*) filter (where po.payout > po.stake) as winners,
+           coalesce(sum(po.stake),0)                  as turnover,
+           coalesce(sum(po.payout),0)                 as payout,
+           coalesce(sum(po.stake - po.payout),0)      as ggr,
+           count(distinct po.user_id)                 as active_players
+         from positions po
+         left join game_days gd on gd.id = po.game_day_id
+         where po.status='settled'
+           and coalesce(gd.trade_date, po.settled_at::date, po.opened_at::date) = $1::date
+       ),
+       comm as (
+         select coalesce(sum(commission),0) as accrued from affiliate_commissions where period = $1::date
+       ),
+       pool as (
+         select coalesce(sum(amount_cents),0) as budget, coalesce(sum(paid_cents),0) as paid
+           from withdrawal_pool where trade_day = $1::date
+       )
+       select reg.new_players, reg.new_marketers,
+              tx.dep_n, tx.dep_c, tx.wd_n, tx.wd_c, tx.pend_n, tx.pend_c, tx.depositors, ftd.n as ftd,
+              g.settled, g.winners, g.turnover, g.payout, g.ggr, g.active_players,
+              comm.accrued, pool.budget, pool.paid
+       from reg, tx, ftd, g, comm, pool`,
+      [date]);
+    const x = (r.rows[0] ?? {}) as Record<string, unknown>;
+    return {
+      date,
+      newRegistrants: Number(x.new_players ?? 0),
+      newMarketers: Number(x.new_marketers ?? 0),
+      activePlayers: Number(x.active_players ?? 0),
+      depositors: Number(x.depositors ?? 0),
+      firstTimeDepositors: Number(x.ftd ?? 0),
+      deposits: { count: Number(x.dep_n ?? 0), amountCents: num(x.dep_c) },
+      withdrawals: { count: Number(x.wd_n ?? 0), amountCents: num(x.wd_c) },
+      pendingWithdrawals: { count: Number(x.pend_n ?? 0), amountCents: num(x.pend_c) },
+      settledPositions: Number(x.settled ?? 0),
+      winningPositions: Number(x.winners ?? 0),
+      turnoverCents: num(x.turnover),
+      payoutCents: num(x.payout),
+      ggrCents: num(x.ggr),
+      commissionAccruedCents: num(x.accrued),
+      poolBudgetCents: num(x.budget),
+      poolPaidCents: num(x.paid),
+    };
+  }
+
   // ── J5: game config + RTP monitor + seed rotation ────────────────────────────────────────────
 
   // Reads the BRAND's live economy from `site_game_config` — the exact row the multiplexed engine
@@ -859,7 +962,7 @@ export class PgAdminRepository implements AdminRepository {
   // the engine never consults, so the operator panel and the live game were divorced (see 0061).
   async getGameConfig(siteId: string = ADMIN_DEFAULT_SITE): Promise<GameConfigRow> {
     const r = await this.q.query(
-      "select house_edge, max_multiplier, min_stake, max_stake, min_withdrawal, default_duration_s, tick_rate_ms, drift_bias, volatility, target_win_rate, version, updated_by, updated_at from site_game_config where site_id = $1", [siteId]);
+      "select g.house_edge, g.max_multiplier, g.min_stake, g.max_stake, g.min_withdrawal, g.default_duration_s, g.tick_rate_ms, g.drift_bias, g.volatility, g.target_win_rate, g.version, g.updated_by, g.updated_at, s.pool_mode from site_game_config g join sites s on s.id = g.site_id where g.site_id = $1", [siteId]);
     if (!r.rows.length) throw new Error("NOT_FOUND");
     return mapGameConfigRow(r.rows[0]);
   }
@@ -869,11 +972,12 @@ export class PgAdminRepository implements AdminRepository {
   // next round with no redeploy. Feasibility is enforced by the site_game_config CHECK (-> INVALID_CONFIG).
   async updateGameConfig(actorId: string, actorRole: string, patch: GameConfigPatch, siteId: string = ADMIN_DEFAULT_SITE): Promise<GameConfigRow> {
     try {
-      const r = await this.q.query(
-        "select house_edge, max_multiplier, min_stake, max_stake, min_withdrawal, default_duration_s, tick_rate_ms, drift_bias, volatility, target_win_rate, version, updated_by, updated_at from fn_admin_set_site_game_config($1,$2,$3::uuid,$4::jsonb)",
+      await this.q.query(
+        "select 1 from fn_admin_set_site_game_config($1,$2,$3::uuid,$4::jsonb)",
         [actorId, actorRole, siteId, JSON.stringify(patch)]);
-      return mapGameConfigRow(r.rows[0]);
     } catch (e) { mapAdminError(e); }
+    // Re-read through getGameConfig so the returned row carries pool_mode (joined from sites).
+    return this.getGameConfig(siteId);
   }
 
   async getWithdrawalPool(siteId: string, tradeDay: string): Promise<WithdrawalPoolRow> {
@@ -1490,6 +1594,35 @@ export class InMemoryAdminRepository implements AdminRepository {
         depositsCents: v.dep, withdrawalsCents: v.wd, turnoverCents: v.turn, ggrCents: v.ggr,
       }))
       .sort((a, b) => (b.ggrCents - a.ggrCents) || (a.userId < b.userId ? -1 : a.userId > b.userId ? 1 : 0));
+  }
+
+  async reportDay(date: string): Promise<AdminDayReport> {
+    const range: ReportRange = { from: date, to: date };
+    let dep = { count: 0, amountCents: 0 }, wd = { count: 0, amountCents: 0 }, pend = { count: 0, amountCents: 0 };
+    const depositors = new Set<string>();
+    for (const t of this.payments.adminTransactions()) {
+      if (!inRange(dayOfMs(t.createdAtMs), range)) continue;
+      if (t.kind === "deposit" && t.status === "success") { dep.count++; dep.amountCents += t.amountCents; depositors.add(t.userId); }
+      else if (t.kind === "withdrawal" && t.status === "success") { wd.count++; wd.amountCents += t.amountCents; }
+      else if (t.kind === "withdrawal" && (t.status === "pending" || t.status === "processing")) { pend.count++; pend.amountCents += t.amountCents; }
+    }
+    let settled = 0, winners = 0, turnover = 0, payout = 0;
+    const active = new Set<string>();
+    for (const p of this.identity.adminReportPlays()) {
+      if (!inRange(p.period, range)) continue;
+      settled++; turnover += p.stakeCents; payout += p.payoutCents;
+      if (p.payoutCents > p.stakeCents) winners++;
+      active.add(p.userId);
+    }
+    return {
+      date,
+      newRegistrants: 0, newMarketers: 0,
+      activePlayers: active.size, depositors: depositors.size, firstTimeDepositors: 0,
+      deposits: dep, withdrawals: wd, pendingWithdrawals: pend,
+      settledPositions: settled, winningPositions: winners,
+      turnoverCents: turnover, payoutCents: payout, ggrCents: turnover - payout,
+      commissionAccruedCents: 0, poolBudgetCents: 0, poolPaidCents: 0,
+    };
   }
 
   // ── J5: game config + RTP monitor + seed rotation (mirrors the 0023 RPC guards) ───────────────

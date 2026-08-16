@@ -20,6 +20,7 @@ import type {
   AdminUserRow,
   AdminWithdrawalRow,
   DailyReportRow,
+  AdminDayReport,
   GameConfigPatch,
   GameConfigRow,
   AdminMarketerLedgerRow,
@@ -167,6 +168,8 @@ export const adminApi = {
     apiFetch<{ items: DailyReportRow[] }>('/admin/reports/daily', { token: t, query: { from: range.from, to: range.to } }),
   reportUsers: (t: string, range: { from?: string | undefined; to?: string | undefined } = {}) =>
     apiFetch<{ items: UserReportRow[] }>('/admin/reports/users', { token: t, query: { from: range.from, to: range.to } }),
+  reportDay: (t: string, date?: string) =>
+    apiFetch<AdminDayReport>('/admin/reports/day', { token: t, query: date ? { date } : {} }),
   audit: (t: string, p: Page = {}) =>
     apiFetch<Paginated<AdminAuditRow>>('/admin/audit', {
       token: t,

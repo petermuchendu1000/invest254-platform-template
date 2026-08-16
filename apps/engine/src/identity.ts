@@ -36,6 +36,8 @@ export interface AffiliateSummary {
   totalReferrals: number; activePlayers7d: number; activePlayers30d: number;
   turnoverCents: number; ggrCents: number;
   commissionAccruedCents: number; commissionPaidCents: number; availableCents: number;
+  // Realtime "today" (EAT) figures for the live marketer performance panel.
+  referralsToday: number; activePlayersToday: number; commissionTodayCents: number;
 }
 /** One referred player as shown in the marketer's referrals list. */
 export interface ReferralRecord { username: string; joinedAtMs: number; lifetimeGgrCents: number; }
@@ -194,7 +196,14 @@ export class PgIdentityRepository implements IdentityRepository, AffiliateReposi
          (select coalesce(sum(c.ggr),0) from affiliate_commissions c where c.affiliate_id = a.user_id) as ggr,
          (select coalesce(sum(c.commission),0) from affiliate_commissions c where c.affiliate_id = a.user_id and c.status = 'accrued') as accrued,
          (select coalesce(sum(c.commission),0) from affiliate_commissions c where c.affiliate_id = a.user_id and c.status = 'paid') as paid,
-         (select coalesce(sum(c.commission),0) from affiliate_commissions c where c.affiliate_id = a.user_id and c.status = 'accrued' and c.payout_id is null) as available
+         (select coalesce(sum(c.commission),0) from affiliate_commissions c where c.affiliate_id = a.user_id and c.status = 'accrued' and c.payout_id is null) as available,
+         (select count(*) from referrals r where r.affiliate_id = a.user_id
+           and (r.created_at at time zone 'Africa/Nairobi')::date = (now() at time zone 'Africa/Nairobi')::date) as referrals_today,
+         (select count(distinct p.user_id) from positions p join referrals r on r.referred_user = p.user_id
+           where r.affiliate_id = a.user_id
+             and (p.opened_at at time zone 'Africa/Nairobi')::date = (now() at time zone 'Africa/Nairobi')::date) as active_today,
+         (select coalesce(sum(c.commission),0) from affiliate_commissions c where c.affiliate_id = a.user_id
+           and c.period = (now() at time zone 'Africa/Nairobi')::date) as commission_today
        from affiliates a where a.user_id = $1`, [userId]);
     if (!r.rows.length) return null;
     const x = r.rows[0];
@@ -207,6 +216,8 @@ export class PgIdentityRepository implements IdentityRepository, AffiliateReposi
       turnoverCents: Number(x.turnover), ggrCents: Number(x.ggr),
       commissionAccruedCents: Number(x.accrued), commissionPaidCents: Number(x.paid),
       availableCents: Number(x.available),
+      referralsToday: Number(x.referrals_today ?? 0), activePlayersToday: Number(x.active_today ?? 0),
+      commissionTodayCents: Number(x.commission_today ?? 0),
     };
   }
   async requestPayout(userId: string): Promise<PayoutRequestResult> {
@@ -489,6 +500,7 @@ export class InMemoryIdentityRepository implements IdentityRepository, Affiliate
       totalReferrals: referred.length, activePlayers7d: activeWithin(7), activePlayers30d: activeWithin(30),
       turnoverCents: turnover, ggrCents: ggr,
       commissionAccruedCents: accrued, commissionPaidCents: paid, availableCents: available,
+      referralsToday: activeWithin(1), activePlayersToday: activeWithin(1), commissionTodayCents: 0,
     };
   }
   async listReferrals(userId: string, q: PageQuery): Promise<Page<ReferralRecord>> {

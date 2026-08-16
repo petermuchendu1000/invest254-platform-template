@@ -5,6 +5,7 @@ import {
 import { StaticConfigProvider, SiteGameConfigStore, type ConfigProvider, type ListenClient } from "./gameconfig.js";
 import { PgUserOverridesRepository, type UserOverridesRepository } from "./overrides.js";
 import { PoolController, PgPoolRepo } from "./poolcontroller.js";
+import { makePgPools } from "./pgpools.js";
 import { SiteRegistry } from "./siteregistry.js";
 import { SiteResolver, type SiteLookup } from "./siteresolver.js";
 import { startMultiEngine } from "./multiengine.js";
@@ -51,7 +52,11 @@ let resolver: SiteResolver;
 
 if (usingDb) {
   const { Pool } = await import("pg");
-  const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+  // Split pools (docs/25 Phase 5): all queries via the TRANSACTION pooler (:6543, high ceiling);
+  // per-brand LISTEN connections via the SESSION pooler (:5432, required for NOTIFY). This stops the
+  // engine from starving the scarce session pool under load while keeping live config hot-reload.
+  const { queryPool, listenPool } = makePgPools(Pool, (m) => console.log(`[engine] ${m}`));
+  const pool = queryPool;
   const q = pool as unknown as Querier;
   repo = new PgGameRepository(q);
   overridesRepo = new PgUserOverridesRepository(q);
@@ -78,7 +83,7 @@ if (usingDb) {
   // A dedicated LISTEN connection per brand is opened lazily via pool.connect().
   configFor = async (siteId): Promise<ConfigProvider> => {
     const store = new SiteGameConfigStore(siteId, q, {
-      connect: () => pool.connect() as unknown as Promise<ListenClient>,
+      connect: () => listenPool.connect() as unknown as Promise<ListenClient>,
     });
     await store.init();
     return store;

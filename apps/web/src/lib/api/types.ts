@@ -157,6 +157,10 @@ export interface AffiliateSummary {
   commissionAccruedCents: Cents;
   commissionPaidCents: Cents;
   availableCents: Cents;
+  /** Realtime "today" (EAT) figures for the live marketer performance panel. */
+  referralsToday: number;
+  activePlayersToday: number;
+  commissionTodayCents: Cents;
 }
 
 /** GET /affiliate/referrals item — one referred player. */

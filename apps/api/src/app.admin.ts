@@ -527,6 +527,13 @@ export function registerAdminRoutes(router: Router, deps: ApiDeps): void {
     return { items: rows };
   });
 
+  // Day explorer (calendar): comprehensive single-day stats. Defaults to today (EAT) if no date.
+  router.get(`${BASE}/admin/reports/day`, auth, admin, async (ctx: Ctx) => {
+    const date = ctx.query.get("date") ?? new Date().toLocaleDateString("en-CA", { timeZone: "Africa/Nairobi" });
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new ApiError("VALIDATION", "date must be YYYY-MM-DD", 400);
+    return deps.admin.reportDay(date);
+  });
+
   router.get(`${BASE}/admin/audit`, auth, admin, async (ctx: Ctx) => deps.admin.listAudit(pageQuery(ctx)));
 
   // ── J5: game configuration + RTP monitor + seed rotation (superadmin mutations) ───────────────

@@ -5,7 +5,7 @@ import type {
   SetUserStatusResult, SetCommissionRateResult,
   AdjustBalanceResult, AdjustBalanceKindResult, ClearBalanceResult, ResetBalanceResult, BalanceKind, UserOverrideRow, UserOverridePatch,
   AdminDepositRow, AdminDepositListQuery, AdminDepositsReconcile,
-  ReportRange, DailyReportRow, UserReportRow,
+  ReportRange, DailyReportRow, UserReportRow, AdminDayReport,
   GameConfigRow, GameConfigPatch, RtpMonitor, AdminSeedRow, SeedRotateResult,
   WithdrawalPoolRow,
   MpesaConfigRow, MpesaConfigPatch, SetUserRoleResult,
@@ -91,6 +91,7 @@ export class AdminService {
 
   /** Per-day operator finance report (J4) — deposits/withdrawals + turnover/GGR, oldest day first. */
   reportDaily(range: ReportRange): Promise<DailyReportRow[]> { return this.repo.reportDaily(range); }
+  reportDay(date: string): Promise<AdminDayReport> { return this.repo.reportDay(date); }
 
   /** Per-user operator finance report (J4) — same metrics, ordered by GGR desc. */
   reportByUser(range: ReportRange): Promise<UserReportRow[]> { return this.repo.reportByUser(range); }
