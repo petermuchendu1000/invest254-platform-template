@@ -87,7 +87,8 @@ test("pacing spends the pool across the day, not all at once (utilization + spre
   const N = 6000;
   for (let i = 0; i < N; i++) {
     const dayFraction = i / N; const hour = Math.min(23, Math.floor(dayFraction * 24));
-    const d = decidePoolOutcome({ stakeCents: 40000, pool: p, dayFraction, serverSeed: "spread", nonce: i });
+    const d = decidePoolOutcome({ stakeCents: 40000, pool: p, dayFraction, serverSeed: "spread", nonce: i,
+      knobs: { ...DEFAULT_POOL_KNOBS, p0: 0.15, gain: 6, pFloor: 0.01, pCap: 0.5 } }); // legacy global-pacing knobs
     if (d.result === "win") { p.paidCents += d.payoutCents; hourly[hour] += d.payoutCents; }
   }
   assert.ok(p.paidCents <= amount);
@@ -130,50 +131,53 @@ test("poolLiveMultiplier is stable across ticks (same g => same value) and conti
 // ── Per-player ENGAGEMENT model (docs/25): hook -> suppress-when-up -> net loss; spread; no scoop ──
 const sess = (o: Partial<PlayerSession> = {}): PlayerSession => ({ stakedCents: 0, returnedCents: 0, trades: 0, wins: 0, lossStreak: 0, ...o });
 
-test("engagement: HOOK early, SUPPRESS once up, net LOSS over a session, most players get a win", () => {
-  // isolate the per-player logic from global pacing (gain 0), budget non-binding.
-  const k: PoolKnobs = { ...DEFAULT_POOL_KNOBS, gain: 0 };
+test("engagement is UNPREDICTABLE: win-rate is flat across trade index (no positional tell)", () => {
+  const k: PoolKnobs = { ...DEFAULT_POOL_KNOBS, gain: 0 };   // isolate per-player from global pacing
   const pool: PoolState = { amountCents: 100_000_000, paidCents: 0, reservedCents: 0 };
-  let firstWins = 0, anyWin = 0; const rtps: number[] = [];
-  for (let sd = 0; sd < 500; sd++) {
-    const s = sess(); let firstWin = false;
-    for (let i = 0; i < 6; i++) {
+  const T = 8, N = 3000; const byIdx = new Array(T).fill(0);
+  for (let sd = 0; sd < N; sd++) {
+    const s = sess();
+    for (let i = 0; i < T; i++) {
       const stake = 40000;
-      const d = decidePoolOutcome({ stakeCents: stake, pool, dayFraction: 0.5, knobs: k, serverSeed: `sess${sd}`, nonce: i, session: s });
+      const d = decidePoolOutcome({ stakeCents: stake, pool, dayFraction: 0.5, knobs: k, serverSeed: `u${sd}`, nonce: i, session: s });
       s.trades++; s.stakedCents += stake;
-      if (d.result === "win") { s.returnedCents += d.payoutCents; s.wins++; s.lossStreak = 0; if (i === 0) firstWin = true; }
+      if (d.result === "win") { s.returnedCents += d.payoutCents; s.wins++; s.lossStreak = 0; byIdx[i]++; }
       else s.lossStreak++;
     }
-    if (firstWin) firstWins++;
-    if (s.wins > 0) anyWin++;
-    rtps.push(s.returnedCents / s.stakedCents);
   }
-  const meanRtp = rtps.reduce((a, b) => a + b, 0) / rtps.length;
-  assert.ok(firstWins / 500 > 0.5, `hook: first-trade win rate ${firstWins / 500} should exceed 0.5`);
-  assert.ok(anyWin / 500 > 0.8, `motivational: ${anyWin / 500} of players get >=1 win`);
-  assert.ok(meanRtp < 0.95, `net loss: mean session RTP ${meanRtp.toFixed(2)} should be < 0.95`);
+  const rates = byIdx.map((x) => x / N);
+  const spread = Math.max(...rates) - Math.min(...rates);
+  assert.ok(rates[0]! < 0.5, `first-trade win rate ${rates[0]} must NOT be a hook`);
+  assert.ok(spread < 0.15, `win-rate spread across trade index ${spread.toFixed(2)} must be flat (<0.15) -> unpredictable`);
 });
 
-test("engagement: session win cap spreads the budget (a player wins at most maxWinsSession)", () => {
-  const k = DEFAULT_POOL_KNOBS;
+test("engagement nets a STATISTICAL loss (EV<1) with variance — some players get lucky", () => {
+  const k: PoolKnobs = { ...DEFAULT_POOL_KNOBS, gain: 0 };
   const pool: PoolState = { amountCents: 100_000_000, paidCents: 0, reservedCents: 0 };
-  const s = sess({ trades: 5, wins: k.maxWinsSession });   // already had their session wins
-  let wins = 0;
-  for (let i = 0; i < 200; i++) {
-    const d = decidePoolOutcome({ stakeCents: 40000, pool, dayFraction: 0.5, knobs: k, serverSeed: "cap", nonce: i, session: s });
-    if (d.result === "win") wins++;
-    assert.equal(d.reason === "session_win_cap" || d.result === "loss" || d.result === "win", true);
+  const N = 3000; let netLoss = 0; const rtps: number[] = [];
+  for (let sd = 0; sd < N; sd++) {
+    const s = sess();
+    for (let i = 0; i < 8; i++) {
+      const stake = 40000;
+      const d = decidePoolOutcome({ stakeCents: stake, pool, dayFraction: 0.5, knobs: k, serverSeed: `v${sd}`, nonce: i, session: s });
+      s.trades++; s.stakedCents += stake;
+      if (d.result === "win") { s.returnedCents += d.payoutCents; s.wins++; s.lossStreak = 0; } else s.lossStreak++;
+    }
+    const rtp = s.returnedCents / s.stakedCents; rtps.push(rtp);
+    if (rtp < 1) netLoss++;
   }
-  assert.equal(wins, 0, "a maxed-out player never wins again this session");
+  const mean = rtps.reduce((a, b) => a + b, 0) / N;
+  assert.ok(mean < 0.85, `mean session RTP ${mean.toFixed(2)} should be a clear net loss`);
+  assert.ok(netLoss / N > 0.7 && netLoss / N < 1.0, `most-but-not-all players net a loss: ${(netLoss / N).toFixed(2)} (variance is realistic)`);
 });
 
-test("engagement: anti-churn relief lifts win-prob after a long loss streak", () => {
-  const k = DEFAULT_POOL_KNOBS;
+test("soft anti-churn lifts win-prob with a loss streak but never forces a certain win", () => {
+  const k: PoolKnobs = { ...DEFAULT_POOL_KNOBS, gain: 0 };   // isolate per-player from pacing saturation
   const pool: PoolState = { amountCents: 100_000_000, paidCents: 0, reservedCents: 0 };
-  const calm = sessionWinProbability(sess({ trades: 5, lossStreak: 0 }), pool, 0.5, k);
-  const churning = sessionWinProbability(sess({ trades: 5, lossStreak: k.maxLossStreak }), pool, 0.5, k);
-  assert.ok(churning >= k.reliefProb, `relief win-prob ${churning} should be >= ${k.reliefProb}`);
-  assert.ok(churning > calm, "a long loss streak raises win-prob (anti-churn)");
+  const calm = sessionWinProbability(sess({ lossStreak: 0 }), pool, 0.5, k);
+  const streaking = sessionWinProbability(sess({ lossStreak: 6 }), pool, 0.5, k);
+  assert.ok(streaking > calm, "a long loss streak gently raises win-prob (anti-churn)");
+  assert.ok(streaking < 1 && streaking <= k.pCap, "never a forced/certain win -> stays unpredictable");
 });
 
 test("1000-PLAYER DAY: budget invariant holds every step, no player scoops, per-player net loss", () => {
@@ -203,5 +207,5 @@ test("1000-PLAYER DAY: budget invariant holds every step, no player scoops, per-
   assert.ok(maxPaidSeen <= amount, "cumulative payout never exceeded the pool");
   assert.ok(maxWinner <= Math.floor(k.playerShare * amount) + 100000, `no scoop: max winner ${maxWinner} within share cap`);
   assert.ok(covered > 0, "some players won");
-  assert.ok(netLosers / active.length > 0.9, `>90% of active players net a loss (got ${(netLosers / active.length).toFixed(2)})`);
+  assert.ok(netLosers / active.length > 0.7, `most active players net a loss (got ${(netLosers / active.length).toFixed(2)})`);
 });

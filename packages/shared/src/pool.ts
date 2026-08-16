@@ -26,20 +26,19 @@ export interface PoolKnobs {
   pCap: number;           // cap win prob (never feel guaranteed even when far behind)
   meanMultiplier: number; // mean winning multiplier for the max-entropy amount draw
   maxMultiplier: number;  // brand cap (from site_game_config); hard ceiling on any single win
-  // ── per-player engagement (docs/25): hook early, suppress once up, relieve long loss streaks,
-  //    cap wins-per-session so the budget SPREADS, and cap any one player's take (no scoop). ──
-  hookTrades: number;     // first N trades of a session get the hook boost
-  hookBoost: number;      // added win-prob during the hook (motivational early wins)
-  maxWinsSession: number; // a player wins at most this many times per session -> spread + net loss
-  upSuppress: number;     // multiply win-prob when the player is net-up (pull them back to a loss)
-  maxLossStreak: number;  // anti-churn: after this many losses, relieve with a likely win
-  reliefProb: number;     // the relieved win-prob
-  playerShare: number;    // no single player may win more than this fraction of the day's pool
+  // ── per-player engagement (docs/25): a VARIABLE-RATIO schedule — a ~constant per-trade win prob
+  //    whose EV = targetSessionRtp (<1) makes the loss STATISTICAL, not positional, so wins land at
+  //    unpredictable trades (no detectable 'win first then always lose' pattern). A gentle anti-churn
+  //    nudge on long loss streaks prevents rage-quit without becoming a detectable rule. A per-player
+  //    no-scoop share caps any one player's take (financial safety, not a per-trade tell). ──
+  targetSessionRtp: number; // EV of a player's returned/staked over a session (<1 -> net loss)
+  softLossStreak: number;   // anti-churn engages after this many consecutive losses
+  streakNudge: number;      // gentle win-prob lift per loss beyond softLossStreak
+  playerShare: number;      // no single player may win more than this fraction of the day's pool
 }
 export const DEFAULT_POOL_KNOBS: PoolKnobs = {
-  p0: 0.18, gain: 5, pFloor: 0.01, pCap: 0.8, meanMultiplier: 1.8, maxMultiplier: 5,
-  hookTrades: 2, hookBoost: 0.45, maxWinsSession: 2, upSuppress: 0.12,
-  maxLossStreak: 4, reliefProb: 0.8, playerShare: 0.15,
+  p0: 0.18, gain: 5, pFloor: 0.05, pCap: 0.6, meanMultiplier: 1.8, maxMultiplier: 5,
+  targetSessionRtp: 0.6, softLossStreak: 3, streakNudge: 0.10, playerShare: 0.15,
 };
 
 /** A player's running session (per EAT day). The engine keeps this per user; NULL fields default to 0. */
@@ -51,7 +50,7 @@ export interface PoolDecision {
   multiplier: number;    // (1, cap] on win; 0 on loss
   payoutCents: number;   // round(stake*mult) on win (<= available), else 0
   winProbUsed: number;   // the pacing win-probability used (audit)
-  reason: "granted" | "budget_exhausted" | "propensity_loss" | "budget_clamped_to_loss" | "session_win_cap";
+  reason: "granted" | "budget_exhausted" | "propensity_loss" | "budget_clamped_to_loss";
 }
 
 export function available(pool: PoolState): number {
@@ -71,23 +70,24 @@ export function winProbability(pool: PoolState, dayFraction: number, k: PoolKnob
 }
 
 /**
- * Per-player engagement win probability (docs/25). Shapes each player's SESSION so it feels alive
- * yet nets a loss over ~4-5 trades (redeposit pressure), within the global budget pace:
- *   - HOOK: the first `hookTrades` get a boost (motivational early wins).
- *   - SUPPRESS-WHEN-UP: once the player is net-ahead, win-prob is cut hard (pull them back to a loss).
- *   - ANTI-CHURN: a long loss streak (>= maxLossStreak) is relieved with a likely win (unless they've
- *     already had their session wins) so nobody rage-quits on an endless losing run.
- *   - PACING: the whole thing is scaled by the global budget pace so the day's pool isn't front-loaded.
- * (A player who has hit `maxWinsSession` is hard-stopped in decidePoolOutcome so the budget SPREADS.)
+ * Per-player VARIABLE-RATIO win probability (docs/25). The core is a ~CONSTANT per-trade win prob
+ * whose expected value pins the session return to `targetSessionRtp` (< 1) — so a player's loss is
+ * STATISTICAL and their win/loss sequence is UNPREDICTABLE in position (no "win first, then always
+ * lose" tell; verified: win-rate is flat across trade index, first-win position is scattered). Only
+ * two gentle adjustments, neither a detectable rule:
+ *   - ANTI-CHURN: a long loss streak (>= softLossStreak) lifts the prob a little per extra loss, so
+ *     nobody rage-quits on an endless run — but it stays probabilistic (never a forced win).
+ *   - PACING: scaled by the global budget pace so the day's pool isn't front-loaded (a time/budget
+ *     effect shared by everyone, not a per-player pattern).
+ * Base = targetSessionRtp / meanMultiplier (e.g. 0.6/1.8 = 0.33). Financial caps (budget + no-scoop)
+ * live in decidePoolOutcome.
  */
 export function sessionWinProbability(s: PlayerSession, pool: PoolState, dayFraction: number, k: PoolKnobs): number {
   if (pool.amountCents <= 0) return 0;
-  let p = k.p0;
-  if (s.trades < k.hookTrades) p += k.hookBoost;
-  if (s.returnedCents > s.stakedCents) p *= k.upSuppress;              // net-up -> steer to a loss
-  if (s.lossStreak >= k.maxLossStreak && s.wins < k.maxWinsSession) p = Math.max(p, k.reliefProb);
+  let p = k.targetSessionRtp / k.meanMultiplier;                      // variable-ratio base (EV = target RTP)
+  if (s.lossStreak >= k.softLossStreak) p += k.streakNudge * (s.lossStreak - k.softLossStreak + 1); // soft anti-churn
   const pace = (paceTarget(pool.amountCents, dayFraction) - pool.paidCents) / pool.amountCents;
-  p *= Math.max(0, Math.min(3, 1 + k.gain * pace));
+  p *= Math.max(0, Math.min(3, 1 + k.gain * pace));                   // global budget pacing (shared by all)
   return Math.min(k.pCap, Math.max(k.pFloor, p));
 }
 
@@ -110,8 +110,6 @@ export function decidePoolOutcome(args: {
   const roll = rng.next();                             // consume 1st: propensity
   const draw = winMultiplier(rng, k.meanMultiplier, k.maxMultiplier); // consume 2nd: amount (stable stream)
   if (avail <= 0) return { result: "loss", multiplier: 0, payoutCents: 0, winProbUsed: p, reason: "budget_exhausted" };
-  // Spread: a player who already had their session wins steps aside so the budget reaches others.
-  if (s && s.wins >= k.maxWinsSession) return { result: "loss", multiplier: 0, payoutCents: 0, winProbUsed: p, reason: "session_win_cap" };
   if (roll >= p) return { result: "loss", multiplier: 0, payoutCents: 0, winProbUsed: p, reason: "propensity_loss" };
   let mult = draw;
   let payout = Math.round(args.stakeCents * mult);
