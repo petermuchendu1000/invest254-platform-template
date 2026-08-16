@@ -207,6 +207,8 @@ export class GameServer {
         siteId: ctx.siteId ?? "", userId: input.userId, stakeCents: input.stakeCents,
         positionId, nonce, openedAtMs, maxMultiplier: this.cfg.maxMultiplier, serverSeed: ctx.seed,
         balanceAfterStakeCents: newBalance, minWithdrawalCents: this.cfg.minWithdrawalCents,
+        // Pool RTP is driven by the operator's house edge (unified config): targetSessionRtp = 1 - edge.
+        targetRtp: Math.min(0.95, Math.max(0.05, 1 - this.cfg.houseEdge)),
       });
       const payoutCents = po.result === "win" ? po.payoutCents : 0;
       const outcome: Outcome = {

@@ -76,11 +76,13 @@ export class PoolController {
     siteId: string; userId: string; stakeCents: number; positionId: string; nonce: number;
     openedAtMs: number; maxMultiplier: number; serverSeed: string;
     balanceAfterStakeCents: number; minWithdrawalCents: number;
+    /** Target session RTP for pool mode = 1 - house_edge (operator-tuned via site_game_config). */
+    targetRtp: number;
   }): Promise<PoolOutcome> {
     const day = eatDay(a.openedAtMs);
     const st = await this.repo.poolState(a.siteId, day);
     const session = await this.getSession(a.siteId, a.userId, day);
-    const knobs: PoolKnobs = { ...this.knobs, maxMultiplier: a.maxMultiplier };
+    const knobs: PoolKnobs = { ...this.knobs, maxMultiplier: a.maxMultiplier, targetSessionRtp: a.targetRtp };
     const decision = decidePoolOutcome({
       stakeCents: a.stakeCents, pool: st, dayFraction: eatDayFraction(a.openedAtMs),
       knobs, serverSeed: a.serverSeed, nonce: a.nonce, session,
