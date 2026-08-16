@@ -84,6 +84,14 @@ export interface ApiDeps {
    * the database said something else).
    */
   config: () => GameConfig | VersionedGameConfig;
+  /**
+   * Brand-aware public game config (fixes the x4/x5 divergence): resolve a site ref
+   * (slug | primary_domain | site id) to THAT brand's live `site_game_config` — the exact row the
+   * engine prices from — so the player-facing limits/cap match the engine instead of the legacy
+   * `game_config` singleton. Returns null when the ref does not resolve to an active brand, in which
+   * case the route falls back to `config()`. Optional so tests/single-tenant deployments still work.
+   */
+  gameConfigForSite?(ref: string): Promise<(GameConfig | VersionedGameConfig) | null>;
   /** Public fairness record for a game-day id (commitment always; seed only after reveal). */
   fairnessById(gameDayId: number): Promise<FairnessRecord | null>;
   /** Public brand resolution (docs/22 Task E): host (or slug) → the `sites` brand DTO, or null. */
@@ -171,7 +179,23 @@ function parseLimit(ctx: Ctx, def: number, max = 100): number {
 export function registerPublicRoutes(router: Router, deps: ApiDeps): void {
   router.get(`${BASE}/health`, () => ({ status: "ok", time: new Date().toISOString() }));
 
-  router.get(`${BASE}/game/config`, () => gameConfigDto(deps.config()));
+  // Brand-aware config: many brand domains share ONE API, so the public config must reflect the
+  // caller's brand (its `site_game_config`, what the engine prices from), not a global singleton.
+  // Resolution order: explicit `?site=` (slug|domain|id) -> `?host=` -> the request `Origin` (the
+  // brand domain the browser is on). Falls back to the legacy singleton when unresolved so the
+  // endpoint never hard-fails. The web sends `?site=<brand.slug>` explicitly (see api.gameConfig).
+  router.get(`${BASE}/game/config`, async (ctx) => {
+    if (deps.gameConfigForSite) {
+      const origin = ctx.req.headers["origin"];
+      const ref = ctx.query.get("site") || ctx.query.get("host")
+        || (typeof origin === "string" ? origin : "");
+      if (ref) {
+        const c = await deps.gameConfigForSite(ref);
+        if (c) return gameConfigDto(c);
+      }
+    }
+    return gameConfigDto(deps.config());
+  });
 
   router.get(`${BASE}/game/fairness/:gameDayId`, async (ctx) => {
     const id = Number(ctx.params.gameDayId);

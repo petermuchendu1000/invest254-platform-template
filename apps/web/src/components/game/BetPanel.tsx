@@ -15,6 +15,7 @@ import { useDepositUi } from '@/lib/wallet/depositUi';
 import { useWallet } from '@/lib/wallet/hooks';
 import { useHydrated } from '@/lib/useHydrated';
 import { useGameSocket } from '@/lib/game/GameSocketProvider';
+import { useBrand } from '@/lib/brand/BrandProvider';
 import { LivePnl } from '@/components/game/LivePnl';
 
 const CHIP_CENTS = [25000, 50000, 75000, 100000];
@@ -29,9 +30,10 @@ export function BetPanel() {
   const pendingTrade = useDepositUi((s) => s.pending);
   const clearPending = useDepositUi((s) => s.clearPending);
 
+  const brand = useBrand();
   const { data: config } = useQuery({
-    queryKey: ['gameConfig'],
-    queryFn: api.gameConfig,
+    queryKey: ['gameConfig', brand.slug],
+    queryFn: () => api.gameConfig(brand.slug),
     staleTime: 5 * 60_000,
   });
   const { data: wallet } = useWallet();

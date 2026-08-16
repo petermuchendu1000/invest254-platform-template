@@ -51,7 +51,10 @@ export interface PositionFilter extends PageParams {
 /** Typed endpoint functions. One per route; grouped by domain. */
 export const api = {
   health: () => apiFetch<{ status: string; time: string }>('/health'),
-  gameConfig: () => apiFetch<GameConfigDto>('/game/config'),
+  // Brand-aware: the shared API serves many brand domains, so pass this brand's ref (slug) to get
+  // ITS live economy (site_game_config) — the same limits/cap the engine enforces. Omitting it
+  // falls back to the default brand server-side.
+  gameConfig: (site?: string) => apiFetch<GameConfigDto>('/game/config', site ? { query: { site } } : {}),
 
 
   // Auth & profile

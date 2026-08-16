@@ -367,6 +367,15 @@ export async function startTestApi(opts: TestApiOptions = {}): Promise<TestApi> 
     notifications,
     marketers: makeInMemoryMarketerRepo(),
     config: () => DEFAULT_CONFIG,
+    // Brand-aware config for tests: resolve a ref (slug|id) to a TEST brand and return a DISTINCT
+    // economy per brand (different maxMultiplier) so tests can prove the response is site-scoped.
+    gameConfigForSite: async (ref: string) => {
+      const h = normalizeHost(ref);
+      const brand = Object.values(TEST_BRANDS).find((b) => b.slug === h || b.siteId === h);
+      if (!brand) return null;
+      const capBySite: Record<string, number> = { [SITE_A]: 4, [SITE_B]: 5 };
+      return { ...DEFAULT_CONFIG, version: 7, maxMultiplier: capBySite[brand.siteId] ?? DEFAULT_CONFIG.maxMultiplier };
+    },
     fairnessById: async (id) => fairness.get(id) ?? null,
     brandByHost: async (host) => resolveTestBrand(host),
     payments,

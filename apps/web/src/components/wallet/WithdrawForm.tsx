@@ -12,6 +12,7 @@ import { useDepositUi } from '@/lib/wallet/depositUi';
 import { useSession } from '@/lib/auth/session';
 import { authErrorMessage } from '@/lib/auth/errors';
 import { maskMsisdn } from '@/lib/wallet/format';
+import { useBrand } from '@/lib/brand/BrandProvider';
 
 const digitsOnly = (s: string) => s.replace(/\D/g, '');
 const grouped = (s: string) => (s ? Number(s).toLocaleString('en-KE') : '');
@@ -44,9 +45,10 @@ export function WithdrawForm() {
 
   // Live minimum withdrawal from game config (admin-editable). Falls back to the shared
   // constant so the form still validates sensibly before config loads / if the fetch fails.
+  const brand = useBrand();
   const { data: config } = useQuery({
-    queryKey: ['gameConfig'],
-    queryFn: api.gameConfig,
+    queryKey: ['gameConfig', brand.slug],
+    queryFn: () => api.gameConfig(brand.slug),
     staleTime: 5 * 60_000,
   });
   const minWithdrawalCents = config?.minWithdrawalCents ?? MIN_WITHDRAWAL_CENTS;

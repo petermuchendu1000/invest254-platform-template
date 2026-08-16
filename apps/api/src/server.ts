@@ -2,12 +2,12 @@ import {
   PgGameRepository, PgEngagementRepository, PgPaymentRepository, PgIdentityRepository,
   PaymentService, AuthService, AffiliateService, AdminService, PgAdminRepository, PlatformService, PgPlatformRepository, makeDarajaClientFromConfig, loadDarajaConfigFromDb, makeVerifier,
   NotificationService, PgNotificationRepository,
-  GameConfigStore,
+  GameConfigStore, mapConfigRow,
   type GameRepository, type EngagementRepository, type PaymentRepository,
   type Querier, type FairnessRecord, type ListenClient,
 } from "@invest254/engine";
 import { createApp, type ApiDeps, type WalletBalance, type BonusStatus, type Brand } from "./app.js";
-import { normalizeHost } from "@invest254/shared";
+import { normalizeHost, type VersionedGameConfig } from "@invest254/shared";
 import { BrandOriginAllowlist } from "./cors.js";
 import { makePgMarketerRepo } from "./marketers.pg.js";
 import { makePgSupportDeps } from "./support.pg.js";
@@ -172,6 +172,27 @@ async function buildDeps(): Promise<ApiDeps> {
     corsAllowOrigin: (origin: string) => brandCors.allows(origin),
     marketers: makePgMarketerRepo((sql, params) => q.query(sql, params ?? [])),
     config: () => gameConfig.active(),
+    // Brand-aware public config: resolve a site ref (slug|domain|id) -> that brand's live
+    // site_game_config (the row the engine prices from), so GET /game/config matches the engine's
+    // limits/cap per brand. Mirrors brandByHost's resolver (apex + www + slug + id). Null => fallback.
+    gameConfigForSite: async (ref: string): Promise<VersionedGameConfig | null> => {
+      const h = normalizeHost(ref);
+      if (!h) return null;
+      const r = await q.query(
+        `select c.house_edge, c.max_multiplier, c.min_stake, c.max_stake, c.min_withdrawal,
+                c.default_duration_s, c.tick_rate_ms, c.drift_bias, c.volatility, c.target_win_rate, c.version
+           from site_game_config c join sites s on s.id = c.site_id
+          where s.status = 'active'
+            and (lower(s.slug) = $1
+                 or lower(s.primary_domain) = $1
+                 or regexp_replace(lower(s.primary_domain), '^www\\.', '') = $1
+                 or lower(s.id::text) = $1)
+          limit 1`,
+        [h],
+      );
+      if (!r.rows.length) return null;
+      return mapConfigRow(r.rows[0] as Record<string, unknown>);
+    },
     fairnessById: async (gameDayId: number): Promise<FairnessRecord | null> => {
       const r = await q.query(
         "select id, trade_date, server_seed_hash, server_seed, revealed_at from v_fairness where id = $1",
