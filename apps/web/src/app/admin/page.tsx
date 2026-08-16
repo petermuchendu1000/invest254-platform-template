@@ -6,7 +6,7 @@ import { Skeleton } from '@/components/ui/Skeleton';
 import { Money } from '@/components/ui/Money';
 import { useSession } from '@/lib/auth/session';
 import { PageHeader, StatCard, Section, TableWrap, Th, Td, Empty } from '@/components/admin/ui';
-import { AreaChart, GroupedBars, ChartCard, LegendDot, KpiCard, Donut, kesCompact, type Point } from '@/components/admin/charts';
+import { AreaChart, GroupedBars, ChartCard, LegendDot, KpiCard, kesCompact, type Point } from '@/components/admin/charts';
 import { useOverview, useRtp, useReportDaily } from '@/lib/admin/hooks';
 
 function isoDaysAgo(days: number): string {
@@ -56,10 +56,10 @@ export default function AdminOverviewPage() {
             </div>
           </Section>
 
-          <Section title="Finance">
+          {/* Operational balances & queues only — money-flow totals/trends live in the Trends KPIs above
+              (deliberately not repeated here). Each card is a distinct liability or action queue. */}
+          <Section title="Balances & queues">
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-              <StatCard label="Deposits" money={o.data.finance.depositsCents} />
-              <StatCard label="Withdrawals" money={o.data.finance.withdrawalsCents} />
               <StatCard
                 label="Pending withdrawals"
                 value={o.data.finance.pendingWithdrawals}
@@ -67,19 +67,13 @@ export default function AdminOverviewPage() {
                 hint="awaiting review"
               />
               <StatCard label="Wallet liability" money={o.data.finance.walletLiabilityCents} hint="owed to players" />
-            </div>
-          </Section>
-
-          <Section title="Affiliate & game">
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-              <StatCard label="Commission accrued" money={o.data.affiliate.commissionAccruedCents} />
+              <StatCard label="Commission accrued" money={o.data.affiliate.commissionAccruedCents} hint="owed to marketers" />
               <StatCard
                 label="Pending payouts"
                 value={o.data.affiliate.pendingPayouts}
                 tone={o.data.affiliate.pendingPayouts > 0 ? 'warn' : 'default'}
+                hint="marketer payouts"
               />
-              <StatCard label="Net revenue (GGR)" money={o.data.game.ggrCents} tone="up" />
-              <StatCard label="Turnover" money={o.data.game.turnoverCents} hint={`${o.data.game.settledPositions} trades`} />
             </div>
           </Section>
         </>
@@ -227,10 +221,12 @@ function TrendsSection() {
             <KpiCard label="Net revenue (GGR)" value={kesCompact(ggrTotal)} series={ggr} tone={ggrTotal >= 0 ? 'up' : 'down'} deltaPct={deltaPct(ggr)} />
           </div>
 
+          {/* Two charts, each answering a distinct question the KPI totals can't: daily cash in-vs-out,
+              and the shape of profitability over time (incl. any loss days below the zero line). */}
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
             <ChartCard
-              title="Deposits vs withdrawals"
-              readout={`${kesCompact(sum(deposits))} in`}
+              title="Cash flow — daily"
+              readout={`net ${kesCompact(sum(deposits) - sum(withdrawals))}`}
               legend={
                 <>
                   <LegendDot tone="up" label="Deposits" />
@@ -244,24 +240,7 @@ function TrendsSection() {
               />
             </ChartCard>
 
-            <ChartCard title="Cash flow split" readout={`net ${kesCompact(sum(deposits) - sum(withdrawals))}`}>
-              <div className="flex justify-center py-1">
-                <Donut
-                  segments={[
-                    { label: 'Deposits', value: sum(deposits), tone: 'up' },
-                    { label: 'Withdrawals', value: sum(withdrawals), tone: 'down' },
-                  ]}
-                  centerLabel="net in"
-                  centerValue={kesCompact(sum(deposits) - sum(withdrawals))}
-                />
-              </div>
-            </ChartCard>
-
-            <ChartCard title="Turnover" readout={kesCompact(sum(turnover))}>
-              <AreaChart points={turnover} tone="accent" />
-            </ChartCard>
-
-            <ChartCard title="Net revenue (GGR)" readout={kesCompact(ggrTotal)}>
+            <ChartCard title="Net revenue (GGR) — daily" readout={kesCompact(ggrTotal)}>
               <AreaChart points={ggr} tone={ggrTotal >= 0 ? 'up' : 'down'} />
             </ChartCard>
           </div>

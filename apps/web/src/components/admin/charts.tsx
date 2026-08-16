@@ -31,19 +31,24 @@ function project(points: Point[]) {
   return { x, y, min, max, zeroY: y(0) };
 }
 
-/** Filled line/area chart. Tone drives the accent color via Tailwind stroke/fill classes. */
-export function AreaChart({ points, tone = 'accent' }: { points: Point[]; tone?: 'accent' | 'up' | 'down' }) {
-  if (points.length === 0) return <div className="h-24 w-full" />;
+/**
+ * Filled line/area chart with a zero baseline and an emphasised latest point.
+ * Colour is driven entirely by theme/brand tokens (currentColor), so it adapts to light/dark and to
+ * each brand automatically. One series, one question — use it for a single trend over time.
+ */
+export function AreaChart({ points, tone = 'accent', className = 'h-24 w-full' }: { points: Point[]; tone?: Tone; className?: string }) {
+  if (points.length === 0) return <div className={className} />;
   const { x, y, zeroY } = project(points);
   const line = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${x(i).toFixed(2)} ${y(p.value).toFixed(2)}`).join(' ');
   const area = `${line} L ${x(points.length - 1).toFixed(2)} ${zeroY.toFixed(2)} L ${x(0).toFixed(2)} ${zeroY.toFixed(2)} Z`;
-  const stroke = tone === 'up' ? 'stroke-up' : tone === 'down' ? 'stroke-down' : 'stroke-accent';
-  const fill = tone === 'up' ? 'fill-up/10' : tone === 'down' ? 'fill-down/10' : 'fill-accent/10';
+  const lastX = x(points.length - 1), lastY = y(points[points.length - 1]!.value);
   return (
-    <svg viewBox={`0 0 ${VB_W} ${VB_H}`} preserveAspectRatio="none" className="h-24 w-full" role="img">
+    <svg viewBox={`0 0 ${VB_W} ${VB_H}`} preserveAspectRatio="none" className={`${className} ${TEXT[tone]}`} role="img">
+      {/* zero baseline for reference (data-ink: the only gridline we keep) */}
       <line x1={PAD} x2={VB_W - PAD} y1={zeroY} y2={zeroY} className="stroke-border" strokeWidth={0.5} strokeDasharray="2 2" />
-      <path d={area} className={fill} stroke="none" />
-      <path d={line} className={stroke} fill="none" strokeWidth={1.5} strokeLinejoin="round" strokeLinecap="round" />
+      <path d={area} fill="currentColor" fillOpacity={0.12} stroke="none" />
+      <path d={line} fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
+      <circle cx={lastX} cy={lastY} r={2.4} fill="currentColor" vectorEffect="non-scaling-stroke" />
     </svg>
   );
 }
@@ -110,9 +115,11 @@ export function LegendDot({ tone, label }: { tone: 'up' | 'down' | 'accent'; lab
 
 // ── Richer primitives for the owner dashboard (mobile-first) ──────────────────────────────────
 
+type Tone = 'up' | 'down' | 'accent';
 const STROKE = { up: 'stroke-up', down: 'stroke-down', accent: 'stroke-accent' } as const;
 const FILL_SOFT = { up: 'fill-up/15', down: 'fill-down/15', accent: 'fill-accent/15' } as const;
-type Tone = 'up' | 'down' | 'accent';
+// Colour an SVG via currentColor + a text token, so fills/strokes/dots share one theme-aware source.
+const TEXT: Record<Tone, string> = { up: 'text-up', down: 'text-down', accent: 'text-accent' };
 
 /** Tiny inline trend line for a KPI card. No axes — just the shape of the last N points. */
 export function Sparkline({ points, tone = 'accent', className = 'h-8 w-full' }: { points: Point[]; tone?: Tone; className?: string }) {
