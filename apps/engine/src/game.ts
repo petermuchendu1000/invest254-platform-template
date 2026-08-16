@@ -206,6 +206,7 @@ export class GameServer {
       const po = await this.pool.controller.decideReserve({
         siteId: ctx.siteId ?? "", userId: input.userId, stakeCents: input.stakeCents,
         positionId, nonce, openedAtMs, maxMultiplier: this.cfg.maxMultiplier, serverSeed: ctx.seed,
+        balanceAfterStakeCents: newBalance, minWithdrawalCents: this.cfg.minWithdrawalCents,
       });
       const payoutCents = po.result === "win" ? po.payoutCents : 0;
       const outcome: Outcome = {

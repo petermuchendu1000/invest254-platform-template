@@ -75,6 +75,7 @@ export class PoolController {
   async decideReserve(a: {
     siteId: string; userId: string; stakeCents: number; positionId: string; nonce: number;
     openedAtMs: number; maxMultiplier: number; serverSeed: string;
+    balanceAfterStakeCents: number; minWithdrawalCents: number;
   }): Promise<PoolOutcome> {
     const day = eatDay(a.openedAtMs);
     const st = await this.repo.poolState(a.siteId, day);
@@ -83,6 +84,7 @@ export class PoolController {
     const decision = decidePoolOutcome({
       stakeCents: a.stakeCents, pool: st, dayFraction: eatDayFraction(a.openedAtMs),
       knobs, serverSeed: a.serverSeed, nonce: a.nonce, session,
+      balanceAfterStakeCents: a.balanceAfterStakeCents, minWithdrawalCents: a.minWithdrawalCents,
     });
     let result = decision.result, multiplier = decision.multiplier, payoutCents = decision.payoutCents;
     if (result === "win") {

@@ -17,6 +17,7 @@ import { DEFAULT_VERSIONED_CONFIG } from "@invest254/shared";
 const SITE = "site-tamu";
 const SEED = "deadbeefcafe";
 const cfg = { ...DEFAULT_CONFIG };
+cfg.minWithdrawalCents = 999_999_999; // disable the withdrawal-line lever here; it is tested in pool.test.ts
 const curve = new CurveGenerator(SEED, cfg);
 const settlement = new SettlementEngine(curve, cfg, "calib", cfg.defaultDurationS, 3600, 600); // small samples = fast
 const DAY_START = Date.UTC(2026, 7, 16, 0, 0, 0);

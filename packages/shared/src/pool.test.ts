@@ -180,6 +180,41 @@ test("soft anti-churn lifts win-prob with a loss streak but never forces a certa
   assert.ok(streaking < 1 && streaking <= k.pCap, "never a forced/certain win -> stays unpredictable");
 });
 
+test("min-withdrawal NEAR-MISS: threshold-crossing wins are held just below the line (mostly)", () => {
+  const k: PoolKnobs = { ...DEFAULT_POOL_KNOBS, gain: 0 };
+  const pool: PoolState = { amountCents: 100_000_000, paidCents: 0, reservedCents: 0 };
+  const W = 100000, stake = 25000, balAfter = 65000;   // pre-trade 90k (<W); a ~1.8x win would cross
+  let crossed = 0, nearMissWin = 0, wins = 0;
+  for (let i = 0; i < 4000; i++) {
+    const s = sess({ trades: 8 });
+    const d = decidePoolOutcome({ stakeCents: stake, pool, dayFraction: 0.5, knobs: k, serverSeed: `nm${i}`, nonce: 0,
+      session: s, balanceAfterStakeCents: balAfter, minWithdrawalCents: W });
+    if (d.result === "win") {
+      wins++;
+      const finalBal = balAfter + d.payoutCents;
+      if (finalBal >= W) crossed++; else { nearMissWin++; assert.ok(finalBal >= 0.9 * W, "near-miss lands in the goal-gradient band"); }
+    }
+  }
+  assert.ok(crossed > 0 && nearMissWin > 0, "both let-through crossings and near-miss holds occur");
+  const crossFrac = crossed / (crossed + nearMissWin);
+  assert.ok(crossFrac < 0.35, `most threshold wins are HELD below the line (cross fraction ${crossFrac.toFixed(2)} ~ let-through)`);
+});
+
+test("min-withdrawal lever does NOT touch players far below the line (normal wins)", () => {
+  const k: PoolKnobs = { ...DEFAULT_POOL_KNOBS, gain: 0 };
+  const pool: PoolState = { amountCents: 100_000_000, paidCents: 0, reservedCents: 0 };
+  const W = 200000, stake = 25000, balAfter = 10000;   // far below W: even a 5x win (125000) cannot reach W
+  let capped = 0, wins = 0;
+  for (let i = 0; i < 2000; i++) {
+    const s = sess({ trades: 8 });
+    const d = decidePoolOutcome({ stakeCents: stake, pool, dayFraction: 0.5, knobs: k, serverSeed: `far${i}`, nonce: 0,
+      session: s, balanceAfterStakeCents: balAfter, minWithdrawalCents: W });
+    if (d.result === "win") { wins++; if (d.reason === "near_miss") capped++; }
+  }
+  assert.ok(wins > 0, "far-below players still win normally");
+  assert.equal(capped, 0, "no threshold capping when a win cannot reach the withdrawal line");
+});
+
 test("1000-PLAYER DAY: budget invariant holds every step, no player scoops, per-player net loss", () => {
   const amount = 6_000_000;                       // KES 60,000
   const k = DEFAULT_POOL_KNOBS;

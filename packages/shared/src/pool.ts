@@ -35,10 +35,18 @@ export interface PoolKnobs {
   softLossStreak: number;   // anti-churn engages after this many consecutive losses
   streakNudge: number;      // gentle win-prob lift per loss beyond softLossStreak
   playerShare: number;      // no single player may win more than this fraction of the day's pool
+  // ── minimum-withdrawal leverage (docs/25): goal-gradient + near-miss. A win that would put the
+  //    balance at/above the withdrawal line is (mostly) capped so the balance lands JUST BELOW it
+  //    ("so close"), driving more trades + redeposits; a small let-through crosses (real withdrawals
+  //    -> social proof). Only engages near the line, so low-balance players build up normally. ──
+  letThroughProb: number;   // chance a threshold-crossing win is allowed through (they can withdraw)
+  nearMissLow: number;      // near-miss lands in [low, high] x minWithdrawal (fraction just below 1)
+  nearMissHigh: number;
 }
 export const DEFAULT_POOL_KNOBS: PoolKnobs = {
   p0: 0.18, gain: 5, pFloor: 0.05, pCap: 0.6, meanMultiplier: 1.8, maxMultiplier: 5,
   targetSessionRtp: 0.6, softLossStreak: 3, streakNudge: 0.10, playerShare: 0.15,
+  letThroughProb: 0.15, nearMissLow: 0.90, nearMissHigh: 0.985,
 };
 
 /** A player's running session (per EAT day). The engine keeps this per user; NULL fields default to 0. */
@@ -50,7 +58,7 @@ export interface PoolDecision {
   multiplier: number;    // (1, cap] on win; 0 on loss
   payoutCents: number;   // round(stake*mult) on win (<= available), else 0
   winProbUsed: number;   // the pacing win-probability used (audit)
-  reason: "granted" | "budget_exhausted" | "propensity_loss" | "budget_clamped_to_loss";
+  reason: "granted" | "budget_exhausted" | "propensity_loss" | "budget_clamped_to_loss" | "near_miss";
 }
 
 export function available(pool: PoolState): number {
@@ -100,6 +108,10 @@ export function sessionWinProbability(s: PlayerSession, pool: PoolState, dayFrac
 export function decidePoolOutcome(args: {
   stakeCents: number; pool: PoolState; dayFraction: number; knobs?: PoolKnobs;
   serverSeed: string; nonce: number; session?: PlayerSession;
+  /** Player's balance AFTER the stake was debited — used for the min-withdrawal near-miss. */
+  balanceAfterStakeCents?: number;
+  /** The brand's minimum withdrawal (the psychological finish line). 0/undefined disables the lever. */
+  minWithdrawalCents?: number;
 }): PoolDecision {
   const k = args.knobs ?? DEFAULT_POOL_KNOBS;
   const s = args.session;
@@ -107,20 +119,29 @@ export function decidePoolOutcome(args: {
   const p = s ? sessionWinProbability(s, args.pool, args.dayFraction, k)
               : winProbability(args.pool, args.dayFraction, k);
   const rng = new SeededRng(args.serverSeed, `pool:${args.nonce}`);
-  const roll = rng.next();                             // consume 1st: propensity
-  const draw = winMultiplier(rng, k.meanMultiplier, k.maxMultiplier); // consume 2nd: amount (stable stream)
+  const roll = rng.next();                             // 1st: propensity
+  const draw = winMultiplier(rng, k.meanMultiplier, k.maxMultiplier); // 2nd: amount
   if (avail <= 0) return { result: "loss", multiplier: 0, payoutCents: 0, winProbUsed: p, reason: "budget_exhausted" };
   if (roll >= p) return { result: "loss", multiplier: 0, payoutCents: 0, winProbUsed: p, reason: "propensity_loss" };
-  let mult = draw;
-  let payout = Math.round(args.stakeCents * mult);
+  let payout = Math.round(args.stakeCents * draw);
   // caps: global remaining budget AND the per-player no-scoop share (fraction of the day's pool).
   const playerCap = s ? Math.max(0, Math.floor(k.playerShare * args.pool.amountCents) - s.returnedCents) : avail;
   payout = Math.min(payout, avail, playerCap);
-  if (payout <= args.stakeCents) {                     // clamp left no real profit -> loss
-    return { result: "loss", multiplier: 0, payoutCents: 0, winProbUsed: p, reason: "budget_clamped_to_loss" };
+  // ── Min-withdrawal near-miss (goal-gradient): a win that would reach the withdrawal line is
+  //    (mostly) held just below it, so the player lands "so close" and keeps chasing. A small
+  //    let-through crosses (real withdrawal -> social proof). Only engages near the line. ──
+  let reason: PoolDecision["reason"] = "granted";
+  const W = args.minWithdrawalCents ?? 0;
+  const bal = args.balanceAfterStakeCents;
+  if (W > 0 && bal != null && bal + payout >= W && rng.next() >= k.letThroughProb) {  // 3rd: let-through
+    const frac = k.nearMissLow + (k.nearMissHigh - k.nearMissLow) * rng.next();       // 4th: near-miss target
+    payout = Math.min(payout, Math.max(0, Math.floor(frac * W) - bal));
+    reason = "near_miss";
   }
-  mult = payout / args.stakeCents;
-  return { result: "win", multiplier: mult, payoutCents: payout, winProbUsed: p, reason: "granted" };
+  if (payout <= args.stakeCents) {                     // no real profit left -> loss (a near-miss loss if capped at the line)
+    return { result: "loss", multiplier: 0, payoutCents: 0, winProbUsed: p, reason: reason === "near_miss" ? "near_miss" : "budget_clamped_to_loss" };
+  }
+  return { result: "win", multiplier: payout / args.stakeCents, payoutCents: payout, winProbUsed: p, reason };
 }
 
 /**
