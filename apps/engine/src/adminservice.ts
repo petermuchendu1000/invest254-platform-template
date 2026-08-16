@@ -112,6 +112,10 @@ export class AdminService {
   setWithdrawalPool(actorId: string, actorRole: string, siteId: string, tradeDay: string, amountCents: number): Promise<WithdrawalPoolRow> {
     return this.repo.setWithdrawalPool(actorId, actorRole, siteId, tradeDay, amountCents);
   }
+  /** docs/25 (0064) — set the brand's recurring default that auto-seeds each new EAT day. */
+  setDefaultPool(actorId: string, actorRole: string, siteId: string, tradeDay: string, amountCents: number): Promise<WithdrawalPoolRow> {
+    return this.repo.setDefaultPool(actorId, actorRole, siteId, tradeDay, amountCents);
+  }
 
   /** Admin-visible M-Pesa config (secrets masked). */
   getMpesaConfig(): Promise<MpesaConfigRow> { return this.repo.getMpesaConfig(); }

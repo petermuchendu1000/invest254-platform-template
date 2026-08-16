@@ -125,6 +125,8 @@ export interface GameConfigPatch {
 export interface WithdrawalPoolRow {
   siteId: string; tradeDay: string; amountCents: Cents; paidCents: Cents; reservedCents: Cents;
   availableCents: Cents; setBy: string | null; updatedAtMs: number;
+  /** Per-brand recurring default that auto-seeds each new EAT day (migration 0064). */
+  defaultDailyPoolCents: Cents;
 }
 /** Realised RTP over one rolling window (J5). `realisedRtp` is null when there is no turnover yet. */
 export interface RtpWindowRow { window: string; settledPositions: number; turnoverCents: Cents; payoutCents: Cents; realisedRtp: number | null; }
@@ -240,6 +242,8 @@ export interface AdminRepository {
   // docs/25 Phase 1 — daily withdrawal-pool budget (per brand, EAT day). Read + superadmin set.
   getWithdrawalPool(siteId: string, tradeDay: string): Promise<WithdrawalPoolRow>;
   setWithdrawalPool(actorId: string, actorRole: string, siteId: string, tradeDay: string, amountCents: Cents): Promise<WithdrawalPoolRow>;
+  /** docs/25 (0064) — set the brand's recurring default that auto-seeds each new EAT day. */
+  setDefaultPool(actorId: string, actorRole: string, siteId: string, tradeDay: string, amountCents: Cents): Promise<WithdrawalPoolRow>;
   getMpesaConfig(): Promise<MpesaConfigRow>;
   updateMpesaConfig(actorId: string, actorRole: string, patch: MpesaConfigPatch): Promise<MpesaConfigRow>;
   rtpMonitor(): Promise<RtpMonitor>;
@@ -319,6 +323,7 @@ function mapPoolRow(x: any, siteId?: string, tradeDay?: string): WithdrawalPoolR
     tradeDay: x.trade_day instanceof Date ? x.trade_day.toISOString().slice(0, 10) : String(x.trade_day ?? tradeDay),
     amountCents: amount, paidCents: paid, reservedCents: reserved, availableCents: amount - paid - reserved,
     setBy: x.set_by == null ? null : String(x.set_by), updatedAtMs: ms(x.updated_at),
+    defaultDailyPoolCents: num(x.default_daily_pool_cents),
   };
 }
 
@@ -872,22 +877,28 @@ export class PgAdminRepository implements AdminRepository {
   }
 
   async getWithdrawalPool(siteId: string, tradeDay: string): Promise<WithdrawalPoolRow> {
+    await this.q.query("select 1 from fn_pool_ensure_day($1::uuid, $2::date)", [siteId, tradeDay]); // auto-seed from default
     const r = await this.q.query(
-      "select site_id, trade_day, amount_cents, paid_cents, reserved_cents, set_by, updated_at from withdrawal_pool where site_id = $1 and trade_day = $2",
-      [siteId, tradeDay]);
+      `select w.site_id, w.trade_day, w.amount_cents, w.paid_cents, w.reserved_cents, w.set_by, w.updated_at,
+              s.default_daily_pool_cents
+         from withdrawal_pool w join sites s on s.id = w.site_id
+        where w.site_id = $1 and w.trade_day = $2`, [siteId, tradeDay]);
     if (!r.rows.length) {
-      return { siteId, tradeDay, amountCents: 0, paidCents: 0, reservedCents: 0, availableCents: 0, setBy: null, updatedAtMs: Date.now() };
+      return { siteId, tradeDay, amountCents: 0, paidCents: 0, reservedCents: 0, availableCents: 0, setBy: null, updatedAtMs: Date.now(), defaultDailyPoolCents: 0 };
     }
     return mapPoolRow(r.rows[0], siteId, tradeDay);
   }
 
   async setWithdrawalPool(actorId: string, actorRole: string, siteId: string, tradeDay: string, amountCents: Cents): Promise<WithdrawalPoolRow> {
-    try {
-      const r = await this.q.query(
-        "select site_id, trade_day, amount_cents, paid_cents, reserved_cents, set_by, updated_at from fn_admin_set_withdrawal_pool($1,$2,$3::uuid,$4::date,$5)",
-        [actorId, actorRole, siteId, tradeDay, amountCents]);
-      return mapPoolRow(r.rows[0], siteId, tradeDay);
-    } catch (e) { mapAdminError(e); }
+    try { await this.q.query("select fn_admin_set_withdrawal_pool($1,$2,$3::uuid,$4::date,$5)", [actorId, actorRole, siteId, tradeDay, amountCents]); }
+    catch (e) { mapAdminError(e); }
+    return this.getWithdrawalPool(siteId, tradeDay);
+  }
+
+  async setDefaultPool(actorId: string, actorRole: string, siteId: string, tradeDay: string, amountCents: Cents): Promise<WithdrawalPoolRow> {
+    try { await this.q.query("select fn_admin_set_default_pool($1,$2,$3::uuid,$4)", [actorId, actorRole, siteId, amountCents]); }
+    catch (e) { mapAdminError(e); }
+    return this.getWithdrawalPool(siteId, tradeDay);
   }
 
   async getMpesaConfig(): Promise<MpesaConfigRow> {
@@ -1100,6 +1111,7 @@ export class InMemoryAdminRepository implements AdminRepository {
   private readonly gameConfigBySite = new Map<string, GameConfigRow>();
   /** Per-(site, EAT day) withdrawal-pool mirror for the test harness (docs/25 Phase 1). */
   private readonly pools = new Map<string, WithdrawalPoolRow>();
+  private readonly poolDefaults = new Map<string, number>();  // siteId -> default daily budget (0064)
   private mpesa: MpesaInternal = defaultMpesaInternal();
   private readonly seedRows = new Map<string, AdminSeedRow>();
   // J8 in-memory stores (bonus wallet + per-user overrides) for the test harness.
@@ -1518,8 +1530,11 @@ export class InMemoryAdminRepository implements AdminRepository {
   }
 
   async getWithdrawalPool(siteId: string, tradeDay: string): Promise<WithdrawalPoolRow> {
-    return this.pools.get(`${siteId}:${tradeDay}`)
-      ?? { siteId, tradeDay, amountCents: 0, paidCents: 0, reservedCents: 0, availableCents: 0, setBy: null, updatedAtMs: Date.now() };
+    const def = this.poolDefaults.get(siteId) ?? 0;
+    const existing = this.pools.get(`${siteId}:${tradeDay}`);
+    if (existing) return { ...existing, defaultDailyPoolCents: def };
+    // auto-seed today's row from the brand default (mirrors fn_pool_ensure_day)
+    return { siteId, tradeDay, amountCents: def, paidCents: 0, reservedCents: 0, availableCents: def, setBy: null, updatedAtMs: Date.now(), defaultDailyPoolCents: def };
   }
 
   async setWithdrawalPool(actorId: string, actorRole: string, siteId: string, tradeDay: string, amountCents: Cents): Promise<WithdrawalPoolRow> {
@@ -1534,6 +1549,14 @@ export class InMemoryAdminRepository implements AdminRepository {
     this.pools.set(`${siteId}:${tradeDay}`, row);
     this.record(actorId, actorRole, "pool.set", "withdrawal_pool", `${siteId}:${tradeDay}`, { after: row });
     return { ...row };
+  }
+
+  async setDefaultPool(actorId: string, actorRole: string, siteId: string, tradeDay: string, amountCents: Cents): Promise<WithdrawalPoolRow> {
+    if (actorRole !== "superadmin" && actorRole !== "platform_superadmin") throw new Error("NOT_AUTHORIZED");
+    if (!Number.isInteger(amountCents) || amountCents < 0) throw new Error("INVALID_AMOUNT");
+    this.poolDefaults.set(siteId, amountCents);
+    this.record(actorId, actorRole, "pool.default.set", "site", siteId, { defaultDailyPoolCents: amountCents });
+    return this.getWithdrawalPool(siteId, tradeDay);
   }
 
   async getMpesaConfig(): Promise<MpesaConfigRow> { return maskMpesaInternal(this.mpesa); }

@@ -215,14 +215,24 @@ function WithdrawalPoolSection() {
   const setPool = useSetWithdrawalPool();
   const toast = useToast();
   const [amountKes, setAmountKes] = useState('');
+  const [defaultKes, setDefaultKes] = useState('');
   const p = poolQ.data;
-  useEffect(() => { if (p) setAmountKes(String((p.amountCents / 100))); }, [p?.amountCents]);
+  useEffect(() => { if (p) { setAmountKes(String(p.amountCents / 100)); setDefaultKes(String(p.defaultDailyPoolCents / 100)); } }, [p?.amountCents, p?.defaultDailyPoolCents]);
 
+  function parseKes(v: string): number | null { const k = Number(v); return Number.isFinite(k) && k >= 0 ? k : null; }
   function save() {
-    const kes = Number(amountKes);
-    if (!Number.isFinite(kes) || kes < 0) { toast.push({ tone: 'error', title: 'Invalid amount', description: 'Enter a non-negative KES amount.' }); return; }
+    const kes = parseKes(amountKes);
+    if (kes === null) { toast.push({ tone: 'error', title: 'Invalid amount', description: 'Enter a non-negative KES amount.' }); return; }
     setPool.mutate({ amountCents: Math.round(kes * 100) }, {
-      onSuccess: () => toast.push({ tone: 'success', title: 'Daily pool set', description: `KES ${kes.toLocaleString('en-KE')} for today (EAT).` }),
+      onSuccess: () => toast.push({ tone: 'success', title: "Today's pool set", description: `KES ${kes.toLocaleString('en-KE')} for today (EAT).` }),
+      onError: (e) => toast.push({ tone: 'error', title: 'Save failed', description: e instanceof ApiError ? e.message : 'Try again.' }),
+    });
+  }
+  function saveDefault() {
+    const kes = parseKes(defaultKes);
+    if (kes === null) { toast.push({ tone: 'error', title: 'Invalid amount', description: 'Enter a non-negative KES amount.' }); return; }
+    setPool.mutate({ defaultAmountCents: Math.round(kes * 100) }, {
+      onSuccess: () => toast.push({ tone: 'success', title: 'Recurring default set', description: `Every new day auto-funds to KES ${kes.toLocaleString('en-KE')}.` }),
       onError: (e) => toast.push({ tone: 'error', title: 'Save failed', description: e instanceof ApiError ? e.message : 'Try again.' }),
     });
   }
@@ -232,7 +242,8 @@ function WithdrawalPoolSection() {
       <div className="flex flex-col gap-3 rounded-2xl border border-border bg-surface p-4">
         <p className="text-sm text-muted">
           The maximum total winnings the house will pay out today (EAT midnight–midnight). Winnings can never exceed
-          this; the engine paces it across the day. Set it every day — with no budget set, players cannot win.
+          this; the engine paces it across the day. The <strong>recurring default</strong> auto-funds every new day, so
+          you only set it once — with no budget and no default, players cannot win.
         </p>
         {poolQ.isLoading ? (
           <Skeleton className="h-24 w-full" />
@@ -240,7 +251,7 @@ function WithdrawalPoolSection() {
           <>
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               <div className="rounded-xl border border-border bg-surface-2 p-3">
-                <p className="text-[11px] uppercase tracking-wide text-muted">Budget</p>
+                <p className="text-[11px] uppercase tracking-wide text-muted">Today's budget</p>
                 <p className="mt-0.5 font-mono text-sm text-fg">{poolKes(p?.amountCents)}</p>
               </div>
               <div className="rounded-xl border border-border bg-surface-2 p-3">
@@ -256,16 +267,25 @@ function WithdrawalPoolSection() {
                 <p className="mt-0.5 font-mono text-sm text-up">{poolKes(p?.availableCents)}</p>
               </div>
             </div>
-            <div className="flex flex-wrap items-end gap-3">
-              <div className="w-48">
-                <Input label="Set today's budget (KES)" inputMode="decimal" value={amountKes}
-                  onChange={(e) => setAmountKes(e.target.value.replace(/[^0-9.]/g, ''))} />
+            <div className="flex flex-wrap items-end gap-6">
+              <div className="flex items-end gap-3">
+                <div className="w-44">
+                  <Input label="Today's budget (KES)" inputMode="decimal" value={amountKes}
+                    onChange={(e) => setAmountKes(e.target.value.replace(/[^0-9.]/g, ''))} />
+                </div>
+                <ConfirmButton label="Set today" confirmLabel="Confirm" busy={setPool.isPending} onConfirm={save} />
               </div>
-              <ConfirmButton label="Set daily pool" confirmLabel="Confirm" busy={setPool.isPending} onConfirm={save} />
+              <div className="flex items-end gap-3">
+                <div className="w-56">
+                  <Input label="Recurring default — auto-funds each day (KES)" inputMode="decimal" value={defaultKes}
+                    onChange={(e) => setDefaultKes(e.target.value.replace(/[^0-9.]/g, ''))} />
+                </div>
+                <ConfirmButton label="Set default" confirmLabel="Confirm" variant="outline" busy={setPool.isPending} onConfirm={saveDefault} />
+              </div>
             </div>
             {p?.updatedAtMs ? (
               <p className="text-xs text-muted">
-                Updated {formatRelativeTime(p.updatedAtMs)} ago{p.setBy ? ` by ${p.setBy.slice(0, 8)}…` : ''}.
+                Today updated {formatRelativeTime(p.updatedAtMs)} ago{p.setBy ? ` by ${p.setBy.slice(0, 8)}…` : ''}. Recurring default: {poolKes(p?.defaultDailyPoolCents)}/day.
               </p>
             ) : null}
           </>

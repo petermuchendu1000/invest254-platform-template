@@ -553,12 +553,25 @@ export function registerAdminRoutes(router: Router, deps: ApiDeps): void {
 
   router.put(`${BASE}/admin/withdrawal-pool`, auth, superadmin, async (ctx: Ctx) => {
     const body = ctx.body && typeof ctx.body === "object" ? (ctx.body as Record<string, unknown>) : {};
-    const raw = body.amountCents ?? body.amount;
-    const amount = typeof raw === "number" ? raw : Number(raw);
-    if (!Number.isInteger(amount) || amount < 0) throw new ApiError("VALIDATION", "amountCents must be a non-negative integer (cents)", 400);
     const day = body.day === undefined || body.day === null ? eatDay() : String(body.day);
     if (!EAT_DAY_RE.test(day)) throw new ApiError("VALIDATION", "day must be YYYY-MM-DD (EAT)", 400);
-    return domain(() => deps.admin.setWithdrawalPool(ctx.claims!.userId, ctx.claims!.role ?? "player", configSiteId(ctx), day, amount));
+    const parseAmt = (v: unknown, label: string): number => {
+      const n = typeof v === "number" ? v : Number(v);
+      if (!Number.isInteger(n) || n < 0) throw new ApiError("VALIDATION", `${label} must be a non-negative integer (cents)`, 400);
+      return n;
+    };
+    const hasToday = body.amountCents !== undefined || body.amount !== undefined;
+    const hasDefault = body.defaultAmountCents !== undefined;
+    if (!hasToday && !hasDefault) throw new ApiError("VALIDATION", "provide amountCents (today) and/or defaultAmountCents (recurring)", 400);
+    const today = hasToday ? parseAmt(body.amountCents ?? body.amount, "amountCents") : null;
+    const dflt = hasDefault ? parseAmt(body.defaultAmountCents, "defaultAmountCents") : null;
+    const actor = ctx.claims!.userId, role = ctx.claims!.role ?? "player", site = configSiteId(ctx);
+    return domain(async () => {
+      let row = await deps.admin.getWithdrawalPool(site, day);
+      if (dflt !== null) row = await deps.admin.setDefaultPool(actor, role, site, day, dflt);
+      if (today !== null) row = await deps.admin.setWithdrawalPool(actor, role, site, day, today);
+      return row;
+    });
   });
 
   router.get(`${BASE}/admin/rtp`, auth, admin, async () => deps.admin.rtpMonitor());

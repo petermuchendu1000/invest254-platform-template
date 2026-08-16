@@ -239,6 +239,8 @@ export interface WithdrawalPoolRow {
   availableCents: Cents;
   setBy: string | null;
   updatedAtMs: number;
+  /** Recurring per-brand default that auto-seeds each new EAT day (migration 0064). */
+  defaultDailyPoolCents: Cents;
 }
 export interface AdminSeedRow {
   gameDayId: number | null;

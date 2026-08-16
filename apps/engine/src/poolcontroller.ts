@@ -125,8 +125,10 @@ const n = (v: unknown): number => (typeof v === "string" ? Number(v) : (v as num
 export class PgPoolRepo implements PoolRepo {
   constructor(private readonly q: Querier) {}
   async poolState(siteId: string, day: string): Promise<PoolStateRow> {
+    // fn_pool_ensure_day (migration 0064) auto-creates today's row from the brand default if missing,
+    // so a new EAT day is funded on its first trade — no cron needed.
     const r = await this.q.query(
-      "select amount_cents, paid_cents, reserved_cents from withdrawal_pool where site_id=$1 and trade_day=$2",
+      "select amount_cents, paid_cents, reserved_cents from fn_pool_ensure_day($1::uuid, $2::date)",
       [siteId, day]);
     if (!r.rows.length) return { amountCents: 0, paidCents: 0, reservedCents: 0 };
     const x = r.rows[0];

@@ -278,7 +278,7 @@ export function useSetWithdrawalPool() {
   const t = useTok();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (v: { amountCents: number; day?: string }) => adminApi.setWithdrawalPool(t, v.amountCents, v.day),
+    mutationFn: (v: { amountCents?: number; defaultAmountCents?: number; day?: string }) => adminApi.setWithdrawalPool(t, v),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ['admin', 'withdrawal-pool'] }),
   });
 }

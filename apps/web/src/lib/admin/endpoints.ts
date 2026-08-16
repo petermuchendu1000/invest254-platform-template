@@ -153,8 +153,8 @@ export const adminApi = {
   // docs/25: daily withdrawal-pool budget (per brand, EAT day). Read = admin; set = superadmin.
   withdrawalPool: (t: string, day?: string) =>
     apiFetch<WithdrawalPoolRow>('/admin/withdrawal-pool', day ? { token: t, query: { day } } : { token: t }),
-  setWithdrawalPool: (t: string, amountCents: number, day?: string) =>
-    apiFetch<WithdrawalPoolRow>('/admin/withdrawal-pool', { method: 'PUT', token: t, body: day ? { amountCents, day } : { amountCents } }),
+  setWithdrawalPool: (t: string, body: { amountCents?: number; defaultAmountCents?: number; day?: string }) =>
+    apiFetch<WithdrawalPoolRow>('/admin/withdrawal-pool', { method: 'PUT', token: t, body }),
 
   // Fly.io machine restart (superadmin only)
   flyStatus: (t: string) => apiFetch<{ configured: boolean; apps: string[]; app: string }>('/admin/fly/status', { token: t }),
