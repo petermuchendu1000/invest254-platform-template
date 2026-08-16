@@ -164,6 +164,9 @@ export class InMemoryPlatformRepository implements PlatformRepository {
       primaryDomain: "invest254.com", logoUrl: null, faviconUrl: null, wordmarkText: "invest254.com",
       colorPrimary: "#22c55e", colorBg: "#0a0a0a", colorAccent: "#06b6d4", theme: "dark",
       currency: "KES", locale: "en-KE", licenceLine: "Operated under licence.", supportEmail: null,
+      mpesaEnv: null, mpesaShortcode: null, mpesaCallbackBase: null, mpesaB2cInitiator: null,
+      hasMpesaConsumerKey: false, hasMpesaConsumerSecret: false, hasMpesaPasskey: false, hasMpesaB2cCredential: false,
+      legalCopy: null,
       config: { ...DEFAULT_CONFIG },
     });
   }

@@ -56,7 +56,7 @@ export class AdminService {
   /** Unified deposits + withdrawals feed for the Finance transactions explorer. */
   listTransactions(q: AdminTransactionListQuery): Promise<Page<AdminTransactionRow>> { return this.repo.listTransactions(q); }
 
-  listAudit(q: PageQuery): Promise<Page<AdminAuditRow>> { return this.repo.listAudit(q); }
+  listAudit(q: PageQuery, siteId?: string): Promise<Page<AdminAuditRow>> { return this.repo.listAudit(q, siteId); }
 
   /** Manual wallet credit/debit (J3) — signed cents, mandatory reason; guards + audit live in the repo/RPC. */
   adjustBalance(actorId: string, actorRole: string, targetId: string, amountCents: number, reason: string): Promise<AdjustBalanceResult> {
@@ -97,11 +97,12 @@ export class AdminService {
   // ── J5: game config + RTP monitor + seed rotation ────────────────────────────────────────────
 
   /** Current game_config singleton (J5). */
-  getGameConfig(): Promise<GameConfigRow> { return this.repo.getGameConfig(); }
+  getGameConfig(siteId?: string): Promise<GameConfigRow> { return this.repo.getGameConfig(siteId); }
 
-  /** Edit game_config (J5; superadmin) — partial patch; guards + validation + audit live in the repo/RPC. */
-  updateGameConfig(actorId: string, actorRole: string, patch: GameConfigPatch): Promise<GameConfigRow> {
-    return this.repo.updateGameConfig(actorId, actorRole, patch);
+  /** Edit a brand's site_game_config (J5; superadmin) — partial patch; guards + validation + audit
+   *  live in the repo/RPC. siteId scopes the write to the operator's brand (the table the engine reads). */
+  updateGameConfig(actorId: string, actorRole: string, patch: GameConfigPatch, siteId?: string): Promise<GameConfigRow> {
+    return this.repo.updateGameConfig(actorId, actorRole, patch, siteId);
   }
 
   /** Admin-visible M-Pesa config (secrets masked). */

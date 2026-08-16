@@ -228,8 +228,10 @@ export interface AdminRepository {
   reportDaily(range: ReportRange): Promise<DailyReportRow[]>;
   reportByUser(range: ReportRange): Promise<UserReportRow[]>;
   // J5 — game config + RTP monitor + seed rotation (superadmin mutations guarded in the RPC/mirror)
-  getGameConfig(): Promise<GameConfigRow>;
-  updateGameConfig(actorId: string, actorRole: string, patch: GameConfigPatch): Promise<GameConfigRow>;
+  // siteId scopes the read/write to a brand's `site_game_config` (the table the ENGINE prices from).
+  // Omitted => the default site. This is the fix for the control-plane/data-plane split (0061).
+  getGameConfig(siteId?: string): Promise<GameConfigRow>;
+  updateGameConfig(actorId: string, actorRole: string, patch: GameConfigPatch, siteId?: string): Promise<GameConfigRow>;
   getMpesaConfig(): Promise<MpesaConfigRow>;
   updateMpesaConfig(actorId: string, actorRole: string, patch: MpesaConfigPatch): Promise<MpesaConfigRow>;
   rtpMonitor(): Promise<RtpMonitor>;
@@ -828,18 +830,24 @@ export class PgAdminRepository implements AdminRepository {
 
   // ── J5: game config + RTP monitor + seed rotation ────────────────────────────────────────────
 
-  async getGameConfig(): Promise<GameConfigRow> {
+  // Reads the BRAND's live economy from `site_game_config` — the exact row the multiplexed engine
+  // prices from (SiteGameConfigStore). Previously this read the legacy `game_config` singleton, which
+  // the engine never consults, so the operator panel and the live game were divorced (see 0061).
+  async getGameConfig(siteId: string = ADMIN_DEFAULT_SITE): Promise<GameConfigRow> {
     const r = await this.q.query(
-      "select house_edge, max_multiplier, min_stake, max_stake, min_withdrawal, default_duration_s, tick_rate_ms, drift_bias, volatility, target_win_rate, version, updated_by, updated_at from game_config where id = 1", []);
+      "select house_edge, max_multiplier, min_stake, max_stake, min_withdrawal, default_duration_s, tick_rate_ms, drift_bias, volatility, target_win_rate, version, updated_by, updated_at from site_game_config where site_id = $1", [siteId]);
     if (!r.rows.length) throw new Error("NOT_FOUND");
     return mapGameConfigRow(r.rows[0]);
   }
 
-  async updateGameConfig(actorId: string, actorRole: string, patch: GameConfigPatch): Promise<GameConfigRow> {
+  // Writes the BRAND's economy via fn_admin_set_site_game_config (migration 0061): the site_game_config
+  // trigger then bumps the version, snapshots history, and fires pg_notify so the engine re-prices the
+  // next round with no redeploy. Feasibility is enforced by the site_game_config CHECK (-> INVALID_CONFIG).
+  async updateGameConfig(actorId: string, actorRole: string, patch: GameConfigPatch, siteId: string = ADMIN_DEFAULT_SITE): Promise<GameConfigRow> {
     try {
       const r = await this.q.query(
-        "select house_edge, max_multiplier, min_stake, max_stake, min_withdrawal, default_duration_s, tick_rate_ms, drift_bias, volatility, target_win_rate, version, updated_by, updated_at from fn_admin_update_game_config($1,$2,$3::jsonb)",
-        [actorId, actorRole, JSON.stringify(patch)]);
+        "select house_edge, max_multiplier, min_stake, max_stake, min_withdrawal, default_duration_s, tick_rate_ms, drift_bias, volatility, target_win_rate, version, updated_by, updated_at from fn_admin_set_site_game_config($1,$2,$3::uuid,$4::jsonb)",
+        [actorId, actorRole, siteId, JSON.stringify(patch)]);
       return mapGameConfigRow(r.rows[0]);
     } catch (e) { mapAdminError(e); }
   }
@@ -1049,7 +1057,9 @@ function memDepositRow(t: { txId: string; userId: string; amountCents: Cents; st
 export class InMemoryAdminRepository implements AdminRepository {
   private readonly audit: MemAudit[] = [];
   private seq = 0;
-  private gameConfig: GameConfigRow = defaultGameConfigRow();
+  // Per-brand game config mirror (site_game_config in the DB). Keyed by site_id; the default site is
+  // seeded lazily. Mirrors the 0061 fix where admin config reads/writes the brand's site_game_config.
+  private readonly gameConfigBySite = new Map<string, GameConfigRow>();
   private mpesa: MpesaInternal = defaultMpesaInternal();
   private readonly seedRows = new Map<string, AdminSeedRow>();
   // J8 in-memory stores (bonus wallet + per-user overrides) for the test harness.
@@ -1432,12 +1442,20 @@ export class InMemoryAdminRepository implements AdminRepository {
 
   // ── J5: game config + RTP monitor + seed rotation (mirrors the 0023 RPC guards) ───────────────
 
-  async getGameConfig(): Promise<GameConfigRow> { return { ...this.gameConfig }; }
+  /** Get-or-seed the per-site config mirror (default site seeded from DEFAULT_CONFIG). */
+  private siteConfig(siteId: string): GameConfigRow {
+    let c = this.gameConfigBySite.get(siteId);
+    if (!c) { c = defaultGameConfigRow(); this.gameConfigBySite.set(siteId, c); }
+    return c;
+  }
 
-  async updateGameConfig(actorId: string, actorRole: string, patch: GameConfigPatch): Promise<GameConfigRow> {
-    if (actorRole !== "superadmin") throw new Error("INSUFFICIENT_PRIVILEGE");
-    const before = { ...this.gameConfig };
-    const next: GameConfigRow = { ...this.gameConfig };
+  async getGameConfig(siteId: string = ADMIN_DEFAULT_SITE): Promise<GameConfigRow> { return { ...this.siteConfig(siteId) }; }
+
+  async updateGameConfig(actorId: string, actorRole: string, patch: GameConfigPatch, siteId: string = ADMIN_DEFAULT_SITE): Promise<GameConfigRow> {
+    if (actorRole !== "superadmin" && actorRole !== "platform_superadmin") throw new Error("INSUFFICIENT_PRIVILEGE");
+    const current = this.siteConfig(siteId);
+    const before = { ...current };
+    const next: GameConfigRow = { ...current };
     if (patch.houseEdge !== undefined) next.houseEdge = patch.houseEdge;
     if (patch.maxMultiplier !== undefined) next.maxMultiplier = patch.maxMultiplier;
     if (patch.minStakeCents !== undefined) next.minStakeCents = patch.minStakeCents;
@@ -1454,8 +1472,8 @@ export class InMemoryAdminRepository implements AdminRepository {
     next.version = before.version + 1;
     next.updatedBy = actorId;
     next.updatedAtMs = Date.now();
-    this.gameConfig = next;
-    this.record(actorId, actorRole, "game.config", "game_config", "1", { before, after: next, patch });
+    this.gameConfigBySite.set(siteId, next);
+    this.record(actorId, actorRole, "game.config", "site_game_config", siteId, { before, after: next, patch });
     return { ...next };
   }
 
@@ -1497,7 +1515,7 @@ export class InMemoryAdminRepository implements AdminRepository {
       return { n, t, p };
     };
     const windows = RTP_WINDOWS.map(({ window, days }) => { const a = agg(days); return rtpWindowRow(window, a.n, a.t, a.p); });
-    return buildRtpMonitor(1 - this.gameConfig.houseEdge, windows);
+    return buildRtpMonitor(1 - this.siteConfig(ADMIN_DEFAULT_SITE).houseEdge, windows);
   }
 
   async listSeeds(limit: number): Promise<AdminSeedRow[]> {

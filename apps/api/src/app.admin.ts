@@ -1,4 +1,4 @@
-import { Router, ApiError, requireAuth, requireRole, rateLimit, assertTargetSiteInScope, type Ctx } from "./http.js";
+import { Router, ApiError, requireAuth, requireRole, rateLimit, assertTargetSiteInScope, adminScopeSite, DEFAULT_SITE_ID, type Ctx } from "./http.js";
 import type { PageQuery, AdminUserListQuery, AdminWithdrawalListQuery, AdminDepositListQuery, AdminTransactionListQuery, ReportRange, GameConfigPatch, MpesaConfigPatch, AdminPayoutListQuery, AdminUserActivityQuery, UserOverridePatch } from "@invest254/engine";
 import type { ApiDeps } from "./app.js";
 
@@ -525,11 +525,16 @@ export function registerAdminRoutes(router: Router, deps: ApiDeps): void {
 
   // ── J5: game configuration + RTP monitor + seed rotation (superadmin mutations) ───────────────
 
-  router.get(`${BASE}/admin/game-config`, auth, admin, async () => deps.admin.getGameConfig());
+  // Resolve the brand this admin edit targets: a site-scoped operator is pinned to their JWT `site`
+  // claim (cannot cross brands); an unrestricted platform operator may name a brand via ?site=, else
+  // the default site. This is what reconnects the panel to the table the engine reads (0061).
+  const configSiteId = (ctx: Ctx): string => adminScopeSite(ctx) ?? ctx.query.get("site") ?? DEFAULT_SITE_ID;
+
+  router.get(`${BASE}/admin/game-config`, auth, admin, async (ctx: Ctx) => deps.admin.getGameConfig(configSiteId(ctx)));
 
   router.patch(`${BASE}/admin/game-config`, auth, superadmin, async (ctx: Ctx) => {
     const patch = parseGameConfigPatch(ctx);
-    return domain(() => deps.admin.updateGameConfig(ctx.claims!.userId, ctx.claims!.role ?? "player", patch));
+    return domain(() => deps.admin.updateGameConfig(ctx.claims!.userId, ctx.claims!.role ?? "player", patch, configSiteId(ctx)));
   });
 
   router.get(`${BASE}/admin/rtp`, auth, admin, async () => deps.admin.rtpMonitor());
