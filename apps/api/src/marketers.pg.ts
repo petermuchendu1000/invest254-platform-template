@@ -28,14 +28,20 @@ function toProfile(r: any): MarketerProfile {
  */
 export function makePgMarketerRepo(query: Query): MarketerRepo {
   return {
-    async create(name, phone): Promise<MarketerRow> {
-      const { rows } = await query("SELECT * FROM public.fn_marketer_create($1, $2)", [name, phone]);
+    async create(name, phone, siteId): Promise<MarketerRow> {
+      const { rows } = await query("SELECT * FROM public.fn_marketer_create($1, $2, $3)", [name, phone, siteId ?? null]);
       return rows[0] as MarketerRow;
     },
 
-    async list(limit): Promise<MarketerProfile[]> {
+    async siteOfMarketer(id): Promise<string | null> {
+      const { rows } = await query("SELECT public.fn_marketer_site($1) AS s", [id]);
+      return rows[0]?.s ?? null;
+    },
+
+    async list(limit, siteId): Promise<MarketerProfile[]> {
       const { rows } = await query(
-        "SELECT * FROM public.marketer_profiles ORDER BY created_at DESC LIMIT $1", [limit]);
+        "SELECT * FROM public.marketer_profiles WHERE ($2::uuid IS NULL OR site_id = $2) ORDER BY created_at DESC LIMIT $1",
+        [limit, siteId ?? null]);
       return rows.map(toProfile);
     },
 
@@ -44,8 +50,10 @@ export function makePgMarketerRepo(query: Query): MarketerRepo {
       return rows.length ? toProfile(rows[0]) : null;
     },
 
-    async profileByPhone(phone): Promise<MarketerProfile | null> {
-      const { rows } = await query("SELECT * FROM public.marketer_profiles WHERE phone = $1", [phone]);
+    async profileByPhone(phone, siteId): Promise<MarketerProfile | null> {
+      const { rows } = await query(
+        "SELECT * FROM public.marketer_profiles WHERE phone = $1 AND ($2::uuid IS NULL OR site_id = $2)",
+        [phone, siteId ?? null]);
       return rows.length ? toProfile(rows[0]) : null;
     },
 
@@ -92,8 +100,8 @@ export function makePgMarketerRepo(query: Query): MarketerRepo {
       await query("SELECT public.fn_marketer_set_pin($1, $2)", [id, pin]);
     },
 
-    async login(phone, pin): Promise<string | null> {
-      const { rows } = await query("SELECT public.fn_marketer_login($1, $2) AS id", [phone, pin]);
+    async login(phone, pin, siteId): Promise<string | null> {
+      const { rows } = await query("SELECT public.fn_marketer_login($1, $2, $3) AS id", [phone, pin, siteId ?? null]);
       return rows[0]?.id ?? null;
     },
 

@@ -196,7 +196,7 @@ export interface MpesaConfigPatch {
 // ── J6: affiliate payout queue + chat moderation ───────────────────────────────────────────────
 /** A payout request in the admin approve/reject queue (J6). */
 export interface AdminPayoutRow { payoutId: string; affiliateId: string; username: string; phone: string; amountCents: Cents; status: string; approvedBy: string | null; createdAtMs: number; }
-export interface AdminPayoutListQuery extends PageQuery { status?: string | undefined; }
+export interface AdminPayoutListQuery extends PageQuery { status?: string | undefined; siteId?: string | undefined; }
 /** A chat message in the moderation view (J6) — includes hidden rows with their visibility. */
 export interface AdminChatModRow { id: number; userId: string | null; username: string; message: string; isHidden: boolean; createdAtMs: number; }
 
@@ -236,7 +236,7 @@ export interface AdminBetSource { adminBetsOf(userId: string): AdminBetSnapshot[
 
 /** Durable boundary for the admin back office (RPCs + reads / in-memory mirror). */
 export interface AdminRepository {
-  overview(): Promise<AdminOverview>;
+  overview(siteId?: string): Promise<AdminOverview>;
   listUsers(q: AdminUserListQuery): Promise<Page<AdminUserRow>>;
   getUserDetail(userId: string): Promise<AdminUserDetail | null>;
   /** A single user's unified activity timeline (deposits + withdrawals + bets), newest-first, keyset-paginated. */
@@ -258,9 +258,9 @@ export interface AdminRepository {
   setUserOverrides(actorId: string, actorRole: string, targetId: string, patch: UserOverridePatch): Promise<UserOverrideRow>;
   listDeposits(q: AdminDepositListQuery): Promise<Page<AdminDepositRow>>;
   depositsReconcile(staleMinutes: number): Promise<AdminDepositsReconcile>;
-  reportDaily(range: ReportRange): Promise<DailyReportRow[]>;
-  reportByUser(range: ReportRange): Promise<UserReportRow[]>;
-  reportDay(date: string): Promise<AdminDayReport>;
+  reportDaily(range: ReportRange, siteId?: string): Promise<DailyReportRow[]>;
+  reportByUser(range: ReportRange, siteId?: string): Promise<UserReportRow[]>;
+  reportDay(date: string, siteId?: string): Promise<AdminDayReport>;
   // J5 — game config + RTP monitor + seed rotation (superadmin mutations guarded in the RPC/mirror)
   // siteId scopes the read/write to a brand's `site_game_config` (the table the ENGINE prices from).
   // Omitted => the default site. This is the fix for the control-plane/data-plane split (0061).
@@ -273,8 +273,8 @@ export interface AdminRepository {
   setDefaultPool(actorId: string, actorRole: string, siteId: string, tradeDay: string, amountCents: Cents): Promise<WithdrawalPoolRow>;
   getMpesaConfig(): Promise<MpesaConfigRow>;
   updateMpesaConfig(actorId: string, actorRole: string, patch: MpesaConfigPatch): Promise<MpesaConfigRow>;
-  rtpMonitor(): Promise<RtpMonitor>;
-  listSeeds(limit: number): Promise<AdminSeedRow[]>;
+  rtpMonitor(siteId?: string): Promise<RtpMonitor>;
+  listSeeds(limit: number, siteId?: string): Promise<AdminSeedRow[]>;
   rotateSeed(actorId: string, actorRole: string, tradeDate: string): Promise<SeedRotateResult>;
   // J6 — affiliate payout queue + chat moderation
   listAffiliatePayouts(q: AdminPayoutListQuery): Promise<Page<AdminPayoutRow>>;
@@ -503,28 +503,28 @@ function buildOverridePatch(patch: UserOverridePatch): Record<string, unknown> {
 export class PgAdminRepository implements AdminRepository {
   constructor(private readonly q: Querier) {}
 
-  async overview(): Promise<AdminOverview> {
+  async overview(siteId?: string): Promise<AdminOverview> {
     const r = await this.q.query(
       `select
-         (select count(*) from profiles) as u_total,
-         (select count(*) from profiles where status = 'active') as u_active,
-         (select count(*) from profiles where status = 'suspended') as u_suspended,
-         (select count(*) from profiles where status = 'banned') as u_banned,
-         (select count(*) from profiles where role = 'player') as u_players,
-         (select count(*) from profiles where role = 'marketer') as u_marketers,
-         (select count(*) from profiles where role in ('admin','superadmin')) as u_admins,
-         (select coalesce(sum(amount),0) from transactions where kind='deposit' and status='success') as f_dep,
-         (select coalesce(sum(amount),0) from transactions where kind='withdrawal' and status='success') as f_wd,
-         (select count(*) from transactions where kind='withdrawal' and status='pending') as f_pending,
-         (select coalesce(sum(real_balance + bonus_balance),0) from wallets) as f_liab,
-         (select count(*) from affiliates) as a_marketers,
-         (select coalesce(sum(commission),0) from affiliate_commissions where status='accrued') as a_accrued,
-         (select coalesce(sum(commission),0) from affiliate_commissions where status='paid') as a_paid,
-         (select count(*) from affiliate_payouts where status in ('requested','approved')) as a_pending,
-         (select count(*) from positions where status='settled') as g_settled,
-         (select coalesce(sum(stake),0) from positions where status='settled') as g_turnover,
-         (select coalesce(sum(stake - payout),0) from positions where status='settled') as g_ggr`,
-      []);
+         (select count(*) from profiles where ($1::uuid is null or site_id = $1)) as u_total,
+         (select count(*) from profiles where status = 'active' and ($1::uuid is null or site_id = $1)) as u_active,
+         (select count(*) from profiles where status = 'suspended' and ($1::uuid is null or site_id = $1)) as u_suspended,
+         (select count(*) from profiles where status = 'banned' and ($1::uuid is null or site_id = $1)) as u_banned,
+         (select count(*) from profiles where role = 'player' and ($1::uuid is null or site_id = $1)) as u_players,
+         (select count(*) from profiles where role = 'marketer' and ($1::uuid is null or site_id = $1)) as u_marketers,
+         (select count(*) from profiles where role in ('admin','superadmin') and ($1::uuid is null or site_id = $1)) as u_admins,
+         (select coalesce(sum(amount),0) from transactions where kind='deposit' and status='success' and ($1::uuid is null or site_id = $1)) as f_dep,
+         (select coalesce(sum(amount),0) from transactions where kind='withdrawal' and status='success' and ($1::uuid is null or site_id = $1)) as f_wd,
+         (select count(*) from transactions where kind='withdrawal' and status='pending' and ($1::uuid is null or site_id = $1)) as f_pending,
+         (select coalesce(sum(real_balance + bonus_balance),0) from wallets where ($1::uuid is null or site_id = $1)) as f_liab,
+         (select count(*) from affiliates where ($1::uuid is null or site_id = $1)) as a_marketers,
+         (select coalesce(sum(commission),0) from affiliate_commissions where status='accrued' and ($1::uuid is null or site_id = $1)) as a_accrued,
+         (select coalesce(sum(commission),0) from affiliate_commissions where status='paid' and ($1::uuid is null or site_id = $1)) as a_paid,
+         (select count(*) from affiliate_payouts where status in ('requested','approved') and ($1::uuid is null or site_id = $1)) as a_pending,
+         (select count(*) from positions where status='settled' and ($1::uuid is null or site_id = $1)) as g_settled,
+         (select coalesce(sum(stake),0) from positions where status='settled' and ($1::uuid is null or site_id = $1)) as g_turnover,
+         (select coalesce(sum(stake - payout),0) from positions where status='settled' and ($1::uuid is null or site_id = $1)) as g_ggr`,
+      [siteId ?? null]);
     const x = r.rows[0];
     return {
       users: { total: num(x.u_total), active: num(x.u_active), suspended: num(x.u_suspended), banned: num(x.u_banned),
@@ -811,7 +811,7 @@ export class PgAdminRepository implements AdminRepository {
     return { summary, staleMinutes, stale: r.rows.map(mapDepositRow) };
   }
 
-  async reportDaily(range: ReportRange): Promise<DailyReportRow[]> {
+  async reportDaily(range: ReportRange, siteId?: string): Promise<DailyReportRow[]> {
     const r = await this.q.query(
       `with t as (
          select created_at::date as d,
@@ -819,6 +819,7 @@ export class PgAdminRepository implements AdminRepository {
                 coalesce(sum(amount) filter (where kind='withdrawal'), 0)  as wd
            from transactions
           where status = 'success'
+            and ($3::uuid is null or site_id = $3)
             and ($1::date is null or created_at::date >= $1::date)
             and ($2::date is null or created_at::date <= $2::date)
           group by 1),
@@ -829,6 +830,7 @@ export class PgAdminRepository implements AdminRepository {
            from positions po
            left join game_days gd on gd.id = po.game_day_id
           where po.status = 'settled'
+            and ($3::uuid is null or po.site_id = $3)
             and ($1::date is null or coalesce(gd.trade_date, po.settled_at::date, po.opened_at::date) >= $1::date)
             and ($2::date is null or coalesce(gd.trade_date, po.settled_at::date, po.opened_at::date) <= $2::date)
           group by 1)
@@ -837,14 +839,14 @@ export class PgAdminRepository implements AdminRepository {
               coalesce(g.turnover, 0) as turnover, coalesce(g.ggr, 0) as ggr
          from t full outer join g on t.d = g.d
         order by day asc`,
-      [range.from ?? null, range.to ?? null]);
+      [range.from ?? null, range.to ?? null, siteId ?? null]);
     return r.rows.map((x) => ({
       date: day(x.day), depositsCents: num(x.deposits), withdrawalsCents: num(x.withdrawals),
       turnoverCents: num(x.turnover), ggrCents: num(x.ggr),
     }));
   }
 
-  async reportByUser(range: ReportRange): Promise<UserReportRow[]> {
+  async reportByUser(range: ReportRange, siteId?: string): Promise<UserReportRow[]> {
     const r = await this.q.query(
       `with t as (
          select user_id,
@@ -852,6 +854,7 @@ export class PgAdminRepository implements AdminRepository {
                 coalesce(sum(amount) filter (where kind='withdrawal'), 0)  as wd
            from transactions
           where status = 'success'
+            and ($3::uuid is null or site_id = $3)
             and ($1::date is null or created_at::date >= $1::date)
             and ($2::date is null or created_at::date <= $2::date)
           group by 1),
@@ -862,6 +865,7 @@ export class PgAdminRepository implements AdminRepository {
            from positions po
            left join game_days gd on gd.id = po.game_day_id
           where po.status = 'settled'
+            and ($3::uuid is null or po.site_id = $3)
             and ($1::date is null or coalesce(gd.trade_date, po.settled_at::date, po.opened_at::date) >= $1::date)
             and ($2::date is null or coalesce(gd.trade_date, po.settled_at::date, po.opened_at::date) <= $2::date)
           group by 1)
@@ -873,7 +877,7 @@ export class PgAdminRepository implements AdminRepository {
          left join t on t.user_id = ids.user_id
          left join g on g.user_id = ids.user_id
         order by ggr desc, user_id asc`,
-      [range.from ?? null, range.to ?? null]);
+      [range.from ?? null, range.to ?? null, siteId ?? null]);
     return r.rows.map((x) => ({
       userId: String(x.user_id), username: String(x.username),
       depositsCents: num(x.deposits), withdrawalsCents: num(x.withdrawals),
@@ -881,14 +885,14 @@ export class PgAdminRepository implements AdminRepository {
     }));
   }
 
-  async reportDay(date: string): Promise<AdminDayReport> {
+  async reportDay(date: string, siteId?: string): Promise<AdminDayReport> {
     const r = await this.q.query(
       `with
        reg as (
          select
            count(*) filter (where role = 'player')   as new_players,
            count(*) filter (where role = 'marketer')  as new_marketers
-         from profiles where created_at::date = $1::date
+         from profiles where created_at::date = $1::date and ($2::uuid is null or site_id = $2)
        ),
        tx as (
          select
@@ -899,12 +903,12 @@ export class PgAdminRepository implements AdminRepository {
            count(*) filter (where kind='withdrawal' and status in ('pending','processing')) as pend_n,
            coalesce(sum(amount) filter (where kind='withdrawal' and status in ('pending','processing')),0) as pend_c,
            count(distinct user_id) filter (where kind='deposit' and status='success') as depositors
-         from transactions where created_at::date = $1::date
+         from transactions where created_at::date = $1::date and ($2::uuid is null or site_id = $2)
        ),
        ftd as (
          select count(*) as n from (
            select user_id, min(created_at::date) as first_dep
-             from transactions where kind='deposit' and status='success' group by user_id
+             from transactions where kind='deposit' and status='success' and ($2::uuid is null or site_id = $2) group by user_id
          ) f where f.first_dep = $1::date
        ),
        g as (
@@ -918,21 +922,22 @@ export class PgAdminRepository implements AdminRepository {
          from positions po
          left join game_days gd on gd.id = po.game_day_id
          where po.status='settled'
+           and ($2::uuid is null or po.site_id = $2)
            and coalesce(gd.trade_date, po.settled_at::date, po.opened_at::date) = $1::date
        ),
        comm as (
-         select coalesce(sum(commission),0) as accrued from affiliate_commissions where period = $1::date
+         select coalesce(sum(commission),0) as accrued from affiliate_commissions where period = $1::date and ($2::uuid is null or site_id = $2)
        ),
        pool as (
          select coalesce(sum(amount_cents),0) as budget, coalesce(sum(paid_cents),0) as paid
-           from withdrawal_pool where trade_day = $1::date
+           from withdrawal_pool where trade_day = $1::date and ($2::uuid is null or site_id = $2)
        )
        select reg.new_players, reg.new_marketers,
               tx.dep_n, tx.dep_c, tx.wd_n, tx.wd_c, tx.pend_n, tx.pend_c, tx.depositors, ftd.n as ftd,
               g.settled, g.winners, g.turnover, g.payout, g.ggr, g.active_players,
               comm.accrued, pool.budget, pool.paid
        from reg, tx, ftd, g, comm, pool`,
-      [date]);
+      [date, siteId ?? null]);
     const x = (r.rows[0] ?? {}) as Record<string, unknown>;
     return {
       date,
@@ -1026,8 +1031,8 @@ export class PgAdminRepository implements AdminRepository {
     } catch (e) { mapAdminError(e); }
   }
 
-  async rtpMonitor(): Promise<RtpMonitor> {
-    const cfg = await this.getGameConfig();
+  async rtpMonitor(siteId?: string): Promise<RtpMonitor> {
+    const cfg = await this.getGameConfig(siteId);
     const r = await this.q.query(
       `select
          count(*) filter (where settled_at >= now() - interval '7 days')                 as n7,
@@ -1037,7 +1042,7 @@ export class PgAdminRepository implements AdminRepository {
          coalesce(sum(stake)  filter (where settled_at >= now() - interval '30 days'), 0) as t30,
          coalesce(sum(payout) filter (where settled_at >= now() - interval '30 days'), 0) as p30,
          count(*) as na, coalesce(sum(stake), 0) as ta, coalesce(sum(payout), 0) as pa
-       from positions where status = 'settled'`, []);
+       from positions where status = 'settled' and ($1::uuid is null or site_id = $1)`, [siteId ?? null]);
     const x = r.rows[0];
     const windows = [
       rtpWindowRow("7d", num(x.n7), num(x.t7), num(x.p7)),
@@ -1047,11 +1052,12 @@ export class PgAdminRepository implements AdminRepository {
     return buildRtpMonitor(cfg.rtpTarget, windows);
   }
 
-  async listSeeds(limit: number): Promise<AdminSeedRow[]> {
+  async listSeeds(limit: number, siteId?: string): Promise<AdminSeedRow[]> {
     const r = await this.q.query(
       `select gd.id, gd.trade_date, gd.server_seed_hash, gd.revealed_at, coalesce(so.version, 0) as version
          from game_days gd left join seed_overrides so on so.trade_date = gd.trade_date
-        order by gd.trade_date desc limit $1`, [clampLimit(limit)]);
+        where ($2::uuid is null or gd.site_id = $2)
+        order by gd.trade_date desc limit $1`, [clampLimit(limit), siteId ?? null]);
     return r.rows.map((x) => ({
       gameDayId: x.id == null ? null : Number(x.id), tradeDate: day(x.trade_date),
       serverSeedHash: x.server_seed_hash == null ? null : String(x.server_seed_hash),
@@ -1077,9 +1083,10 @@ export class PgAdminRepository implements AdminRepository {
       `select ap.id, ap.affiliate_id, pr.username, pr.phone, ap.amount, ap.status, ap.approved_by, ap.created_at
          from affiliate_payouts ap join profiles pr on pr.id = ap.affiliate_id
         where ($1::text is null or ap.status = $1)
+          and ($5::uuid is null or ap.site_id = $5)
           and ($2::timestamptz is null or (ap.created_at, ap.id) < ($2::timestamptz, $3::uuid))
         order by ap.created_at desc, ap.id desc limit $4`,
-      [q.status ?? null, cur ? new Date(cur.tsMs).toISOString() : null, cur ? cur.id : null, limit + 1]);
+      [q.status ?? null, cur ? new Date(cur.tsMs).toISOString() : null, cur ? cur.id : null, limit + 1, q.siteId ?? null]);
     const rows: AdminPayoutRow[] = r.rows.map((x) => ({
       payoutId: String(x.id), affiliateId: String(x.affiliate_id), username: String(x.username), phone: String(x.phone),
       amountCents: num(x.amount), status: String(x.status), approvedBy: x.approved_by == null ? null : String(x.approved_by), createdAtMs: ms(x.created_at),
@@ -1228,7 +1235,7 @@ export class InMemoryAdminRepository implements AdminRepository {
     private readonly bets?: AdminBetSource,
   ) {}
 
-  async overview(): Promise<AdminOverview> {
+  async overview(siteId?: string): Promise<AdminOverview> {
     const users = this.identity.adminUsers();
     const txs = this.payments.adminTransactions();
     const commissions = this.identity.adminCommissions();
@@ -1546,7 +1553,7 @@ export class InMemoryAdminRepository implements AdminRepository {
     return { summary, staleMinutes, stale };
   }
 
-  async reportDaily(range: ReportRange): Promise<DailyReportRow[]> {
+  async reportDaily(range: ReportRange, siteId?: string): Promise<DailyReportRow[]> {
     const acc = new Map<string, { dep: number; wd: number; turn: number; ggr: number }>();
     const bucket = (d: string) => {
       let b = acc.get(d);
@@ -1570,7 +1577,7 @@ export class InMemoryAdminRepository implements AdminRepository {
       .map(([date, v]) => ({ date, depositsCents: v.dep, withdrawalsCents: v.wd, turnoverCents: v.turn, ggrCents: v.ggr }));
   }
 
-  async reportByUser(range: ReportRange): Promise<UserReportRow[]> {
+  async reportByUser(range: ReportRange, siteId?: string): Promise<UserReportRow[]> {
     const acc = new Map<string, { dep: number; wd: number; turn: number; ggr: number }>();
     const bucket = (id: string) => {
       let b = acc.get(id);
@@ -1596,7 +1603,7 @@ export class InMemoryAdminRepository implements AdminRepository {
       .sort((a, b) => (b.ggrCents - a.ggrCents) || (a.userId < b.userId ? -1 : a.userId > b.userId ? 1 : 0));
   }
 
-  async reportDay(date: string): Promise<AdminDayReport> {
+  async reportDay(date: string, siteId?: string): Promise<AdminDayReport> {
     const range: ReportRange = { from: date, to: date };
     let dep = { count: 0, amountCents: 0 }, wd = { count: 0, amountCents: 0 }, pend = { count: 0, amountCents: 0 };
     const depositors = new Set<string>();
@@ -1718,7 +1725,7 @@ export class InMemoryAdminRepository implements AdminRepository {
     return after;
   }
 
-  async rtpMonitor(): Promise<RtpMonitor> {
+  async rtpMonitor(siteId?: string): Promise<RtpMonitor> {
     const plays = this.identity.adminReportPlays();
     const agg = (days: number | null): { n: number; t: number; p: number } => {
       const lo = days == null ? null : utcDayKeyAgo(days - 1);
@@ -1733,7 +1740,7 @@ export class InMemoryAdminRepository implements AdminRepository {
     return buildRtpMonitor(1 - this.siteConfig(ADMIN_DEFAULT_SITE).houseEdge, windows);
   }
 
-  async listSeeds(limit: number): Promise<AdminSeedRow[]> {
+  async listSeeds(limit: number, siteId?: string): Promise<AdminSeedRow[]> {
     return [...this.seedRows.values()]
       .sort((a, b) => (a.tradeDate < b.tradeDate ? 1 : a.tradeDate > b.tradeDate ? -1 : 0))
       .slice(0, clampLimit(limit));

@@ -22,7 +22,7 @@ import type {
 export class AdminService {
   constructor(private readonly repo: AdminRepository) {}
 
-  overview(): Promise<AdminOverview> { return this.repo.overview(); }
+  overview(siteId?: string): Promise<AdminOverview> { return this.repo.overview(siteId); }
 
   listUsers(q: AdminUserListQuery): Promise<Page<AdminUserRow>> { return this.repo.listUsers(q); }
 
@@ -90,11 +90,11 @@ export class AdminService {
   depositsReconcile(staleMinutes: number): Promise<AdminDepositsReconcile> { return this.repo.depositsReconcile(staleMinutes); }
 
   /** Per-day operator finance report (J4) — deposits/withdrawals + turnover/GGR, oldest day first. */
-  reportDaily(range: ReportRange): Promise<DailyReportRow[]> { return this.repo.reportDaily(range); }
-  reportDay(date: string): Promise<AdminDayReport> { return this.repo.reportDay(date); }
+  reportDaily(range: ReportRange, siteId?: string): Promise<DailyReportRow[]> { return this.repo.reportDaily(range, siteId); }
+  reportDay(date: string, siteId?: string): Promise<AdminDayReport> { return this.repo.reportDay(date, siteId); }
 
   /** Per-user operator finance report (J4) — same metrics, ordered by GGR desc. */
-  reportByUser(range: ReportRange): Promise<UserReportRow[]> { return this.repo.reportByUser(range); }
+  reportByUser(range: ReportRange, siteId?: string): Promise<UserReportRow[]> { return this.repo.reportByUser(range, siteId); }
 
   // ── J5: game config + RTP monitor + seed rotation ────────────────────────────────────────────
 
@@ -127,10 +127,10 @@ export class AdminService {
   }
 
   /** Realised RTP vs target across rolling windows, with a drift alert (J5). */
-  rtpMonitor(): Promise<RtpMonitor> { return this.repo.rtpMonitor(); }
+  rtpMonitor(siteId?: string): Promise<RtpMonitor> { return this.repo.rtpMonitor(siteId); }
 
   /** Provably-fair day rows: commitment hash, seed version, reveal state (J5). */
-  listSeeds(limit: number): Promise<AdminSeedRow[]> { return this.repo.listSeeds(limit); }
+  listSeeds(limit: number, siteId?: string): Promise<AdminSeedRow[]> { return this.repo.listSeeds(limit, siteId); }
 
   /** Force-rotate a day's seed (J5; superadmin) — bumps the durable seed version; audited. */
   rotateSeed(actorId: string, actorRole: string, tradeDate: string): Promise<SeedRotateResult> {

@@ -227,7 +227,7 @@ export function registerAdminRoutes(router: Router, deps: ApiDeps): void {
   const admin = requireRole("admin");
   const superadmin = requireRole("superadmin");
 
-  router.get(`${BASE}/admin/overview`, auth, admin, async () => deps.admin.overview());
+  router.get(`${BASE}/admin/overview`, auth, admin, async (ctx: Ctx) => deps.admin.overview(ctx.claims?.site));
 
   router.get(`${BASE}/admin/users`, auth, admin, async (ctx: Ctx) => {
     // Optional non-negative integer (cents/count) query param; ignored when absent or invalid.
@@ -255,8 +255,10 @@ export function registerAdminRoutes(router: Router, deps: ApiDeps): void {
     return deps.admin.listUsers(q);
   });
 
-  router.get(`${BASE}/admin/users/:id`, auth, admin, async (ctx: Ctx) =>
-    domain(() => deps.admin.getUserDetail(ctx.params.id!)));
+  router.get(`${BASE}/admin/users/:id`, auth, admin, async (ctx: Ctx) => {
+    await ensureUserInScope(deps, ctx, ctx.params.id!);
+    return domain(() => deps.admin.getUserDetail(ctx.params.id!));
+  });
 
   // Per-user activity timeline (J7) — deposits + withdrawals + bets, newest-first, keyset-paginated.
   router.get(`${BASE}/admin/users/:id/activity`, auth, admin, async (ctx: Ctx) => {
@@ -264,6 +266,7 @@ export function registerAdminRoutes(router: Router, deps: ApiDeps): void {
     if (kindRaw !== null && kindRaw !== "deposit" && kindRaw !== "withdrawal" && kindRaw !== "bet") {
       throw new ApiError("INVALID_KIND", "kind must be 'deposit', 'withdrawal', or 'bet'", 400);
     }
+    await ensureUserInScope(deps, ctx, ctx.params.id!);
     const q: AdminUserActivityQuery = { ...pageQuery(ctx), kind: kindRaw ?? undefined };
     const page = await deps.admin.listUserActivity(ctx.params.id!, q);
     return { items: page.items, nextCursor: page.nextCursor };
@@ -460,11 +463,13 @@ export function registerAdminRoutes(router: Router, deps: ApiDeps): void {
   });
 
   // J8: per-user engine overrides (win rate / auto-sell duration / max multiplier / stake bounds).
-  router.get(`${BASE}/admin/users/:id/overrides`, auth, admin, async (ctx: Ctx) =>
-    (await deps.admin.getUserOverrides(ctx.params.id!)) ?? {
+  router.get(`${BASE}/admin/users/:id/overrides`, auth, admin, async (ctx: Ctx) => {
+    await ensureUserInScope(deps, ctx, ctx.params.id!);
+    return (await deps.admin.getUserOverrides(ctx.params.id!)) ?? {
       userId: ctx.params.id!, winRate: null, houseEdge: null, tradeDurationS: null, maxWinMultiplier: null,
       minStakeCents: null, maxStakeCents: null, notes: null, updatedBy: null, updatedAtMs: null,
-    });
+    };
+  });
   // Writing a per-user override is a powerful statistical lever → superadmin-gated (docs/22 Task H).
   // platform_superadmin (rank 5) also satisfies this. The RPC stamps the override with the target's
   // brand (user_overrides.site_id) and writes an admin_actions audit row.
@@ -508,7 +513,7 @@ export function registerAdminRoutes(router: Router, deps: ApiDeps): void {
   });
 
   router.get(`${BASE}/admin/reports/daily`, auth, admin, async (ctx: Ctx) => {
-    const rows = await deps.admin.reportDaily(reportRange(ctx));
+    const rows = await deps.admin.reportDaily(reportRange(ctx), ctx.claims?.site);
     if (wantsCsv(ctx)) {
       return sendCsv(ctx, "report-daily.csv",
         ["date", "deposits_cents", "withdrawals_cents", "turnover_cents", "ggr_cents"],
@@ -518,7 +523,7 @@ export function registerAdminRoutes(router: Router, deps: ApiDeps): void {
   });
 
   router.get(`${BASE}/admin/reports/users`, auth, admin, async (ctx: Ctx) => {
-    const rows = await deps.admin.reportByUser(reportRange(ctx));
+    const rows = await deps.admin.reportByUser(reportRange(ctx), ctx.claims?.site);
     if (wantsCsv(ctx)) {
       return sendCsv(ctx, "report-users.csv",
         ["user_id", "username", "deposits_cents", "withdrawals_cents", "turnover_cents", "ggr_cents"],
@@ -531,10 +536,10 @@ export function registerAdminRoutes(router: Router, deps: ApiDeps): void {
   router.get(`${BASE}/admin/reports/day`, auth, admin, async (ctx: Ctx) => {
     const date = ctx.query.get("date") ?? new Date().toLocaleDateString("en-CA", { timeZone: "Africa/Nairobi" });
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new ApiError("VALIDATION", "date must be YYYY-MM-DD", 400);
-    return deps.admin.reportDay(date);
+    return deps.admin.reportDay(date, ctx.claims?.site);
   });
 
-  router.get(`${BASE}/admin/audit`, auth, admin, async (ctx: Ctx) => deps.admin.listAudit(pageQuery(ctx)));
+  router.get(`${BASE}/admin/audit`, auth, admin, async (ctx: Ctx) => deps.admin.listAudit(pageQuery(ctx), ctx.claims?.site));
 
   // ── J5: game configuration + RTP monitor + seed rotation (superadmin mutations) ───────────────
 
@@ -581,7 +586,7 @@ export function registerAdminRoutes(router: Router, deps: ApiDeps): void {
     });
   });
 
-  router.get(`${BASE}/admin/rtp`, auth, admin, async () => deps.admin.rtpMonitor());
+  router.get(`${BASE}/admin/rtp`, auth, admin, async (ctx: Ctx) => deps.admin.rtpMonitor(ctx.claims?.site));
 
   // ── M-Pesa configuration (admin reads masked; superadmin edits; secrets write-only) ──────────
   router.get(`${BASE}/admin/mpesa-config`, auth, admin, async () => domain(() => deps.admin.getMpesaConfig()));
@@ -591,7 +596,7 @@ export function registerAdminRoutes(router: Router, deps: ApiDeps): void {
     return domain(() => deps.admin.updateMpesaConfig(ctx.claims!.userId, ctx.claims!.role ?? "player", patch));
   });
 
-  router.get(`${BASE}/admin/seeds`, auth, admin, async (ctx: Ctx) => ({ items: await deps.admin.listSeeds(listLimit(ctx, 30)) }));
+  router.get(`${BASE}/admin/seeds`, auth, admin, async (ctx: Ctx) => ({ items: await deps.admin.listSeeds(listLimit(ctx, 30), ctx.claims?.site) }));
 
   router.post(`${BASE}/admin/seeds/rotate`, auth, superadmin, async (ctx: Ctx) =>
     domain(() => deps.admin.rotateSeed(ctx.claims!.userId, ctx.claims!.role ?? "player", bodyTradeDate(ctx))));
@@ -600,7 +605,7 @@ export function registerAdminRoutes(router: Router, deps: ApiDeps): void {
   // The approve/reject *actions* already ship in app.affiliate.ts (I4) at
   // /admin/affiliate/payouts/:id/{approve,reject} (now audited). J6 adds the queue the UI lists from.
   router.get(`${BASE}/admin/affiliate/payouts`, auth, admin, async (ctx: Ctx) => {
-    const q: AdminPayoutListQuery = { ...pageQuery(ctx), status: ctx.query.get("status") ?? undefined };
+    const q: AdminPayoutListQuery = { ...pageQuery(ctx), status: ctx.query.get("status") ?? undefined, siteId: ctx.claims?.site };
     return deps.admin.listAffiliatePayouts(q);
   });
 

@@ -1,4 +1,4 @@
-import { Router, ApiError, requireAuth, requireRole, rateLimit, type Ctx } from "./http.js";
+import { Router, ApiError, requireAuth, requireRole, rateLimit, assertTargetSiteInScope, type Ctx } from "./http.js";
 import type { ApiDeps } from "./app.js";
 import { mpesaCode, mpesaReceivedMessage, mpesaSentMessage, ksh } from "./mpesa.js";
 
@@ -89,11 +89,13 @@ export function ledgerToTxDto(r: MarketerLedgerRow): MarketerTxDto {
 
 /** Persistence contract for the marketer module (Postgres impl in marketers.pg.ts). */
 export interface MarketerRepo {
-  create(name: string, phone: string): Promise<MarketerRow>;
-  list(limit: number): Promise<MarketerProfile[]>;
+  create(name: string, phone: string, siteId?: string): Promise<MarketerRow>;
+  list(limit: number, siteId?: string): Promise<MarketerProfile[]>;
   profile(id: string): Promise<MarketerProfile | null>;
-  /** Look up a marketer by phone (the identity shared with the invest254 website account). */
-  profileByPhone(phone: string): Promise<MarketerProfile | null>;
+  /** Look up a marketer by phone WITHIN a brand (identity is per-site; omit => default site). */
+  profileByPhone(phone: string, siteId?: string): Promise<MarketerProfile | null>;
+  /** The brand a marketer belongs to (for admin by-id scope guards); null if unknown. */
+  siteOfMarketer(id: string): Promise<string | null>;
   credit(id: string, amountCents: number, ref: string | null, meta: unknown): Promise<number>;
   withdraw(id: string, amountCents: number, ref: string | null, meta: unknown, method: string): Promise<WithdrawResult>;
   setFuliza(id: string, amountCents: number): Promise<number>;
@@ -101,8 +103,8 @@ export interface MarketerRepo {
   statement(id: string, limit: number): Promise<MarketerLedgerRow[]>;
   // ── auth / lifecycle ──
   setPin(id: string, pin: string): Promise<void>;
-  /** Returns the marketer id on success, or null on ANY failure (no enumeration). */
-  login(phone: string, pin: string): Promise<string | null>;
+  /** Returns the marketer id on success, or null on ANY failure (no enumeration). Scoped per brand. */
+  login(phone: string, pin: string, siteId?: string): Promise<string | null>;
   changePin(id: string, currentPin: string, newPin: string): Promise<void>;
   setStatus(id: string, status: string): Promise<string>;
 }
@@ -206,6 +208,23 @@ function requireMarketer(deps: ApiDeps) {
 }
 
 // ── Routes ───────────────────────────────────────────────────────────────────
+/** Resolve the brand for an UNAUTHENTICATED marketer request (login), mirroring app.auth's
+ *  resolveSiteId: explicit `site`/`host` in body or query, validated against ACTIVE brands; an
+ *  unknown/absent ref => undefined => the default site (unchanged single-tenant behaviour). */
+async function resolveMarketerSite(ctx: Ctx, body: Record<string, unknown>, deps: ApiDeps): Promise<string | undefined> {
+  const raw = body["site"] ?? ctx.query.get("site") ?? body["host"] ?? ctx.query.get("host");
+  const ref = typeof raw === "string" && raw.trim() !== "" ? raw.trim() : undefined;
+  if (!ref) return undefined;
+  const brand = await deps.brandByHost(ref);
+  return brand?.siteId;
+}
+
+/** Refuse a site-scoped admin touching a marketer in another brand (tolerant: platform admin and
+ *  unknown target both pass — the per-site RPCs/uniques remain the ultimate guard). */
+async function ensureMarketerInScope(deps: ApiDeps, ctx: Ctx, marketerId: string): Promise<void> {
+  assertTargetSiteInScope(ctx, await deps.marketers.siteOfMarketer(marketerId));
+}
+
 export function registerMarketerRoutes(router: Router, deps: ApiDeps): void {
   const auth = requireAuth(deps.verifier);
   const admin = requireRole("admin");
@@ -215,16 +234,17 @@ export function registerMarketerRoutes(router: Router, deps: ApiDeps): void {
   // Create / upsert a marketer (by phone) + provision wallet.
   router.post(`${BASE}/admin/marketers`, auth, admin, async (ctx: Ctx) => {
     const b = bodyObj(ctx);
-    const m = await domain(() => deps.marketers.create(reqStr(b, "name"), reqStr(b, "phone")));
+    const m = await domain(() => deps.marketers.create(reqStr(b, "name"), reqStr(b, "phone"), ctx.claims?.site));
     return { status: 201, body: m };
   });
 
   // List marketer profiles (incl. derived first_name + initials and balances).
   router.get(`${BASE}/admin/marketers`, auth, admin, async (ctx: Ctx) =>
-    domain(() => deps.marketers.list(limitOf(ctx))));
+    domain(() => deps.marketers.list(limitOf(ctx), ctx.claims?.site)));
 
   // Single marketer profile.
   router.get(`${BASE}/admin/marketers/:id`, auth, admin, async (ctx: Ctx) => {
+    await ensureMarketerInScope(deps, ctx, idOf(ctx));
     const p = await domain(() => deps.marketers.profile(idOf(ctx)));
     if (!p) throw new ApiError("MARKETER_NOT_FOUND", "marketer not found", 404);
     return p;
@@ -232,6 +252,7 @@ export function registerMarketerRoutes(router: Router, deps: ApiDeps): void {
 
   // Pay a marketer (credit). Idempotent when `ref` is supplied.
   router.post(`${BASE}/admin/marketers/:id/credit`, auth, admin, async (ctx: Ctx) => {
+    await ensureMarketerInScope(deps, ctx, idOf(ctx));
     const b = bodyObj(ctx);
     const balanceCents = await domain(() =>
       deps.marketers.credit(idOf(ctx), reqPositiveCents(b), optStr(b, "ref"), b.meta ?? {}));
@@ -240,6 +261,7 @@ export function registerMarketerRoutes(router: Router, deps: ApiDeps): void {
 
   // Withdraw from a marketer. Blocks overdraw; idempotent when `ref` is supplied.
   router.post(`${BASE}/admin/marketers/:id/withdraw`, auth, admin, async (ctx: Ctx) => {
+    await ensureMarketerInScope(deps, ctx, idOf(ctx));
     const b = bodyObj(ctx);
     return domain(() =>
       deps.marketers.withdraw(idOf(ctx), reqPositiveCents(b), optStr(b, "ref"), b.meta ?? {}, optStr(b, "method") ?? "internal"));
@@ -247,19 +269,23 @@ export function registerMarketerRoutes(router: Router, deps: ApiDeps): void {
 
   // Admin sets Available Fuliza for a marketer.
   router.patch(`${BASE}/admin/marketers/:id/fuliza`, auth, admin, async (ctx: Ctx) => {
+    await ensureMarketerInScope(deps, ctx, idOf(ctx));
     const availableFulizaCents = await domain(() => deps.marketers.setFuliza(idOf(ctx), reqNonNegCents(bodyObj(ctx))));
     return { availableFulizaCents };
   });
 
   // Admin sets airtime balance for a marketer.
   router.patch(`${BASE}/admin/marketers/:id/airtime`, auth, admin, async (ctx: Ctx) => {
+    await ensureMarketerInScope(deps, ctx, idOf(ctx));
     const airtimeBalanceCents = await domain(() => deps.marketers.setAirtime(idOf(ctx), reqNonNegCents(bodyObj(ctx))));
     return { airtimeBalanceCents };
   });
 
   // Marketer ledger statement (newest-first).
-  router.get(`${BASE}/admin/marketers/:id/statement`, auth, admin, async (ctx: Ctx) =>
-    domain(() => deps.marketers.statement(idOf(ctx), limitOf(ctx))));
+  router.get(`${BASE}/admin/marketers/:id/statement`, auth, admin, async (ctx: Ctx) => {
+    await ensureMarketerInScope(deps, ctx, idOf(ctx));
+    return domain(() => deps.marketers.statement(idOf(ctx), limitOf(ctx)));
+  });
 
   // ── Marketer self-service auth (phone + PIN) ───────────────────────────────
   // Login: returns a marketer-role JWT + the caller's profile. Generic 401 on any failure.
@@ -267,7 +293,8 @@ export function registerMarketerRoutes(router: Router, deps: ApiDeps): void {
     const b = bodyObj(ctx);
     const phone = reqStr(b, "phone");
     const pin = reqPin(b, "pin");
-    const id = await domain(() => deps.marketers.login(phone, pin));
+    const siteId = await resolveMarketerSite(ctx, b, deps);
+    const id = await domain(() => deps.marketers.login(phone, pin, siteId));
     if (!id) throw new ApiError("INVALID_CREDENTIALS", "invalid phone or PIN", 401);
     const token = await deps.auth.issueToken(id, "marketer");
     const marketerProfile = await deps.marketers.profile(id);
@@ -288,15 +315,18 @@ export function registerMarketerRoutes(router: Router, deps: ApiDeps): void {
     const password = typeof b.password === "string" ? b.password : "";
     if (password.length === 0) throw new ApiError("VALIDATION", "password is required", 400);
 
-    // 1) Prove the website account (phone + password). Any failure collapses to a generic 401.
+    // Resolve the brand this login is for (identity is per-site) BEFORE verifying credentials.
+    const siteId = await resolveMarketerSite(ctx, b, deps);
+
+    // 1) Prove the website account (phone + password) WITHIN this brand. Any failure -> generic 401.
     try {
-      await deps.auth.login({ phone, password });
+      await deps.auth.login({ phone, password, ...(siteId ? { siteId } : {}) });
     } catch {
       throw new ApiError("INVALID_CREDENTIALS", "invalid phone or password", 401);
     }
 
-    // 2) The website identity must be linked to an ACTIVE marketer wallet (same phone).
-    const profile = await domain(() => deps.marketers.profileByPhone(phone));
+    // 2) The website identity must be linked to an ACTIVE marketer wallet on THIS brand (same phone).
+    const profile = await domain(() => deps.marketers.profileByPhone(phone, siteId));
     if (!profile) throw new ApiError("NOT_MARKETER", "not a marketer account", 403);
     if (profile.status !== "active") throw new ApiError("MARKETER_INACTIVE", `marketer is ${profile.status}`, 403);
 
@@ -326,12 +356,14 @@ export function registerMarketerRoutes(router: Router, deps: ApiDeps): void {
   // ── Admin lifecycle (onboarding + demotion/suspension) ─────────────────────
   // Set/reset a marketer's PIN (onboarding or admin recovery — no self-service reset).
   router.post(`${BASE}/admin/marketers/:id/pin`, auth, admin, async (ctx: Ctx) => {
+    await ensureMarketerInScope(deps, ctx, idOf(ctx));
     await domain(() => deps.marketers.setPin(idOf(ctx), reqPin(bodyObj(ctx), "pin")));
     return { ok: true };
   });
 
   // Set status: active | suspended | disabled. 'disabled'/'suspended' = demotion (blocks login + /me).
   router.patch(`${BASE}/admin/marketers/:id/status`, auth, admin, async (ctx: Ctx) => {
+    await ensureMarketerInScope(deps, ctx, idOf(ctx));
     const status = await domain(() => deps.marketers.setStatus(idOf(ctx), reqStr(bodyObj(ctx), "status")));
     return { status };
   });

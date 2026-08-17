@@ -15,9 +15,11 @@ import { createHash } from "node:crypto";
 
 /** In-memory MarketerRepo mirroring the SQL RPCs (0033): overdraw guard, idempotency, initials. */
 export function makeInMemoryMarketerRepo(): MarketerRepo {
-  interface Rec { id: string; name: string; phone: string; status: string; created_at: string; updated_at: string; balance: number; fuliza: number; airtime: number; }
+  interface Rec { id: string; name: string; phone: string; status: string; created_at: string; updated_at: string; balance: number; fuliza: number; airtime: number; site: string; }
   const byId = new Map<string, Rec>();
-  const byPhone = new Map<string, string>();
+  const byPhone = new Map<string, string>();  // key: `${site}:${phone}`
+  const DEFAULT_SITE = "00000000-0000-0000-0000-000000000001";
+  const pkey = (site: string | undefined, phone: string) => `${site ?? DEFAULT_SITE}:${phone}`;
   const ledgers = new Map<string, MarketerLedgerRow[]>();
   const refs = new Map<string, { balance: number; ledgerId: number }>();
   const pins = new Map<string, string>();
@@ -33,19 +35,22 @@ export function makeInMemoryMarketerRepo(): MarketerRepo {
     return row.id;
   };
   return {
-    async create(name: string, phone: string): Promise<MarketerRow> {
-      const existing = byPhone.get(phone);
+    async create(name: string, phone: string, siteId?: string): Promise<MarketerRow> {
+      const site = siteId ?? DEFAULT_SITE;
+      const existing = byPhone.get(pkey(site, phone));
       if (existing) { const m = byId.get(existing)!; m.name = name; m.updated_at = now(); return { id: m.id, name: m.name, phone: m.phone, status: m.status, created_at: m.created_at, updated_at: m.updated_at }; }
       const id = `m-${++mseq}`; const ts = now();
-      const m: Rec = { id, name, phone, status: "active", created_at: ts, updated_at: ts, balance: 0, fuliza: 0, airtime: 0 };
-      byId.set(id, m); byPhone.set(phone, id); ledgers.set(id, []);
+      const m: Rec = { id, name, phone, status: "active", created_at: ts, updated_at: ts, balance: 0, fuliza: 0, airtime: 0, site };
+      byId.set(id, m); byPhone.set(pkey(site, phone), id); ledgers.set(id, []);
       return { id, name, phone, status: "active", created_at: ts, updated_at: ts };
     },
-    async list(limit: number): Promise<MarketerProfile[]> {
-      return [...byId.values()].sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, limit).map(profileOf);
+    async list(limit: number, siteId?: string): Promise<MarketerProfile[]> {
+      return [...byId.values()].filter((m) => siteId == null || m.site === siteId)
+        .sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, limit).map(profileOf);
     },
     async profile(id: string): Promise<MarketerProfile | null> { const m = byId.get(id); return m ? profileOf(m) : null; },
-    async profileByPhone(phone: string): Promise<MarketerProfile | null> { const id = byPhone.get(phone); const m = id ? byId.get(id) : undefined; return m ? profileOf(m) : null; },
+    async profileByPhone(phone: string, siteId?: string): Promise<MarketerProfile | null> { const id = byPhone.get(pkey(siteId, phone)); const m = id ? byId.get(id) : undefined; return m ? profileOf(m) : null; },
+    async siteOfMarketer(id: string): Promise<string | null> { return byId.get(id)?.site ?? null; },
     async credit(id: string, amountCents: number, ref: string | null, meta: unknown): Promise<number> {
       if (amountCents <= 0) throw new Error("AMOUNT_MUST_BE_POSITIVE");
       if (ref && refs.has(ref)) return refs.get(ref)!.balance;
@@ -70,8 +75,8 @@ export function makeInMemoryMarketerRepo(): MarketerRepo {
     async setAirtime(id: string, amountCents: number): Promise<number> { if (amountCents < 0) throw new Error("AMOUNT_MUST_BE_NONNEGATIVE"); const m = byId.get(id); if (!m) throw new Error("MARKETER_NOT_FOUND"); m.airtime = amountCents; m.updated_at = now(); return amountCents; },
     async statement(id: string, limit: number): Promise<MarketerLedgerRow[]> { return (ledgers.get(id) ?? []).slice().reverse().slice(0, limit); },
     async setPin(id: string, pin: string): Promise<void> { if (!/^\d{4,6}$/.test(pin)) throw new Error("INVALID_PIN"); if (!byId.has(id)) throw new Error("MARKETER_NOT_FOUND"); pins.set(id, pin); },
-    async login(phone: string, pin: string): Promise<string | null> {
-      const id = byPhone.get(phone); if (!id) return null;
+    async login(phone: string, pin: string, siteId?: string): Promise<string | null> {
+      const id = byPhone.get(pkey(siteId, phone)); if (!id) return null;
       const m = byId.get(id)!; if (!pins.has(id) || m.status !== "active") return null;
       return pins.get(id) === pin ? id : null;
     },
