@@ -25,6 +25,10 @@ const HistoryIcon = () => (
   <svg viewBox="0 0 24 24" className={ic} fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden>
     <circle cx="12" cy="12" r="9" />
     <path d="M12 7v5l3 2" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>);
+const ReferralIcon = () => (
+  <svg viewBox="0 0 24 24" className={ic} fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden>
+    <path d="M20 12v8H4v-8M2 8h20v4H2zM12 8V4M12 4a2 2 0 1 0-3.5 1.3C9.5 6.5 12 8 12 8M12 4a2 2 0 1 1 3.5 1.3C14.5 6.5 12 8 12 8" strokeLinecap="round" strokeLinejoin="round" />
   </svg>
 );
 const AccountIcon = () => (
@@ -111,6 +115,9 @@ export function ProfileMenu({ user }: { user: MeDto }) {
 
           <Link role="menuitem" href="/history" className={itemCls} onClick={() => setOpen(false)}>
             <HistoryIcon /> History
+          </Link>
+          <Link role="menuitem" href="/referral" className={itemCls} onClick={() => setOpen(false)}>
+            <ReferralIcon /> Referrals &amp; earnings
           </Link>
           <Link role="menuitem" href="/account" className={itemCls} onClick={() => setOpen(false)}>
             <AccountIcon /> Account

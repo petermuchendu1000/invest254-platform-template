@@ -18,6 +18,9 @@ import type {
   TransactionKind,
   WalletDto,
   WithdrawalResult,
+  MeReferralDto,
+  CommissionEventDto,
+  ReferredPlayerDto,
 } from '@/lib/api/types';
 import type { PositionStatus } from '@invest254/shared';
 
@@ -112,6 +115,16 @@ export const api = {
       token,
       query: { cursor: p.cursor ?? undefined, limit: p.limit },
     }),
+
+  // Referral / instant-commission dashboard (available to every logged-in user)
+  meReferral: (token: string) => apiFetch<MeReferralDto>('/me/referral', { token }),
+  meReferralCommissions: (token: string, p: PageParams = {}) =>
+    apiFetch<Paginated<CommissionEventDto>>('/me/referral/commissions', {
+      token,
+      query: { cursor: p.cursor ?? undefined, limit: p.limit },
+    }),
+  meReferralReferred: (token: string) =>
+    apiFetch<{ items: ReferredPlayerDto[] }>('/me/referral/referred', { token }),
   affiliateRequestPayout: (token: string) =>
     apiFetch<PayoutRequestResult>('/affiliate/payouts', { method: 'POST', token }),
 

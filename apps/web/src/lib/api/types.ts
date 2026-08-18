@@ -195,3 +195,41 @@ export interface NotificationDto {
   category: string | null;
   createdAtMs: number;
 }
+
+/** GET /me/referral — referral code/link + headline commission earnings (all users). */
+export interface ReferralEarningsDto {
+  totalCents: Cents;
+  last30dCents: Cents;
+  byLevel: { l1: Cents; l2: Cents; l3: Cents };
+  playerReferralCents: Cents;
+  count: number;
+}
+export interface MeReferralDto {
+  code: string | null;
+  link: string | null;
+  referralPath: string;
+  referredCount: number;
+  downlineMarketers: number;
+  earnings: ReferralEarningsDto;
+}
+/** GET /me/referral/commissions item — one instant commission event. */
+export interface CommissionEventDto {
+  id: string;
+  referredUsername: string;
+  level: number;
+  role: string;
+  rate: number;
+  depositCents: Cents;
+  commissionCents: Cents;
+  createdAtMs: number;
+}
+/** GET /me/referral/referred item — a referred player with deposit/played transparency. */
+export interface ReferredPlayerDto {
+  userId: string;
+  username: string;
+  depositsCents: Cents;
+  playedCents: Cents;
+  unplayedCents: Cents;
+  commissionCents: Cents;
+  lastActiveMs: number | null;
+}

@@ -3,7 +3,7 @@ import { DEFAULT_CONFIG, normalizeHost, type Cents } from "@invest254/shared";
 import {
   InMemoryEngagementRepository, InMemoryPaymentRepository, InMemoryGameRepository, StubDarajaClient,
   InMemoryIdentityRepository, PaymentService, AuthService, AffiliateService, AdminService, InMemoryAdminRepository, PlatformService, InMemoryPlatformRepository, maskHandle,
-  NotificationService, InMemoryNotificationRepository,
+  NotificationService, InMemoryNotificationRepository, InMemoryReferralRepository,
   type FairnessRecord, type AuthClaims, type Verifier,
 } from "@invest254/engine";
 import { createApp, type ApiDeps, type WalletBalance, type Brand } from "./app.js";
@@ -371,6 +371,7 @@ export async function startTestApi(opts: TestApiOptions = {}): Promise<TestApi> 
     platform,
     notifications,
     marketers: makeInMemoryMarketerRepo(),
+    referral: new InMemoryReferralRepository(),
     config: () => DEFAULT_CONFIG,
     // Brand-aware config for tests: resolve a ref (slug|id) to a TEST brand and return a DISTINCT
     // economy per brand (different maxMultiplier) so tests can prove the response is site-scoped.

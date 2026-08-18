@@ -1,6 +1,6 @@
 import {
   PgGameRepository, PgEngagementRepository, PgPaymentRepository, PgIdentityRepository,
-  PaymentService, AuthService, AffiliateService, AdminService, PgAdminRepository, PlatformService, PgPlatformRepository, makeDarajaClientFromConfig, loadDarajaConfigFromDb, makeVerifier,
+  PaymentService, AuthService, AffiliateService, AdminService, PgAdminRepository, PgReferralRepository, PlatformService, PgPlatformRepository, makeDarajaClientFromConfig, loadDarajaConfigFromDb, makeVerifier,
   NotificationService, PgNotificationRepository,
   GameConfigStore, mapConfigRow, makePgPools,
   type GameRepository, type EngagementRepository, type PaymentRepository,
@@ -89,6 +89,7 @@ async function buildDeps(): Promise<ApiDeps> {
   });
   const affiliate = new AffiliateService(identity, daraja);
   const admin = new AdminService(new PgAdminRepository(q));
+  const referral = new PgReferralRepository(q);
   const platform = new PlatformService(new PgPlatformRepository(q));
   const notifications = new NotificationService(new PgNotificationRepository(q));
   const support = makePgSupportDeps(q);
@@ -174,6 +175,7 @@ async function buildDeps(): Promise<ApiDeps> {
     notifications,
     corsAllowOrigin: (origin: string) => brandCors.allows(origin),
     marketers: makePgMarketerRepo((sql, params) => q.query(sql, params ?? [])),
+    referral,
     config: () => gameConfig.active(),
     // Brand-aware public config: resolve a site ref (slug|domain|id) -> that brand's live
     // site_game_config (the row the engine prices from), so GET /game/config matches the engine's

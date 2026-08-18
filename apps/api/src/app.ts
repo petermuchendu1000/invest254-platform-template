@@ -2,6 +2,7 @@ import { rtp, type GameConfig, type Cents, type VersionedGameConfig } from "@inv
 import type {
   FairnessRecord, PaymentService, AuthService, AffiliateService, AdminService, NotificationService, Verifier, PlatformService,
   Page, PageQuery, LedgerEntry, PositionRecord, PositionDetail, PositionListQuery, TransactionRecord, TxListQuery,
+  ReferralRepository,
 } from "@invest254/engine";
 import { Router, ApiError, serverFrom, type Ctx } from "./http.js";
 import { registerProtectedRoutes } from "./app.payments.js";
@@ -9,6 +10,7 @@ import { registerHistoryRoutes } from "./app.history.js";
 import { registerSiteRoutes } from "./app.site.js";
 import { registerAuthRoutes } from "./app.auth.js";
 import { registerAffiliateRoutes } from "./app.affiliate.js";
+import { registerReferralRoutes } from "./app.referral.js";
 import { registerAdminRoutes } from "./app.admin.js";
 import { registerPlatformRoutes } from "./app.platform.js";
 import { registerNotificationRoutes } from "./app.notifications.js";
@@ -78,6 +80,8 @@ export interface ApiDeps {
   notifications: Pick<NotificationService, "create" | "listActive" | "adminList" | "dismiss" | "resolve" | "resolveByCategory">;
   /** Marketer payments module (0033): create/credit/withdraw + admin-set Fuliza/airtime + statement. */
   marketers: MarketerRepo;
+  /** Referral/commission reads (0068): code+link, earnings, feed, per-referred-player breakdown. */
+  referral: ReferralRepository;
   /**
    * Public game configuration source. A PROVIDER, not a value: config is edited live in the
    * admin panel, so a snapshot captured at boot would serve stale limits forever (the exact
@@ -219,6 +223,7 @@ export function createRouter(deps: ApiDeps): Router {
   registerPlatformRoutes(router, deps);
   registerNotificationRoutes(router, deps);
   registerMarketerRoutes(router, deps);
+  registerReferralRoutes(router, deps);
   registerProtectedRoutes(router, deps);
   registerHistoryRoutes(router, deps);
   registerSupportRoutes(router, deps);
