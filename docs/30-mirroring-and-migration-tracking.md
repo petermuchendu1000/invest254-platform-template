@@ -14,9 +14,14 @@ template must never carry independent code commits; platform changes land here a
 | `.github/workflows/mirror-drift.yml` | Daily (+ on template `main` push): read-only detector that **fails** and maintains a single rolling `🔄 Mirror drift` issue whenever the template is not identical to our HEAD. Safety net if sync is disabled. |
 
 Both are inert here (`if: github.repository == '…/invest254-platform-template'`) and active only once
-mirrored into the template. No cross-repo secret is needed: upstream is public (read), and each
-workflow writes only to its own repo via `GITHUB_TOKEN`. Design follows the standard
-upstream→downstream mirror + drift-issue pattern.
+mirrored into the template. Design follows the standard upstream→downstream mirror + drift-issue
+pattern.
+
+**Required secret (template only): `MIRROR_PAT`.** The default `GITHUB_TOKEN` is forbidden from pushing
+changes under `.github/workflows/`, so `mirror-sync` pushes with `MIRROR_PAT` — a fine-grained PAT
+scoped to the template with **contents:write + workflows:write**. Upstream is public (read needs no
+secret); `mirror-drift` only reads + writes issues via `GITHUB_TOKEN`. Rotate `MIRROR_PAT` in the
+template's Actions secrets when the platform PAT is rotated.
 
 **To intentionally change the template, change it HERE.** Template-only commits are reverted by the
 next sync — that is the point.

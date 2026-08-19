@@ -46,6 +46,7 @@ jobs:
         env: { GH_TOKEN: "${{ github.token }}" }
         run: |
           set -euo pipefail
+          gh label create mirror-drift --color FBCA04 --description "Template out of sync with upstream production" 2>/dev/null || true
           title="🔄 Mirror drift: template behind production"
           n=$(gh issue list --state open --search "$title in:title" --json number -q '.[0].number' || true)
           if [ -n "${n:-}" ]; then gh issue edit "$n" --body-file drift.md; gh issue comment "$n" --body "Drift still present on run ${{ github.run_id }}.";
