@@ -1,0 +1,64 @@
+name: Mirror · drift check
+
+# Safety net for the mirror (docs/30): independent, read-only detector that FAILS and opens a single
+# rolling issue whenever this template is not byte-identical to upstream production HEAD. Runs even if
+# the sync workflow is disabled/broken. Guarded to the template repo; inert when mirrored upstream.
+
+on:
+  schedule:
+    - cron: "0 5 * * *"      # daily 05:00 UTC (~08:00 EAT)
+  push:
+    branches: [main]          # confirm a sync actually converged
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  UPSTREAM: https://github.com/petermuchendu1000/invest254.git
+
+jobs:
+  drift:
+    if: github.repository == 'petermuchendu1000/invest254-platform-template'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: main, fetch-depth: 0 }
+      - name: Compare tree to upstream HEAD
+        id: cmp
+        run: |
+          set -euo pipefail
+          git remote add prod "$UPSTREAM" || git remote set-url prod "$UPSTREAM"
+          git fetch --depth=1 prod main
+          behind=$(git rev-list --count HEAD..FETCH_HEAD || echo "?")
+          if git diff --quiet HEAD FETCH_HEAD; then
+            echo "drift=false" >> "$GITHUB_OUTPUT"; echo "✅ template == production HEAD"
+          else
+            echo "drift=true" >> "$GITHUB_OUTPUT"
+            { echo "### 🔄 Mirror drift detected";
+              echo "Template `main` is not byte-identical to upstream \`invest254@$(git rev-parse --short FETCH_HEAD)\` (behind by ~${behind} commits).";
+              echo ""; echo '```'; git diff --stat HEAD FETCH_HEAD | tail -40; echo '```';
+              echo "Run the **Mirror · sync to production** workflow to reconcile."; } > drift.md
+          fi
+      - name: Open/update rolling drift issue
+        if: steps.cmp.outputs.drift == 'true'
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          set -euo pipefail
+          title="🔄 Mirror drift: template behind production"
+          n=$(gh issue list --state open --search "$title in:title" --json number -q '.[0].number' || true)
+          if [ -n "${n:-}" ]; then gh issue edit "$n" --body-file drift.md; gh issue comment "$n" --body "Drift still present on run ${{ github.run_id }}.";
+          else gh issue create --title "$title" --label mirror-drift --body-file drift.md; fi
+      - name: Close rolling issue when back in sync
+        if: steps.cmp.outputs.drift == 'false'
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          set -euo pipefail
+          title="🔄 Mirror drift: template behind production"
+          n=$(gh issue list --state open --search "$title in:title" --json number -q '.[0].number' || true)
+          if [ -n "${n:-}" ]; then gh issue comment "$n" --body "✅ Back in sync with production HEAD (run ${{ github.run_id }}). Closing."; gh issue close "$n"; fi
+      - name: Fail the job on drift
+        if: steps.cmp.outputs.drift == 'true'
+        run: |
+          echo "::error::Template is not identical to production HEAD (mirror drift)."; exit 1

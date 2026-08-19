@@ -45,6 +45,11 @@ Idempotent, dependency-ordered SQL migrations for the Invest254 Supabase Postgre
 ## Applying
 With the Supabase/Postgres connection, apply each file in order. They are safe to re-run.
 
+After applying, stamp the ledger so applied-state stays deterministic and tamper-evident:
+`node --import tsx scripts/migrations_status.mts --record` (backfill / after each new migration), and
+`node --import tsx scripts/migrations_status.mts` to verify (0 problems). See `docs/30` and
+`0091_migration_ledger.sql` (`public.schema_migrations`).
+
 ## ⚠️ Super-admin bootstrap (manual, required)
 As of `0015` identity is self-managed (phone + password, no Supabase Auth). Create the first
 super-admin by registering through the app (or calling `fn_register_user` as `service_role`),

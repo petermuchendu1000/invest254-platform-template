@@ -1,0 +1,74 @@
+name: Mirror · sync to production
+
+# Autonomous TRUE-MIRROR enforcement (docs/30). Keeps this template exactly equal to the upstream
+# source of truth (petermuchendu1000/invest254) so the 0067/0068-style drift that forked this repo
+# cannot recur. Reads PUBLIC upstream with no secret; pushes to its OWN main via GITHUB_TOKEN.
+# Guarded to run ONLY in the template repo, so the identical file is inert when mirrored upstream.
+
+on:
+  schedule:
+    - cron: "0 */3 * * *"     # every 3 hours
+  workflow_dispatch: {}
+
+concurrency:
+  group: mirror-sync
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  issues: write
+
+env:
+  UPSTREAM: https://github.com/petermuchendu1000/invest254.git
+
+jobs:
+  sync:
+    if: github.repository == 'petermuchendu1000/invest254-platform-template'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: main, fetch-depth: 0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm }
+      - name: Fetch upstream & detect drift
+        id: drift
+        run: |
+          set -euo pipefail
+          git remote add prod "$UPSTREAM" || git remote set-url prod "$UPSTREAM"
+          git fetch --depth=1 prod main
+          if git diff --quiet HEAD FETCH_HEAD; then
+            echo "in_sync=true" >> "$GITHUB_OUTPUT"; echo "Already at production HEAD."
+          else
+            echo "in_sync=false" >> "$GITHUB_OUTPUT"; echo "sha=$(git rev-parse --short FETCH_HEAD)" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Align tree to production HEAD
+        if: steps.drift.outputs.in_sync == 'false'
+        run: |
+          set -euo pipefail
+          git checkout FETCH_HEAD -- .
+          comm -23 <(git ls-files | sort) <(git ls-tree -r --name-only FETCH_HEAD | sort) | xargs -r git rm -q
+          git add -A
+      - name: CI gate (typecheck) before publishing the mirror
+        if: steps.drift.outputs.in_sync == 'false'
+        run: |
+          set -euo pipefail
+          npm ci
+          npx tsc -b packages/shared apps/engine apps/api
+      - name: Commit & push mirror
+        if: steps.drift.outputs.in_sync == 'false'
+        run: |
+          set -euo pipefail
+          git config user.name  "mirror-bot"
+          git config user.email "mirror-bot@users.noreply.github.com"
+          git commit -m "chore(mirror): sync to invest254@${{ steps.drift.outputs.sha }} [skip ci]"
+          git push origin HEAD:main
+      - name: Open/refresh a blocker issue on failure
+        if: failure()
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          set -euo pipefail
+          title="🔴 Mirror sync blocked"
+          n=$(gh issue list --state open --search "$title in:title" --json number -q '.[0].number' || true)
+          body="Automatic mirror to production HEAD failed on run ${{ github.run_id }}. The typecheck/align gate did not pass, so main was NOT updated. See the run logs."
+          if [ -n "${n:-}" ]; then gh issue comment "$n" --body "$body";
+          else gh issue create --title "$title" --label mirror-drift --body "$body"; fi
