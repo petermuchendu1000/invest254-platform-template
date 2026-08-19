@@ -19,15 +19,28 @@ import type { DarajaConfig } from "./daraja.js";
 
 export interface AdminOverview {
   users: { total: number; active: number; suspended: number; banned: number; players: number; marketers: number; admins: number };
-  finance: { depositsCents: Cents; withdrawalsCents: Cents; pendingWithdrawals: number; walletLiabilityCents: Cents };
+  // `withdrawalsCents` is REAL cash out (M-Pesa B2C) only. Marketer game-winnings "withdrawals"
+  // are internal book transfers into the companion marketer wallet (transactions.provider='internal',
+  // migration 0036) — no cash leaves the business — so they are EXCLUDED from every real-money figure
+  // and surfaced separately as `internalTransfersCents` for transparency.
+  finance: { depositsCents: Cents; withdrawalsCents: Cents; internalTransfersCents: Cents; pendingWithdrawals: number; walletLiabilityCents: Cents };
   affiliate: { marketers: number; commissionAccruedCents: Cents; commissionPaidCents: Cents; pendingPayouts: number };
   game: { settledPositions: number; turnoverCents: Cents; ggrCents: Cents };
+  // Marketer (internal) cohort, isolated from every REAL figure above. Marketer accounts (migration
+  // 0033, matched by phone) are credited internally (ledger adjustments, not real deposits), play on
+  // that funny money and cash out internally — so their deposits/turnover/GGR/liability are excluded
+  // from the real-player stats and reported here separately for transparency.
+  marketer: { accounts: number; creditedCents: Cents; turnoverCents: Cents; ggrCents: Cents; walletLiabilityCents: Cents };
 }
 /** A user as the admin user-list sees them — enriched with wallet, lifetime cash flow,
  *  game economics and last-activity so operators get deep info at a glance (no drill-in needed). */
 export interface AdminUserRow {
   userId: string; username: string; phone: string; role: string; status: string; createdAtMs: number;
   realBalanceCents: Cents; bonusBalanceCents: Cents;
+  /** Non-withdrawable demo bucket (migration 0084). Non-zero only for marketer/demo accounts. */
+  demoBalanceCents: Cents;
+  /** True when this is a demo/marketer account (plays on demo_balance; excluded from real cash). */
+  isMarketer: boolean;
   depositsCents: Cents; withdrawalsCents: Cents; netDepositsCents: Cents;
   lastFundedCents: Cents | null;
   turnoverCents: Cents; ggrCents: Cents; betCount: number;
@@ -37,7 +50,30 @@ export interface AdminUserRow {
 export interface AdminUserDetail extends AdminUserRow {
   referredBy: string | null;
 }
-export interface AdminWithdrawalRow { txId: string; userId: string; username: string; amountCents: Cents; status: string; phone: string; createdAtMs: number; }
+/**
+ * A withdrawal as the admin moderation queue sees it. Beyond the transaction itself it carries the
+ * player's identity and lifetime money context (same brand as the withdrawal) so a reviewer can
+ * judge a payout without leaving the page: current balance, lifetime deposits/withdrawals (count +
+ * value) and when the player first funded. Fields map to clickable links in the UI.
+ */
+export interface AdminWithdrawalRow {
+  txId: string;
+  userId: string;
+  username: string;
+  phone: string;
+  amountCents: Cents;
+  status: string;
+  provider: string | null;
+  mpesaReceipt: string | null;
+  createdAtMs: number;
+  updatedAtMs: number | null;
+  balanceCents: Cents;             // player's current real balance (this brand)
+  totalDepositsCents: Cents;       // lifetime successful deposits (this brand)
+  depositCount: number;
+  totalWithdrawalsCents: Cents;    // lifetime successful (paid) withdrawals (this brand)
+  withdrawalCount: number;
+  firstDepositAtMs: number | null; // first successful deposit (funding age); null if never funded
+}
 /** A transaction (deposit OR withdrawal) as the unified Finance transactions explorer sees it —
  *  carries the player identity, exact timestamps, provider, receipt and STK checkout id. */
 export interface AdminTransactionRow {
@@ -63,6 +99,7 @@ export interface AdminWithdrawalListQuery extends PageQuery { status?: string | 
 export interface SetUserStatusResult { userId: string; status: string; }
 export interface SetCommissionRateResult { userId: string; commissionRate: number; }
 export interface SetUserRoleResult { userId: string; role: string; }
+export interface UpdateUserDetailsResult { userId: string; phone: string; username: string; }
 /** Result of a manual wallet balance adjustment (J3). */
 export interface AdjustBalanceResult { userId: string; amountCents: Cents; newBalanceCents: Cents; direction: "credit" | "debit"; }
 /** Result of resetting a wallet to the user's last funded (most recent successful deposit) amount. */
@@ -158,6 +195,17 @@ export interface WithdrawalPoolRow {
 export interface RtpWindowRow { window: string; settledPositions: number; turnoverCents: Cents; payoutCents: Cents; realisedRtp: number | null; }
 /** RTP monitor: realised vs target across rolling windows, with a drift alert (J5). */
 export interface RtpMonitor { targetRtp: number; toleranceAbs: number; minSamples: number; windows: RtpWindowRow[]; alert: boolean; }
+
+/** Real-cash RTP (rec #7): committed-money truth from the ledger, marketer cohort shown separately. */
+export interface RealCashSide { turnoverCents: Cents; payoutCents: Cents; ggrCents: Cents; bets: number; rtp: number | null; }
+export interface RealCashWindow { window: string; real: RealCashSide; demo: RealCashSide; cash: { depositsCents: Cents; withdrawalsCents: Cents; netCashCents: Cents }; }
+export interface RealCashRtp { rtpTarget: number | null; windows: RealCashWindow[]; }
+
+/** One economy-config version in the change-review (diff vs prior + risk flag). */
+export interface ConfigChangeRow {
+  version: number; createdAtMs: number; houseEdge: number; targetWinRate: number; maxMultiplier: number;
+  prevHouseEdge: number | null; prevTargetWinRate: number | null; changedFields: string[]; risk: boolean; riskReason: string;
+}
 /** One provably-fair day row for the admin seed panel (J5). Hash is the public commitment. */
 export interface AdminSeedRow { gameDayId: number | null; tradeDate: string; serverSeedHash: string | null; seedVersion: number; revealed: boolean; revealedAtMs: number | null; }
 /** Result of a superadmin-forced seed rotation (J5): the day and its new (bumped) seed version. */
@@ -207,7 +255,7 @@ export interface AdminChatModRow { id: number; userId: string | null; username: 
  *  deposit/withdrawal amount or the bet stake; `createdAtMs` is the transaction time or the
  *  position's opened-at — the single sort/keyset key across both sources. */
 export interface AdminUserActivityRow {
-  kind: "deposit" | "withdrawal" | "bet";
+  kind: "deposit" | "withdrawal" | "bet" | "adjustment";
   id: string;
   createdAtMs: number;
   status: string;
@@ -236,6 +284,7 @@ export interface AdminBetSource { adminBetsOf(userId: string): AdminBetSnapshot[
 
 /** Durable boundary for the admin back office (RPCs + reads / in-memory mirror). */
 export interface AdminRepository {
+  /** Dashboard KPIs. `siteId` scopes every figure to one brand (null/undefined => cross-brand global for platform admins). */
   overview(siteId?: string): Promise<AdminOverview>;
   listUsers(q: AdminUserListQuery): Promise<Page<AdminUserRow>>;
   getUserDetail(userId: string): Promise<AdminUserDetail | null>;
@@ -244,6 +293,8 @@ export interface AdminRepository {
   setUserStatus(actorId: string, actorRole: string, targetId: string, status: string, reason: string | null): Promise<SetUserStatusResult>;
   setCommissionRate(actorId: string, actorRole: string, targetId: string, rate: number): Promise<SetCommissionRateResult>;
   setUserRole(actorId: string, actorRole: string, targetId: string, role: string): Promise<SetUserRoleResult>;
+  /** Edit a user's phone/username (item 6). Admin+ (a plain admin may not edit an admin). Per-brand unique. */
+  updateUserDetails(actorId: string, actorRole: string, targetId: string, phone: string | null, username: string | null): Promise<UpdateUserDetailsResult>;
   listWithdrawals(q: AdminWithdrawalListQuery): Promise<Page<AdminWithdrawalRow>>;
   /** Unified deposits + withdrawals feed for the Finance transactions explorer (newest-first, keyset). */
   listTransactions(q: AdminTransactionListQuery): Promise<Page<AdminTransactionRow>>;
@@ -271,9 +322,16 @@ export interface AdminRepository {
   setWithdrawalPool(actorId: string, actorRole: string, siteId: string, tradeDay: string, amountCents: Cents): Promise<WithdrawalPoolRow>;
   /** docs/25 (0064) — set the brand's recurring default that auto-seeds each new EAT day. */
   setDefaultPool(actorId: string, actorRole: string, siteId: string, tradeDay: string, amountCents: Cents): Promise<WithdrawalPoolRow>;
+  // 0067 — per-brand withdrawal kill switch. Read + admin/owner toggle (audited).
+  getWithdrawalsEnabled(siteId: string): Promise<boolean>;
+  setWithdrawalsEnabled(actorId: string, actorRole: string, siteId: string, enabled: boolean): Promise<boolean>;
   getMpesaConfig(): Promise<MpesaConfigRow>;
   updateMpesaConfig(actorId: string, actorRole: string, patch: MpesaConfigPatch): Promise<MpesaConfigRow>;
   rtpMonitor(siteId?: string): Promise<RtpMonitor>;
+  /** Real-cash RTP from committed ledger money (rec #7); marketer cohort shown separately. */
+  realCashRtp(siteId?: string): Promise<RealCashRtp>;
+  /** Economy-config change review: recent versions with diffs + risk flags (docs/28 §4). */
+  configChangeReview(siteId: string, limit?: number): Promise<ConfigChangeRow[]>;
   listSeeds(limit: number, siteId?: string): Promise<AdminSeedRow[]>;
   rotateSeed(actorId: string, actorRole: string, tradeDate: string): Promise<SeedRotateResult>;
   // J6 — affiliate payout queue + chat moderation
@@ -504,6 +562,9 @@ export class PgAdminRepository implements AdminRepository {
   constructor(private readonly q: Querier) {}
 
   async overview(siteId?: string): Promise<AdminOverview> {
+    // $1 = optional brand filter. NULL => cross-brand global (platform_superadmin); a uuid => one brand.
+    // Every subselect is site-scoped so a brand-scoped admin's dashboard shows ONLY its own brand's
+    // figures (the marketer-cohort exclusion via marketer_account_ids is orthogonal to the site filter).
     const r = await this.q.query(
       `select
          (select count(*) from profiles where ($1::uuid is null or site_id = $1)) as u_total,
@@ -513,25 +574,32 @@ export class PgAdminRepository implements AdminRepository {
          (select count(*) from profiles where role = 'player' and ($1::uuid is null or site_id = $1)) as u_players,
          (select count(*) from profiles where role = 'marketer' and ($1::uuid is null or site_id = $1)) as u_marketers,
          (select count(*) from profiles where role in ('admin','superadmin') and ($1::uuid is null or site_id = $1)) as u_admins,
-         (select coalesce(sum(amount),0) from transactions where kind='deposit' and status='success' and ($1::uuid is null or site_id = $1)) as f_dep,
-         (select coalesce(sum(amount),0) from transactions where kind='withdrawal' and status='success' and ($1::uuid is null or site_id = $1)) as f_wd,
-         (select count(*) from transactions where kind='withdrawal' and status='pending' and ($1::uuid is null or site_id = $1)) as f_pending,
-         (select coalesce(sum(real_balance + bonus_balance),0) from wallets where ($1::uuid is null or site_id = $1)) as f_liab,
+         (select coalesce(sum(amount),0) from transactions where kind='deposit' and status='success' and user_id not in (select user_id from marketer_account_ids) and ($1::uuid is null or site_id = $1)) as f_dep,
+         (select coalesce(sum(amount),0) from transactions where kind='withdrawal' and status='success' and provider is distinct from 'internal' and user_id not in (select user_id from marketer_account_ids) and ($1::uuid is null or site_id = $1)) as f_wd,
+         (select coalesce(sum(amount),0) from transactions where kind='withdrawal' and status='success' and provider = 'internal' and ($1::uuid is null or site_id = $1)) as f_internal,
+         (select count(*) from transactions where kind='withdrawal' and status='pending' and provider is distinct from 'internal' and user_id not in (select user_id from marketer_account_ids) and ($1::uuid is null or site_id = $1)) as f_pending,
+         (select coalesce(sum(real_balance + bonus_balance),0) from wallets where user_id not in (select user_id from marketer_account_ids) and ($1::uuid is null or site_id = $1)) as f_liab,
          (select count(*) from affiliates where ($1::uuid is null or site_id = $1)) as a_marketers,
          (select coalesce(sum(commission),0) from affiliate_commissions where status='accrued' and ($1::uuid is null or site_id = $1)) as a_accrued,
          (select coalesce(sum(commission),0) from affiliate_commissions where status='paid' and ($1::uuid is null or site_id = $1)) as a_paid,
          (select count(*) from affiliate_payouts where status in ('requested','approved') and ($1::uuid is null or site_id = $1)) as a_pending,
-         (select count(*) from positions where status='settled' and ($1::uuid is null or site_id = $1)) as g_settled,
-         (select coalesce(sum(stake),0) from positions where status='settled' and ($1::uuid is null or site_id = $1)) as g_turnover,
-         (select coalesce(sum(stake - payout),0) from positions where status='settled' and ($1::uuid is null or site_id = $1)) as g_ggr`,
+         (select count(*) from positions where status='settled' and user_id not in (select user_id from marketer_account_ids) and ($1::uuid is null or site_id = $1)) as g_settled,
+         (select coalesce(sum(stake),0) from positions where status='settled' and user_id not in (select user_id from marketer_account_ids) and ($1::uuid is null or site_id = $1)) as g_turnover,
+         (select coalesce(sum(stake - payout),0) from positions where status='settled' and user_id not in (select user_id from marketer_account_ids) and ($1::uuid is null or site_id = $1)) as g_ggr,
+         (select count(*) from marketer_account_ids mai join profiles p on p.id = mai.user_id where ($1::uuid is null or p.site_id = $1)) as m_accounts,
+         (select coalesce(sum(amount),0) from ledger_entries where type='adjustment' and user_id in (select user_id from marketer_account_ids) and ($1::uuid is null or site_id = $1)) as m_credited,
+         (select coalesce(sum(stake),0) from positions where status='settled' and user_id in (select user_id from marketer_account_ids) and ($1::uuid is null or site_id = $1)) as m_turnover,
+         (select coalesce(sum(stake - payout),0) from positions where status='settled' and user_id in (select user_id from marketer_account_ids) and ($1::uuid is null or site_id = $1)) as m_ggr,
+         (select coalesce(sum(real_balance + bonus_balance),0) from wallets where user_id in (select user_id from marketer_account_ids) and ($1::uuid is null or site_id = $1)) as m_liab`,
       [siteId ?? null]);
     const x = r.rows[0];
     return {
       users: { total: num(x.u_total), active: num(x.u_active), suspended: num(x.u_suspended), banned: num(x.u_banned),
         players: num(x.u_players), marketers: num(x.u_marketers), admins: num(x.u_admins) },
-      finance: { depositsCents: num(x.f_dep), withdrawalsCents: num(x.f_wd), pendingWithdrawals: num(x.f_pending), walletLiabilityCents: num(x.f_liab) },
+      finance: { depositsCents: num(x.f_dep), withdrawalsCents: num(x.f_wd), internalTransfersCents: num(x.f_internal), pendingWithdrawals: num(x.f_pending), walletLiabilityCents: num(x.f_liab) },
       affiliate: { marketers: num(x.a_marketers), commissionAccruedCents: num(x.a_accrued), commissionPaidCents: num(x.a_paid), pendingPayouts: num(x.a_pending) },
       game: { settledPositions: num(x.g_settled), turnoverCents: num(x.g_turnover), ggrCents: num(x.g_ggr) },
+      marketer: { accounts: num(x.m_accounts), creditedCents: num(x.m_credited), turnoverCents: num(x.m_turnover), ggrCents: num(x.m_ggr), walletLiabilityCents: num(x.m_liab) },
     };
   }
 
@@ -553,7 +621,7 @@ export class PgAdminRepository implements AdminRepository {
          from profiles p
          left join wallets w on w.user_id = p.id
          left join lateral (select coalesce(sum(amount),0) as deposits    from transactions t where t.user_id = p.id and t.kind='deposit'    and t.status='success') td on true
-         left join lateral (select coalesce(sum(amount),0) as withdrawals from transactions t where t.user_id = p.id and t.kind='withdrawal' and t.status='success') tw on true
+         left join lateral (select coalesce(sum(amount),0) as withdrawals from transactions t where t.user_id = p.id and t.kind='withdrawal' and t.status='success' and t.provider is distinct from 'internal') tw on true
          left join lateral (select coalesce(sum(stake),0) as turnover, coalesce(sum(stake - payout),0) as ggr, count(*) as bet_count, max(opened_at) as last_bet_at
                               from positions x where x.user_id = p.id and x.status='settled') po on true
          left join lateral (select created_at, kind, amount, status from transactions t where t.user_id = p.id order by created_at desc, id desc limit 1) lt on true
@@ -582,6 +650,8 @@ export class PgAdminRepository implements AdminRepository {
       `select p.id, p.username, p.phone, p.role, p.status, p.referred_by, p.created_at,
               coalesce(w.real_balance,0)  as real_balance,
               coalesce(w.bonus_balance,0) as bonus_balance,
+              coalesce(w.demo_balance,0)  as demo_balance,
+              fn_is_marketer_account(p.id) as is_marketer,
               coalesce(td.deposits,0)     as deposits,
               coalesce(tw.withdrawals,0)  as withdrawals,
               coalesce(po.turnover,0)     as turnover,
@@ -593,7 +663,7 @@ export class PgAdminRepository implements AdminRepository {
          from profiles p
          left join wallets w on w.user_id = p.id
          left join lateral (select coalesce(sum(amount),0) as deposits    from transactions t where t.user_id = p.id and t.kind='deposit'    and t.status='success') td on true
-         left join lateral (select coalesce(sum(amount),0) as withdrawals from transactions t where t.user_id = p.id and t.kind='withdrawal' and t.status='success') tw on true
+         left join lateral (select coalesce(sum(amount),0) as withdrawals from transactions t where t.user_id = p.id and t.kind='withdrawal' and t.status='success' and t.provider is distinct from 'internal') tw on true
          left join lateral (select coalesce(sum(stake),0) as turnover, coalesce(sum(stake - payout),0) as ggr, count(*) as bet_count, max(opened_at) as last_bet_at
                               from positions x where x.user_id = p.id and x.status='settled') po on true
          left join lateral (select created_at, kind, amount, status from transactions t where t.user_id = p.id order by created_at desc, id desc limit 1) lt on true
@@ -639,6 +709,15 @@ export class PgAdminRepository implements AdminRepository {
                 null::text as phone, null::text as mpesa_receipt
            from positions p
           where p.user_id = $1 and ($2::text is null or $2 = 'bet')
+          union all
+          select l.id::text as id, 'adjustment' as kind, l.created_at as created_at, 'posted' as status,
+                 l.amount::bigint as amount_cents,
+                 null::text as direction, null::bigint as payout_cents, null::bigint as pnl_cents,
+                 null::double precision as multiplier, null::text as result,
+                 null::timestamptz as settled_at, null::bigint as game_day_id,
+                 null::text as phone, null::text as mpesa_receipt
+            from ledger_entries l
+           where l.user_id = $1 and l.type = 'adjustment' and ($2::text is null or $2 = 'adjustment')
        ) a
        where ($3::timestamptz is null or (a.created_at, a.id) < ($3::timestamptz, $4::text))
        order by a.created_at desc, a.id desc
@@ -664,6 +743,15 @@ export class PgAdminRepository implements AdminRepository {
     } catch (e) { mapAdminError(e); }
   }
 
+  async updateUserDetails(actorId: string, actorRole: string, targetId: string, phone: string | null, username: string | null): Promise<UpdateUserDetailsResult> {
+    try {
+      const r = await this.q.query("select user_id, phone, username from fn_admin_update_user($1,$2,$3,$4,$5)",
+        [actorId, actorRole, targetId, phone ?? null, username ?? null]);
+      const x = r.rows[0];
+      return { userId: String(x.user_id), phone: String(x.phone), username: String(x.username) };
+    } catch (e) { mapAdminError(e); }
+  }
+
   async setCommissionRate(actorId: string, actorRole: string, targetId: string, rate: number): Promise<SetCommissionRateResult> {
     try {
       const r = await this.q.query("select user_id, commission_rate from fn_admin_set_commission_rate($1,$2,$3,$4)", [actorId, actorRole, targetId, rate]);
@@ -675,10 +763,35 @@ export class PgAdminRepository implements AdminRepository {
   async listWithdrawals(q: AdminWithdrawalListQuery): Promise<Page<AdminWithdrawalRow>> {
     const limit = clampLimit(q.limit);
     const cur = decodeKeyset(q.cursor);
+    // Enrich each withdrawal with the player's identity, current balance and lifetime deposit/
+    // withdrawal totals (scoped to the SAME brand as the withdrawal) via a lateral aggregate, so the
+    // moderation queue shows everything a reviewer needs without an extra round-trip per row.
     const r = await this.q.query(
-      `select t.id, t.user_id, t.amount, t.status, t.phone, t.created_at, p.username from transactions t
+      `select t.id, t.user_id, t.amount, t.status, t.phone, t.provider, t.mpesa_receipt,
+              t.created_at, t.updated_at, p.username,
+              coalesce(w.real_balance, 0) as balance,
+              coalesce(agg.dep_c, 0) as total_deposits, coalesce(agg.dep_n, 0) as deposit_count,
+              coalesce(agg.wd_c, 0)  as total_withdrawals, coalesce(agg.wd_n, 0) as withdrawal_count,
+              agg.first_dep
+         from transactions t
          left join profiles p on p.id = t.user_id
+         left join wallets w on w.user_id = t.user_id
+              and w.site_id = coalesce(t.site_id, '00000000-0000-0000-0000-000000000001'::uuid)
+         left join lateral (
+           select
+             count(*) filter (where t2.kind='deposit'    and t2.status='success') as dep_n,
+             coalesce(sum(t2.amount) filter (where t2.kind='deposit'    and t2.status='success'),0) as dep_c,
+             count(*) filter (where t2.kind='withdrawal' and t2.status='success' and t2.provider is distinct from 'internal') as wd_n,
+             coalesce(sum(t2.amount) filter (where t2.kind='withdrawal' and t2.status='success' and t2.provider is distinct from 'internal'),0) as wd_c,
+             min(t2.created_at) filter (where t2.kind='deposit' and t2.status='success') as first_dep
+           from transactions t2
+           where t2.user_id = t.user_id
+             and coalesce(t2.site_id, '00000000-0000-0000-0000-000000000001'::uuid)
+               = coalesce(t.site_id,  '00000000-0000-0000-0000-000000000001'::uuid)
+         ) agg on true
         where t.kind = 'withdrawal'
+          and t.provider is distinct from 'internal'
+          and t.user_id not in (select user_id from marketer_account_ids)
           and ($1::text is null or t.status = $1)
           and ($5::uuid is null or t.site_id = $5)
           and ($2::timestamptz is null or (t.created_at, t.id) < ($2::timestamptz, $3::uuid))
@@ -687,7 +800,14 @@ export class PgAdminRepository implements AdminRepository {
       [q.status ?? null, cur ? new Date(cur.tsMs).toISOString() : null, cur ? cur.id : null, limit + 1, q.siteId ?? null]);
     const rows: AdminWithdrawalRow[] = r.rows.map((x) => ({
       txId: String(x.id), userId: String(x.user_id), username: x.username == null ? "" : String(x.username),
-      amountCents: num(x.amount), status: String(x.status), phone: String(x.phone), createdAtMs: ms(x.created_at),
+      phone: String(x.phone), amountCents: num(x.amount), status: String(x.status),
+      provider: x.provider == null ? null : String(x.provider),
+      mpesaReceipt: x.mpesa_receipt == null ? null : String(x.mpesa_receipt),
+      createdAtMs: ms(x.created_at), updatedAtMs: x.updated_at == null ? null : ms(x.updated_at),
+      balanceCents: num(x.balance),
+      totalDepositsCents: num(x.total_deposits), depositCount: num(x.deposit_count),
+      totalWithdrawalsCents: num(x.total_withdrawals), withdrawalCount: num(x.withdrawal_count),
+      firstDepositAtMs: x.first_dep == null ? null : ms(x.first_dep),
     }));
     return pageFrom(rows, limit, (t) => `${t.createdAtMs}:${t.txId}`);
   }
@@ -702,6 +822,8 @@ export class PgAdminRepository implements AdminRepository {
          left join profiles p on p.id = t.user_id
         where ($1::text is null or t.kind = $1)
           and ($2::text is null or t.status = $2)
+          and t.provider is distinct from 'internal'
+          and t.user_id not in (select user_id from marketer_account_ids)
           and ($7::uuid is null or t.site_id = $7)
           and ($3::text is null or p.username ilike '%'||$3||'%' or t.phone ilike '%'||$3||'%' or t.mpesa_receipt ilike '%'||$3||'%')
           and ($4::timestamptz is null or (t.created_at, t.id) < ($4::timestamptz, $5::uuid))
@@ -798,12 +920,13 @@ export class PgAdminRepository implements AdminRepository {
   async depositsReconcile(staleMinutes: number): Promise<AdminDepositsReconcile> {
     const s = await this.q.query(
       `select status, count(*)::bigint as n, coalesce(sum(amount),0)::bigint as amt
-         from transactions where kind = 'deposit' group by status order by status`, []);
+         from transactions where kind = 'deposit' and user_id not in (select user_id from marketer_account_ids) group by status order by status`, []);
     const summary: AdminDepositStatusBucket[] = s.rows.map((x) => ({ status: String(x.status), count: num(x.n), amountCents: num(x.amt) }));
     const r = await this.q.query(
       `select t.id, t.user_id, t.amount, t.status, t.phone, t.mpesa_receipt, t.checkout_request_id, t.created_at, p.username
          from transactions t left join profiles p on p.id = t.user_id
         where t.kind = 'deposit' and t.status in ('pending', 'processing')
+          and t.user_id not in (select user_id from marketer_account_ids)
           and t.created_at < now() - ($1::int * interval '1 minute')
         order by t.created_at desc, t.id desc
         limit 100`,
@@ -814,25 +937,26 @@ export class PgAdminRepository implements AdminRepository {
   async reportDaily(range: ReportRange, siteId?: string): Promise<DailyReportRow[]> {
     const r = await this.q.query(
       `with t as (
-         select created_at::date as d,
+         select (created_at at time zone 'Africa/Nairobi')::date as d,
                 coalesce(sum(amount) filter (where kind='deposit'), 0)    as dep,
-                coalesce(sum(amount) filter (where kind='withdrawal'), 0)  as wd
+                coalesce(sum(amount) filter (where kind='withdrawal' and provider is distinct from 'internal'), 0)  as wd
            from transactions
           where status = 'success'
+            and user_id not in (select user_id from marketer_account_ids)
             and ($3::uuid is null or site_id = $3)
-            and ($1::date is null or created_at::date >= $1::date)
-            and ($2::date is null or created_at::date <= $2::date)
+            and ($1::date is null or (created_at at time zone 'Africa/Nairobi')::date >= $1::date)
+            and ($2::date is null or (created_at at time zone 'Africa/Nairobi')::date <= $2::date)
           group by 1),
        g as (
-         select coalesce(gd.trade_date, po.settled_at::date, po.opened_at::date) as d,
+         select (coalesce(po.settled_at, po.opened_at) at time zone 'Africa/Nairobi')::date as d,
                 coalesce(sum(po.stake), 0)              as turnover,
                 coalesce(sum(po.stake - po.payout), 0)  as ggr
            from positions po
-           left join game_days gd on gd.id = po.game_day_id
           where po.status = 'settled'
+            and po.user_id not in (select user_id from marketer_account_ids)
             and ($3::uuid is null or po.site_id = $3)
-            and ($1::date is null or coalesce(gd.trade_date, po.settled_at::date, po.opened_at::date) >= $1::date)
-            and ($2::date is null or coalesce(gd.trade_date, po.settled_at::date, po.opened_at::date) <= $2::date)
+            and ($1::date is null or (coalesce(po.settled_at, po.opened_at) at time zone 'Africa/Nairobi')::date >= $1::date)
+            and ($2::date is null or (coalesce(po.settled_at, po.opened_at) at time zone 'Africa/Nairobi')::date <= $2::date)
           group by 1)
        select coalesce(t.d, g.d) as day,
               coalesce(t.dep, 0) as deposits, coalesce(t.wd, 0) as withdrawals,
@@ -851,23 +975,24 @@ export class PgAdminRepository implements AdminRepository {
       `with t as (
          select user_id,
                 coalesce(sum(amount) filter (where kind='deposit'), 0)    as dep,
-                coalesce(sum(amount) filter (where kind='withdrawal'), 0)  as wd
+                coalesce(sum(amount) filter (where kind='withdrawal' and provider is distinct from 'internal'), 0)  as wd
            from transactions
           where status = 'success'
+            and user_id not in (select user_id from marketer_account_ids)
             and ($3::uuid is null or site_id = $3)
-            and ($1::date is null or created_at::date >= $1::date)
-            and ($2::date is null or created_at::date <= $2::date)
+            and ($1::date is null or (created_at at time zone 'Africa/Nairobi')::date >= $1::date)
+            and ($2::date is null or (created_at at time zone 'Africa/Nairobi')::date <= $2::date)
           group by 1),
        g as (
          select po.user_id,
                 coalesce(sum(po.stake), 0)              as turnover,
                 coalesce(sum(po.stake - po.payout), 0)  as ggr
            from positions po
-           left join game_days gd on gd.id = po.game_day_id
           where po.status = 'settled'
+            and po.user_id not in (select user_id from marketer_account_ids)
             and ($3::uuid is null or po.site_id = $3)
-            and ($1::date is null or coalesce(gd.trade_date, po.settled_at::date, po.opened_at::date) >= $1::date)
-            and ($2::date is null or coalesce(gd.trade_date, po.settled_at::date, po.opened_at::date) <= $2::date)
+            and ($1::date is null or (coalesce(po.settled_at, po.opened_at) at time zone 'Africa/Nairobi')::date >= $1::date)
+            and ($2::date is null or (coalesce(po.settled_at, po.opened_at) at time zone 'Africa/Nairobi')::date <= $2::date)
           group by 1)
        select p.id as user_id, p.username,
               coalesce(t.dep, 0) as deposits, coalesce(t.wd, 0) as withdrawals,
@@ -892,23 +1017,23 @@ export class PgAdminRepository implements AdminRepository {
          select
            count(*) filter (where role = 'player')   as new_players,
            count(*) filter (where role = 'marketer')  as new_marketers
-         from profiles where created_at::date = $1::date and ($2::uuid is null or site_id = $2)
+         from profiles where (created_at at time zone 'Africa/Nairobi')::date = $1::date and ($2::uuid is null or site_id = $2)
        ),
        tx as (
          select
            count(*) filter (where kind='deposit'    and status='success')            as dep_n,
            coalesce(sum(amount) filter (where kind='deposit'    and status='success'),0) as dep_c,
-           count(*) filter (where kind='withdrawal' and status='success')            as wd_n,
-           coalesce(sum(amount) filter (where kind='withdrawal' and status='success'),0) as wd_c,
-           count(*) filter (where kind='withdrawal' and status in ('pending','processing')) as pend_n,
-           coalesce(sum(amount) filter (where kind='withdrawal' and status in ('pending','processing')),0) as pend_c,
+           count(*) filter (where kind='withdrawal' and status='success' and provider is distinct from 'internal')            as wd_n,
+           coalesce(sum(amount) filter (where kind='withdrawal' and status='success' and provider is distinct from 'internal'),0) as wd_c,
+           count(*) filter (where kind='withdrawal' and status in ('pending','processing') and provider is distinct from 'internal') as pend_n,
+           coalesce(sum(amount) filter (where kind='withdrawal' and status in ('pending','processing') and provider is distinct from 'internal'),0) as pend_c,
            count(distinct user_id) filter (where kind='deposit' and status='success') as depositors
-         from transactions where created_at::date = $1::date and ($2::uuid is null or site_id = $2)
+         from transactions where (created_at at time zone 'Africa/Nairobi')::date = $1::date and user_id not in (select user_id from marketer_account_ids) and ($2::uuid is null or site_id = $2)
        ),
        ftd as (
          select count(*) as n from (
-           select user_id, min(created_at::date) as first_dep
-             from transactions where kind='deposit' and status='success' and ($2::uuid is null or site_id = $2) group by user_id
+           select user_id, min((created_at at time zone 'Africa/Nairobi')::date) as first_dep
+             from transactions where kind='deposit' and status='success' and user_id not in (select user_id from marketer_account_ids) and ($2::uuid is null or site_id = $2) group by user_id
          ) f where f.first_dep = $1::date
        ),
        g as (
@@ -920,10 +1045,10 @@ export class PgAdminRepository implements AdminRepository {
            coalesce(sum(po.stake - po.payout),0)      as ggr,
            count(distinct po.user_id)                 as active_players
          from positions po
-         left join game_days gd on gd.id = po.game_day_id
          where po.status='settled'
+           and po.user_id not in (select user_id from marketer_account_ids)
            and ($2::uuid is null or po.site_id = $2)
-           and coalesce(gd.trade_date, po.settled_at::date, po.opened_at::date) = $1::date
+           and (coalesce(po.settled_at, po.opened_at) at time zone 'Africa/Nairobi')::date = $1::date
        ),
        comm as (
          select coalesce(sum(commission),0) as accrued from affiliate_commissions where period = $1::date and ($2::uuid is null or site_id = $2)
@@ -1010,6 +1135,17 @@ export class PgAdminRepository implements AdminRepository {
     return this.getWithdrawalPool(siteId, tradeDay);
   }
 
+  async getWithdrawalsEnabled(siteId: string): Promise<boolean> {
+    const r = await this.q.query("select withdrawals_enabled from sites where id = $1::uuid", [siteId]);
+    // Fail-open (enabled) when the brand row is missing, matching the DB column default.
+    return r.rows.length ? (r.rows[0] as Record<string, unknown>).withdrawals_enabled !== false : true;
+  }
+  async setWithdrawalsEnabled(actorId: string, actorRole: string, siteId: string, enabled: boolean): Promise<boolean> {
+    try { await this.q.query("select fn_admin_set_withdrawals_enabled($1,$2,$3::uuid,$4)", [actorId, actorRole, siteId, enabled]); }
+    catch (e) { mapAdminError(e); }
+    return this.getWithdrawalsEnabled(siteId);
+  }
+
   async getMpesaConfig(): Promise<MpesaConfigRow> {
     const r = await this.q.query(
       `select environment, shortcode, stk_callback_url, b2c_initiator, b2c_result_url, b2c_timeout_url,
@@ -1032,7 +1168,7 @@ export class PgAdminRepository implements AdminRepository {
   }
 
   async rtpMonitor(siteId?: string): Promise<RtpMonitor> {
-    const cfg = await this.getGameConfig(siteId);
+    const cfg = await this.getGameConfig(siteId ?? ADMIN_DEFAULT_SITE);
     const r = await this.q.query(
       `select
          count(*) filter (where settled_at >= now() - interval '7 days')                 as n7,
@@ -1042,7 +1178,7 @@ export class PgAdminRepository implements AdminRepository {
          coalesce(sum(stake)  filter (where settled_at >= now() - interval '30 days'), 0) as t30,
          coalesce(sum(payout) filter (where settled_at >= now() - interval '30 days'), 0) as p30,
          count(*) as na, coalesce(sum(stake), 0) as ta, coalesce(sum(payout), 0) as pa
-       from positions where status = 'settled' and ($1::uuid is null or site_id = $1)`, [siteId ?? null]);
+       from positions where status = 'settled' and user_id not in (select user_id from marketer_account_ids) and ($1::uuid is null or site_id = $1)`, [siteId ?? null]);
     const x = r.rows[0];
     const windows = [
       rtpWindowRow("7d", num(x.n7), num(x.t7), num(x.p7)),
@@ -1050,6 +1186,21 @@ export class PgAdminRepository implements AdminRepository {
       rtpWindowRow("all", num(x.na), num(x.ta), num(x.pa)),
     ];
     return buildRtpMonitor(cfg.rtpTarget, windows);
+  }
+  async realCashRtp(siteId?: string): Promise<RealCashRtp> {
+    const r = await this.q.query("select fn_real_cash_rtp($1::uuid) as j", [siteId ?? null]);
+    return (r.rows[0]?.j ?? { rtpTarget: null, windows: [] }) as RealCashRtp;
+  }
+  async configChangeReview(siteId: string, limit = 50): Promise<ConfigChangeRow[]> {
+    const r = await this.q.query("select * from fn_config_change_review($1::uuid, $2)", [siteId, limit]);
+    return r.rows.map((x: any) => ({
+      version: Number(x.version), createdAtMs: ms(x.created_at),
+      houseEdge: Number(x.house_edge), targetWinRate: Number(x.target_win_rate), maxMultiplier: Number(x.max_multiplier),
+      prevHouseEdge: x.prev_house_edge == null ? null : Number(x.prev_house_edge),
+      prevTargetWinRate: x.prev_target_win_rate == null ? null : Number(x.prev_target_win_rate),
+      changedFields: Array.isArray(x.changed_fields) ? x.changed_fields.map(String) : [],
+      risk: x.risk === true, riskReason: x.risk_reason == null ? "" : String(x.risk_reason),
+    }));
   }
 
   async listSeeds(limit: number, siteId?: string): Promise<AdminSeedRow[]> {
@@ -1139,6 +1290,8 @@ function mapUserRow(x: any): AdminUserRow {
     userId: String(x.id), username: String(x.username), phone: x.phone == null ? "" : String(x.phone),
     role: String(x.role), status: String(x.status), createdAtMs: ms(x.created_at),
     realBalanceCents: num(x.real_balance), bonusBalanceCents: num(x.bonus_balance),
+    demoBalanceCents: x.demo_balance == null ? 0 : num(x.demo_balance),
+    isMarketer: x.is_marketer === true,
     depositsCents: deposits, withdrawalsCents: withdrawals, netDepositsCents: deposits - withdrawals,
     lastFundedCents: x.last_funded == null ? null : num(x.last_funded),
     turnoverCents: num(x.turnover), ggrCents: num(x.ggr), betCount: num(x.bet_count),
@@ -1223,6 +1376,7 @@ export class InMemoryAdminRepository implements AdminRepository {
   /** Per-(site, EAT day) withdrawal-pool mirror for the test harness (docs/25 Phase 1). */
   private readonly pools = new Map<string, WithdrawalPoolRow>();
   private readonly poolDefaults = new Map<string, number>();  // siteId -> default daily budget (0064)
+  private readonly withdrawalsEnabledBySite = new Map<string, boolean>(); // siteId -> kill switch (0067); absent = enabled
   private mpesa: MpesaInternal = defaultMpesaInternal();
   private readonly seedRows = new Map<string, AdminSeedRow>();
   // J8 in-memory stores (bonus wallet + per-user overrides) for the test harness.
@@ -1236,10 +1390,18 @@ export class InMemoryAdminRepository implements AdminRepository {
   ) {}
 
   async overview(siteId?: string): Promise<AdminOverview> {
-    const users = this.identity.adminUsers();
-    const txs = this.payments.adminTransactions();
+    // Brand isolation for the dashboard: when `siteId` is set, every figure is restricted to that
+    // brand. Users + transactions carry a siteId directly; plays/affiliates/liability are scoped via
+    // the user's brand (userId -> site map). commissions/pendingPayouts lack a per-user site link in
+    // this simplified harness so they stay global here — the Pg repo scopes them (proven by the DB e2e).
+    const allUsers = this.identity.adminUsers();
+    const userSite = new Map(allUsers.map((u) => [u.userId, u.siteId] as const));
+    const inSite = (uid: string): boolean => siteMatches(userSite.get(uid), siteId);
+    const users = allUsers.filter((u) => siteMatches(u.siteId, siteId));
+    const txs = this.payments.adminTransactions().filter((t) => siteMatches(t.siteId, siteId));
     const commissions = this.identity.adminCommissions();
-    const plays = this.identity.adminPlays();
+    const plays = this.identity.adminPlays().filter((p) => inSite(p.userId));
+    const inScopeUserIds = siteId === undefined ? undefined : new Set(users.map((u) => u.userId));
     return {
       users: {
         total: users.length,
@@ -1253,11 +1415,14 @@ export class InMemoryAdminRepository implements AdminRepository {
       finance: {
         depositsCents: txs.filter((t) => t.kind === "deposit" && t.status === "success").reduce((s, t) => s + t.amountCents, 0),
         withdrawalsCents: txs.filter((t) => t.kind === "withdrawal" && t.status === "success").reduce((s, t) => s + t.amountCents, 0),
+        // In-memory transactions never carry an 'internal' provider (the marketer game-withdraw rail
+        // is a Pg-only RPC), so there are no internal transfers to isolate in the test harness.
+        internalTransfersCents: 0,
         pendingWithdrawals: txs.filter((t) => t.kind === "withdrawal" && t.status === "pending").length,
-        walletLiabilityCents: this.payments.adminWalletLiabilityCents(),
+        walletLiabilityCents: this.payments.adminWalletLiabilityCents(inScopeUserIds),
       },
       affiliate: {
-        marketers: this.identity.adminAffiliates().length,
+        marketers: this.identity.adminAffiliates().filter((a) => inSite(a.userId)).length,
         commissionAccruedCents: commissions.filter((c) => c.status === "accrued").reduce((s, c) => s + c.commissionCents, 0),
         commissionPaidCents: commissions.filter((c) => c.status === "paid").reduce((s, c) => s + c.commissionCents, 0),
         pendingPayouts: this.identity.adminPendingPayoutCount(),
@@ -1267,6 +1432,8 @@ export class InMemoryAdminRepository implements AdminRepository {
         turnoverCents: plays.reduce((s, p) => s + p.stakeCents, 0),
         ggrCents: plays.reduce((s, p) => s + (p.stakeCents - p.payoutCents), 0),
       },
+      // The test harness has no `marketers` table cohort, so nothing to isolate here.
+      marketer: { accounts: 0, creditedCents: 0, turnoverCents: 0, ggrCents: 0, walletLiabilityCents: 0 },
     };
   }
 
@@ -1285,6 +1452,7 @@ export class InMemoryAdminRepository implements AdminRepository {
     return {
       userId: u.userId, username: u.username, phone: u.phone, role: u.role, status: u.status, createdAtMs: u.createdAtMs,
       realBalanceCents: await this.payments.getBalance(u.userId), bonusBalanceCents: this.bonusBal.get(u.userId) ?? 0,
+      demoBalanceCents: 0, isMarketer: false,   // in-memory harness has no demo bucket / marketers cohort
       depositsCents: deposits, withdrawalsCents: withdrawals, netDepositsCents: deposits - withdrawals,
       lastFundedCents: lastFundedTx ? lastFundedTx.amountCents : null,
       turnoverCents: turnover, ggrCents: ggr, betCount: plays.length,
@@ -1371,17 +1539,44 @@ export class InMemoryAdminRepository implements AdminRepository {
   }
 
   async setUserRole(actorId: string, actorRole: string, targetId: string, role: string): Promise<SetUserRoleResult> {
-    if (actorRole !== "superadmin") throw new Error("NOT_AUTHORIZED");
+    if (!["admin", "superadmin", "platform_superadmin"].includes(actorRole)) throw new Error("NOT_AUTHORIZED");
     if (!VALID_ROLES.includes(role)) throw new Error("INVALID_ROLE");
     if (role === "superadmin") throw new Error("SUPERADMIN_PROTECTED");
     if (actorId === targetId) throw new Error("NO_SELF_ACTION");
     const u = this.identity.adminUser(targetId);
     if (!u) throw new Error("USER_NOT_FOUND");
-    if (u.role === "superadmin") throw new Error("SUPERADMIN_PROTECTED");
+    if (u.role === "superadmin" || u.role === "platform_superadmin") throw new Error("SUPERADMIN_PROTECTED");
+    // A plain admin is confined to the player<->marketer transition.
+    if (actorRole === "admin" && (!["player", "marketer"].includes(role) || !["player", "marketer"].includes(u.role))) {
+      throw new Error("NOT_AUTHORIZED");
+    }
     const from = u.role;
     this.identity.adminSetRole(targetId, role);
     this.record(actorId, actorRole, "user.role", "user", targetId, { from, to: role });
     return { userId: targetId, role };
+  }
+
+  async updateUserDetails(actorId: string, actorRole: string, targetId: string, phone: string | null, username: string | null): Promise<UpdateUserDetailsResult> {
+    if (!["admin", "superadmin", "platform_superadmin"].includes(actorRole)) throw new Error("NOT_AUTHORIZED");
+    const u = this.identity.adminUser(targetId);
+    if (!u) throw new Error("USER_NOT_FOUND");
+    if (actorRole === "admin" && ["admin", "superadmin", "platform_superadmin"].includes(u.role)) throw new Error("NOT_AUTHORIZED");
+    const site = u.siteId ?? ADMIN_DEFAULT_SITE;
+    const newPhone = phone && phone.trim() ? phone.replace(/^\+?254/, "0").trim() : null;
+    const newName = username && username.trim() ? username.trim() : null;
+    const all = this.identity.adminUsers();
+    if (newPhone != null) {
+      if (!/^0[17][0-9]{8}$/.test(newPhone)) throw new Error("INVALID_PHONE");
+      if (all.some((x) => x.userId !== targetId && (x.siteId ?? ADMIN_DEFAULT_SITE) === site && x.phone === newPhone)) throw new Error("PHONE_TAKEN");
+    }
+    if (newName != null) {
+      if (newName.length < 2 || newName.length > 40) throw new Error("INVALID_USERNAME");
+      if (all.some((x) => x.userId !== targetId && (x.siteId ?? ADMIN_DEFAULT_SITE) === site && x.username.toLowerCase() === newName.toLowerCase())) throw new Error("USERNAME_TAKEN");
+    }
+    this.identity.adminSetContact(targetId, newPhone, newName);
+    const after = this.identity.adminUser(targetId)!;
+    this.record(actorId, actorRole, "user.update_details", "user", targetId, { phone: after.phone, username: after.username });
+    return { userId: targetId, phone: after.phone, username: after.username };
   }
 
   async setCommissionRate(actorId: string, actorRole: string, targetId: string, rate: number): Promise<SetCommissionRateResult> {
@@ -1396,9 +1591,29 @@ export class InMemoryAdminRepository implements AdminRepository {
   }
 
   async listWithdrawals(q: AdminWithdrawalListQuery): Promise<Page<AdminWithdrawalRow>> {
-    const rows = this.payments.adminTransactions()
-      .filter((t) => t.kind === "withdrawal" && (q.status === undefined || t.status === q.status) && siteMatches(t.siteId, q.siteId))
-      .map((t) => ({ txId: t.txId, userId: t.userId, username: this.identity.adminUser(t.userId)?.username ?? "", amountCents: t.amountCents, status: t.status, phone: t.phone, createdAtMs: t.createdAtMs, _ts: t.createdAtMs, _id: t.txId }));
+    const DEF = "00000000-0000-0000-0000-000000000001";
+    const site = (s?: string | null): string => s ?? DEF;
+    const all = this.payments.adminTransactions();
+    const matched = all.filter((t) => t.kind === "withdrawal" && (q.status === undefined || t.status === q.status) && siteMatches(t.siteId, q.siteId));
+    // Enrich with the player's balance + lifetime deposit/withdrawal totals (same brand), mirroring
+    // the Pg lateral aggregate so the moderation queue is identical under test and in production.
+    const rows = await Promise.all(matched.map(async (t) => {
+      const mine = all.filter((x) => x.userId === t.userId && site(x.siteId) === site(t.siteId));
+      const dep = mine.filter((x) => x.kind === "deposit" && x.status === "success");
+      const wd = mine.filter((x) => x.kind === "withdrawal" && x.status === "success");
+      const firstDep = dep.length ? Math.min(...dep.map((x) => x.createdAtMs)) : null;
+      return {
+        txId: t.txId, userId: t.userId, username: this.identity.adminUser(t.userId)?.username ?? "",
+        phone: t.phone, amountCents: t.amountCents, status: t.status,
+        provider: null, mpesaReceipt: t.mpesaReceipt ?? null,
+        createdAtMs: t.createdAtMs, updatedAtMs: null,
+        balanceCents: await this.payments.getBalance(t.userId),
+        totalDepositsCents: dep.reduce((s, x) => s + x.amountCents, 0), depositCount: dep.length,
+        totalWithdrawalsCents: wd.reduce((s, x) => s + x.amountCents, 0), withdrawalCount: wd.length,
+        firstDepositAtMs: firstDep,
+        _ts: t.createdAtMs, _id: t.txId,
+      };
+    }));
     return memKeyset(rows, q);
   }
 
@@ -1554,6 +1769,8 @@ export class InMemoryAdminRepository implements AdminRepository {
   }
 
   async reportDaily(range: ReportRange, siteId?: string): Promise<DailyReportRow[]> {
+    const userSite = new Map(this.identity.adminUsers().map((u) => [u.userId, u.siteId] as const));
+    const inSite = (uid: string): boolean => siteMatches(userSite.get(uid), siteId);
     const acc = new Map<string, { dep: number; wd: number; turn: number; ggr: number }>();
     const bucket = (d: string) => {
       let b = acc.get(d);
@@ -1562,6 +1779,7 @@ export class InMemoryAdminRepository implements AdminRepository {
     };
     for (const t of this.payments.adminTransactions()) {
       if (t.status !== "success") continue;
+      if (!siteMatches(t.siteId, siteId)) continue;
       const d = dayOfMs(t.createdAtMs);
       if (!inRange(d, range)) continue;
       const b = bucket(d);
@@ -1569,6 +1787,7 @@ export class InMemoryAdminRepository implements AdminRepository {
     }
     for (const p of this.identity.adminReportPlays()) {
       if (!inRange(p.period, range)) continue;
+      if (!inSite(p.userId)) continue;
       const b = bucket(p.period);
       b.turn += p.stakeCents; b.ggr += p.stakeCents - p.payoutCents;
     }
@@ -1578,6 +1797,8 @@ export class InMemoryAdminRepository implements AdminRepository {
   }
 
   async reportByUser(range: ReportRange, siteId?: string): Promise<UserReportRow[]> {
+    const userSite = new Map(this.identity.adminUsers().map((u) => [u.userId, u.siteId] as const));
+    const inSite = (uid: string): boolean => siteMatches(userSite.get(uid), siteId);
     const acc = new Map<string, { dep: number; wd: number; turn: number; ggr: number }>();
     const bucket = (id: string) => {
       let b = acc.get(id);
@@ -1586,12 +1807,14 @@ export class InMemoryAdminRepository implements AdminRepository {
     };
     for (const t of this.payments.adminTransactions()) {
       if (t.status !== "success") continue;
+      if (!siteMatches(t.siteId, siteId)) continue;
       if (!inRange(dayOfMs(t.createdAtMs), range)) continue;
       const b = bucket(t.userId);
       if (t.kind === "deposit") b.dep += t.amountCents; else b.wd += t.amountCents;
     }
     for (const p of this.identity.adminReportPlays()) {
       if (!inRange(p.period, range)) continue;
+      if (!inSite(p.userId)) continue;
       const b = bucket(p.userId);
       b.turn += p.stakeCents; b.ggr += p.stakeCents - p.payoutCents;
     }
@@ -1605,9 +1828,12 @@ export class InMemoryAdminRepository implements AdminRepository {
 
   async reportDay(date: string, siteId?: string): Promise<AdminDayReport> {
     const range: ReportRange = { from: date, to: date };
+    const userSite = new Map(this.identity.adminUsers().map((u) => [u.userId, u.siteId] as const));
+    const inSite = (uid: string): boolean => siteMatches(userSite.get(uid), siteId);
     let dep = { count: 0, amountCents: 0 }, wd = { count: 0, amountCents: 0 }, pend = { count: 0, amountCents: 0 };
     const depositors = new Set<string>();
     for (const t of this.payments.adminTransactions()) {
+      if (!siteMatches(t.siteId, siteId)) continue;
       if (!inRange(dayOfMs(t.createdAtMs), range)) continue;
       if (t.kind === "deposit" && t.status === "success") { dep.count++; dep.amountCents += t.amountCents; depositors.add(t.userId); }
       else if (t.kind === "withdrawal" && t.status === "success") { wd.count++; wd.amountCents += t.amountCents; }
@@ -1617,6 +1843,7 @@ export class InMemoryAdminRepository implements AdminRepository {
     const active = new Set<string>();
     for (const p of this.identity.adminReportPlays()) {
       if (!inRange(p.period, range)) continue;
+      if (!inSite(p.userId)) continue;
       settled++; turnover += p.stakeCents; payout += p.payoutCents;
       if (p.payoutCents > p.stakeCents) winners++;
       active.add(p.userId);
@@ -1699,6 +1926,16 @@ export class InMemoryAdminRepository implements AdminRepository {
     return this.getWithdrawalPool(siteId, tradeDay);
   }
 
+  async getWithdrawalsEnabled(siteId: string): Promise<boolean> {
+    return this.withdrawalsEnabledBySite.get(siteId) !== false; // absent => enabled (matches DB default)
+  }
+  async setWithdrawalsEnabled(actorId: string, actorRole: string, siteId: string, enabled: boolean): Promise<boolean> {
+    if (!["admin", "superadmin", "platform_admin", "platform_superadmin"].includes(actorRole)) throw new Error("NOT_AUTHORIZED");
+    this.withdrawalsEnabledBySite.set(siteId, enabled);
+    this.record(actorId, actorRole, "withdrawals.toggle", "site", siteId, { withdrawals_enabled: enabled });
+    return enabled;
+  }
+
   async getMpesaConfig(): Promise<MpesaConfigRow> { return maskMpesaInternal(this.mpesa); }
 
   async updateMpesaConfig(actorId: string, actorRole: string, patch: MpesaConfigPatch): Promise<MpesaConfigRow> {
@@ -1726,7 +1963,9 @@ export class InMemoryAdminRepository implements AdminRepository {
   }
 
   async rtpMonitor(siteId?: string): Promise<RtpMonitor> {
-    const plays = this.identity.adminReportPlays();
+    const userSite = new Map(this.identity.adminUsers().map((u) => [u.userId, u.siteId] as const));
+    const inSite = (uid: string): boolean => siteMatches(userSite.get(uid), siteId);
+    const plays = this.identity.adminReportPlays().filter((p) => inSite(p.userId));
     const agg = (days: number | null): { n: number; t: number; p: number } => {
       const lo = days == null ? null : utcDayKeyAgo(days - 1);
       let n = 0, t = 0, p = 0;
@@ -1737,10 +1976,16 @@ export class InMemoryAdminRepository implements AdminRepository {
       return { n, t, p };
     };
     const windows = RTP_WINDOWS.map(({ window, days }) => { const a = agg(days); return rtpWindowRow(window, a.n, a.t, a.p); });
-    return buildRtpMonitor(1 - this.siteConfig(ADMIN_DEFAULT_SITE).houseEdge, windows);
+    return buildRtpMonitor(1 - this.siteConfig(siteId ?? ADMIN_DEFAULT_SITE).houseEdge, windows);
   }
+  async realCashRtp(siteId?: string): Promise<RealCashRtp> {
+    return { rtpTarget: Number((1 - this.siteConfig(siteId ?? ADMIN_DEFAULT_SITE).houseEdge).toFixed(4)), windows: [] };
+  }
+  async configChangeReview(_siteId: string, _limit = 50): Promise<ConfigChangeRow[]> { return []; }
 
-  async listSeeds(limit: number, siteId?: string): Promise<AdminSeedRow[]> {
+  // The in-memory harness models seeds globally (no per-site seed_rows); `_siteId` is accepted for
+  // interface parity and scoped for real in the Pg repo (game_days.site_id), proven by the DB e2e.
+  async listSeeds(limit: number, _siteId?: string): Promise<AdminSeedRow[]> {
     return [...this.seedRows.values()]
       .sort((a, b) => (a.tradeDate < b.tradeDate ? 1 : a.tradeDate > b.tradeDate ? -1 : 0))
       .slice(0, clampLimit(limit));
@@ -1761,11 +2006,15 @@ export class InMemoryAdminRepository implements AdminRepository {
   // ── J6: affiliate payout queue + chat moderation ─────────────────────────────────────────────
 
   async listAffiliatePayouts(q: AdminPayoutListQuery): Promise<Page<AdminPayoutRow>> {
-    const rows = this.identity.adminListPayouts(q.status).map((p) => ({
-      payoutId: p.payoutId, affiliateId: p.affiliateId, username: p.username, phone: p.phone,
-      amountCents: p.amountCents, status: p.status, approvedBy: p.approvedBy, createdAtMs: p.createdAtMs,
-      _ts: p.createdAtMs, _id: p.payoutId,
-    }));
+    const userSite = new Map(this.identity.adminUsers().map((u) => [u.userId, u.siteId] as const));
+    const inSite = (uid: string): boolean => siteMatches(userSite.get(uid), q.siteId);
+    const rows = this.identity.adminListPayouts(q.status)
+      .filter((p) => inSite(p.affiliateId))
+      .map((p) => ({
+        payoutId: p.payoutId, affiliateId: p.affiliateId, username: p.username, phone: p.phone,
+        amountCents: p.amountCents, status: p.status, approvedBy: p.approvedBy, createdAtMs: p.createdAtMs,
+        _ts: p.createdAtMs, _id: p.payoutId,
+      }));
     return memKeyset(rows, q);
   }
 

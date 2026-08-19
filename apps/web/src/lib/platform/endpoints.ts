@@ -14,6 +14,7 @@ export interface SiteRow {
   mpesaEnv?: string | null; mpesaShortcode?: string | null; mpesaCallbackBase?: string | null; mpesaB2cInitiator?: string | null;
   hasMpesaConsumerKey?: boolean; hasMpesaConsumerSecret?: boolean; hasMpesaPasskey?: boolean; hasMpesaB2cCredential?: boolean;
   legalCopy?: Record<string, unknown> | null;
+  ownerUserId?: string | null;
 }
 export interface SiteWithConfig extends SiteRow { config: SiteConfig }
 export interface SiteKpis {
@@ -21,6 +22,19 @@ export interface SiteKpis {
   users: number; depositsCents: number; withdrawalsCents: number; ggrCents: number; openPositions: number; bets: number;
 }
 export interface CreateSiteBody { slug: string; name: string; currency?: string | undefined; primaryDomain?: string | undefined }
+
+/** Per-brand performance over a time window (docs/24 performance filters). */
+export interface SitePerformance {
+  siteId: string; slug: string; name: string; status: string;
+  depositsCents: number; withdrawalsCents: number; ggrCents: number; bets: number; stakedCents: number; newPlayers: number;
+}
+export interface PerformanceResult { fromMs: number; toMs: number; sites: SitePerformance[] }
+
+/** Result of minting a brand-scoped superadmin token for the platform owner (docs/24 impersonation). */
+export interface ImpersonateResult {
+  token: string; role: string; site: string;
+  brand: { siteId: string; slug: string; name: string; primaryDomain: string | null };
+}
 
 /** One brand's slice of a marketer's cross-brand rollup (docs/22 Task R). */
 export interface MarketerRollupSite {
@@ -62,6 +76,10 @@ export interface AuditRow {
 
 export const platformApi = {
   overview: (t: string) => apiFetch<{ sites: SiteKpis[] }>('/platform/overview', { token: t }),
+  performance: (t: string, fromMs: number, toMs: number) =>
+    apiFetch<PerformanceResult>('/platform/performance', { token: t, query: { from: fromMs, to: toMs } }),
+  impersonate: (t: string, siteId: string) =>
+    apiFetch<ImpersonateResult>(`/platform/sites/${siteId}/impersonate`, { method: 'POST', token: t }),
   sites: (t: string) => apiFetch<{ sites: SiteWithConfig[] }>('/platform/sites', { token: t }),
   createSite: (t: string, body: CreateSiteBody) =>
     apiFetch<{ siteId: string }>('/platform/sites', { method: 'POST', token: t, body }),
@@ -69,6 +87,8 @@ export const platformApi = {
     apiFetch<SiteRow>(`/platform/sites/${id}`, { method: 'PATCH', token: t, body: patch }),
   setConfig: (t: string, id: string, patch: Record<string, unknown>) =>
     apiFetch<SiteConfig>(`/platform/sites/${id}/config`, { method: 'PATCH', token: t, body: patch }),
+  setSiteOwner: (t: string, id: string, ownerUserId: string | null) =>
+    apiFetch<SiteRow>(`/platform/sites/${id}/owner`, { method: 'PATCH', token: t, body: { ownerUserId } }),
   setTheme: (t: string, id: string, tokens: Record<string, string>) =>
     apiFetch<SiteRow>(`/platform/sites/${id}/theme`, { method: 'PATCH', token: t, body: { tokens } }),
   // Task R — cross-brand marketer rollup (reporting only).

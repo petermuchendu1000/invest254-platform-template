@@ -92,7 +92,13 @@ export class RecoveryService {
         const settlement = overrideAffectsPricing(ov)
           ? (userSettlement(ctx.curve, ctx.cfg, ov!) ?? ctx.settlement)
           : ctx.settlement;
-        const outcome = settlement.settle(row.stakeCents, row.direction, entryT);
+        // Reproduce the EXACT outcome committed at open: the GameServer opens with
+        // settleVariable(stake, dir, entryT, nonce, seed) whenever a day seed exists, so recovery
+        // MUST use the same seeded engagement draw (not settle(), whose curve-derived multiplier
+        // differs per position). Falls back to settle() only in the no-seed (local dev) path.
+        const outcome = ctx.seed
+          ? settlement.settleVariable(row.stakeCents, row.direction, entryT, row.nonce, ctx.seed)
+          : settlement.settle(row.stakeCents, row.direction, entryT);
 
         if (nowMs >= expiresAtMs) {
           // Hold-to-expiry final outcome (no early sell can be inferred post-crash).

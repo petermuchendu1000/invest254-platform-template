@@ -43,6 +43,9 @@ const PLATFORM_STATUS: Readonly<Record<string, number>> = {
   NOT_AUTHORIZED: 403,
   INVALID_BRAND: 400,
   INVALID_PATCH: 400,
+  INVALID_RANGE: 400,
+  OVERRIDE_FAVORS_PLAYER: 422,
+  INVALID_OVERRIDE: 400,
   SLUG_TAKEN: 409,
   SITE_NOT_FOUND: 404,
   site_cfg_feasible: 422, // the economy-feasibility CHECK (RTP/win-rate) rejected the tuning
@@ -52,6 +55,9 @@ const PLATFORM_STATUS: Readonly<Record<string, number>> = {
   INVALID_GLOBAL: 400,
   MARKETER_GLOBAL_NOT_FOUND: 404,
   NOT_AFFILIATE: 404,
+  OWNER_NOT_FOUND: 404,
+  OWNER_NOT_MARKETER: 422,
+  OWNER_WRONG_SITE: 422,
 };
 
 async function domain<T>(fn: () => Promise<T>): Promise<T> {
@@ -147,8 +153,46 @@ export function registerPlatformRoutes(router: Router, deps: ApiDeps): void {
   router.get(`${BASE}/platform/overview`, auth, platform, async (ctx: Ctx) =>
     ({ sites: await domain(() => deps.platform.overview(ctx.claims!.role ?? "player")) }));
 
+  // Per-brand performance within a [from, to) window (docs/24 performance filters). `from`/`to` are
+  // epoch-ms (or ISO); defaults to the last 24h when omitted. Read-only; platform_superadmin-gated.
+  router.get(`${BASE}/platform/performance`, auth, platform, async (ctx: Ctx) => {
+    const parse = (raw: string | null): number | null => {
+      if (!raw || !raw.trim()) return null;
+      const n = Number(raw);
+      const ms = Number.isFinite(n) ? n : Date.parse(raw);
+      return Number.isFinite(ms) ? ms : null;
+    };
+    const now = Date.now();
+    const toMs = parse(ctx.query.get("to")) ?? now;
+    const fromMs = parse(ctx.query.get("from")) ?? toMs - 24 * 60 * 60 * 1000;
+    if (toMs <= fromMs) throw new ApiError("VALIDATION", "`to` must be after `from`", 400);
+    return { fromMs, toMs, sites: await domain(() => deps.platform.performance(fromMs, toMs)) };
+  });
+
   router.get(`${BASE}/platform/sites`, auth, platform, async () =>
     ({ sites: await deps.platform.listSites() }));
+
+  // Impersonation (docs/24 §370): the platform owner "logs into" any client's admin console AS its
+  // superadmin — no signup, no per-brand credential. We mint a superadmin JWT whose SUBJECT stays the
+  // platform admin (so every admin_actions row is audited to the real actor) but whose `role` is
+  // 'superadmin' and `site` claim is the TARGET brand — so requireSite + adminScopeSite scope every
+  // read and write to that brand only (a superadmin, rank 4, is site-restricted; the platform owner,
+  // rank 5, is not — minting 'superadmin' deliberately fences the session to one brand). The action
+  // itself is platform_superadmin-gated and audited.
+  router.post(`${BASE}/platform/sites/:id/impersonate`, auth, platform, async (ctx: Ctx) => {
+    const siteId = ctx.params.id!;
+    const brand = (await deps.platform.listSites()).find((s) => s.siteId === siteId);
+    if (!brand) throw new ApiError("SITE_NOT_FOUND", "brand not found", 404);
+    const token = await deps.auth.issueToken(ctx.claims!.userId, "superadmin", siteId);
+    await deps.admin.recordAction(
+      ctx.claims!.userId, ctx.claims!.role ?? "player",
+      "platform.impersonate", "site", siteId, { slug: brand.slug, name: brand.name },
+    );
+    return {
+      token, role: "superadmin", site: siteId,
+      brand: { siteId: brand.siteId, slug: brand.slug, name: brand.name, primaryDomain: brand.primaryDomain },
+    };
+  });
 
   router.post(`${BASE}/platform/sites`, auth, platform, async (ctx: Ctx) => {
     const body = asObject(ctx.body);
@@ -171,6 +215,14 @@ export function registerPlatformRoutes(router: Router, deps: ApiDeps): void {
   router.patch(`${BASE}/platform/sites/:id/config`, auth, platform, async (ctx: Ctx) => {
     const patch = asObject(ctx.body);
     return domain(() => deps.platform.setSiteConfig(ctx.claims!.userId, ctx.claims!.role ?? "player", ctx.params.id!, patch));
+  });
+
+  // Assign / change the brand's marketer (site-owner commission model). ownerUserId null clears it.
+  router.patch(`${BASE}/platform/sites/:id/owner`, auth, platform, async (ctx: Ctx) => {
+    const body = asObject(ctx.body);
+    const owner = body.ownerUserId === null ? null : (typeof body.ownerUserId === "string" ? body.ownerUserId : undefined);
+    if (owner === undefined) throw new ApiError("VALIDATION", "ownerUserId (string or null) is required", 400);
+    return domain(() => deps.platform.setSiteOwner(ctx.claims!.userId, ctx.claims!.role ?? "player", ctx.params.id!, owner));
   });
 
   // Persist a brand's full design-token palette (from the console's seed-hue → derived palette).

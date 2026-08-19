@@ -43,6 +43,31 @@ test("POST /affiliate/enroll → 200 mints a code, promotes to marketer, is idem
   } finally { await api.close(); }
 });
 
+test("POST /affiliate/click records a click (funnel), is tolerant, and reflects in the summary", async () => {
+  const api = await startTestApi();
+  try {
+    const userId = await register(api, "0712345678", "alice");
+    const enroll = await json(await req(api, "POST", "/api/v1/affiliate/enroll", { token: userId }));
+    const code: string = enroll.referralCode;
+
+    // A real code records (public, no auth) and is case-insensitive.
+    const c1 = await req(api, "POST", "/api/v1/affiliate/click", { body: { code } });
+    assert.equal(c1.status, 200);
+    assert.equal((await json(c1)).recorded, true);
+    const c2 = await json(await req(api, "POST", "/api/v1/affiliate/click", { body: { code: code.toLowerCase() } }));
+    assert.equal(c2.recorded, true);
+
+    // An unknown code is a silent no-op (never errors), and a missing code is a 400.
+    assert.equal((await json(await req(api, "POST", "/api/v1/affiliate/click", { body: { code: "ZZZZZZZZ" } }))).recorded, false);
+    assert.equal((await req(api, "POST", "/api/v1/affiliate/click", { body: {} })).status, 400);
+
+    // The two valid clicks surface in the marketer funnel.
+    const summary = await json(await req(api, "GET", "/api/v1/affiliate/summary", { token: `${userId}:marketer` }));
+    assert.equal(summary.clicks, 2);
+    assert.equal(typeof summary.ftdCount, "number");
+  } finally { await api.close(); }
+});
+
 test("POST /affiliate/enroll → 401 without a bearer token", async () => {
   const api = await startTestApi();
   try {

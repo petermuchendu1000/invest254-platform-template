@@ -185,6 +185,7 @@ export function DepositForm() {
         type="text"
         inputMode="numeric"
         autoComplete="off"
+        autoFocus
         required
         leading={<span className="text-sm font-semibold text-muted">KES</span>}
         value={grouped(amount)}

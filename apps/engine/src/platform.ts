@@ -17,6 +17,7 @@ export interface SiteRow {
   mpesaEnv: string | null; mpesaShortcode: string | null; mpesaCallbackBase: string | null; mpesaB2cInitiator: string | null;
   hasMpesaConsumerKey: boolean; hasMpesaConsumerSecret: boolean; hasMpesaPasskey: boolean; hasMpesaB2cCredential: boolean;
   legalCopy: Record<string, unknown> | null;
+  ownerUserId: string | null;
 }
 export interface SiteConfigRow {
   houseEdge: number; maxMultiplier: number; minStakeCents: number; maxStakeCents: number; minWithdrawalCents: number;
@@ -28,6 +29,12 @@ export interface SiteKpis {
   users: number; depositsCents: number; withdrawalsCents: number; ggrCents: number; openPositions: number; bets: number;
 }
 export interface CreateSiteInput { slug: string; name: string; currency?: string | undefined; primaryDomain?: string | null | undefined; }
+/** Per-brand performance over a [fromMs, toMs) window (docs/24 performance filters). Shared columns
+ *  (deposits/withdrawals/ggr/bets) reconcile with `overview` when the window spans all time. */
+export interface SitePerformance {
+  siteId: string; slug: string; name: string; status: string;
+  depositsCents: number; withdrawalsCents: number; ggrCents: number; bets: number; stakedCents: number; newPlayers: number;
+}
 /** A JSON patch of snake_case columns (mirrors the RPC jsonb contract). */
 export type JsonPatch = Record<string, unknown>;
 
@@ -45,12 +52,16 @@ export interface PlatformRepository {
   updateSite(actorId: string, actorRole: string, siteId: string, patch: JsonPatch): Promise<SiteRow>;
   setSiteConfig(actorId: string, actorRole: string, siteId: string, patch: JsonPatch): Promise<SiteConfigRow>;
   overview(actorRole: string): Promise<SiteKpis[]>;
+  /** Per-brand performance within a time window (read-only; the API route gates on platform_superadmin). */
+  performance(fromMs: number, toMs: number): Promise<SitePerformance[]>;
   // Task R — cross-brand marketer rollup (reporting only; money stays per site).
   marketerRollup(actorRole: string): Promise<MarketerRollupRow[]>;
   createMarketerGlobal(actorId: string, actorRole: string, label: string): Promise<string>;
   linkMarketer(actorId: string, actorRole: string, affiliateUserId: string, globalId: string | null): Promise<void>;
   /** Persist a brand's full design-token palette (docs/22 Task G+). platform_superadmin-gated. */
   setSiteTheme(actorId: string, actorRole: string, siteId: string, tokens: JsonPatch): Promise<SiteRow>;
+  /** Assign/clear the brand's marketer (owner_user_id) — the site-owner commission model (0081/0082). */
+  setSiteOwner(actorId: string, actorRole: string, siteId: string, ownerUserId: string | null): Promise<SiteRow>;
 }
 
 const num = (v: unknown): number => (typeof v === "string" ? Number(v) : (v as number)) || 0;
@@ -68,6 +79,7 @@ function mapSiteRow(x: Record<string, unknown>): SiteRow {
     hasMpesaConsumerKey: Boolean(x.mpesa_consumer_key_ref), hasMpesaConsumerSecret: Boolean(x.mpesa_consumer_secret_ref),
     hasMpesaPasskey: Boolean(x.mpesa_passkey_ref), hasMpesaB2cCredential: Boolean(x.mpesa_b2c_credential_ref),
     legalCopy: (x.legal_copy as Record<string, unknown>) ?? null,
+    ownerUserId: (x.owner_user_id as string) ?? null,
   };
 }
 function mapConfigRow(x: Record<string, unknown>): SiteConfigRow {
@@ -117,6 +129,57 @@ export class PgPlatformRepository implements PlatformRepository {
     }));
   }
 
+  async performance(fromMs: number, toMs: number): Promise<SitePerformance[]> {
+    const from = new Date(fromMs).toISOString();
+    const to = new Date(toMs).toISOString();
+    const r = await this.q.query(
+      `with dep as (
+         select site_id,
+                coalesce(sum(amount) filter (where kind='deposit'    and status='success'), 0) as deposits_cents,
+                coalesce(sum(amount) filter (where kind='withdrawal' and status='success' and provider is distinct from 'internal'), 0) as withdrawals_cents
+           from transactions
+          where created_at >= $1 and created_at < $2
+            and user_id not in (select user_id from marketer_account_ids)
+          group by site_id
+       ),
+       pos as (
+         select site_id,
+                count(*) filter (where status='settled')                       as bets,
+                coalesce(sum(stake), 0)                                         as staked_cents,
+                coalesce(sum(stake - payout) filter (where status='settled'),0) as ggr_cents
+           from positions
+          where opened_at >= $1 and opened_at < $2
+            and user_id not in (select user_id from marketer_account_ids)
+          group by site_id
+       ),
+       np as (
+         select site_id, count(*) as new_players
+           from profiles
+          where created_at >= $1 and created_at < $2
+            and id not in (select user_id from marketer_account_ids)
+          group by site_id
+       )
+       select s.id as site_id, s.slug, s.name, s.status,
+              coalesce(dep.deposits_cents, 0)    as deposits_cents,
+              coalesce(dep.withdrawals_cents, 0) as withdrawals_cents,
+              coalesce(pos.ggr_cents, 0)         as ggr_cents,
+              coalesce(pos.bets, 0)              as bets,
+              coalesce(pos.staked_cents, 0)      as staked_cents,
+              coalesce(np.new_players, 0)        as new_players
+         from sites s
+         left join dep on dep.site_id = s.id
+         left join pos on pos.site_id = s.id
+         left join np  on np.site_id  = s.id
+        order by s.created_at asc`,
+      [from, to],
+    );
+    return r.rows.map((x: Record<string, unknown>) => ({
+      siteId: String(x.site_id), slug: String(x.slug), name: String(x.name), status: String(x.status),
+      depositsCents: num(x.deposits_cents), withdrawalsCents: num(x.withdrawals_cents), ggrCents: num(x.ggr_cents),
+      bets: num(x.bets), stakedCents: num(x.staked_cents), newPlayers: num(x.new_players),
+    }));
+  }
+
   async marketerRollup(actorRole: string): Promise<MarketerRollupRow[]> {
     const r = await this.q.query("select * from fn_platform_marketer_rollup($1)", [actorRole]);
     return r.rows.map((x: Record<string, unknown>) => ({
@@ -140,6 +203,12 @@ export class PgPlatformRepository implements PlatformRepository {
   async setSiteTheme(actorId: string, actorRole: string, siteId: string, tokens: JsonPatch): Promise<SiteRow> {
     const r = await this.q.query("select * from fn_platform_set_site_theme($1,$2,$3,$4)",
       [actorId, actorRole, siteId, JSON.stringify(tokens)]);
+    return mapSiteRow(r.rows[0] as Record<string, unknown>);
+  }
+
+  async setSiteOwner(actorId: string, actorRole: string, siteId: string, ownerUserId: string | null): Promise<SiteRow> {
+    const r = await this.q.query("select * from fn_platform_set_site_owner($1,$2,$3,$4)",
+      [actorId, actorRole, siteId, ownerUserId]);
     return mapSiteRow(r.rows[0] as Record<string, unknown>);
   }
 }
@@ -167,6 +236,7 @@ export class InMemoryPlatformRepository implements PlatformRepository {
       mpesaEnv: null, mpesaShortcode: null, mpesaCallbackBase: null, mpesaB2cInitiator: null,
       hasMpesaConsumerKey: false, hasMpesaConsumerSecret: false, hasMpesaPasskey: false, hasMpesaB2cCredential: false,
       legalCopy: null,
+      ownerUserId: null,
       config: { ...DEFAULT_CONFIG },
     });
   }
@@ -189,6 +259,7 @@ export class InMemoryPlatformRepository implements PlatformRepository {
       mpesaEnv: null, mpesaShortcode: null, mpesaCallbackBase: null, mpesaB2cInitiator: null,
       hasMpesaConsumerKey: false, hasMpesaConsumerSecret: false, hasMpesaPasskey: false, hasMpesaB2cCredential: false,
       legalCopy: null,
+      ownerUserId: null,
       config: { ...DEFAULT_CONFIG },
     });
     return id;
@@ -226,6 +297,14 @@ export class InMemoryPlatformRepository implements PlatformRepository {
   async overview(actorRole: string): Promise<SiteKpis[]> {
     this.gate(actorRole);
     return [...this.sites.values()].map((s) => ({ siteId: s.siteId, slug: s.slug, name: s.name, status: s.status, ...this.kpis(s.siteId) }));
+  }
+
+  async performance(_fromMs: number, _toMs: number): Promise<SitePerformance[]> {
+    // No transaction/position store in the in-memory repo — return each brand with zeroed metrics.
+    return [...this.sites.values()].map((s) => ({
+      siteId: s.siteId, slug: s.slug, name: s.name, status: s.status,
+      depositsCents: 0, withdrawalsCents: 0, ggrCents: 0, bets: 0, stakedCents: 0, newPlayers: 0,
+    }));
   }
 
   // ── Task R: cross-brand marketer rollup (in-memory mirror for tests) ──
@@ -281,6 +360,15 @@ export class InMemoryPlatformRepository implements PlatformRepository {
     const { config, ...row } = s;
     return { ...row };
   }
+
+  async setSiteOwner(_actorId: string, actorRole: string, siteId: string, ownerUserId: string | null): Promise<SiteRow> {
+    this.gate(actorRole);
+    const s = this.sites.get(siteId);
+    if (!s) throw new Error("SITE_NOT_FOUND");
+    s.ownerUserId = ownerUserId;
+    const { config, ...row } = s;
+    return { ...row };
+  }
 }
 
 /** Thin service over the repo: input validation + a stable surface for the API + console. */
@@ -288,6 +376,11 @@ export class PlatformService {
   constructor(private readonly repo: PlatformRepository) {}
   listSites(): Promise<SiteWithConfig[]> { return this.repo.listSites(); }
   overview(actorRole: string): Promise<SiteKpis[]> { return this.repo.overview(actorRole); }
+  performance(fromMs: number, toMs: number): Promise<SitePerformance[]> {
+    const from = Number(fromMs), to = Number(toMs);
+    if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from) throw new Error("INVALID_RANGE");
+    return this.repo.performance(from, to);
+  }
   createSite(actorId: string, actorRole: string, input: CreateSiteInput): Promise<string> {
     if (!input || typeof input.slug !== "string" || typeof input.name !== "string" || !input.slug.trim() || !input.name.trim()) {
       throw new Error("INVALID_BRAND");
@@ -317,5 +410,8 @@ export class PlatformService {
   setSiteTheme(actorId: string, actorRole: string, siteId: string, tokens: JsonPatch): Promise<SiteRow> {
     if (!tokens || typeof tokens !== "object" || Array.isArray(tokens)) throw new Error("INVALID_PATCH");
     return this.repo.setSiteTheme(actorId, actorRole, siteId, tokens);
+  }
+  setSiteOwner(actorId: string, actorRole: string, siteId: string, ownerUserId: string | null): Promise<SiteRow> {
+    return this.repo.setSiteOwner(actorId, actorRole, siteId, ownerUserId);
   }
 }

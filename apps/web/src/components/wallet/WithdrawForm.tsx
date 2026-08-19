@@ -147,6 +147,7 @@ export function WithdrawForm() {
             name="amount"
             inputMode="numeric"
             autoComplete="off"
+            autoFocus
             aria-label="Amount to withdraw in KES"
             placeholder="0"
             value={grouped(amount)}

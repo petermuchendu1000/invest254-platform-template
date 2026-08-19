@@ -24,6 +24,41 @@ export interface PaymentServiceOptions {
    * returns a non-positive value.
    */
   minWithdrawalProvider?: () => Cents;
+  /**
+   * Site-aware live minimum-withdrawal source (multi-tenant). Consulted per-request with the
+   * withdrawing brand's `siteId` so the server enforces the SAME floor the player's client
+   * validated against (each brand's `site_game_config.min_withdrawal`). This closes the divergence
+   * where a brand's minimum differs from the platform default and the client accepts an amount the
+   * server then rejects as BELOW_MIN. Takes precedence over `minWithdrawalProvider`; a non-positive
+   * / non-integer result (or a throw) defers to `minWithdrawalProvider` then the static constant, so
+   * a transient bad per-brand value can never open the floor below the safe default.
+   */
+  minWithdrawalForSite?: (siteId: string | undefined) => Cents | Promise<Cents>;
+  /**
+   * Per-brand withdrawal kill switch (owner/admin override, migration 0067). Consulted at the top of
+   * every withdrawal initiation: when it resolves to `false`, the request is refused with
+   * WITHDRAWALS_DISABLED before any money moves — covering BOTH the marketer instant game->mpesa
+   * transfer and the normal player pending->approve->B2C request. Lets an operator halt payouts
+   * instantly during a malfunction or when the daily pool would be exceeded. Absent/throws => treated
+   * as enabled (fail-open to current behaviour), so a missing resolver never blocks legitimate payouts.
+   */
+  withdrawalsEnabledForSite?: (siteId: string | undefined) => boolean | Promise<boolean>;
+  /**
+   * Site-aware M-Pesa AccountReference source (multi-tenant). Consulted per-deposit with the brand's
+   * `siteId` so the STK-push prompt shows THAT brand's account ("Account no. <Brand>") instead of a
+   * hardcoded one. Falls back to `defaultAccountRef` (then "Invest254") when absent / empty / throws.
+   */
+  accountRefForSite?: (siteId: string | undefined) => string | Promise<string>;
+  /** Fallback AccountReference when no per-site value resolves (default "Invest254"). */
+  defaultAccountRef?: string;
+  /**
+   * Per-brand Daraja client resolver (multi-tenant M-Pesa routing). Consulted per-deposit with the
+   * brand's `siteId`: when a brand has registered its OWN Safaricom shortcode/credentials it returns
+   * a brand-specific client (so the deposit routes to that brand's paybill and shows its business
+   * name); returns undefined/throws => fall back to the shared platform client. Dormant until a brand
+   * is configured, so it never changes behaviour for brands on the shared paybill.
+   */
+  darajaForSite?: (siteId: string | undefined) => DarajaClient | undefined | Promise<DarajaClient | undefined>;
   events?: PaymentEvents;
   verifyStkCallbacks?: boolean;
 }
@@ -32,12 +67,22 @@ export class PaymentService {
   private readonly minDeposit: Cents;
   private readonly minWithdrawal: Cents;
   private readonly minWithdrawalProvider?: () => Cents;
+  private readonly minWithdrawalForSite?: (siteId: string | undefined) => Cents | Promise<Cents>;
+  private readonly withdrawalsEnabledForSite?: (siteId: string | undefined) => boolean | Promise<boolean>;
+  private readonly accountRefForSite?: (siteId: string | undefined) => string | Promise<string>;
+  private readonly defaultAccountRef: string;
+  private readonly darajaForSite?: (siteId: string | undefined) => DarajaClient | undefined | Promise<DarajaClient | undefined>;
   private readonly events: PaymentEvents;
   private readonly verifyStk: boolean;
   constructor(private readonly repo: PaymentRepository, private readonly daraja: DarajaClient, opts: PaymentServiceOptions = {}) {
     this.minDeposit = opts.minDepositCents ?? MIN_DEPOSIT_CENTS;
     this.minWithdrawal = opts.minWithdrawalCents ?? MIN_WITHDRAWAL_CENTS;
     if (opts.minWithdrawalProvider) this.minWithdrawalProvider = opts.minWithdrawalProvider;
+    if (opts.minWithdrawalForSite) this.minWithdrawalForSite = opts.minWithdrawalForSite;
+    if (opts.withdrawalsEnabledForSite) this.withdrawalsEnabledForSite = opts.withdrawalsEnabledForSite;
+    if (opts.accountRefForSite) this.accountRefForSite = opts.accountRefForSite;
+    this.defaultAccountRef = opts.defaultAccountRef ?? "Invest254";
+    if (opts.darajaForSite) this.darajaForSite = opts.darajaForSite;
     this.events = opts.events ?? {};
     // Secure by default: a client can POST to the public STK callback URL, so a raw
     // resultCode=0 is NOT trusted — we re-check with Safaricom before crediting. Opt out only
@@ -51,9 +96,37 @@ export class PaymentService {
     if (amountCents < this.minDeposit) throw new Error("BELOW_MIN");
     const msisdn = normalizeMsisdn(phoneRaw);
     const txId = await this.repo.createDeposit(userId, amountCents, msisdn, siteId);
-    const stk = await this.daraja.stkPush({ amountCents, msisdn, accountRef: "Invest254", desc: "Deposit" });
+    // Site-aware AccountReference: show the depositing brand's account, not a hardcoded one. And
+    // route through the brand's OWN Daraja client when it has registered its own paybill (else shared).
+    const accountRef = await this.resolveAccountRef(siteId);
+    const client = await this.resolveDaraja(siteId);
+    const stk = await client.stkPush({ amountCents, msisdn, accountRef, desc: "Deposit" });
     await this.repo.attachStk(txId, stk.merchantRequestId, stk.checkoutRequestId);
     return { txId, checkoutRequestId: stk.checkoutRequestId };
+  }
+
+  /** Resolve the brand's STK AccountReference, sanitised for Daraja (alphanumeric, <=12). */
+  private async resolveAccountRef(siteId?: string): Promise<string> {
+    let ref = this.defaultAccountRef;
+    if (this.accountRefForSite) {
+      try {
+        const v = await this.accountRefForSite(siteId);
+        if (typeof v === "string" && v.trim().length > 0) ref = v.trim();
+      } catch { /* fall back to default */ }
+    }
+    const clean = ref.replace(/[^A-Za-z0-9]/g, "").slice(0, 12);
+    return clean.length > 0 ? clean : "Invest254";
+  }
+
+  /** Resolve the brand's Daraja client (own paybill) or fall back to the shared platform client. */
+  private async resolveDaraja(siteId?: string): Promise<DarajaClient> {
+    if (this.darajaForSite) {
+      try {
+        const c = await this.darajaForSite(siteId);
+        if (c) return c;
+      } catch { /* fall back to shared client */ }
+    }
+    return this.daraja;
   }
   /**
    * Daraja STK callback handler (idempotent). A success (resultCode 0) is verified against
@@ -110,7 +183,15 @@ export class PaymentService {
    *  - Otherwise it validates and HOLDS funds atomically (status pending) for the normal M-Pesa flow.
    */
   async requestWithdrawal(userId: string, amountCents: number, phoneRaw: string, siteId?: string): Promise<WithdrawalOutcome> {
-    const minWithdrawal = this.currentMinWithdrawal();
+    // Kill switch first: if withdrawals are disabled for this brand, refuse before any money moves —
+    // this halts BOTH the marketer instant transfer and the player pending request. Fail-open on a
+    // missing/throwing resolver so a config glitch never blocks legitimate payouts.
+    if (this.withdrawalsEnabledForSite) {
+      let enabled = true;
+      try { enabled = (await this.withdrawalsEnabledForSite(siteId)) !== false; } catch { enabled = true; }
+      if (!enabled) throw new Error("WITHDRAWALS_DISABLED");
+    }
+    const minWithdrawal = await this.currentMinWithdrawal(siteId);
     if (!Number.isInteger(amountCents) || amountCents <= 0) throw new Error("INVALID_AMOUNT");
     if (amountCents < minWithdrawal) throw new Error("BELOW_MIN");
     // Marketer instant path (game -> mpesa wallet). Phone is resolved from the player's profile.
@@ -128,12 +209,24 @@ export class PaymentService {
   }
 
   /**
-   * The minimum withdrawal in force right now. Prefers the live provider (admin-editable
-   * `game_config.min_withdrawal`) and falls back to the boot-time constant if the provider is
-   * absent or returns a non-positive integer — so a transient bad config can never open the
-   * floor below the safe default.
+   * The minimum withdrawal in force for THIS request. Resolution order (multi-tenant safe):
+   *   1. `minWithdrawalForSite(siteId)` — the withdrawing brand's own `site_game_config.min_withdrawal`,
+   *      i.e. exactly the floor the player's client validated against (kills the client/server BELOW_MIN
+   *      divergence for brands whose minimum differs from the platform default);
+   *   2. `minWithdrawalProvider()` — the process-wide live default (admin-editable `game_config.min_withdrawal`);
+   *   3. the boot-time constant.
+   * Any source that is absent, throws, or yields a non-positive / non-integer value is skipped, so a
+   * transient bad config can never open the floor below the safe default.
    */
-  private currentMinWithdrawal(): Cents {
+  private async currentMinWithdrawal(siteId?: string): Promise<Cents> {
+    if (this.minWithdrawalForSite) {
+      try {
+        const perSite = await this.minWithdrawalForSite(siteId);
+        if (Number.isInteger(perSite) && (perSite as number) > 0) return perSite as Cents;
+      } catch {
+        // fall through to the process-wide provider / static default
+      }
+    }
     const live = this.minWithdrawalProvider?.();
     return Number.isInteger(live) && (live as number) > 0 ? (live as Cents) : this.minWithdrawal;
   }

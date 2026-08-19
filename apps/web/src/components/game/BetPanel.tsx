@@ -16,7 +16,6 @@ import { useWallet } from '@/lib/wallet/hooks';
 import { useHydrated } from '@/lib/useHydrated';
 import { useGameSocket } from '@/lib/game/GameSocketProvider';
 import { useBrand } from '@/lib/brand/BrandProvider';
-import { WithdrawalProgress } from '@/components/wallet/WithdrawalProgress';
 import { LivePnl } from '@/components/game/LivePnl';
 
 const CHIP_CENTS = [25000, 50000, 75000, 100000];
@@ -170,13 +169,12 @@ export function BetPanel() {
   // ── Idle — stake + duration + BUY/SELL (always visible) ──────────────────
   return (
     <Card className="flex flex-col gap-2.5 rounded-xl p-3">
-      {/* Goal-gradient: how close the player is to the withdrawal line (docs/25). */}
-      {token ? <WithdrawalProgress realCents={balanceReal} minWithdrawalCents={config?.minWithdrawalCents ?? 0} /> : null}
       {/* Stake input with KES prefix + quick steppers */}
-      <div className="flex items-center gap-2 rounded-xl border border-border bg-surface-2 px-3">
+      <div className="flex items-center gap-2 rounded-xl border border-border bg-surface-2 px-3 transition focus-within:border-accent focus-within:ring-1 focus-within:ring-accent">
         <span className="rounded-md bg-surface px-2 py-1 text-xs font-semibold text-muted">KES</span>
         <input
           inputMode="decimal"
+          autoFocus
           value={stake}
           onChange={(e) => setStake(e.target.value.replace(/[^0-9.]/g, ''))}
           placeholder="0"
@@ -287,8 +285,6 @@ export function BetPanel() {
         </p>
       ) : !token ? (
         <p className="text-center text-[11px] text-muted">Deposit to buy or sell.</p>
-      ) : overBalance ? (
-        <p className="text-center text-[11px] text-warn">Not enough balance — tap BUY or SELL to add money and trade.</p>
       ) : null}
     </Card>
   );

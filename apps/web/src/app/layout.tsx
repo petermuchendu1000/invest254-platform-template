@@ -8,6 +8,10 @@ import { resolveBrand, brandRootStyle, brandWordmark, type Brand } from '@/lib/b
 import { googleFontsHref } from '@/lib/brand/fonts';
 import { env } from '@/lib/env';
 
+// Cloudflare Pages runs on the edge; per-request per-brand SSR (Task G) makes every route dynamic,
+// so the whole app must opt into the Edge runtime. Set on the root layout -> cascades to all routes.
+export const runtime = 'edge';
+
 /** The incoming host (proxy-aware) — drives which brand this request renders. */
 function requestHost(): string {
   const h = headers();

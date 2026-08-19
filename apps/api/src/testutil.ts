@@ -3,23 +3,79 @@ import { DEFAULT_CONFIG, normalizeHost, type Cents } from "@invest254/shared";
 import {
   InMemoryEngagementRepository, InMemoryPaymentRepository, InMemoryGameRepository, StubDarajaClient,
   InMemoryIdentityRepository, PaymentService, AuthService, AffiliateService, AdminService, InMemoryAdminRepository, PlatformService, InMemoryPlatformRepository, maskHandle,
-  NotificationService, InMemoryNotificationRepository, InMemoryReferralRepository,
+  NotificationService, InMemoryNotificationRepository,
   type FairnessRecord, type AuthClaims, type Verifier,
 } from "@invest254/engine";
 import { createApp, type ApiDeps, type WalletBalance, type Brand } from "./app.js";
 import type { MarketerRepo, MarketerRow, MarketerProfile, MarketerLedgerRow, WithdrawResult } from "./app.marketers.js";
+import type { ReferralRepo, CommissionPayoutRow, AdminCommissionPayoutRow } from "./app.referral.js";
 import type { SupportDeps, SupportStore, SupportConversation, SupportMessageRow } from "./app.support.js";
 import type { PlatformOnboardDeps, OnboardInput, OnboardResult } from "./app.platform.js";
 import type { EmbedFn, KbHit, LlmFn, LlmMessage, SupportBrandInfo } from "@invest254/shared";
 import { createHash } from "node:crypto";
 
+/** In-memory ReferralRepo mirroring the 0078/0079 payout lifecycle (min KES 500, one pending
+ *  request, approve->paid->reject) for API route tests. `_seedCommission` seeds a marketer balance. */
+export type InMemoryReferralRepo = ReferralRepo & {
+  _seedCommission(userId: string, cents: number, siteId?: string): void;
+  _setCode(userId: string, code: string): void;
+};
+export function makeInMemoryReferralRepo(): InMemoryReferralRepo {
+  const MIN = 50000;
+  const accrued = new Map<string, number>();          // userId -> accrued marketer commission cents
+  const codes = new Map<string, string>();            // userId -> referral code
+  const siteOf = new Map<string, string>();           // userId -> siteId
+  const payouts = new Map<string, AdminCommissionPayoutRow>();
+  const bal = (u: string) => {
+    const earned = accrued.get(u) ?? 0;
+    let held = 0, paid = 0;
+    for (const p of payouts.values()) if (p.beneficiaryUser === u) {
+      if (p.status === "requested" || p.status === "approved") held += p.amountCents;
+      else if (p.status === "paid") paid += p.amountCents;
+    }
+    return { earned, held, paid, available: earned - held - paid };
+  };
+  const asRow = (p: AdminCommissionPayoutRow): CommissionPayoutRow => ({
+    id: p.id, amountCents: p.amountCents, status: p.status, requestedAtMs: p.requestedAtMs,
+    approvedAtMs: p.approvedAtMs, paidAtMs: p.paidAtMs, paidRef: p.paidRef, note: p.note,
+  });
+  return {
+    _seedCommission(userId, cents, siteId = "00000000-0000-0000-0000-000000000001") {
+      accrued.set(userId, (accrued.get(userId) ?? 0) + cents); siteOf.set(userId, siteId);
+    },
+    _setCode(userId, code) { codes.set(userId, code); },
+    async myReferral(userId) {
+      const b = bal(userId); const code = codes.get(userId) ?? null;
+      return { referralCode: code, referralPath: code ? `/r/${code}` : null, isMarketer: (accrued.get(userId) ?? 0) > 0,
+        totalReferrals: 0, earnedCents: b.earned, heldCents: b.held, paidCents: b.paid, availableCents: b.available, minPayoutCents: MIN };
+    },
+    async listMyCommissions() { return []; },
+    async requestPayout(userId) {
+      for (const p of payouts.values()) if (p.beneficiaryUser === userId && (p.status === "requested" || p.status === "approved")) throw new Error("PAYOUT_PENDING");
+      const b = bal(userId);
+      if (b.available < MIN) throw new Error("BELOW_MIN");
+      const id = `cp-${payouts.size + 1}`;
+      const row: AdminCommissionPayoutRow = { id, amountCents: b.available, status: "requested", requestedAtMs: Date.now(),
+        approvedAtMs: null, paidAtMs: null, paidRef: null, note: null,
+        beneficiaryUser: userId, username: null, phone: null, siteId: siteOf.get(userId) ?? "00000000-0000-0000-0000-000000000001" };
+      payouts.set(id, row); return asRow(row);
+    },
+    async listMyPayouts(userId) { return [...payouts.values()].filter((p) => p.beneficiaryUser === userId).map(asRow); },
+    async listPayouts(siteId, status) {
+      return [...payouts.values()].filter((p) => (!siteId || p.siteId === siteId) && (!status || p.status === status));
+    },
+    async siteOfPayout(id) { return payouts.get(id)?.siteId ?? null; },
+    async approvePayout(id) { const p = payouts.get(id); if (!p || p.status !== "requested") throw new Error("INVALID_STATE"); p.status = "approved"; p.approvedAtMs = Date.now(); return asRow(p); },
+    async markPaid(id, _admin, ref) { const p = payouts.get(id); if (!p || (p.status !== "requested" && p.status !== "approved")) throw new Error("INVALID_STATE"); p.status = "paid"; p.paidAtMs = Date.now(); p.paidRef = ref; return asRow(p); },
+    async rejectPayout(id, _admin, reason) { const p = payouts.get(id); if (!p || (p.status !== "requested" && p.status !== "approved")) throw new Error("INVALID_STATE"); p.status = "rejected"; p.note = reason; return asRow(p); },
+  };
+}
+
 /** In-memory MarketerRepo mirroring the SQL RPCs (0033): overdraw guard, idempotency, initials. */
 export function makeInMemoryMarketerRepo(): MarketerRepo {
-  interface Rec { id: string; name: string; phone: string; status: string; created_at: string; updated_at: string; balance: number; fuliza: number; airtime: number; site: string; }
+  interface Rec { id: string; name: string; phone: string; status: string; created_at: string; updated_at: string; balance: number; fuliza: number; airtime: number; }
   const byId = new Map<string, Rec>();
-  const byPhone = new Map<string, string>();  // key: `${site}:${phone}`
-  const DEFAULT_SITE = "00000000-0000-0000-0000-000000000001";
-  const pkey = (site: string | undefined, phone: string) => `${site ?? DEFAULT_SITE}:${phone}`;
+  const byPhone = new Map<string, string>();
   const ledgers = new Map<string, MarketerLedgerRow[]>();
   const refs = new Map<string, { balance: number; ledgerId: number }>();
   const pins = new Map<string, string>();
@@ -35,22 +91,30 @@ export function makeInMemoryMarketerRepo(): MarketerRepo {
     return row.id;
   };
   return {
-    async create(name: string, phone: string, siteId?: string): Promise<MarketerRow> {
-      const site = siteId ?? DEFAULT_SITE;
-      const existing = byPhone.get(pkey(site, phone));
+    async create(name: string, phone: string): Promise<MarketerRow> {
+      const existing = byPhone.get(phone);
       if (existing) { const m = byId.get(existing)!; m.name = name; m.updated_at = now(); return { id: m.id, name: m.name, phone: m.phone, status: m.status, created_at: m.created_at, updated_at: m.updated_at }; }
       const id = `m-${++mseq}`; const ts = now();
-      const m: Rec = { id, name, phone, status: "active", created_at: ts, updated_at: ts, balance: 0, fuliza: 0, airtime: 0, site };
-      byId.set(id, m); byPhone.set(pkey(site, phone), id); ledgers.set(id, []);
+      const m: Rec = { id, name, phone, status: "active", created_at: ts, updated_at: ts, balance: 0, fuliza: 0, airtime: 0 };
+      byId.set(id, m); byPhone.set(phone, id); ledgers.set(id, []);
       return { id, name, phone, status: "active", created_at: ts, updated_at: ts };
     },
-    async list(limit: number, siteId?: string): Promise<MarketerProfile[]> {
-      return [...byId.values()].filter((m) => siteId == null || m.site === siteId)
-        .sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, limit).map(profileOf);
+    async update(id: string, name: string | null, phone: string | null): Promise<MarketerRow> {
+      const m = byId.get(id); if (!m) throw new Error("MARKETER_NOT_FOUND");
+      if (phone && phone.trim() && phone.trim() !== m.phone) {
+        const other = byPhone.get(phone.trim());
+        if (other && other !== id) throw new Error("PHONE_TAKEN");
+        byPhone.delete(m.phone); m.phone = phone.trim(); byPhone.set(m.phone, id);
+      }
+      if (name && name.trim()) m.name = name.trim();
+      m.updated_at = now();
+      return { id: m.id, name: m.name, phone: m.phone, status: m.status, created_at: m.created_at, updated_at: m.updated_at };
+    },
+    async list(limit: number): Promise<MarketerProfile[]> {
+      return [...byId.values()].sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, limit).map(profileOf);
     },
     async profile(id: string): Promise<MarketerProfile | null> { const m = byId.get(id); return m ? profileOf(m) : null; },
-    async profileByPhone(phone: string, siteId?: string): Promise<MarketerProfile | null> { const id = byPhone.get(pkey(siteId, phone)); const m = id ? byId.get(id) : undefined; return m ? profileOf(m) : null; },
-    async siteOfMarketer(id: string): Promise<string | null> { return byId.get(id)?.site ?? null; },
+    async profileByPhone(phone: string): Promise<MarketerProfile | null> { const id = byPhone.get(phone); const m = id ? byId.get(id) : undefined; return m ? profileOf(m) : null; },
     async credit(id: string, amountCents: number, ref: string | null, meta: unknown): Promise<number> {
       if (amountCents <= 0) throw new Error("AMOUNT_MUST_BE_POSITIVE");
       if (ref && refs.has(ref)) return refs.get(ref)!.balance;
@@ -75,8 +139,8 @@ export function makeInMemoryMarketerRepo(): MarketerRepo {
     async setAirtime(id: string, amountCents: number): Promise<number> { if (amountCents < 0) throw new Error("AMOUNT_MUST_BE_NONNEGATIVE"); const m = byId.get(id); if (!m) throw new Error("MARKETER_NOT_FOUND"); m.airtime = amountCents; m.updated_at = now(); return amountCents; },
     async statement(id: string, limit: number): Promise<MarketerLedgerRow[]> { return (ledgers.get(id) ?? []).slice().reverse().slice(0, limit); },
     async setPin(id: string, pin: string): Promise<void> { if (!/^\d{4,6}$/.test(pin)) throw new Error("INVALID_PIN"); if (!byId.has(id)) throw new Error("MARKETER_NOT_FOUND"); pins.set(id, pin); },
-    async login(phone: string, pin: string, siteId?: string): Promise<string | null> {
-      const id = byPhone.get(pkey(siteId, phone)); if (!id) return null;
+    async login(phone: string, pin: string): Promise<string | null> {
+      const id = byPhone.get(phone); if (!id) return null;
       const m = byId.get(id)!; if (!pins.has(id) || m.status !== "active") return null;
       return pins.get(id) === pin ? id : null;
     },
@@ -287,6 +351,7 @@ export interface TestApi {
   withdrawalSuccesses: Array<{ userId: string; amountCents: Cents }>;
   notifications: NotificationService;
   marketers: MarketerRepo;
+  referral: InMemoryReferralRepo;
   /** The in-memory platform repo, so tests can seed brands + marketer rollup rows (Task R). */
   platformRepo: InMemoryPlatformRepository;
   /** Support-chat fakes (seed KB, swap LLM, inspect recorded conversations/messages). */
@@ -312,7 +377,14 @@ export async function startTestApi(opts: TestApiOptions = {}): Promise<TestApi> 
   const resolveHandle = async (userId: string): Promise<string> =>
     (await engage.getUsername(userId)) ?? `guest_${userId.slice(0, 6)}`;
 
+  // Late-bound so the withdrawal kill switch reads the SAME in-memory admin repo the toggle route
+  // writes to (the admin repo is created below, after PaymentService). Resolver runs at request time.
+  let adminRepoRef: InMemoryAdminRepository | undefined;
+  const TU_DEFAULT_SITE_ID = "00000000-0000-0000-0000-000000000001";
+
   const payments = new PaymentService(payRepo, daraja, {
+    withdrawalsEnabledForSite: async (siteId) =>
+      adminRepoRef ? adminRepoRef.getWithdrawalsEnabled(siteId ?? TU_DEFAULT_SITE_ID) : true,
     events: {
       onWithdrawalSuccess: (e) => {
         withdrawalSuccesses.push(e);
@@ -330,7 +402,9 @@ export async function startTestApi(opts: TestApiOptions = {}): Promise<TestApi> 
   const identity = new InMemoryIdentityRepository();
   const auth = new AuthService(identity, { jwtSecret: "test-secret-which-is-long-enough-123456", jwtTtlSeconds: 3600 });
   const affiliate = new AffiliateService(identity, daraja);
-  const admin = new AdminService(new InMemoryAdminRepository(identity, payRepo, engage, gameRepo));
+  const adminRepo = new InMemoryAdminRepository(identity, payRepo, engage, gameRepo);
+  adminRepoRef = adminRepo;
+  const admin = new AdminService(adminRepo);
   const platformRepo = new InMemoryPlatformRepository();
   const platform = new PlatformService(platformRepo);
   const notifications = new NotificationService(new InMemoryNotificationRepository());
@@ -363,6 +437,7 @@ export async function startTestApi(opts: TestApiOptions = {}): Promise<TestApi> 
     },
   };
 
+  const referralRepo = makeInMemoryReferralRepo();
   const deps: ApiDeps = {
     verifier: stubVerifier(),
     auth,
@@ -371,7 +446,25 @@ export async function startTestApi(opts: TestApiOptions = {}): Promise<TestApi> 
     platform,
     notifications,
     marketers: makeInMemoryMarketerRepo(),
-    referral: new InMemoryReferralRepository(),
+    referral: referralRepo,
+    marketerExpenses: (() => {
+      const rows: Array<{ id: string; marketerUserId: string; category: string; amountCents: number; note: string | null; createdBy: string | null; createdAtMs: number }> = [];
+      let seq = 0;
+      return {
+        async add(actorId: string, actorRole: string, _siteId: string, marketerUserId: string, category: string, amountCents: number, note: string | null) {
+          if (!["admin", "superadmin", "platform_admin", "platform_superadmin"].includes(actorRole)) throw new Error("NOT_AUTHORIZED");
+          if (!category.trim()) throw new Error("CATEGORY_REQUIRED");
+          if (!Number.isInteger(amountCents) || amountCents <= 0) throw new Error("INVALID_AMOUNT");
+          const row = { id: `exp-${++seq}`, marketerUserId, category: category.trim(), amountCents, note: note && note.trim() ? note.trim() : null, createdBy: actorId, createdAtMs: Date.now() };
+          rows.unshift(row);
+          return { id: row.id, category: row.category, amountCents: row.amountCents, note: row.note, createdAtMs: row.createdAtMs, createdBy: row.createdBy };
+        },
+        async list(marketerUserId: string, limit: number) {
+          return rows.filter((r) => r.marketerUserId === marketerUserId).slice(0, limit)
+            .map((r) => ({ id: r.id, category: r.category, amountCents: r.amountCents, note: r.note, createdAtMs: r.createdAtMs, createdBy: r.createdBy }));
+        },
+      };
+    })(),
     config: () => DEFAULT_CONFIG,
     // Brand-aware config for tests: resolve a ref (slug|id) to a TEST brand and return a DISTINCT
     // economy per brand (different maxMultiplier) so tests can prove the response is site-scoped.
@@ -406,6 +499,7 @@ export async function startTestApi(opts: TestApiOptions = {}): Promise<TestApi> 
     deps, identity, engage, payRepo, gameRepo, daraja, fairness, bonus, withdrawalSuccesses,
     notifications,
     marketers: deps.marketers,
+    referral: referralRepo,
     platformRepo,
     support,
     onboard: { calls: onboardCalls, deps: onboardDeps },

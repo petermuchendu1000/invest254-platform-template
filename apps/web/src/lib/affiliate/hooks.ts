@@ -17,8 +17,7 @@ export function useAffiliateSummary(enabled: boolean) {
 }
 
 /** Realtime marketer performance — same summary, but polled every 5s while the live HUD is open. */
-export function useMarketerLiveSummary(enabled: boolean) {
-  const token = useSession((s) => s.token);
+export function useMarketerLiveSummary(enabled: boolean) {  const token = useSession((s) => s.token);
   return useQuery({
     queryKey: ['affiliate', 'summary', 'live'],
     queryFn: () => api.affiliateSummary(token as string),
@@ -76,6 +75,54 @@ export function useAffiliatePayout() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['affiliate', 'summary'] });
       void qc.invalidateQueries({ queryKey: ['affiliate', 'commissions'] });
+    },
+  });
+}
+
+/** Admin-logged expenses attributed to the marketer (transparency). Polled with the live HUD. */
+export function useAffiliateExpenses(enabled: boolean) {
+  const token = useSession((s) => s.token);
+  return useQuery({
+    queryKey: ['affiliate', 'expenses'],
+    queryFn: () => api.affiliateExpenses(token as string),
+    enabled: !!token && enabled,
+    retry: false,
+    refetchInterval: enabled ? 15000 : false,
+  });
+}
+
+// ── Deposit-based referral commissions (0078/0079) — available to every authed user ─────────────
+/** The caller's referral code, link and commission balance (players + marketers). */
+export function useReferral(enabled = true) {
+  const token = useSession((s) => s.token);
+  return useQuery({
+    queryKey: ['referral', 'me'],
+    queryFn: () => api.myReferral(token as string),
+    enabled: !!token && enabled,
+    retry: false,
+  });
+}
+
+/** The caller's commission line-items (newest first). */
+export function useMyCommissions(enabled = true) {
+  const token = useSession((s) => s.token);
+  return useQuery({
+    queryKey: ['referral', 'commissions'],
+    queryFn: () => api.myReferralCommissions(token as string),
+    enabled: !!token && enabled,
+    retry: false,
+  });
+}
+
+/** Request a commission payout (marketer balance must be >= KES 500). Refreshes the summary. */
+export function useRequestCommissionPayout() {
+  const token = useSession((s) => s.token);
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.requestCommissionPayout(token as string),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['referral', 'me'] });
+      qc.invalidateQueries({ queryKey: ['referral', 'commissions'] });
     },
   });
 }

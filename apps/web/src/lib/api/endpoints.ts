@@ -11,6 +11,10 @@ import type {
   NotificationDto,
   Paginated,
   PayoutRequestResult,
+  ReferralSummaryDto,
+  CommissionLineDto,
+  CommissionPayoutDto,
+  MarketerExpensesResponse,
   PositionDetailDto,
   PositionDto,
   ReferralRecord,
@@ -18,9 +22,6 @@ import type {
   TransactionKind,
   WalletDto,
   WithdrawalResult,
-  MeReferralDto,
-  CommissionEventDto,
-  ReferredPlayerDto,
 } from '@/lib/api/types';
 import type { PositionStatus } from '@invest254/shared';
 
@@ -105,6 +106,9 @@ export const api = {
   affiliateEnroll: (token: string) =>
     apiFetch<AffiliateEnrollment>('/affiliate/enroll', { method: 'POST', token }),
   affiliateSummary: (token: string) => apiFetch<AffiliateSummary>('/affiliate/summary', { token }),
+  // Public: record a referral-link click from the /r/<code> landing page (fire-and-forget, no auth).
+  recordAffiliateClick: (code: string, site?: string) =>
+    apiFetch<{ recorded: boolean }>('/affiliate/click', { method: 'POST', body: site ? { code, site } : { code } }),
   affiliateReferrals: (token: string, p: PageParams = {}) =>
     apiFetch<Paginated<ReferralRecord>>('/affiliate/referrals', {
       token,
@@ -115,18 +119,19 @@ export const api = {
       token,
       query: { cursor: p.cursor ?? undefined, limit: p.limit },
     }),
-
-  // Referral / instant-commission dashboard (available to every logged-in user)
-  meReferral: (token: string) => apiFetch<MeReferralDto>('/me/referral', { token }),
-  meReferralCommissions: (token: string, p: PageParams = {}) =>
-    apiFetch<Paginated<CommissionEventDto>>('/me/referral/commissions', {
-      token,
-      query: { cursor: p.cursor ?? undefined, limit: p.limit },
-    }),
-  meReferralReferred: (token: string) =>
-    apiFetch<{ items: ReferredPlayerDto[] }>('/me/referral/referred', { token }),
   affiliateRequestPayout: (token: string) =>
     apiFetch<PayoutRequestResult>('/affiliate/payouts', { method: 'POST', token }),
+
+  // Deposit-based referral commissions (0078/0079) — separate stream from the GGR affiliate payouts.
+  myReferral: (token: string) => apiFetch<ReferralSummaryDto>('/me/referral', { token }),
+  myReferralCommissions: (token: string) =>
+    apiFetch<{ items: CommissionLineDto[] }>('/me/referral/commissions', { token }),
+  requestCommissionPayout: (token: string) =>
+    apiFetch<CommissionPayoutDto>('/me/referral/payouts', { method: 'POST', token }),
+  myCommissionPayouts: (token: string) =>
+    apiFetch<{ items: CommissionPayoutDto[] }>('/me/referral/payouts', { token }),
+  affiliateExpenses: (token: string) =>
+    apiFetch<MarketerExpensesResponse>('/affiliate/expenses', { token }),
 
   // Sticky notifications (J7)
   notifications: (token: string) => apiFetch<{ items: NotificationDto[] }>('/notifications', { token }),

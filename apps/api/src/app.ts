@@ -2,7 +2,6 @@ import { rtp, type GameConfig, type Cents, type VersionedGameConfig } from "@inv
 import type {
   FairnessRecord, PaymentService, AuthService, AffiliateService, AdminService, NotificationService, Verifier, PlatformService,
   Page, PageQuery, LedgerEntry, PositionRecord, PositionDetail, PositionListQuery, TransactionRecord, TxListQuery,
-  ReferralRepository,
 } from "@invest254/engine";
 import { Router, ApiError, serverFrom, type Ctx } from "./http.js";
 import { registerProtectedRoutes } from "./app.payments.js";
@@ -10,11 +9,11 @@ import { registerHistoryRoutes } from "./app.history.js";
 import { registerSiteRoutes } from "./app.site.js";
 import { registerAuthRoutes } from "./app.auth.js";
 import { registerAffiliateRoutes } from "./app.affiliate.js";
-import { registerReferralRoutes } from "./app.referral.js";
 import { registerAdminRoutes } from "./app.admin.js";
 import { registerPlatformRoutes } from "./app.platform.js";
 import { registerNotificationRoutes } from "./app.notifications.js";
 import { registerMarketerRoutes, type MarketerRepo } from "./app.marketers.js";
+import { registerReferralRoutes, type ReferralRepo } from "./app.referral.js";
 import { registerSupportRoutes, type SupportDeps } from "./app.support.js";
 import type { PlatformOnboardDeps } from "./app.platform.js";
 import type { Server } from "node:http";
@@ -53,6 +52,21 @@ export interface Brand {
   themeTokens?: Record<string, string> | null;
 }
 
+/** One admin-logged marketer expense (transparency ledger, migration 0068). */
+export interface MarketerExpenseRow {
+  id: string;
+  category: string;
+  amountCents: number;
+  note: string | null;
+  createdAtMs: number;
+  createdBy: string | null;
+}
+/** Marketer-expenses persistence (add is admin-authorized; list is used by admin + the marketer's own dashboard). */
+export interface MarketerExpensesDeps {
+  add(actorId: string, actorRole: string, siteId: string, marketerUserId: string, category: string, amountCents: number, note: string | null): Promise<MarketerExpenseRow>;
+  list(marketerUserId: string, limit: number): Promise<MarketerExpenseRow[]>;
+}
+
 export interface ApiDeps {
   /** JWT verifier for player/admin routes; null → DEV header auth (see requireAuth). */
   verifier: Verifier | null;
@@ -63,25 +77,27 @@ export interface ApiDeps {
   /** Marketer enrollment, commission accrual, dashboard reads (I1/I2/I3) + payouts (I4). */
   affiliate: Pick<AffiliateService,
     "enroll" | "accrueDaily" | "summary" | "listReferrals" | "listCommissions"
-    | "requestPayout" | "approvePayout" | "completePayout" | "rejectPayout" | "siteOfPayout">;
+    | "requestPayout" | "approvePayout" | "completePayout" | "rejectPayout" | "siteOfPayout" | "recordClick">;
   /** Admin back office (J2): dashboard reads, user status, commission rate, withdrawal queue, audit. */
   admin: Pick<AdminService,
-    "overview" | "listUsers" | "getUserDetail" | "listUserActivity" | "setUserStatus" | "setCommissionRate" | "setUserRole" | "listWithdrawals" | "listTransactions" | "listAudit"
+    "overview" | "listUsers" | "getUserDetail" | "listUserActivity" | "setUserStatus" | "setCommissionRate" | "setUserRole" | "updateUserDetails" | "listWithdrawals" | "listTransactions" | "listAudit"
     | "adjustBalance" | "resetBalanceToLastFunded" | "listDeposits" | "depositsReconcile" | "reportDaily" | "reportByUser" | "reportDay"
-    | "getGameConfig" | "updateGameConfig" | "getMpesaConfig" | "updateMpesaConfig" | "rtpMonitor" | "listSeeds" | "rotateSeed"
-    | "getWithdrawalPool" | "setWithdrawalPool" | "setDefaultPool"
+    | "getGameConfig" | "updateGameConfig" | "getMpesaConfig" | "updateMpesaConfig" | "rtpMonitor" | "realCashRtp" | "configChangeReview" | "listSeeds" | "rotateSeed"
+    | "getWithdrawalPool" | "setWithdrawalPool" | "setDefaultPool" | "getWithdrawalsEnabled" | "setWithdrawalsEnabled"
     | "listAffiliatePayouts" | "recordAction"
     | "adjustBalanceKind" | "clearBalance" | "getUserOverrides" | "setUserOverrides"
     | "siteOfUser" | "siteOfTransaction">;
   /** Platform-superadmin console (docs/22 Task H): cross-brand onboarding + economy + KPIs. */
-  platform: Pick<PlatformService, "listSites" | "overview" | "createSite" | "updateSite" | "setSiteConfig"
-    | "marketerRollup" | "createMarketerGlobal" | "linkMarketer" | "setSiteTheme">;
+  platform: Pick<PlatformService, "listSites" | "overview" | "performance" | "createSite" | "updateSite" | "setSiteConfig"
+    | "marketerRollup" | "createMarketerGlobal" | "linkMarketer" | "setSiteTheme" | "setSiteOwner">;
   /** Per-user sticky notifications: admin/system raise; player reads active + dismisses (J7). */
   notifications: Pick<NotificationService, "create" | "listActive" | "adminList" | "dismiss" | "resolve" | "resolveByCategory">;
   /** Marketer payments module (0033): create/credit/withdraw + admin-set Fuliza/airtime + statement. */
   marketers: MarketerRepo;
-  /** Referral/commission reads (0068): code+link, earnings, feed, per-referred-player breakdown. */
-  referral: ReferralRepository;
+  /** Deposit-based referral commissions + separate commission-payout queue (0078/0079). */
+  referral: ReferralRepo;
+  /** Admin-logged marketer expenses (transparency, migration 0068). */
+  marketerExpenses: MarketerExpensesDeps;
   /**
    * Public game configuration source. A PROVIDER, not a value: config is edited live in the
    * admin panel, so a snapshot captured at boot would serve stale limits forever (the exact
@@ -219,11 +235,11 @@ export function createRouter(deps: ApiDeps): Router {
   registerSiteRoutes(router, deps);
   registerAuthRoutes(router, deps);
   registerAffiliateRoutes(router, deps);
+  registerReferralRoutes(router, deps);
   registerAdminRoutes(router, deps);
   registerPlatformRoutes(router, deps);
   registerNotificationRoutes(router, deps);
   registerMarketerRoutes(router, deps);
-  registerReferralRoutes(router, deps);
   registerProtectedRoutes(router, deps);
   registerHistoryRoutes(router, deps);
   registerSupportRoutes(router, deps);

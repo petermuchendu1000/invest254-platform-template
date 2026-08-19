@@ -161,6 +161,10 @@ export interface AffiliateSummary {
   referralsToday: number;
   activePlayersToday: number;
   commissionTodayCents: Cents;
+  /** Funnel: referral-link clicks and first-time-depositors (docs/19). */
+  clicks: number;
+  clicksToday: number;
+  ftdCount: number;
 }
 
 /** GET /affiliate/referrals item — one referred player. */
@@ -185,6 +189,21 @@ export interface PayoutRequestResult {
   amountCents: Cents;
 }
 
+/** One admin-logged marketer expense (transparency, migration 0068). */
+export interface MarketerExpenseRow {
+  id: string;
+  category: string;
+  amountCents: Cents;
+  note: string | null;
+  createdAtMs: number;
+  createdBy: string | null;
+}
+/** GET /affiliate/expenses (and admin variant) — the marketer's expense ledger + total. */
+export interface MarketerExpensesResponse {
+  items: MarketerExpenseRow[];
+  totalCents: Cents;
+}
+
 /** A sticky notification shown to the player (J7). */
 export interface NotificationDto {
   id: number;
@@ -196,40 +215,38 @@ export interface NotificationDto {
   createdAtMs: number;
 }
 
-/** GET /me/referral — referral code/link + headline commission earnings (all users). */
-export interface ReferralEarningsDto {
-  totalCents: Cents;
-  last30dCents: Cents;
-  byLevel: { l1: Cents; l2: Cents; l3: Cents };
-  playerReferralCents: Cents;
-  count: number;
+// ── Deposit-based referral commissions (0078/0079) ──────────────────────────────────────────────
+export interface ReferralSummaryDto {
+  referralCode: string | null;
+  referralPath: string | null;
+  isMarketer: boolean;
+  totalReferrals: number;
+  earnedCents: number;
+  heldCents: number;
+  paidCents: number;
+  availableCents: number;
+  minPayoutCents: number;
 }
-export interface MeReferralDto {
-  code: string | null;
-  link: string | null;
-  referralPath: string;
-  referredCount: number;
-  downlineMarketers: number;
-  earnings: ReferralEarningsDto;
-}
-/** GET /me/referral/commissions item — one instant commission event. */
-export interface CommissionEventDto {
-  id: string;
-  referredUsername: string;
-  level: number;
+export interface CommissionLineDto {
+  id: number;
+  depositTxId: string;
+  referredUser: string;
+  referredUsername: string | null;
+  position: number;
   role: string;
   rate: number;
-  depositCents: Cents;
-  commissionCents: Cents;
+  depositAmountCents: number;
+  commissionCents: number;
+  status: string;
   createdAtMs: number;
 }
-/** GET /me/referral/referred item — a referred player with deposit/played transparency. */
-export interface ReferredPlayerDto {
-  userId: string;
-  username: string;
-  depositsCents: Cents;
-  playedCents: Cents;
-  unplayedCents: Cents;
-  commissionCents: Cents;
-  lastActiveMs: number | null;
+export interface CommissionPayoutDto {
+  id: string;
+  amountCents: number;
+  status: string;
+  requestedAtMs: number;
+  approvedAtMs: number | null;
+  paidAtMs: number | null;
+  paidRef: string | null;
+  note: string | null;
 }

@@ -1,4 +1,4 @@
-import { Router, ApiError, requireAuth, requireRole, requireSite, assertTargetSiteInScope, type Ctx } from "./http.js";
+import { Router, ApiError, requireAuth, requireRole, requireSite, assertTargetSiteInScope, rateLimit, DEFAULT_SITE_ID, type Ctx } from "./http.js";
 import type { PageQuery } from "@invest254/engine";
 import type { ApiDeps } from "./app.js";
 import { parseB2cResult } from "./app.payments.js";
@@ -58,6 +58,22 @@ export function registerAffiliateRoutes(router: Router, deps: ApiDeps): void {
   // both makes ctx.siteId available and rejects a token that names a different brand (?site=).
   const site = requireSite();
 
+  // Public referral-link click tracking (funnel stage 0, docs/19). Fire-and-forget from the
+  // /r/<code> landing page BEFORE signup, so no auth. Tolerant: an unknown/inactive code is a
+  // silent no-op (recorded:false) and never errors. IP rate-limited to blunt click-spam.
+  const clickLimit = rateLimit({ name: "aff-click", by: "ip", limit: Number(process.env.RATE_LIMIT_AFF_CLICK_PER_MIN) || 60, windowMs: 60_000 });
+  router.post(`${BASE}/affiliate/click`, clickLimit, async (ctx: Ctx) => {
+    const b = ctx.body && typeof ctx.body === "object" ? (ctx.body as Record<string, unknown>) : {};
+    const code = typeof b.code === "string" ? b.code : "";
+    if (!code.trim()) throw new ApiError("VALIDATION", "code is required", 400);
+    // Optional brand: accept a site uuid directly, else resolve a slug/host to its brand.
+    let siteId: string | undefined;
+    const ref = typeof b.site === "string" && b.site.trim() ? b.site.trim() : undefined;
+    if (ref) siteId = /^[0-9a-f-]{36}$/i.test(ref) ? ref : (await deps.brandByHost(ref.toLowerCase()))?.siteId;
+    const recorded = await domain(() => deps.affiliate.recordClick(code.trim(), siteId));
+    return { recorded };
+  });
+
   router.post(`${BASE}/affiliate/enroll`, auth, site, async (ctx: Ctx) => {
     const e = await domain(() => deps.affiliate.enroll(ctx.claims!.userId));
     // Enrollment promotes player -> marketer in the DB, but the caller's JWT still carries the
@@ -83,6 +99,14 @@ export function registerAffiliateRoutes(router: Router, deps: ApiDeps): void {
 
   router.get(`${BASE}/affiliate/commissions`, auth, site, marketer, async (ctx: Ctx) =>
     domain(() => deps.affiliate.listCommissions(ctx.claims!.userId, pageQuery(ctx))));
+
+  // Transparency (0068): the marketer sees every expense an admin has logged against them
+  // (TikTok promo, data bundles, advances, …). Read-only; own records only.
+  router.get(`${BASE}/affiliate/expenses`, auth, site, marketer, async (ctx: Ctx) => {
+    const limit = Number(ctx.query.get("limit")) || 100;
+    const items = await domain(() => deps.marketerExpenses.list(ctx.claims!.userId, limit));
+    return { items, totalCents: items.reduce((s, e) => s + e.amountCents, 0) };
+  });
 
   // ── Payouts (I4): marketer request → admin approve/reject → M-Pesa B2C result ──
   router.post(`${BASE}/affiliate/payouts`, auth, site, marketer, async (ctx: Ctx) =>
@@ -111,11 +135,66 @@ export function registerAffiliateRoutes(router: Router, deps: ApiDeps): void {
       return { rejected };
     }));
 
+  // Bulk: approve/reject many payout requests in one call. Each row is brand-guarded, audited, and
+  // executed independently (partial success). Approval dispatches the M-Pesa B2C per row; the RPCs
+  // are idempotent so a re-run over already-decided payouts is a safe no-op.
+  router.post(`${BASE}/admin/affiliate/payouts/bulk`, auth, admin, async (ctx: Ctx) => {
+    const body = ctx.body && typeof ctx.body === "object" ? (ctx.body as Record<string, unknown>) : {};
+    const action = body.action === "approve" || body.action === "reject" ? body.action : "";
+    if (!action) throw new ApiError("VALIDATION", "action must be 'approve' or 'reject'", 400);
+    const raw = Array.isArray(body.payoutIds) ? body.payoutIds : [];
+    const payoutIds = [...new Set(raw.filter((x): x is string => typeof x === "string" && x.length > 0))];
+    if (payoutIds.length === 0) throw new ApiError("VALIDATION", "payoutIds must be a non-empty array", 400);
+    if (payoutIds.length > 200) throw new ApiError("VALIDATION", "at most 200 payouts per bulk action", 400);
+    const actorId = ctx.claims!.userId;
+    const actorRole = ctx.claims!.role ?? "player";
+    const results = await Promise.all(payoutIds.map(async (id) => {
+      try {
+        assertTargetSiteInScope(ctx, await deps.affiliate.siteOfPayout(id));
+        if (action === "approve") {
+          const res = await deps.affiliate.approvePayout(id, actorId);
+          await deps.admin.recordAction(actorId, actorRole, "affiliate.payout.approve", "affiliate_payout", id, res);
+          return { id, ok: true, result: res };
+        }
+        const rejected = await deps.affiliate.rejectPayout(id, actorId);
+        await deps.admin.recordAction(actorId, actorRole, "affiliate.payout.reject", "affiliate_payout", id, { rejected });
+        return { id, ok: true, result: { rejected } };
+      } catch (e) {
+        const code = e instanceof ApiError ? e.code : (e as { message?: string })?.message ?? "ERROR";
+        return { id, ok: false, error: code };
+      }
+    }));
+    const okCount = results.filter((r) => r.ok).length;
+    return { action, total: payoutIds.length, okCount, failCount: results.length - okCount, results };
+  });
+
   // Public: Daraja B2C result for a payout (network-allowlisted at the edge). Always acks.
   router.post(`${BASE}/affiliate/payouts/mpesa/result/:payoutId`, async (ctx: Ctx) => {
     const r = parseB2cResult(ctx.body);
     await domain(() => deps.affiliate.completePayout(ctx.params.payoutId!, r.resultCode, r.conversationId, r.receipt, null, ctx.body));
     return DARAJA_ACK;
+  });
+
+  // ── Marketer expenses (0068): admin logs a cost against a marketer; both admin and the marketer see it ──
+  router.post(`${BASE}/admin/affiliate/expenses`, auth, admin, async (ctx: Ctx) => {
+    const b = ctx.body && typeof ctx.body === "object" ? (ctx.body as Record<string, unknown>) : {};
+    const marketerUserId = typeof b.marketerUserId === "string" && b.marketerUserId.trim() ? b.marketerUserId.trim() : "";
+    if (!marketerUserId) throw new ApiError("VALIDATION", "marketerUserId is required", 400);
+    const category = typeof b.category === "string" && b.category.trim() ? b.category.trim() : "";
+    if (!category) throw new ApiError("VALIDATION", "category is required", 400);
+    const amountCents = typeof b.amountCents === "number" ? b.amountCents : Number(b.amountCents);
+    if (!Number.isInteger(amountCents) || amountCents <= 0) throw new ApiError("VALIDATION", "amountCents must be a positive integer (cents)", 400);
+    const note = typeof b.note === "string" && b.note.trim() ? b.note.trim() : null;
+    const siteId = ctx.claims?.site ?? DEFAULT_SITE_ID;
+    return domain(() => deps.marketerExpenses.add(ctx.claims!.userId, ctx.claims!.role ?? "player", siteId, marketerUserId, category, amountCents, note));
+  });
+
+  router.get(`${BASE}/admin/affiliate/expenses`, auth, admin, async (ctx: Ctx) => {
+    const marketerUserId = ctx.query.get("marketerUserId");
+    if (!marketerUserId) throw new ApiError("VALIDATION", "marketerUserId query param is required", 400);
+    const limit = Number(ctx.query.get("limit")) || 100;
+    const items = await domain(() => deps.marketerExpenses.list(marketerUserId, limit));
+    return { items, totalCents: items.reduce((s, e) => s + e.amountCents, 0) };
   });
 
   // Operational: run the daily revenue-share accrual for a trading day (idempotent). In

@@ -38,6 +38,8 @@ export interface MultiEngineOptions {
 export interface MultiEngineHandle {
   wss: WebSocketServer;
   close(): Promise<void>;
+  /** Fan a confirmed deposit out to connected platform_superadmin sockets (docs/24 live feed). */
+  emitPlatformDeposit(dep: unknown): void;
 }
 
 export async function startMultiEngine(opts: MultiEngineOptions): Promise<MultiEngineHandle> {
@@ -55,6 +57,60 @@ export async function startMultiEngine(opts: MultiEngineOptions): Promise<MultiE
   const toSiteUser = (siteId: string, userId: string, type: string, data: unknown) =>
     perSiteUser.get(siteId)?.get(userId)?.forEach((ws) => send(ws, type, data));
   const onlineCount = (siteId: string) => Math.max(perSiteSockets.get(siteId)?.size ?? 0, opts.onlineFloor ?? 0);
+
+  // ── Platform live channel (docs/24): cross-brand feed for the platform_superadmin console ──
+  // Platform sockets connect with `?platform=1`, never join a brand's socket set (so they don't
+  // inflate a brand's online count), and receive raw per-site online counts + confirmed deposits.
+  const platformSockets = new Set<WebSocket>();
+  /** RAW per-site online counts (no onlineFloor) — the console needs the true live-player figure. */
+  const onlineSnapshot = () => {
+    const sites: Array<{ siteId: string; count: number }> = [];
+    let total = 0;
+    for (const [siteId, set] of perSiteSockets) {
+      const c = set.size;
+      if (c > 0) { sites.push({ siteId, count: c }); total += c; }
+    }
+    return { sites, total };
+  };
+  const broadcastPlatformOnline = () => {
+    if (platformSockets.size === 0) return;
+    const snap = onlineSnapshot();
+    platformSockets.forEach((ws) => send(ws, "platform_online", { sites: snap.sites, totalOnline: snap.total, ts: Date.now() }));
+  };
+  /** Fan a confirmed deposit (from the DepositNotifier LISTEN) out to every platform socket. */
+  const emitPlatformDeposit = (dep: unknown) => platformSockets.forEach((ws) => send(ws, "platform_deposit", dep));
+
+  /** A `?platform=1` connection: platform_superadmin-gated live feed, bound to NO brand. */
+  function handlePlatformConnection(ws: WebSocket) {
+    send(ws, "hello", { serverTime: Date.now(), platform: true });
+    let authed = false;
+    ws.on("message", async (raw) => {
+      let msg: any; try { msg = JSON.parse(String(raw)); } catch { return send(ws, "error", { code: "BAD_JSON" }); }
+      switch (msg.type) {
+        case "auth": {
+          if (opts.verifier) {
+            let claims;
+            try { claims = await opts.verifier(String(msg.data?.token ?? "")); }
+            catch { return send(ws, "error", { code: "AUTH_INVALID" }); }
+            if ((claims as { role?: string }).role !== "platform_superadmin") return send(ws, "error", { code: "NOT_AUTHORIZED" });
+          } else if (String(msg.data?.role ?? "") !== "platform_superadmin") {
+            return send(ws, "error", { code: "NOT_AUTHORIZED" });
+          }
+          authed = true;
+          return send(ws, "platform_authed", {});
+        }
+        case "subscribe_platform": {
+          if (!authed) return send(ws, "error", { code: "AUTH_REQUIRED" });
+          platformSockets.add(ws);
+          const snap = onlineSnapshot();
+          return send(ws, "platform_snapshot", { sites: snap.sites, totalOnline: snap.total, ts: Date.now() });
+        }
+        case "ping": return send(ws, "pong", {});
+        default: return send(ws, "error", { code: "UNKNOWN_TYPE", message: msg.type });
+      }
+    });
+    ws.on("close", () => { platformSockets.delete(ws); });
+  }
 
   /** Build (once) a brand's runtime and wire its per-site fan-out. */
   async function ensureSite(siteId: string) {
@@ -83,6 +139,10 @@ export async function startMultiEngine(opts: MultiEngineOptions): Promise<MultiE
 
   wss.on("connection", (ws, req) => {
     void (async () => {
+      // Platform-console sockets are brand-less: route them to the cross-brand live channel.
+      const purl = new URL(req.url ?? "/", "http://localhost");
+      if (purl.searchParams.get("platform") === "1") { handlePlatformConnection(ws); return; }
+
       let siteId: string;
       try { siteId = await opts.resolveSite(req); } catch { try { ws.close(1008, "unknown site"); } catch { /* ignore */ } return; }
       let rt;
@@ -93,6 +153,7 @@ export async function startMultiEngine(opts: MultiEngineOptions): Promise<MultiE
       const ctx = rt.seeds.getActive();
       send(ws, "hello", { serverTime: Date.now(), serverSeedHash: ctx.seedHash, tradeDate: ctx.dateKey, gameConfig: rt.game.onlineConfigSnapshot(), site: siteId });
       toSite(siteId, "online", { count: onlineCount(siteId) });
+      broadcastPlatformOnline();
 
       ws.on("message", async (raw) => {
         let msg: any; try { msg = JSON.parse(String(raw)); } catch { return send(ws, "error", { code: "BAD_JSON" }); }
@@ -146,6 +207,7 @@ export async function startMultiEngine(opts: MultiEngineOptions): Promise<MultiE
         const u = userOf.get(ws);
         if (u) perSiteUser.get(siteId)?.get(u)?.delete(ws);
         toSite(siteId, "online", { count: onlineCount(siteId) });
+        broadcastPlatformOnline();
       });
     })();
   });
@@ -153,6 +215,7 @@ export async function startMultiEngine(opts: MultiEngineOptions): Promise<MultiE
   await new Promise<void>((resolve) => wss.once("listening", () => resolve()));
   return {
     wss,
+    emitPlatformDeposit,
     close: () => new Promise<void>((resolve) => { opts.registry.stopAll(); wss.close(() => resolve()); }),
   };
 }

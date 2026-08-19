@@ -120,6 +120,10 @@ const SITE_A_LEGACY = "00000000-0000-0000-0000-000000000001";
 
 export class InMemoryGameRepository implements GameRepository {
   private balances = new Map<string, Cents>();
+  /** Non-withdrawable demo bucket for marketer accounts (migration 0084). Mirrors wallets.demo_balance. */
+  private demo = new Map<string, Cents>();
+  /** Marketer (demo) accounts — the repo is authoritative for money routing, exactly like the DB RPC. */
+  private marketers = new Set<string>();
   private positions = new Map<string, MemPos>();
   private days = new Map<string, MemDay>();
   private seedVersions = new Map<string, number>();
@@ -135,8 +139,17 @@ export class InMemoryGameRepository implements GameRepository {
   }
 
   seed(userId: string, amount: Cents): void { this.balances.set(userId, assertCents(amount)); this.pushLedger(userId, "seed", amount, "real", null, "seed"); }
-  async getBalance(userId: string): Promise<Cents> { return this.balances.get(userId) ?? 0; }
+  /** Mark a user as a marketer/demo account (mirrors fn_is_marketer_account). */
+  markMarketer(userId: string): void { this.marketers.add(userId); }
+  /** Seed a marketer's non-withdrawable demo balance. */
+  seedDemo(userId: string, amount: Cents): void { this.demo.set(userId, assertCents(amount)); this.pushLedger(userId, "seed", amount, "demo", null, "seed"); }
+  private isMarketer(userId: string): boolean { return this.marketers.has(userId); }
+  /** The account's spendable game balance: demo for marketers, real for players (mirrors getBalance SQL). */
+  async getBalance(userId: string): Promise<Cents> {
+    return (this.isMarketer(userId) ? this.demo.get(userId) : this.balances.get(userId)) ?? 0;
+  }
   async getWalletSnapshot(userId: string): Promise<WalletSnapshot> {
+    if (this.isMarketer(userId)) return { real: this.demo.get(userId) ?? 0, bonus: 0, currency: "KES" };
     return { real: this.balances.get(userId) ?? 0, bonus: 0, currency: "KES" };
   }
 
@@ -156,10 +169,14 @@ export class InMemoryGameRepository implements GameRepository {
 
   async openPosition(a: OpenArgs): Promise<OpenResult> {
     if (a.stakeCents <= 0) throw new Error("INVALID_STAKE");
-    const bal = this.balances.get(a.userId);
+    // Marketer stakes debit the non-withdrawable demo bucket ONLY (never dip into real) — migration 0084.
+    const marketer = this.isMarketer(a.userId);
+    const book = marketer ? this.demo : this.balances;
+    const kind = marketer ? "demo" : "real";
+    const bal = book.get(a.userId);
     if (bal === undefined) throw new Error("WALLET_NOT_FOUND");
     if (bal < a.stakeCents) throw new Error("INSUFFICIENT_FUNDS");
-    const next = bal - a.stakeCents; this.balances.set(a.userId, next);
+    const next = bal - a.stakeCents; book.set(a.userId, next);
     const id = randomUUID();
     this.positions.set(id, {
       id, userId: a.userId, stake: a.stakeCents, status: "open",
@@ -168,7 +185,7 @@ export class InMemoryGameRepository implements GameRepository {
       configVersion: a.configVersion ?? null, seq: ++this.posSeq, siteId: a.siteId ?? null,
       exitRate: null, multiplier: null, payout: null, pnl: null, result: null, settledAtMs: null,
     });
-    this.pushLedger(a.userId, "stake", -a.stakeCents, "real", "positions", id, null, a.siteId ?? null);
+    this.pushLedger(a.userId, "stake", -a.stakeCents, kind, "positions", id, null, a.siteId ?? null);
     return { positionId: id, newBalance: next };
   }
 
@@ -176,12 +193,16 @@ export class InMemoryGameRepository implements GameRepository {
     if (a.payoutCents < 0) throw new Error("INVALID_PAYOUT");
     const p = this.positions.get(a.positionId);
     if (!p) throw new Error("POSITION_NOT_FOUND");
-    if (p.status !== "open") return { settled: false, newBalance: this.balances.get(p.userId) ?? 0 }; // idempotent
+    if (p.status !== "open") return { settled: false, newBalance: (this.isMarketer(p.userId) ? this.demo.get(p.userId) : this.balances.get(p.userId)) ?? 0 }; // idempotent
     p.status = "settled";
     p.exitRate = a.exitRate; p.multiplier = a.multiplier; p.payout = a.payoutCents;
     p.pnl = a.payoutCents - p.stake; p.result = a.result; p.settledAtMs = this.now();
-    let bal = this.balances.get(p.userId) ?? 0;
-    if (a.payoutCents > 0) { bal += a.payoutCents; this.balances.set(p.userId, bal); this.pushLedger(p.userId, "payout", a.payoutCents, "real", "positions", a.positionId, null, p.siteId); }
+    // Marketer payouts credit the demo bucket ONLY — a demo win can never become real cash (migration 0084).
+    const marketer = this.isMarketer(p.userId);
+    const book = marketer ? this.demo : this.balances;
+    const kind = marketer ? "demo" : "real";
+    let bal = book.get(p.userId) ?? 0;
+    if (a.payoutCents > 0) { bal += a.payoutCents; book.set(p.userId, bal); this.pushLedger(p.userId, "payout", a.payoutCents, kind, "positions", a.positionId, null, p.siteId); }
     return { settled: true, newBalance: bal };
   }
 
@@ -295,17 +316,24 @@ const toMs = (v: unknown): number => (v instanceof Date ? v.getTime() : new Date
 export class PgGameRepository implements GameRepository {
   constructor(private readonly q: Querier) {}
   async getBalance(userId: string): Promise<Cents> {
-    const r = await this.q.query("select real_balance from wallets where user_id = $1", [userId]);
-    return r.rows.length ? toCents(r.rows[0].real_balance) : 0;
+    // Spendable game balance: the demo bucket for marketer/demo accounts, real_balance otherwise
+    // (migration 0084). fn_is_marketer_account is the one canonical predicate, shared with the money RPCs.
+    const r = await this.q.query(
+      "select case when fn_is_marketer_account(user_id) then demo_balance else real_balance end as bal from wallets where user_id = $1",
+      [userId]);
+    return r.rows.length ? toCents(r.rows[0].bal) : 0;
   }
   async getWalletSnapshot(userId: string): Promise<WalletSnapshot> {
     const r = await this.q.query(
-      "select real_balance, bonus_balance, currency from wallets where user_id = $1",
+      "select real_balance, bonus_balance, demo_balance, currency, fn_is_marketer_account(user_id) as is_marketer from wallets where user_id = $1",
       [userId],
     );
     if (!r.rows.length) return { real: 0, bonus: 0, currency: "KES" };
     const row = r.rows[0];
-    return { real: toCents(row.real_balance), bonus: toCents(row.bonus_balance), currency: (row.currency as string) ?? "KES" };
+    // Marketer/demo accounts spend the demo bucket; surface it as `real` so the client shows the
+    // one spendable game balance (migration 0084). Their real_balance is 0 and non-withdrawable anyway.
+    const spendable = row.is_marketer === true ? toCents(row.demo_balance) : toCents(row.real_balance);
+    return { real: spendable, bonus: toCents(row.bonus_balance), currency: (row.currency as string) ?? "KES" };
   }
   async openPosition(a: OpenArgs): Promise<OpenResult> {
     // matches migration 0047: fn_open_position(user,stake,direction,entry_rate,duration_s,game_day,nonce,opened_at,config_version,site_id)
