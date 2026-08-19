@@ -12,7 +12,7 @@
  * the match rate falls below MATCH_THRESHOLD, so a scheduler (GitHub Action / fly machine / cron) can
  * alert. Read-only against game data; only inserts into the audit table.
  *
- * Run:  DATABASE_URL=... node --import tsx scripts/reproducibility_check.mts [--limit 500] [--days 2] [--site <uuid>]
+ * Run:  DATABASE_URL=... node --import tsx scripts/reproducibility_check.mts [--limit 500] [--days 2] [--site <uuid>] [--dry-run]
  */
 import { Pool } from "pg";
 import { CurveGenerator, SettlementEngine, dayStartMs, dateKeyUTC, type GameConfig } from "@invest254/shared";
@@ -92,7 +92,8 @@ async function main() {
     const mismatched = sampled - matched;
     const pct = sampled > 0 ? Number((mismatched / sampled).toFixed(4)) : 0;
     const okRun = sampled === 0 ? true : (matched / sampled) >= MATCH_THRESHOLD;
-    await pool.query(
+    // --dry-run (CI gate): verify fairness WITHOUT writing an audit row (the nightly run persists it).
+    if (!process.argv.includes("--dry-run")) await pool.query(
       `insert into reproducibility_check_runs(site_id, window_desc, sampled, matched, mismatched, mismatch_pct, ok, details, notes)
        values ($1::uuid, $2, $3, $4, $5, $6, $7, $8::jsonb, $9)`,
       [SITE || null, `last ${DAYS}d, clean cohort`, sampled, matched, mismatched, pct, okRun,

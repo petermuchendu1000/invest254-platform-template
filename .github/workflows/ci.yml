@@ -7,6 +7,7 @@ on:
 
 jobs:
   build:
+    name: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -22,3 +23,48 @@ jobs:
         run: npm -w @invest254/web run build
       - name: Test
         run: npm test
+
+  # Gate: the migrations/ directory must exactly match the applied-ledger (schema_migrations, 0091).
+  # Fails on any UNRECORDED (file added but not applied+recorded) or CHANGED (file edited after apply).
+  # Skips gracefully when DATABASE_URL is absent (e.g. the mirrored template CI has no DB secret).
+  migrations-ledger:
+    name: migrations-ledger
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install
+        run: npm ci
+      - name: Reconcile migrations against the ledger
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "No DATABASE_URL secret (non-prod mirror) — skipping migration-ledger gate."; exit 0
+          fi
+          node --import tsx scripts/migrations_status.mts
+
+  # Gate: provable-fairness reproducibility must hold (>= 98% of the clean recent sample reproduces).
+  # Dry-run (no audit-row write; the nightly reproducibility.yml persists rows). Skips without DATABASE_URL.
+  reproducibility:
+    name: reproducibility
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install
+        run: npm ci
+      - name: Provable-fairness reproducibility gate (dry-run)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "No DATABASE_URL secret (non-prod mirror) — skipping reproducibility gate."; exit 0
+          fi
+          node --import tsx scripts/reproducibility_check.mts --days 2 --limit 500 --dry-run

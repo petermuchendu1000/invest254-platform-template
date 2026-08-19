@@ -2,7 +2,12 @@ name: Mirror · sync to production
 
 # Autonomous TRUE-MIRROR enforcement (docs/30). Keeps this template exactly equal to the upstream
 # source of truth (petermuchendu1000/invest254) so the 0067/0068-style drift that forked this repo
-# cannot recur. Reads PUBLIC upstream with no secret; pushes to its OWN main via GITHUB_TOKEN.
+# cannot recur. Reads PUBLIC upstream with no secret.
+#
+# PUSH AUTH: uses the MIRROR_PAT secret (a fine-grained PAT scoped to THIS repo with contents:write
+# AND workflows:write). The default GITHUB_TOKEN cannot push changes under .github/workflows/, so a
+# PAT with the `workflows` scope is required to mirror workflow files. Falls back to GITHUB_TOKEN
+# (non-workflow changes only) if MIRROR_PAT is unset.
 # Guarded to run ONLY in the template repo, so the identical file is inert when mirrored upstream.
 
 on:
@@ -27,7 +32,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with: { ref: main, fetch-depth: 0 }
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.MIRROR_PAT || github.token }}
       - uses: actions/setup-node@v4
         with: { node-version: 20, cache: npm }
       - name: Fetch upstream & detect drift
@@ -60,15 +68,16 @@ jobs:
           set -euo pipefail
           git config user.name  "mirror-bot"
           git config user.email "mirror-bot@users.noreply.github.com"
-          git commit -m "chore(mirror): sync to invest254@${{ steps.drift.outputs.sha }} [skip ci]"
+          git commit -m "chore(mirror): sync to invest254@${{ steps.drift.outputs.sha }}"
           git push origin HEAD:main
       - name: Open/refresh a blocker issue on failure
         if: failure()
         env: { GH_TOKEN: "${{ github.token }}" }
         run: |
           set -euo pipefail
+          gh label create mirror-drift --color FBCA04 --description "Template out of sync with upstream production" 2>/dev/null || true
           title="🔴 Mirror sync blocked"
           n=$(gh issue list --state open --search "$title in:title" --json number -q '.[0].number' || true)
-          body="Automatic mirror to production HEAD failed on run ${{ github.run_id }}. The typecheck/align gate did not pass, so main was NOT updated. See the run logs."
+          body="Automatic mirror to production HEAD failed on run ${{ github.run_id }}. main was NOT updated. Common cause: MIRROR_PAT missing/expired (needs contents+workflows write). See the run logs."
           if [ -n "${n:-}" ]; then gh issue comment "$n" --body "$body";
           else gh issue create --title "$title" --label mirror-drift --body "$body"; fi
