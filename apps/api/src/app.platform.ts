@@ -233,6 +233,56 @@ export function registerPlatformRoutes(router: Router, deps: ApiDeps): void {
     return domain(() => deps.platform.setSiteTheme(ctx.claims!.userId, ctx.claims!.role ?? "player", ctx.params.id!, tokens as Record<string, unknown>));
   });
 
+  // ── Global configuration console (migration 0092): master switches + global pool distribution ──
+  // The platform owner's single control plane over EVERY brand. platform_superadmin-gated + audited.
+  router.get(`${BASE}/platform/global-config`, auth, platform, async () =>
+    ({ config: await domain(() => deps.platform.getGlobalConfig()) }));
+
+  router.patch(`${BASE}/platform/global-config`, auth, platform, async (ctx: Ctx) => {
+    const body = asObject(ctx.body);
+    // Whitelist the master switches + banner; ignore anything else. Booleans validated per key.
+    const patch: Record<string, unknown> = {};
+    for (const k of ["deposits_enabled", "withdrawals_enabled", "play_enabled", "marketers_enabled", "registrations_enabled"]) {
+      if (k in body) { if (typeof body[k] !== "boolean") throw new ApiError("VALIDATION", `${k} must be boolean`, 400); patch[k] = body[k]; }
+    }
+    if ("maintenance_message" in body) {
+      const m = body.maintenance_message;
+      if (m !== null && typeof m !== "string") throw new ApiError("VALIDATION", "maintenance_message must be string or null", 400);
+      patch.maintenance_message = m;
+    }
+    if (Object.keys(patch).length === 0) throw new ApiError("VALIDATION", "no recognised fields to update", 400);
+    return { config: await domain(() => deps.platform.setGlobalConfig(ctx.claims!.userId, ctx.claims!.role ?? "player", patch)) };
+  });
+
+  // Distribute a global withdrawal-pool total across every active brand's daily cap.
+  //   { totalCents, mode: 'equal' } | { mode: 'per_site', overrides: { <siteId>: cents } }
+  router.post(`${BASE}/platform/pool/distribute`, auth, platform, async (ctx: Ctx) => {
+    const body = asObject(ctx.body);
+    const mode = body.mode === "per_site" ? "per_site" : "equal";
+    let totalCents: number | null = null;
+    let overrides: Record<string, number> | null = null;
+    if (mode === "equal") {
+      const n = Number(body.totalCents);
+      if (!Number.isInteger(n) || n < 0) throw new ApiError("VALIDATION", "totalCents must be a non-negative integer", 400);
+      totalCents = n;
+    } else {
+      const o = asObject(body.overrides);
+      overrides = {};
+      for (const [k, v] of Object.entries(o)) {
+        const n = Number(v);
+        if (!Number.isInteger(n) || n < 0) throw new ApiError("VALIDATION", `override for ${k} must be a non-negative integer`, 400);
+        overrides[k] = n;
+      }
+      if (Object.keys(overrides).length === 0) throw new ApiError("VALIDATION", "per_site mode requires a non-empty overrides map", 400);
+    }
+    return { result: await domain(() => deps.platform.distributePool(ctx.claims!.userId, ctx.claims!.role ?? "player", totalCents, mode, overrides)) };
+  });
+
+  router.get(`${BASE}/platform/pool/distributions`, auth, platform, async (ctx: Ctx) => {
+    const limit = Math.min(Math.max(Number(ctx.query.get("limit")) || 20, 1), 100);
+    return { distributions: await domain(() => deps.platform.listPoolDistributions(limit)) };
+  });
+
   // ── Task R: cross-brand marketer rollup (reporting only; money stays per site) ──
   // The one view: per marketer -> which clients on which site + the cross-brand total.
   router.get(`${BASE}/platform/marketers/rollup`, auth, platform, async (ctx: Ctx) => {

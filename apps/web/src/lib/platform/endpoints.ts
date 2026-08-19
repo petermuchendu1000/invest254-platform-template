@@ -74,6 +74,15 @@ export interface AuditRow {
   id: string; actorId: string; actorRole: string; action: string; targetType: string; targetId: string | null; detail: unknown; createdAtMs: number;
 }
 
+/** Platform-wide master config (migration 0092) — the global console. */
+export interface GlobalConfigDto {
+  depositsEnabled: boolean; withdrawalsEnabled: boolean; playEnabled: boolean;
+  marketersEnabled: boolean; registrationsEnabled: boolean;
+  maintenanceMessage: string | null; globalDailyPoolCents: number | null; version: number; updatedAt: string | null;
+}
+export interface DistributeResultDto { totalCents: number; mode: string; perSite: Record<string, number> }
+export interface PoolDistributionDto { id: number; totalCents: number; mode: string; siteCount: number; perSite: Record<string, number>; createdAt: string }
+
 export const platformApi = {
   overview: (t: string) => apiFetch<{ sites: SiteKpis[] }>('/platform/overview', { token: t }),
   performance: (t: string, fromMs: number, toMs: number) =>
@@ -109,4 +118,12 @@ export const platformApi = {
     apiFetch(`/platform/sites/${id}/users/${uid}/role`, { method: 'POST', token: t, body }),
   siteUserBalance: (t: string, id: string, uid: string, body: { amountCents: number; reason?: string | undefined; kind?: string | undefined }) =>
     apiFetch(`/platform/sites/${id}/users/${uid}/balance`, { method: 'POST', token: t, body }),
+  // ── Global config console (migration 0092) ──
+  globalConfig: (t: string) => apiFetch<{ config: GlobalConfigDto }>('/platform/global-config', { token: t }),
+  setGlobalConfig: (t: string, patch: Record<string, unknown>) =>
+    apiFetch<{ config: GlobalConfigDto }>('/platform/global-config', { method: 'PATCH', token: t, body: patch }),
+  distributePool: (t: string, body: { totalCents?: number; mode: string; overrides?: Record<string, number> }) =>
+    apiFetch<{ result: DistributeResultDto }>('/platform/pool/distribute', { method: 'POST', token: t, body }),
+  poolDistributions: (t: string) =>
+    apiFetch<{ distributions: PoolDistributionDto[] }>('/platform/pool/distributions', { token: t }),
 };

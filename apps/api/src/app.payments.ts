@@ -133,6 +133,8 @@ export function registerProtectedRoutes(router: Router, deps: ApiDeps): void {
 
   // ── Player: payments ──
   router.post(`${BASE}/deposits`, auth, site, depositLimit, async (ctx: Ctx) => {
+    if (deps.platformGate && !(await deps.platformGate.allows("deposits")))
+      throw new ApiError("SYSTEM_DISABLED", "Deposits are temporarily disabled by the platform.", 403);
     const body = asObject(ctx.body);
     const amount = requireIntAmount(body);
     const phone = requirePhone(body);
@@ -141,6 +143,8 @@ export function registerProtectedRoutes(router: Router, deps: ApiDeps): void {
   });
 
   router.post(`${BASE}/withdrawals`, auth, site, withdrawLimit, async (ctx: Ctx) => {
+    if (deps.platformGate && !(await deps.platformGate.allows("withdrawals")))
+      throw new ApiError("SYSTEM_DISABLED", "Withdrawals are temporarily disabled by the platform.", 403);
     const body = asObject(ctx.body);
     const amount = requireIntAmount(body);
     const phone = requirePhone(body);

@@ -15,6 +15,34 @@ export function usePlatformOverview() {
   return useQuery({ queryKey: ['platform', 'overview'], queryFn: () => platformApi.overview(t), enabled: !!t });
 }
 
+// ── Global config console (migration 0092) ──
+export function useGlobalConfig() {
+  const t = useTok();
+  return useQuery({ queryKey: ['platform', 'global-config'], queryFn: () => platformApi.globalConfig(t), enabled: !!t });
+}
+export function useSetGlobalConfig() {
+  const t = useTok(); const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (patch: Record<string, unknown>) => platformApi.setGlobalConfig(t, patch),
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: ['platform', 'global-config'] }); },
+  });
+}
+export function useDistributePool() {
+  const t = useTok(); const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { totalCents?: number; mode: string; overrides?: Record<string, number> }) => platformApi.distributePool(t, body),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['platform', 'pool-distributions'] });
+      void qc.invalidateQueries({ queryKey: ['platform', 'global-config'] });
+      void qc.invalidateQueries({ queryKey: ['platform', 'sites'] });
+    },
+  });
+}
+export function usePoolDistributions() {
+  const t = useTok();
+  return useQuery({ queryKey: ['platform', 'pool-distributions'], queryFn: () => platformApi.poolDistributions(t), enabled: !!t });
+}
+
 export function usePlatformSites() {
   const t = useTok();
   return useQuery({ queryKey: ['platform', 'sites'], queryFn: () => platformApi.sites(t), enabled: !!t });

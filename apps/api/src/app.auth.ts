@@ -106,6 +106,8 @@ export function registerAuthRoutes(router: Router, deps: ApiDeps): void {
   const authLimit = rateLimit({ name: "auth", by: "ip", limit: Number(process.env.RATE_LIMIT_AUTH_PER_MIN) || 40, windowMs: 60_000 });
 
   router.post(`${BASE}/auth/register`, authLimit, async (ctx: Ctx) => {
+    if (deps.platformGate && !(await deps.platformGate.allows("registrations")))
+      throw new ApiError("SYSTEM_DISABLED", "New registrations are temporarily disabled by the platform.", 403);
     const body = asObject(ctx.body);
     const phone = requireString(body, "phone");
     const username = requireString(body, "username");

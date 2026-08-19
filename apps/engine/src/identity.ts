@@ -190,32 +190,38 @@ export class PgIdentityRepository implements IdentityRepository, AffiliateReposi
   }
   async affiliateSummary(userId: string): Promise<AffiliateSummary | null> {
     const r = await this.q.query(
-      `select a.referral_code, a.commission_rate, a.status,
-         (select count(*) from referrals r where r.affiliate_id = a.user_id) as total_referrals,
-         (select count(distinct p.user_id) from positions p join referrals r on r.referred_user = p.user_id
-           where r.affiliate_id = a.user_id and p.opened_at >= now() - interval '7 days') as active7,
-         (select count(distinct p.user_id) from positions p join referrals r on r.referred_user = p.user_id
-           where r.affiliate_id = a.user_id and p.opened_at >= now() - interval '30 days') as active30,
-         (select coalesce(sum(p.stake),0) from positions p join referrals r on r.referred_user = p.user_id
-           where r.affiliate_id = a.user_id and p.status = 'settled') as turnover,
-         (select coalesce(sum(c.ggr),0) from affiliate_commissions c where c.affiliate_id = a.user_id) as ggr,
-         (select coalesce(sum(c.commission),0) from affiliate_commissions c where c.affiliate_id = a.user_id and c.status = 'accrued') as accrued,
-         (select coalesce(sum(c.commission),0) from affiliate_commissions c where c.affiliate_id = a.user_id and c.status = 'paid') as paid,
-         (select coalesce(sum(c.commission),0) from affiliate_commissions c where c.affiliate_id = a.user_id and c.status = 'accrued' and c.payout_id is null) as available,
-         (select count(*) from referrals r where r.affiliate_id = a.user_id
-           and (r.created_at at time zone 'Africa/Nairobi')::date = (now() at time zone 'Africa/Nairobi')::date) as referrals_today,
-         (select count(distinct p.user_id) from positions p join referrals r on r.referred_user = p.user_id
-           where r.affiliate_id = a.user_id
-             and (p.opened_at at time zone 'Africa/Nairobi')::date = (now() at time zone 'Africa/Nairobi')::date) as active_today,
-         (select coalesce(sum(c.commission),0) from affiliate_commissions c where c.affiliate_id = a.user_id
-           and c.period = (now() at time zone 'Africa/Nairobi')::date) as commission_today,
-         (select count(*) from affiliate_clicks k where k.affiliate_id = a.user_id) as clicks,
-         (select count(*) from affiliate_clicks k where k.affiliate_id = a.user_id
+      // Referral/earnings KPIs are sourced from the CURRENT commission model (deposit_commissions,
+      // migration 0078/0081 + profiles.referred_by first-touch), UNIONed with the legacy `referrals`
+      // table for back-compat. The old query read only `referrals`/`affiliate_commissions`, which the
+      // live system no longer populates (site-owner + deposit-commission marketers have 0 there), so
+      // every non-money KPI showed 0. `ef` = the distinct set of players this marketer earns from.
+      // Money mirrors deposit_commissions; /me/referral remains authoritative for withdrawable balance.
+      `with ef as (
+         select referred_user as u, created_at as ts from deposit_commissions where beneficiary_user = $1
+         union all select id as u, created_at as ts from profiles where referred_by = $1
+         union all select referred_user as u, created_at as ts from referrals where affiliate_id = $1
+       ), efg as (select u, min(ts) as first_ts from ef group by u)
+       select a.referral_code, a.commission_rate, a.status,
+         (select count(*) from efg) as total_referrals,
+         (select count(distinct e.u) from efg e join positions p on p.user_id = e.u
+           where p.opened_at >= now() - interval '7 days') as active7,
+         (select count(distinct e.u) from efg e join positions p on p.user_id = e.u
+           where p.opened_at >= now() - interval '30 days') as active30,
+         (select coalesce(sum(p.stake),0) from efg e join positions p on p.user_id = e.u
+           where p.status = 'settled') as turnover,
+         coalesce((select sum(c.ggr) from affiliate_commissions c where c.affiliate_id = $1),0) as ggr,
+         (select coalesce(sum(commission_amount),0) from deposit_commissions where beneficiary_user = $1 and status = 'accrued') as accrued,
+         (select coalesce(sum(commission_amount),0) from deposit_commissions where beneficiary_user = $1 and status = 'paid') as paid,
+         (select coalesce(sum(commission_amount),0) from deposit_commissions where beneficiary_user = $1 and status = 'accrued') as available,
+         (select count(*) from efg where (first_ts at time zone 'Africa/Nairobi')::date = (now() at time zone 'Africa/Nairobi')::date) as referrals_today,
+         (select count(distinct e.u) from efg e join positions p on p.user_id = e.u
+           where (p.opened_at at time zone 'Africa/Nairobi')::date = (now() at time zone 'Africa/Nairobi')::date) as active_today,
+         (select coalesce(sum(commission_amount),0) from deposit_commissions where beneficiary_user = $1
+           and (created_at at time zone 'Africa/Nairobi')::date = (now() at time zone 'Africa/Nairobi')::date) as commission_today,
+         (select count(*) from affiliate_clicks k where k.affiliate_id = $1) as clicks,
+         (select count(*) from affiliate_clicks k where k.affiliate_id = $1
            and (k.created_at at time zone 'Africa/Nairobi')::date = (now() at time zone 'Africa/Nairobi')::date) as clicks_today,
-         (select count(distinct r.referred_user) from referrals r
-           where r.affiliate_id = a.user_id
-             and exists (select 1 from transactions t
-                          where t.user_id = r.referred_user and t.kind='deposit' and t.status='success')) as ftd_count
+         (select count(distinct referred_user) from deposit_commissions where beneficiary_user = $1) as ftd_count
        from affiliates a where a.user_id = $1`, [userId]);
     if (!r.rows.length) return null;
     const x = r.rows[0];

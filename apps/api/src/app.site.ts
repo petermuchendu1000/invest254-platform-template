@@ -1,3 +1,4 @@
+import { PLATFORM_ALL_ON } from "@invest254/shared";
 import { Router, ApiError, requireAuth, requireSite, type Ctx } from "./http.js";
 import type { ApiDeps } from "./app.js";
 
@@ -14,6 +15,11 @@ const BASE = "/api/v1";
  *    JWT `site` claim drives `ctx.siteId`.
  */
 export function registerSiteRoutes(router: Router, deps: ApiDeps): void {
+  // Public platform master switches + maintenance banner (migration 0092). The web reads this to
+  // show a maintenance notice and disable deposit/withdraw/play/register/marketer-login controls
+  // when the platform owner turns a system off. Fail-open on the server side (all-ON by default).
+  router.get(`${BASE}/config`, async () => ({ body: deps.platformGate ? await deps.platformGate.flags() : PLATFORM_ALL_ON }));
+
   router.get(`${BASE}/site/brand`, async (ctx: Ctx) => {
     const host = ctx.query.get("host")?.trim().toLowerCase();
     if (!host) throw new ApiError("VALIDATION", "host query parameter is required", 400);

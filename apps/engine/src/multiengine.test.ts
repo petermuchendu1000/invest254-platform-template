@@ -40,7 +40,7 @@ class Client {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-async function boot(): Promise<{ handle: MultiEngineHandle; repo: InMemoryGameRepository; url: (site: string) => string }> {
+async function boot(extra?: { playAllowed?: () => boolean | Promise<boolean> }): Promise<{ handle: MultiEngineHandle; repo: InMemoryGameRepository; url: (site: string) => string }> {
   const repo = new InMemoryGameRepository();
   const seeded = new Set<string>();
   const registry = new SiteRegistry({
@@ -62,6 +62,7 @@ async function boot(): Promise<{ handle: MultiEngineHandle; repo: InMemoryGameRe
     },
     devSeedBalance: (_siteId, userId) => { if (!seeded.has(userId)) { seeded.add(userId); repo.seed(userId, 1_000_000); } },
     onError: () => { /* quiet in tests */ },
+    ...(extra?.playAllowed ? { playAllowed: extra.playAllowed } : {}),
   });
   const port = (handle.wss.address() as any).port as number;
   return { handle, repo, url: (site) => `ws://127.0.0.1:${port}/?site=${site}` };
@@ -119,6 +120,25 @@ test("multiplex: auth, open, settle are fully isolated between brands", async ()
     assert.ok(["win", "loss"].includes(settled.data.result));
     assert.equal(b.of("position_settled").length, 0, "brand B never sees brand A's settle");
   } finally { a.close(); b.close(); await handle.close(); }
+});
+
+test("platform master switch: play OFF refuses open_position (SYSTEM_DISABLED); balance untouched", async () => {
+  const { handle, url } = await boot({ playAllowed: () => false });
+  const a = new Client(url(SITE_A));
+  try {
+    await a.open();
+    await a.waitFor("hello");
+    a.send("auth", { userId: "userPlayOff" });
+    const bal = await a.waitFor("balance");
+    assert.equal(bal.data.real, 1_000_000);
+    a.send("open_position", { stakeCents: 25000, direction: "buy", durationS: 1 });
+    const err = await a.waitFor("error");
+    assert.equal(err.data.code, "SYSTEM_DISABLED", "open refused when play is globally off");
+    await sleep(150);
+    assert.equal(a.of("position_opened").length, 0, "no position opened");
+    // balance must be unchanged (no debit on a refused open)
+    assert.equal(a.of("balance").at(-1).data.real, 1_000_000, "stake NOT debited on refusal");
+  } finally { a.close(); await handle.close(); }
 });
 
 test("multiplex: resolveSite may be async — a brand resolved LIVE (onboarded after boot) still streams", async () => {

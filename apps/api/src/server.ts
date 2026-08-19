@@ -7,7 +7,7 @@ import {
   type Querier, type FairnessRecord, type ListenClient,
 } from "@invest254/engine";
 import { createApp, type ApiDeps, type WalletBalance, type BonusStatus, type Brand } from "./app.js";
-import { normalizeHost, type VersionedGameConfig, type Cents } from "@invest254/shared";
+import { normalizeHost, PlatformGate, type VersionedGameConfig, type Cents } from "@invest254/shared";
 import { BrandOriginAllowlist } from "./cors.js";
 import { makePgMarketerRepo } from "./marketers.pg.js";
 import { makePgReferralRepo } from "./referral.pg.js";
@@ -164,6 +164,8 @@ async function buildDeps(): Promise<ApiDeps> {
     ...(process.env.SUPABASE_JWT_AUD ? { audience: process.env.SUPABASE_JWT_AUD } : {}),
   });
   const affiliate = new AffiliateService(identity, daraja);
+  // Platform-wide master switches (migration 0092). 5s cache; fails open on read error.
+  const platformGate = new PlatformGate((sql: string, p?: unknown[]) => q.query(sql, p ?? []));
   const admin = new AdminService(new PgAdminRepository(q));
   const platform = new PlatformService(new PgPlatformRepository(q));
   const notifications = new NotificationService(new PgNotificationRepository(q));
@@ -332,6 +334,7 @@ async function buildDeps(): Promise<ApiDeps> {
       };
     },
     payments,
+    platformGate,
     resolveHandle,
     walletBalance: async (userId: string, siteId?: string): Promise<WalletBalance> => {
       const r = await q.query("select real_balance, bonus_balance, currency from wallets where user_id = $1 and ($2::uuid is null or site_id = $2)", [userId, siteId ?? null]);

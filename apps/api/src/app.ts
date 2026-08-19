@@ -1,4 +1,4 @@
-import { rtp, type GameConfig, type Cents, type VersionedGameConfig } from "@invest254/shared";
+import { rtp, PlatformGate, type GameConfig, type Cents, type VersionedGameConfig } from "@invest254/shared";
 import type {
   FairnessRecord, PaymentService, AuthService, AffiliateService, AdminService, NotificationService, Verifier, PlatformService,
   Page, PageQuery, LedgerEntry, PositionRecord, PositionDetail, PositionListQuery, TransactionRecord, TxListQuery,
@@ -89,7 +89,8 @@ export interface ApiDeps {
     | "siteOfUser" | "siteOfTransaction">;
   /** Platform-superadmin console (docs/22 Task H): cross-brand onboarding + economy + KPIs. */
   platform: Pick<PlatformService, "listSites" | "overview" | "performance" | "createSite" | "updateSite" | "setSiteConfig"
-    | "marketerRollup" | "createMarketerGlobal" | "linkMarketer" | "setSiteTheme" | "setSiteOwner">;
+    | "marketerRollup" | "createMarketerGlobal" | "linkMarketer" | "setSiteTheme" | "setSiteOwner"
+    | "getGlobalConfig" | "setGlobalConfig" | "distributePool" | "listPoolDistributions">;
   /** Per-user sticky notifications: admin/system raise; player reads active + dismisses (J7). */
   notifications: Pick<NotificationService, "create" | "listActive" | "adminList" | "dismiss" | "resolve" | "resolveByCategory">;
   /** Marketer payments module (0033): create/credit/withdraw + admin-set Fuliza/airtime + statement. */
@@ -98,6 +99,9 @@ export interface ApiDeps {
   referral: ReferralRepo;
   /** Admin-logged marketer expenses (transparency, migration 0068). */
   marketerExpenses: MarketerExpensesDeps;
+  /** Platform-wide master switches (migration 0092): deposits/withdrawals/play/marketers/registrations.
+   * Optional so test doubles need not supply it; absent => gate skipped (fail-open). server.ts always sets it. */
+  platformGate?: PlatformGate;
   /**
    * Public game configuration source. A PROVIDER, not a value: config is edited live in the
    * admin panel, so a snapshot captured at boot would serve stale limits forever (the exact

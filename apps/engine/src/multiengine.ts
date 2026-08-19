@@ -33,6 +33,9 @@ export interface MultiEngineOptions {
   /** Dev/test only: ensure a just-authenticated user has a wallet/balance (in-memory seeding). */
   devSeedBalance?: (siteId: string, userId: string) => Promise<void> | void;
   onError?: (err: Error, ctx: string) => void;
+  /** Platform master switch (migration 0092): when it returns false, new positions are refused
+   * platform-wide. Omitted in dev/tests => play always allowed. In-flight positions are unaffected. */
+  playAllowed?: () => boolean | Promise<boolean>;
 }
 
 export interface MultiEngineHandle {
@@ -185,6 +188,8 @@ export async function startMultiEngine(opts: MultiEngineOptions): Promise<MultiE
             }
             case "open_position": {
               const userId = userOf.get(ws); if (!userId) return send(ws, "error", { code: "AUTH_REQUIRED" });
+              if (opts.playAllowed && !(await opts.playAllowed()))
+                return send(ws, "error", { code: "SYSTEM_DISABLED", message: "Play is temporarily disabled by the platform." });
               const { position: p, balance } = await rt.game.openPosition({
                 userId, stakeCents: Number(msg.data.stakeCents), direction: msg.data.direction as Direction, durationS: msg.data.durationS,
                 role: roleOf.get(ws) ?? "player",

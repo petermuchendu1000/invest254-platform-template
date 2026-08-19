@@ -12,7 +12,7 @@ import { SiteResolver, type SiteLookup } from "./siteresolver.js";
 import { startMultiEngine } from "./multiengine.js";
 import { DepositNotifier, type DepositListenClient } from "./platformlive.js";
 import { makeVerifier } from "./auth.js";
-import { DEFAULT_VERSIONED_CONFIG } from "@invest254/shared";
+import { DEFAULT_VERSIONED_CONFIG, PlatformGate } from "@invest254/shared";
 
 /**
  * Multiplexed engine entrypoint (multi-tenant).
@@ -40,6 +40,8 @@ if (usingDb && !verifier) {
 }
 
 let repo: GameRepository;
+// Platform master switch (migration 0092) — gates new positions platform-wide. Set in DB mode only.
+let platformGate: PlatformGate | undefined;
 let overridesRepo: UserOverridesRepository | undefined;
 let configFor: (siteId: string) => ConfigProvider | Promise<ConfigProvider>;
 let masterSeedFor: ((siteId: string) => string | undefined) | undefined;
@@ -67,6 +69,7 @@ if (usingDb) {
   listenConnect = () => listenPool.connect() as unknown as Promise<DepositListenClient>;
   const pool = queryPool;
   const q = pool as unknown as Querier;
+  platformGate = new PlatformGate((sql: string, p?: unknown[]) => q.query(sql, p ?? []));
   repo = new PgGameRepository(q);
   overridesRepo = new PgUserOverridesRepository(q);
 
@@ -198,6 +201,7 @@ const handle = await startMultiEngine({
   resolveSite,
   onlineFloor: ONLINE_FLOOR,
   ...(devSeed ? { devSeedBalance: devSeed } : {}),
+  ...(platformGate ? { playAllowed: () => platformGate!.allows("play") } : {}),
 });
 
 if (!verifier) console.warn("[engine] WARNING: no JWT verifier — DEV auth (trusts client userId). Not for production.");

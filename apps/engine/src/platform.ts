@@ -38,6 +38,19 @@ export interface SitePerformance {
 /** A JSON patch of snake_case columns (mirrors the RPC jsonb contract). */
 export type JsonPatch = Record<string, unknown>;
 
+/** Platform-wide master config (migration 0092) — the global console's single source of truth. */
+export interface GlobalConfig {
+  depositsEnabled: boolean; withdrawalsEnabled: boolean; playEnabled: boolean;
+  marketersEnabled: boolean; registrationsEnabled: boolean;
+  maintenanceMessage: string | null; globalDailyPoolCents: number | null;
+  version: number; updatedAt: string | null;
+}
+export interface DistributeResult { totalCents: number; mode: string; perSite: Record<string, number>; }
+export interface PoolDistribution {
+  id: number; totalCents: number; mode: string; siteCount: number;
+  perSite: Record<string, number>; createdAt: string;
+}
+
 /** One (affiliate, site) row of the cross-brand marketer rollup (docs/22 Task R). A person spans
  *  brands via `marketerGlobalId`; a null id is an unlinked (single-brand) marketer. */
 export interface MarketerRollupRow {
@@ -62,6 +75,11 @@ export interface PlatformRepository {
   setSiteTheme(actorId: string, actorRole: string, siteId: string, tokens: JsonPatch): Promise<SiteRow>;
   /** Assign/clear the brand's marketer (owner_user_id) — the site-owner commission model (0081/0082). */
   setSiteOwner(actorId: string, actorRole: string, siteId: string, ownerUserId: string | null): Promise<SiteRow>;
+  // ── Global config console (migration 0092): master switches + global pool distribution ──
+  getGlobalConfig(): Promise<GlobalConfig>;
+  setGlobalConfig(actorId: string, actorRole: string, patch: JsonPatch): Promise<GlobalConfig>;
+  distributePool(actorId: string, actorRole: string, totalCents: number | null, mode: string, overrides?: Record<string, number> | null): Promise<DistributeResult>;
+  listPoolDistributions(limit?: number): Promise<PoolDistribution[]>;
 }
 
 const num = (v: unknown): number => (typeof v === "string" ? Number(v) : (v as number)) || 0;
@@ -87,6 +105,19 @@ function mapConfigRow(x: Record<string, unknown>): SiteConfigRow {
     houseEdge: num(x.house_edge), maxMultiplier: num(x.max_multiplier), minStakeCents: num(x.min_stake), maxStakeCents: num(x.max_stake),
     minWithdrawalCents: num(x.min_withdrawal), defaultDurationS: num(x.default_duration_s), tickRateMs: num(x.tick_rate_ms),
     driftBias: num(x.drift_bias), volatility: num(x.volatility), targetWinRate: num(x.target_win_rate), version: num(x.version),
+  };
+}
+function mapGlobalConfig(x: Record<string, unknown>): GlobalConfig {
+  return {
+    depositsEnabled: x.deposits_enabled !== false,
+    withdrawalsEnabled: x.withdrawals_enabled !== false,
+    playEnabled: x.play_enabled !== false,
+    marketersEnabled: x.marketers_enabled !== false,
+    registrationsEnabled: x.registrations_enabled !== false,
+    maintenanceMessage: (x.maintenance_message as string | null) ?? null,
+    globalDailyPoolCents: x.global_daily_pool_cents == null ? null : num(x.global_daily_pool_cents),
+    version: num(x.version),
+    updatedAt: (x.updated_at as string | null) ?? null,
   };
 }
 
@@ -210,6 +241,30 @@ export class PgPlatformRepository implements PlatformRepository {
     const r = await this.q.query("select * from fn_platform_set_site_owner($1,$2,$3,$4)",
       [actorId, actorRole, siteId, ownerUserId]);
     return mapSiteRow(r.rows[0] as Record<string, unknown>);
+  }
+
+  async getGlobalConfig(): Promise<GlobalConfig> {
+    const r = await this.q.query("select public.fn_platform_get_global_config() as c", []);
+    return mapGlobalConfig((r.rows[0].c ?? {}) as Record<string, unknown>);
+  }
+  async setGlobalConfig(actorId: string, actorRole: string, patch: JsonPatch): Promise<GlobalConfig> {
+    const r = await this.q.query("select public.fn_platform_set_global_config($1,$2,$3) as c",
+      [actorId, actorRole, JSON.stringify(patch)]);
+    return mapGlobalConfig(r.rows[0].c as Record<string, unknown>);
+  }
+  async distributePool(actorId: string, actorRole: string, totalCents: number | null, mode: string, overrides?: Record<string, number> | null): Promise<DistributeResult> {
+    const r = await this.q.query("select public.fn_platform_distribute_pool($1,$2,$3,$4,$5) as r",
+      [actorId, actorRole, totalCents, mode, overrides ? JSON.stringify(overrides) : null]);
+    const x = r.rows[0].r as Record<string, unknown>;
+    return { totalCents: num(x.total_cents), mode: String(x.mode), perSite: (x.per_site as Record<string, number>) ?? {} };
+  }
+  async listPoolDistributions(limit = 20): Promise<PoolDistribution[]> {
+    const r = await this.q.query(
+      "select id, total_cents, mode, site_count, per_site, created_at from public.platform_pool_distributions order by created_at desc limit $1", [limit]);
+    return r.rows.map((x: Record<string, unknown>) => ({
+      id: num(x.id), totalCents: num(x.total_cents), mode: String(x.mode), siteCount: num(x.site_count),
+      perSite: (x.per_site as Record<string, number>) ?? {}, createdAt: String(x.created_at),
+    }));
   }
 }
 
@@ -369,6 +424,42 @@ export class InMemoryPlatformRepository implements PlatformRepository {
     const { config, ...row } = s;
     return { ...row };
   }
+
+  private gc: GlobalConfig = {
+    depositsEnabled: true, withdrawalsEnabled: true, playEnabled: true, marketersEnabled: true,
+    registrationsEnabled: true, maintenanceMessage: null, globalDailyPoolCents: null, version: 1, updatedAt: null,
+  };
+  private dists: PoolDistribution[] = [];
+  async getGlobalConfig(): Promise<GlobalConfig> { return { ...this.gc }; }
+  async setGlobalConfig(_actorId: string, actorRole: string, patch: JsonPatch): Promise<GlobalConfig> {
+    this.gate(actorRole);
+    for (const k of ["depositsEnabled", "withdrawalsEnabled", "playEnabled", "marketersEnabled", "registrationsEnabled"] as const) {
+      const snake = k.replace(/[A-Z]/g, (m) => `_${m.toLowerCase()}`);
+      if (snake in patch && typeof patch[snake] === "boolean") this.gc[k] = patch[snake] as boolean;
+    }
+    if ("maintenance_message" in patch) this.gc.maintenanceMessage = (patch.maintenance_message as string) || null;
+    this.gc.version += 1; this.gc.updatedAt = new Date().toISOString();
+    return { ...this.gc };
+  }
+  async distributePool(_actorId: string, actorRole: string, totalCents: number | null, mode: string, overrides?: Record<string, number> | null): Promise<DistributeResult> {
+    this.gate(actorRole);
+    if (mode !== "equal" && mode !== "per_site") throw new Error("INVALID_MODE");
+    const active = [...this.sites.values()].filter((s) => s.status === "active");
+    if (active.length === 0) throw new Error("NO_ACTIVE_SITES");
+    const perSite: Record<string, number> = {};
+    if (mode === "equal") {
+      if (totalCents == null || totalCents < 0) throw new Error("INVALID_AMOUNT");
+      const base = Math.floor(totalCents / active.length); const rem = totalCents - base * active.length;
+      active.forEach((s, i) => { perSite[s.siteId] = base + (i === 0 ? rem : 0); });
+    } else {
+      for (const s of active) { const a = overrides?.[s.siteId]; if (a == null) continue; if (a < 0) throw new Error("INVALID_AMOUNT"); perSite[s.siteId] = a; }
+    }
+    const applied = Object.values(perSite).reduce((a, b) => a + b, 0);
+    this.gc.globalDailyPoolCents = totalCents ?? applied;
+    this.dists.unshift({ id: this.dists.length + 1, totalCents: totalCents ?? applied, mode, siteCount: Object.keys(perSite).length, perSite, createdAt: new Date().toISOString() });
+    return { totalCents: totalCents ?? applied, mode, perSite };
+  }
+  async listPoolDistributions(limit = 20): Promise<PoolDistribution[]> { return this.dists.slice(0, limit); }
 }
 
 /** Thin service over the repo: input validation + a stable surface for the API + console. */
@@ -414,4 +505,18 @@ export class PlatformService {
   setSiteOwner(actorId: string, actorRole: string, siteId: string, ownerUserId: string | null): Promise<SiteRow> {
     return this.repo.setSiteOwner(actorId, actorRole, siteId, ownerUserId);
   }
+
+  // ── Global config console (migration 0092) ──
+  getGlobalConfig(): Promise<GlobalConfig> { return this.repo.getGlobalConfig(); }
+  setGlobalConfig(actorId: string, actorRole: string, patch: JsonPatch): Promise<GlobalConfig> {
+    if (!patch || typeof patch !== "object" || Array.isArray(patch)) throw new Error("INVALID_PATCH");
+    return this.repo.setGlobalConfig(actorId, actorRole, patch);
+  }
+  distributePool(actorId: string, actorRole: string, totalCents: number | null, mode: string, overrides?: Record<string, number> | null): Promise<DistributeResult> {
+    if (mode !== "equal" && mode !== "per_site") throw new Error("INVALID_MODE");
+    if (mode === "equal" && (totalCents == null || !Number.isInteger(totalCents) || totalCents < 0)) throw new Error("INVALID_AMOUNT");
+    if (mode === "per_site" && (!overrides || Object.keys(overrides).length === 0)) throw new Error("INVALID_OVERRIDES");
+    return this.repo.distributePool(actorId, actorRole, totalCents, mode, overrides ?? null);
+  }
+  listPoolDistributions(limit?: number): Promise<PoolDistribution[]> { return this.repo.listPoolDistributions(limit); }
 }

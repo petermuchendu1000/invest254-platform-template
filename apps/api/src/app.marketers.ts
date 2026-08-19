@@ -279,6 +279,8 @@ export function registerMarketerRoutes(router: Router, deps: ApiDeps): void {
   // ── Marketer self-service auth (phone + PIN) ───────────────────────────────
   // Login: returns a marketer-role JWT + the caller's profile. Generic 401 on any failure.
   router.post(`${BASE}/marketers/auth/login`, loginLimit, async (ctx: Ctx) => {
+    if (deps.platformGate && !(await deps.platformGate.allows("marketers")))
+      throw new ApiError("SYSTEM_DISABLED", "The marketer system is temporarily disabled by the platform.", 403);
     const b = bodyObj(ctx);
     const phone = reqStr(b, "phone");
     const pin = reqPin(b, "pin");
@@ -297,6 +299,8 @@ export function registerMarketerRoutes(router: Router, deps: ApiDeps): void {
   //  - valid account, not a marketer -> 403 NOT_MARKETER
   //  - marketer suspended/disabled   -> 403 MARKETER_INACTIVE
   router.post(`${BASE}/marketers/auth/login-web`, loginLimit, async (ctx: Ctx) => {
+    if (deps.platformGate && !(await deps.platformGate.allows("marketers")))
+      throw new ApiError("SYSTEM_DISABLED", "The marketer system is temporarily disabled by the platform.", 403);
     const b = bodyObj(ctx);
     const phone = reqStr(b, "phone");
     // Read the password verbatim (no trim) so credentials aren't silently mangled.
