@@ -14,7 +14,10 @@ export interface AdminOverview {
   };
   finance: {
     depositsCents: Cents;
+    /** Real cash out (M-Pesa B2C) only — excludes internal marketer transfers. */
     withdrawalsCents: Cents;
+    /** Marketer game-winnings moved into the companion marketer wallet (provider='internal'). Not cash out. */
+    internalTransfersCents: Cents;
     pendingWithdrawals: number;
     walletLiabilityCents: Cents;
   };
@@ -25,6 +28,15 @@ export interface AdminOverview {
     pendingPayouts: number;
   };
   game: { settledPositions: number; turnoverCents: Cents; ggrCents: Cents };
+  /** Internal marketer cohort (migration 0033/0036) — isolated from every real figure above. */
+  marketer: {
+    accounts: number;
+    /** Internal funding into marketer player wallets (ledger adjustments) — not real deposits. */
+    creditedCents: Cents;
+    turnoverCents: Cents;
+    ggrCents: Cents;
+    walletLiabilityCents: Cents;
+  };
 }
 
 export interface RtpWindowRow {
@@ -42,6 +54,17 @@ export interface RtpMonitor {
   alert: boolean;
 }
 
+/** Real-cash RTP (rec #7): committed-money truth; marketer cohort shown separately from real players. */
+export interface RealCashSide { turnoverCents: Cents; payoutCents: Cents; ggrCents: Cents; bets: number; rtp: number | null; }
+export interface RealCashWindow { window: string; real: RealCashSide; demo: RealCashSide; cash: { depositsCents: Cents; withdrawalsCents: Cents; netCashCents: Cents }; }
+export interface RealCashRtp { rtpTarget: number | null; windows: RealCashWindow[]; }
+
+/** One economy-config version in the change-review (diff vs prior + risk flag). */
+export interface ConfigChangeRow {
+  version: number; createdAtMs: number; houseEdge: number; targetWinRate: number; maxMultiplier: number;
+  prevHouseEdge: number | null; prevTargetWinRate: number | null; changedFields: string[]; risk: boolean; riskReason: string;
+}
+
 /** Enriched user-list row — wallet, lifetime cash flow, game economics and last activity. */
 export interface AdminUserRow {
   userId: string;
@@ -52,6 +75,10 @@ export interface AdminUserRow {
   createdAtMs: number;
   realBalanceCents: Cents;
   bonusBalanceCents: Cents;
+  /** Non-withdrawable demo bucket (migration 0084); non-zero only for marketer/demo accounts. */
+  demoBalanceCents: Cents;
+  /** True when this is a demo/marketer account (plays on demo_balance; excluded from real cash). */
+  isMarketer: boolean;
   depositsCents: Cents;
   withdrawalsCents: Cents;
   netDepositsCents: Cents;
@@ -118,7 +145,7 @@ export interface BulkActionInput {
   category?: string | null;
 }
 
-export type AdminActivityKind = 'deposit' | 'withdrawal' | 'bet';
+export type AdminActivityKind = 'deposit' | 'withdrawal' | 'bet' | 'adjustment';
 /** One event in a user's unified activity timeline (mirrors engine AdminUserActivityRow). */
 export interface AdminUserActivityRow {
   kind: AdminActivityKind;
@@ -141,10 +168,19 @@ export interface AdminWithdrawalRow {
   txId: string;
   userId: string;
   username: string;
+  phone: string;
   amountCents: Cents;
   status: string;
-  phone: string;
+  provider: string | null;
+  mpesaReceipt: string | null;
   createdAtMs: number;
+  updatedAtMs: number | null;
+  balanceCents: Cents;
+  totalDepositsCents: Cents;
+  depositCount: number;
+  totalWithdrawalsCents: Cents;
+  withdrawalCount: number;
+  firstDepositAtMs: number | null;
 }
 
 export interface AdminDepositRow {
@@ -404,4 +440,21 @@ export interface MarketerWithdrawResult {
   balance_cents: Cents;
   withdrawal_id?: string;
   ledger_id: number;
+}
+
+// ── Generic bulk-action result for the finance/affiliate/marketer bulk endpoints ──────────────
+/** One row's outcome in a bulk action (keyed by the item id: txId / payoutId / marketerId). */
+export interface AdminBulkResultRow {
+  id: string;
+  ok: boolean;
+  error?: string;
+  result?: unknown;
+}
+/** Aggregate result of a bulk action: total attempted + per-row outcomes (partial success). */
+export interface AdminBulkResult {
+  action: string;
+  total: number;
+  okCount: number;
+  failCount: number;
+  results: AdminBulkResultRow[];
 }

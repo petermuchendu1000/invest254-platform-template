@@ -166,6 +166,130 @@ test("admin reports: per-day & per-user JSON, CSV export, and the date-range fil
 
 // ──────────────────────────────────────────────── J5: game config + RTP monitor + seed rotation ──
 
+test("admin reports/day (calendar): comprehensive single-day stats; date-validated; role-gated", async () => {
+  const api = await startTestApi();
+  try {
+    const uid = await register(api, "0712009090", "dayuser");
+    api.payRepo.seed(uid, 0);
+    // A successful deposit today must surface in the day report's cash section.
+    const dep = await api.payRepo.createDeposit(uid, 50_000, "0712009090");
+    await api.payRepo.attachStk(dep, "m", "chk-day");
+    await api.payRepo.completeDeposit("chk-day", 0, "ok", "RCPT", {});
+    // UTC day matches the in-memory grouping used by the reports repo (see reports/daily test).
+    const today = new Date().toISOString().slice(0, 10);
+
+    const res = await req(api, "GET", `/api/v1/admin/reports/day?date=${today}`, { token: "admin-1:admin" });
+    assert.equal(res.status, 200);
+    const d = await json(res);
+    assert.equal(d.date, today);
+    assert.equal(d.deposits.count, 1);
+    assert.equal(d.deposits.amountCents, 50_000);
+    assert.equal(d.depositors, 1);
+    // The full shape the calendar UI renders must be present as numbers (never undefined).
+    for (const k of ["newRegistrants", "newMarketers", "activePlayers", "firstTimeDepositors",
+      "settledPositions", "winningPositions", "turnoverCents", "payoutCents", "ggrCents",
+      "commissionAccruedCents", "poolBudgetCents", "poolPaidCents"]) {
+      assert.equal(typeof d[k], "number", `${k} should be a number`);
+    }
+    assert.equal(typeof d.withdrawals.amountCents, "number");
+    assert.equal(typeof d.pendingWithdrawals.amountCents, "number");
+
+    // Defaults to today (EAT) when no date param is supplied.
+    assert.equal((await req(api, "GET", "/api/v1/admin/reports/day", { token: "admin-1:admin" })).status, 200);
+    // Malformed date -> 400; player token -> 403.
+    assert.equal((await req(api, "GET", "/api/v1/admin/reports/day?date=2026/06/10", { token: "admin-1:admin" })).status, 400);
+    assert.equal((await req(api, "GET", "/api/v1/admin/reports/day", { token: uid })).status, 403);
+  } finally { await api.close(); }
+});
+
+test("admin withdrawals queue carries full player context (balance + lifetime deposits/withdrawals)", async () => {
+  const api = await startTestApi();
+  try {
+    const uid = await register(api, "0712009191", "wduser");
+    api.payRepo.seed(uid, 0);
+    // Fund the player: KES 1,000 deposit -> balance 100000, lifetime deposits 100000.
+    const dep = await api.payRepo.createDeposit(uid, 100_000, "0712009191");
+    await api.payRepo.attachStk(dep, "m", "chk-wd");
+    await api.payRepo.completeDeposit("chk-wd", 0, "ok", "RCPT-1", {});
+    // Request a KES 300 withdrawal (holds funds; status pending).
+    const wd = await api.payRepo.createWithdrawal(uid, 30_000, "0712009191", 25_000);
+
+    const items = (await json(await req(api, "GET", "/api/v1/admin/withdrawals", { token: "admin-1:admin" }))).items as any[];
+    const row = items.find((r) => r.txId === wd.txId);
+    assert.ok(row, "withdrawal should appear in the admin queue");
+    assert.equal(row.username, "wduser");
+    assert.equal(row.amountCents, 30_000);
+    assert.equal(row.phone, "0712009191");
+    assert.equal(row.balanceCents, 70_000);        // 100000 deposited − 30000 held
+    assert.equal(row.totalDepositsCents, 100_000);
+    assert.equal(row.depositCount, 1);
+    assert.equal(row.totalWithdrawalsCents, 0);     // this one is still pending, not paid
+    assert.equal(row.withdrawalCount, 0);
+    assert.equal(typeof row.firstDepositAtMs, "number");
+
+    // Player token is forbidden.
+    assert.equal((await req(api, "GET", "/api/v1/admin/withdrawals", { token: uid })).status, 403);
+  } finally { await api.close(); }
+});
+
+test("admin withdrawals kill switch: role-gated toggle that blocks new withdrawals when off", async () => {
+  const api = await startTestApi();
+  try {
+    const uid = await register(api, "0712009292", "kswuser");
+    api.payRepo.seed(uid, 0);
+    const dep = await api.payRepo.createDeposit(uid, 100_000, "0712009292");
+    await api.payRepo.attachStk(dep, "m", "chk-ksw");
+    await api.payRepo.completeDeposit("chk-ksw", 0, "ok", "R-KSW", {});
+
+    // Default: enabled. Player cannot read or toggle.
+    assert.equal((await json(await req(api, "GET", "/api/v1/admin/withdrawals-enabled", { token: "admin-1:admin" }))).enabled, true);
+    assert.equal((await req(api, "GET", "/api/v1/admin/withdrawals-enabled", { token: uid })).status, 403);
+    assert.equal((await req(api, "PUT", "/api/v1/admin/withdrawals-enabled", { token: uid, body: { enabled: false } })).status, 403);
+    // Missing/invalid body -> 400.
+    assert.equal((await req(api, "PUT", "/api/v1/admin/withdrawals-enabled", { token: "admin-1:admin", body: {} })).status, 400);
+
+    // Admin disables -> a player withdrawal request is refused (403 WITHDRAWALS_DISABLED).
+    const off = await req(api, "PUT", "/api/v1/admin/withdrawals-enabled", { token: "admin-1:admin", body: { enabled: false } });
+    assert.equal(off.status, 200);
+    assert.equal((await json(off)).enabled, false);
+    const blocked = await req(api, "POST", "/api/v1/withdrawals", { token: uid, body: { amount: 30_000, phone: "0712009292" } });
+    assert.equal(blocked.status, 403);
+    assert.equal((await json(blocked)).error.code, "WITHDRAWALS_DISABLED");
+
+    // Re-enable -> the same request now succeeds (202 pending).
+    await req(api, "PUT", "/api/v1/admin/withdrawals-enabled", { token: "admin-1:admin", body: { enabled: true } });
+    const okRes = await req(api, "POST", "/api/v1/withdrawals", { token: uid, body: { amount: 30_000, phone: "0712009292" } });
+    assert.equal(okRes.status, 202);
+  } finally { await api.close(); }
+});
+
+test("marketer expenses (0068): admin logs an expense; the marketer sees it (transparency); role-gated", async () => {
+  const api = await startTestApi();
+  try {
+    const uid = await register(api, "0712009393", "expmkt");
+    // Admin logs two expenses against this marketer.
+    const e1 = await req(api, "POST", "/api/v1/admin/affiliate/expenses", { token: "admin-1:admin", body: { marketerUserId: uid, category: "tiktok_promo", amountCents: 5_000, note: "Boost" } });
+    assert.equal(e1.status, 200);
+    assert.equal((await json(e1)).category, "tiktok_promo");
+    await req(api, "POST", "/api/v1/admin/affiliate/expenses", { token: "admin-1:admin", body: { marketerUserId: uid, category: "advance", amountCents: 20_000 } });
+
+    // Admin can list them (newest-first, with a total).
+    const adminList = await json(await req(api, "GET", `/api/v1/admin/affiliate/expenses?marketerUserId=${uid}`, { token: "admin-1:admin" }));
+    assert.equal(adminList.items.length, 2);
+    assert.equal(adminList.totalCents, 25_000);
+
+    // The marketer sees their OWN expenses (transparency).
+    const mine = await json(await req(api, "GET", "/api/v1/affiliate/expenses", { token: `${uid}:marketer` }));
+    assert.equal(mine.items.length, 2);
+    assert.equal(mine.totalCents, 25_000);
+
+    // Player token cannot add (admin-gated) and missing fields -> 400.
+    assert.equal((await req(api, "POST", "/api/v1/admin/affiliate/expenses", { token: uid, body: { marketerUserId: uid, category: "other", amountCents: 100 } })).status, 403);
+    assert.equal((await req(api, "POST", "/api/v1/admin/affiliate/expenses", { token: "admin-1:admin", body: { marketerUserId: uid, amountCents: 100 } })).status, 400);
+    assert.equal((await req(api, "POST", "/api/v1/admin/affiliate/expenses", { token: "admin-1:admin", body: { marketerUserId: uid, category: "other", amountCents: -5 } })).status, 400);
+  } finally { await api.close(); }
+});
+
 test("J5 game config: admin reads; only superadmin edits; validates; audited", async () => {
   const api = await startTestApi();
   try {
@@ -245,13 +369,18 @@ test("M-Pesa config: admin reads masked; only superadmin edits; secrets write-on
   } finally { await api.close(); }
 });
 
-test("user role: only superadmin promotes/demotes; validates; no self-action; audited", async () => {
+test("user role: admin promotes player<->marketer; superadmin full power; validates; no self-action; audited", async () => {
   const api = await startTestApi();
   try {
     const uid = await register(api, "0712000099", "role_target");
 
-    // a plain admin cannot change roles (superadmin only)
-    assert.equal((await req(api, "POST", `/api/v1/admin/users/${uid}/role`, { token: "admin-1:admin", body: { role: "marketer" } })).status, 403);
+    // item 6: a plain admin CAN promote player -> marketer, but CANNOT mint an admin
+    assert.equal((await req(api, "POST", `/api/v1/admin/users/${uid}/role`, { token: "admin-1:admin", body: { role: "admin" } })).status, 403);
+    const adminUp = await req(api, "POST", `/api/v1/admin/users/${uid}/role`, { token: "admin-1:admin", body: { role: "marketer" } });
+    assert.equal(adminUp.status, 200);
+    assert.equal((await json(adminUp)).role, "marketer");
+    // demote back to player (superadmin) so the flow below is meaningful
+    assert.equal((await req(api, "POST", `/api/v1/admin/users/${uid}/role`, { token: "root-1:superadmin", body: { role: "player" } })).status, 200);
 
     // superadmin promotes player -> marketer
     const up = await req(api, "POST", `/api/v1/admin/users/${uid}/role`, { token: "root-1:superadmin", body: { role: "marketer" } });

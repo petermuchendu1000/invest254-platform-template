@@ -8,8 +8,10 @@ import { Money } from '@/components/ui/Money';
 import { StatusBadge } from '@/components/ui/Badge';
 import { formatExact, formatRelativeTime } from '@/lib/format';
 import { PageHeader, StatCard, Section, TableWrap, Th, Td, Empty, Toolbar, FilterSelect } from '@/components/admin/ui';
-import { useDeposits, useDepositsReconcile, useTransactions, useOverview } from '@/lib/admin/hooks';
-import type { AdminDepositRow, AdminTransactionRow } from '@/lib/admin/types';
+import { useRowSelection, SelectAllCheckbox, RowCheckbox, BulkBar, downloadCsv, copyText } from '@/components/admin/BulkSelect';
+import { useToast } from '@/lib/toast/ToastProvider';
+import { useDepositsReconcile, useTransactions, useOverview } from '@/lib/admin/hooks';
+import type { AdminTransactionRow } from '@/lib/admin/types';
 
 const STATUS_OPTIONS = [
   { value: '', label: 'All statuses' },
@@ -23,12 +25,6 @@ const KIND_OPTIONS = [
   { value: '', label: 'Deposits & withdrawals' },
   { value: 'deposit', label: 'Deposits only' },
   { value: 'withdrawal', label: 'Withdrawals only' },
-];
-
-const STALE_OPTIONS = [
-  { value: '15', label: 'Stale > 15 min' },
-  { value: '30', label: 'Stale > 30 min' },
-  { value: '60', label: 'Stale > 60 min' },
 ];
 
 /** Per-status tone for reconciliation tiles. */
@@ -73,21 +69,43 @@ function TimeCell({ ms }: { ms: number }) {
 }
 
 export default function FinancePage() {
-  const [staleMinutes, setStaleMinutes] = useState('15');
   const [txKind, setTxKind] = useState('');
   const [txStatus, setTxStatus] = useState('');
-  const [depStatus, setDepStatus] = useState('');
 
   const overview = useOverview();
-  const recon = useDepositsReconcile(Number(staleMinutes));
+  const recon = useDepositsReconcile();
   const txns = useTransactions({ ...(txKind ? { kind: txKind } : {}), ...(txStatus ? { status: txStatus } : {}) });
-  const deposits = useDeposits(depStatus || undefined);
 
   const txRows = useMemo(() => txns.data?.pages.flatMap((p) => p.items) ?? [], [txns.data]);
-  const depRows = useMemo(() => deposits.data?.pages.flatMap((p) => p.items) ?? [], [deposits.data]);
+
+  const sel = useRowSelection(txRows, (r) => r.txId);
+  const toast = useToast();
+  const selInfo = useMemo(() => {
+    let deposits = 0, withdrawals = 0, depN = 0, wdN = 0;
+    for (const r of sel.selectedRows) {
+      if (r.kind === 'deposit') { deposits += r.amountCents; depN += 1; } else { withdrawals += r.amountCents; wdN += 1; }
+    }
+    return { deposits, withdrawals, depN, wdN };
+  }, [sel.selectedRows]);
+  async function copyPhones() {
+    const phones = [...new Set(sel.selectedRows.map((r) => r.phone).filter((p): p is string => !!p))];
+    const ok = await copyText(phones.join('\n'));
+    toast.push({ tone: ok ? 'success' : 'error', title: ok ? 'Phone numbers copied' : 'Copy failed', description: `${phones.length} unique number(s)` });
+  }
+  function exportCsv() {
+    downloadCsv(
+      `transactions-${new Date().toISOString().slice(0, 10)}.csv`,
+      sel.selectedRows.map((r) => ({
+        txId: r.txId, username: r.username, kind: r.kind,
+        amountKES: (r.amountCents / 100).toFixed(2), status: r.status,
+        phone: r.phone ?? '', provider: r.provider ?? '',
+        receipt: r.mpesaReceipt ?? r.checkoutRequestId ?? '',
+        time: r.createdAtMs ? new Date(r.createdAtMs).toISOString() : '',
+      })),
+    );
+  }
 
   const summary = recon.data?.summary ?? [];
-  const stale = recon.data?.stale ?? [];
 
   const fin = overview.data?.finance;
   const netCents = fin ? fin.depositsCents - fin.withdrawalsCents : 0;
@@ -106,8 +124,8 @@ export default function FinancePage() {
         ) : (
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
             <StatCard label="Deposits (success)" money={fin?.depositsCents ?? 0} tone="up" />
-            <StatCard label="Withdrawals (success)" money={fin?.withdrawalsCents ?? 0} tone="down" />
-            <StatCard label="Net cash in" money={netCents} tone={netCents >= 0 ? 'up' : 'down'} />
+            <StatCard label="Withdrawals (M-Pesa)" money={fin?.withdrawalsCents ?? 0} tone="down" hint="real cash out" />
+            <StatCard label="Net cash in" money={netCents} tone={netCents >= 0 ? 'up' : 'down'} hint="deposits − real withdrawals" />
             <StatCard label="Pending withdrawals" value={fin?.pendingWithdrawals ?? 0} tone="warn" hint="awaiting moderation" />
             <StatCard label="Wallet liability" money={fin?.walletLiabilityCents ?? 0} hint="owed to players" />
           </div>
@@ -116,9 +134,6 @@ export default function FinancePage() {
 
       {/* Reconciliation summary — deposits grouped by status */}
       <Section title="Deposit reconciliation">
-        <Toolbar>
-          <FilterSelect label="Window" value={staleMinutes} onChange={setStaleMinutes} options={STALE_OPTIONS} />
-        </Toolbar>
         {recon.isLoading ? (
           <Skeleton className="h-24 w-full" />
         ) : recon.isError ? (
@@ -140,35 +155,6 @@ export default function FinancePage() {
         )}
       </Section>
 
-      {/* Stale non-terminal deposits — the reconcile worklist */}
-      <Section title={`Stale deposits${stale.length ? ` (${stale.length})` : ''}`}>
-        {recon.isLoading ? (
-          <Skeleton className="h-24 w-full" />
-        ) : stale.length === 0 ? (
-          <Empty title="No stale deposits" description={`No pending or processing STK pushes older than ${staleMinutes} minutes.`} />
-        ) : (
-          <div className="overflow-hidden rounded-2xl border border-warn">
-            <TableWrap>
-              <thead>
-                <tr className="border-b border-border">
-                  <Th>Player</Th>
-                  <Th className="text-right">Amount</Th>
-                  <Th>Phone</Th>
-                  <Th>Status</Th>
-                  <Th>Checkout ID</Th>
-                  <Th className="text-right">Age</Th>
-                </tr>
-              </thead>
-              <tbody>
-                {stale.map((r) => (
-                  <DepositRow key={r.txId} r={r} highlightAge />
-                ))}
-              </tbody>
-            </TableWrap>
-          </div>
-        )}
-      </Section>
-
       {/* Unified transactions explorer — deposits + withdrawals, deep + clickable */}
       <Section title="All transactions">
         <Toolbar>
@@ -186,6 +172,7 @@ export default function FinancePage() {
             <TableWrap>
               <thead>
                 <tr className="border-b border-border">
+                  <Th className="w-8"><SelectAllCheckbox allSelected={sel.allSelected} someSelected={sel.someSelected} onChange={sel.setAll} /></Th>
                   <Th>Player</Th>
                   <Th>Type</Th>
                   <Th className="text-right">Amount</Th>
@@ -198,7 +185,7 @@ export default function FinancePage() {
               </thead>
               <tbody>
                 {txRows.map((r) => (
-                  <TxRow key={r.txId} r={r} />
+                  <TxRow key={r.txId} r={r} checked={sel.isSelected(r.txId)} onToggle={() => sel.toggle(r.txId)} />
                 ))}
               </tbody>
             </TableWrap>
@@ -207,45 +194,14 @@ export default function FinancePage() {
                 {txns.isFetchingNextPage ? 'Loading…' : 'Load more'}
               </Button>
             ) : null}
-          </>
-        )}
-      </Section>
-
-      {/* Deposit-only explorer (STK detail: receipt + checkout id) */}
-      <Section title="Deposits (M-Pesa detail)">
-        <Toolbar>
-          <FilterSelect label="Status" value={depStatus} onChange={setDepStatus} options={STATUS_OPTIONS} />
-        </Toolbar>
-        {deposits.isLoading ? (
-          <Skeleton className="h-40 w-full" />
-        ) : deposits.isError ? (
-          <Empty title="Couldn't load deposits" description="Try again shortly." />
-        ) : depRows.length === 0 ? (
-          <Empty title="No deposits" description="No deposits match this filter." />
-        ) : (
-          <>
-            <TableWrap>
-              <thead>
-                <tr className="border-b border-border">
-                  <Th>Player</Th>
-                  <Th className="text-right">Amount</Th>
-                  <Th>Phone</Th>
-                  <Th>Status</Th>
-                  <Th>M-Pesa receipt</Th>
-                  <Th className="text-right">Time</Th>
-                </tr>
-              </thead>
-              <tbody>
-                {depRows.map((r) => (
-                  <DepositRow key={r.txId} r={r} />
-                ))}
-              </tbody>
-            </TableWrap>
-            {deposits.hasNextPage ? (
-              <Button variant="outline" size="sm" onClick={() => deposits.fetchNextPage()} disabled={deposits.isFetchingNextPage}>
-                {deposits.isFetchingNextPage ? 'Loading…' : 'Load more'}
-              </Button>
-            ) : null}
+            <BulkBar
+              count={sel.count}
+              onClear={sel.clear}
+              summary={<>{selInfo.depN} dep <Money cents={selInfo.deposits} /> · {selInfo.wdN} wd <Money cents={selInfo.withdrawals} /></>}
+            >
+              <Button size="sm" variant="outline" onClick={copyPhones}>Copy phones</Button>
+              <Button size="sm" variant="outline" onClick={exportCsv}>Export CSV</Button>
+            </BulkBar>
           </>
         )}
       </Section>
@@ -253,10 +209,11 @@ export default function FinancePage() {
   );
 }
 
-function TxRow({ r }: { r: AdminTransactionRow }) {
+function TxRow({ r, checked, onToggle }: { r: AdminTransactionRow; checked: boolean; onToggle: () => void }) {
   const isDeposit = r.kind === 'deposit';
   return (
-    <tr className="border-b border-border last:border-0 hover:bg-surface-2/50">
+    <tr className={`border-b border-border last:border-0 hover:bg-surface-2/50 ${checked ? 'bg-accent/5' : ''}`}>
+      <Td><RowCheckbox checked={checked} onChange={onToggle} label={`Select ${r.username}`} /></Td>
       <Td>
         <UserCell userId={r.userId} username={r.username} />
       </Td>
@@ -291,33 +248,3 @@ function TxRow({ r }: { r: AdminTransactionRow }) {
   );
 }
 
-function DepositRow({ r, highlightAge }: { r: AdminDepositRow; highlightAge?: boolean }) {
-  return (
-    <tr className="border-b border-border last:border-0 hover:bg-surface-2/50">
-      <Td>
-        <UserCell userId={r.userId} username={r.username} />
-      </Td>
-      <Td className="text-right font-medium tabular-nums">
-        <Money cents={r.amountCents} />
-      </Td>
-      <Td>
-        <PhoneCell phone={r.phone} />
-      </Td>
-      <Td>
-        <StatusBadge status={r.status} />
-      </Td>
-      {highlightAge ? (
-        <Td className="font-mono text-[11px] text-muted">{r.checkoutRequestId ?? '—'}</Td>
-      ) : (
-        <Td className="font-mono text-[11px] text-muted">{r.mpesaReceipt ?? '—'}</Td>
-      )}
-      <Td className="text-right">
-        {highlightAge ? (
-          <span className="whitespace-nowrap text-xs font-medium text-warn">{formatRelativeTime(r.createdAtMs)} ago</span>
-        ) : (
-          <TimeCell ms={r.createdAtMs} />
-        )}
-      </Td>
-    </tr>
-  );
-}

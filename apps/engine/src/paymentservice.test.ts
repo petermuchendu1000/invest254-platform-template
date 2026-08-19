@@ -99,6 +99,103 @@ test("PaymentService: minWithdrawalProvider falls back to the static default on 
   assert.equal((await svc.requestWithdrawal("u", 25_000, "0712345678")).newBalance, 975_000);
 });
 
+test("PaymentService: minWithdrawalForSite enforces the withdrawing brand's OWN floor (multi-tenant, mirrors the client)", async () => {
+  const repo = new InMemoryPaymentRepository();
+  repo.seed("u", 1_000_000);
+  const daraja = new StubDarajaClient();
+  // Per-brand floors, exactly as each brand's site_game_config.min_withdrawal would be:
+  //   brand A = KES 100 (10_000), brand B = KES 500 (50_000). The static default is KES 250.
+  const perSite: Record<string, number> = { "site-a": 10_000, "site-b": 50_000 };
+  const svc = new PaymentService(repo, daraja, {
+    minWithdrawalCents: 25_000,
+    minWithdrawalForSite: (siteId) => (siteId && perSite[siteId] != null ? perSite[siteId]! : 25_000),
+  });
+  // Brand A: its own floor (10_000) is allowed; a cent under is BELOW_MIN.
+  assert.equal((await svc.requestWithdrawal("u", 10_000, "0712345678", "site-a")).newBalance, 990_000);
+  await assert.rejects(() => svc.requestWithdrawal("u", 9_999, "0712345678", "site-a"), /BELOW_MIN/);
+  // Brand B enforces its OWN higher floor: 10_000 (fine for A) is now rejected; 50_000 passes.
+  // Only successful requests deduct: after the single 10_000 above, balance is 990_000; -50_000 = 940_000.
+  await assert.rejects(() => svc.requestWithdrawal("u", 10_000, "0712345678", "site-b"), /BELOW_MIN/);
+  assert.equal((await svc.requestWithdrawal("u", 50_000, "0712345678", "site-b")).newBalance, 940_000);
+  // Unknown/absent site -> the resolver's own fallback (the static default, 25_000) holds.
+  await assert.rejects(() => svc.requestWithdrawal("u", 24_999, "0712345678", "site-x"), /BELOW_MIN/);
+  assert.equal((await svc.requestWithdrawal("u", 25_000, "0712345678")).newBalance, 915_000);
+});
+
+test("PaymentService: minWithdrawalForSite takes precedence, but a bad (0/throw) per-site value defers to provider/static — never opens the floor", async () => {
+  const repo = new InMemoryPaymentRepository();
+  repo.seed("u", 1_000_000);
+  const daraja = new StubDarajaClient();
+  // Transient bad per-site value (0) must NOT allow any amount; the provider default (25_000) holds.
+  const svcZero = new PaymentService(repo, daraja, { minWithdrawalProvider: () => 25_000, minWithdrawalForSite: () => 0 });
+  await assert.rejects(() => svcZero.requestWithdrawal("u", 24_999, "0712345678", "site-a"), /BELOW_MIN/);
+  assert.equal((await svcZero.requestWithdrawal("u", 25_000, "0712345678", "site-a")).newBalance, 975_000);
+  // A throwing resolver is caught and also defers to the provider default.
+  const svcThrow = new PaymentService(repo, daraja, { minWithdrawalProvider: () => 25_000, minWithdrawalForSite: () => { throw new Error("db down"); } });
+  await assert.rejects(() => svcThrow.requestWithdrawal("u", 24_999, "0712345678", "site-a"), /BELOW_MIN/);
+  assert.equal((await svcThrow.requestWithdrawal("u", 25_000, "0712345678", "site-a")).newBalance, 950_000);
+});
+
+test("PaymentService: marketer withdrawal still honours the site-aware minimum, then pays INSTANTLY with no admin approval (vs player)", async () => {
+  const repo = new InMemoryPaymentRepository();
+  repo.seed("m", 1_000_000);
+  repo.seed("p", 1_000_000);
+  repo.setPhone("m", "0712345678");
+  repo.markAsMarketer("0712345678", "mk-1");
+  const credited: Array<{ id: string; amt: number }> = [];
+  repo.onMarketerCredit = (id, amt) => credited.push({ id, amt });
+  const daraja = new StubDarajaClient();
+  // Brand floor KES 500 (50_000) for both marketer and normal player on this site.
+  const svc = new PaymentService(repo, daraja, { minWithdrawalForSite: (s) => (s === "site-a" ? 50_000 : 25_000) });
+
+  // Marketer BELOW the brand floor -> rejected (the minimum is enforced BEFORE the instant path).
+  await assert.rejects(() => svc.requestWithdrawal("m", 40_000, "0712345678", "site-a"), /BELOW_MIN/);
+  assert.equal(credited.length, 0);
+  // Marketer AT/above the floor -> instant game->mpesa transfer, marked paid, NO admin approval step.
+  const mk = await svc.requestWithdrawal("m", 50_000, "0712345678", "site-a");
+  assert.equal(mk.mode, "marketer");
+  assert.equal(credited.length, 1);
+
+  // Normal player on the same brand: same floor applies, but the outcome is a PENDING daraja hold
+  // that must be admin-approved (the marketer/player difference is preserved).
+  await assert.rejects(() => svc.requestWithdrawal("p", 40_000, "0712345678", "site-a"), /BELOW_MIN/);
+  const pl = await svc.requestWithdrawal("p", 50_000, "0712345678", "site-a");
+  assert.equal(pl.mode, "daraja");
+});
+
+test("PaymentService: withdrawalsEnabledForSite kill switch refuses ALL withdrawals (player + marketer) when off", async () => {
+  const repo = new InMemoryPaymentRepository();
+  repo.seed("p", 1_000_000);
+  repo.seed("m", 1_000_000);
+  repo.setPhone("m", "0712345678");
+  repo.markAsMarketer("0712345678", "mk-1");
+  const daraja = new StubDarajaClient();
+  let enabled = true;
+  const svc = new PaymentService(repo, daraja, { withdrawalsEnabledForSite: () => enabled });
+
+  // Enabled -> both the normal player (daraja) and the marketer (instant) paths work.
+  assert.equal((await svc.requestWithdrawal("p", 30_000, "0712345678", "site-a")).mode, "daraja");
+  assert.equal((await svc.requestWithdrawal("m", 30_000, "0712345678", "site-a")).mode, "marketer");
+
+  // Disabled -> BOTH are refused BEFORE any money moves (single entry-point enforcement).
+  enabled = false;
+  await assert.rejects(() => svc.requestWithdrawal("p", 30_000, "0712345678", "site-a"), /WITHDRAWALS_DISABLED/);
+  await assert.rejects(() => svc.requestWithdrawal("m", 30_000, "0712345678", "site-a"), /WITHDRAWALS_DISABLED/);
+
+  // Re-enabled -> works again (the switch is live per-request).
+  enabled = true;
+  assert.equal((await svc.requestWithdrawal("p", 30_000, "0712345678", "site-a")).mode, "daraja");
+});
+
+test("PaymentService: a throwing/absent withdrawalsEnabledForSite fails OPEN (never blocks legitimate payouts)", async () => {
+  const repo = new InMemoryPaymentRepository();
+  repo.seed("p", 1_000_000);
+  const daraja = new StubDarajaClient();
+  const svc = new PaymentService(repo, daraja, { withdrawalsEnabledForSite: () => { throw new Error("db down"); } });
+  // Resolver throws -> treated as enabled, so the withdrawal still goes through.
+  assert.equal((await svc.requestWithdrawal("p", 30_000, "0712345678", "site-a")).mode, "daraja");
+});
+
 test("makeDarajaClient: stub without creds, HttpDarajaClient when configured", () => {
   assert.ok(makeDarajaClient({} as NodeJS.ProcessEnv) instanceof StubDarajaClient);
   const cfgEnv = { MPESA_CONSUMER_KEY: "k", MPESA_CONSUMER_SECRET: "s", MPESA_SHORTCODE: "174379", MPESA_PASSKEY: "p" } as any;

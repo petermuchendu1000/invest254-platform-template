@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/Button';
 import { useAuthUi } from '@/lib/auth/ui';
 import { useSession } from '@/lib/auth/session';
 import { storeReferral } from '@/lib/auth/referral';
+import { api } from '@/lib/api/endpoints';
 
 // Referral landing: capture the code, then route the visitor into sign-up with it
 // prefilled. Attribution is finalised server-side at registration (first-touch).
@@ -17,6 +18,9 @@ export default function ReferralLandingPage({ params }: { params: { code: string
 
   useEffect(() => {
     storeReferral(code);
+    // Funnel stage 0: record the click (fire-and-forget; tolerant server-side, never blocks the page).
+    const host = typeof window !== 'undefined' ? window.location.hostname : undefined;
+    void api.recordAffiliateClick(code, host).catch(() => {});
   }, [code]);
 
   return (

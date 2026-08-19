@@ -41,6 +41,9 @@ export interface SiteRegistryOptions {
    *  brand whose poolModeFor(siteId) is true has its non-marketer trades governed by the controller. */
   poolController?: PoolController;
   poolModeFor?: (siteId: string) => boolean;
+  /** Canonical marketer/demo classifier (migration 0084) shared by every brand's GameServer, so the
+   *  pool exemption matches the money layer's demo routing. Absent -> GameServer falls back to role. */
+  loadIsMarketer?: (userId: string) => Promise<boolean>;
   /** Surface live-config rebuild failures (defaults to console.error). */
   onError?: (err: Error, ctx: string) => void;
 }
@@ -77,6 +80,7 @@ export class SiteRegistry {
         this.opts.poolController
           ? { enabled: () => (this.opts.poolModeFor?.(siteId) ?? false), controller: this.opts.poolController }
           : undefined,
+        this.opts.loadIsMarketer,
       );
       const rt: SiteRuntime = { siteId, seeds, game, config };
 

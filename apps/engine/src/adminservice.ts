@@ -6,9 +6,9 @@ import type {
   AdjustBalanceResult, AdjustBalanceKindResult, ClearBalanceResult, ResetBalanceResult, BalanceKind, UserOverrideRow, UserOverridePatch,
   AdminDepositRow, AdminDepositListQuery, AdminDepositsReconcile,
   ReportRange, DailyReportRow, UserReportRow, AdminDayReport,
-  GameConfigRow, GameConfigPatch, RtpMonitor, AdminSeedRow, SeedRotateResult,
+  GameConfigRow, GameConfigPatch, RtpMonitor, RealCashRtp, ConfigChangeRow, AdminSeedRow, SeedRotateResult,
   WithdrawalPoolRow,
-  MpesaConfigRow, MpesaConfigPatch, SetUserRoleResult,
+  MpesaConfigRow, MpesaConfigPatch, SetUserRoleResult, UpdateUserDetailsResult,
   AdminPayoutRow, AdminPayoutListQuery, AdminChatModRow,
   AdminUserActivityRow, AdminUserActivityQuery,
 } from "./admin.js";
@@ -50,6 +50,11 @@ export class AdminService {
   /** Promote/demote a user's role (superadmin) — guards + audit live in the repo/RPC. */
   setUserRole(actorId: string, actorRole: string, targetId: string, role: string): Promise<SetUserRoleResult> {
     return this.repo.setUserRole(actorId, actorRole, targetId, role);
+  }
+
+  /** Edit a user's phone/username (item 6). Guards + per-brand uniqueness live in the RPC/mirror. */
+  updateUserDetails(actorId: string, actorRole: string, targetId: string, phone: string | null, username: string | null): Promise<UpdateUserDetailsResult> {
+    return this.repo.updateUserDetails(actorId, actorRole, targetId, phone, username);
   }
 
   listWithdrawals(q: AdminWithdrawalListQuery): Promise<Page<AdminWithdrawalRow>> { return this.repo.listWithdrawals(q); }
@@ -117,6 +122,10 @@ export class AdminService {
   setDefaultPool(actorId: string, actorRole: string, siteId: string, tradeDay: string, amountCents: number): Promise<WithdrawalPoolRow> {
     return this.repo.setDefaultPool(actorId, actorRole, siteId, tradeDay, amountCents);
   }
+  getWithdrawalsEnabled(siteId: string): Promise<boolean> { return this.repo.getWithdrawalsEnabled(siteId); }
+  setWithdrawalsEnabled(actorId: string, actorRole: string, siteId: string, enabled: boolean): Promise<boolean> {
+    return this.repo.setWithdrawalsEnabled(actorId, actorRole, siteId, enabled);
+  }
 
   /** Admin-visible M-Pesa config (secrets masked). */
   getMpesaConfig(): Promise<MpesaConfigRow> { return this.repo.getMpesaConfig(); }
@@ -128,6 +137,8 @@ export class AdminService {
 
   /** Realised RTP vs target across rolling windows, with a drift alert (J5). */
   rtpMonitor(siteId?: string): Promise<RtpMonitor> { return this.repo.rtpMonitor(siteId); }
+  realCashRtp(siteId?: string): Promise<RealCashRtp> { return this.repo.realCashRtp(siteId); }
+  configChangeReview(siteId: string, limit?: number): Promise<ConfigChangeRow[]> { return this.repo.configChangeReview(siteId, limit); }
 
   /** Provably-fair day rows: commitment hash, seed version, reveal state (J5). */
   listSeeds(limit: number, siteId?: string): Promise<AdminSeedRow[]> { return this.repo.listSeeds(limit, siteId); }

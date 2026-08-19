@@ -35,6 +35,11 @@ export class AffiliateService {
     return { ...a, referralPath: `/r/${a.referralCode}` };
   }
 
+  /** Record a referral-link click (funnel stage 0). Tolerant: unknown/inactive code -> false. */
+  recordClick(code: string, siteId?: string): Promise<boolean> {
+    return this.repo.recordClick(code, siteId);
+  }
+
   /** Accrue commission for one trading day (`YYYY-MM-DD`). `siteId` scopes to one brand (omit = all). Idempotent. Throws INVALID_PERIOD. */
   async accrueDaily(period: string, siteId?: string): Promise<AffiliateAccrualResult> {
     if (typeof period !== "string" || !PERIOD_RE.test(period)) throw new Error("INVALID_PERIOD");

@@ -1,10 +1,10 @@
 import type { Metadata } from 'next';
-import { AdminShell } from '@/components/admin/AdminShell';
+import { PlatformShell } from '@/components/platform/PlatformShell';
 
 export const metadata: Metadata = { title: 'Platform' };
 
-// The platform console reuses the admin chrome (sidebar). AdminShell admits platform_superadmin
-// and shows the Platform nav section; a plain admin lands on the "not authorised" gate.
+// The platform console runs in its own operator shell: a left sidebar + ⌘K command palette,
+// gated strictly to platform_superadmin (a plain admin lands on the "platform owner only" gate).
 export default function PlatformLayout({ children }: { children: React.ReactNode }) {
-  return <AdminShell>{children}</AdminShell>;
+  return <PlatformShell>{children}</PlatformShell>;
 }

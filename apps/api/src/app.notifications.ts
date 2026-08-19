@@ -1,4 +1,4 @@
-import { Router, ApiError, requireAuth, requireRole, assertTargetSiteInScope, type Ctx } from "./http.js";
+import { Router, ApiError, requireAuth, requireRole, type Ctx } from "./http.js";
 import type { NotificationRow, NotificationLevel } from "@invest254/engine";
 import type { ApiDeps } from "./app.js";
 
@@ -73,8 +73,6 @@ export function registerNotificationRoutes(router: Router, deps: ApiDeps): void 
   });
 
   router.get(`${BASE}/admin/users/:id/notifications`, auth, admin, async (ctx: Ctx) => {
-    // Site isolation: a per-brand admin may only read notifications for a user in their own brand.
-    assertTargetSiteInScope(ctx, await deps.admin.siteOfUser(ctx.params.id!));
     const rows = await deps.notifications.adminList(ctx.params.id!, true, 100);
     return { items: rows.map(notificationDto) };
   });

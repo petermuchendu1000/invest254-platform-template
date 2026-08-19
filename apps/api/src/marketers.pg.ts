@@ -29,13 +29,14 @@ function toProfile(r: any): MarketerProfile {
 export function makePgMarketerRepo(query: Query): MarketerRepo {
   return {
     async create(name, phone, siteId): Promise<MarketerRow> {
+      // 3-arg site-aware RPC (0076). NULL => the function's default site (coalesce inside the RPC).
       const { rows } = await query("SELECT * FROM public.fn_marketer_create($1, $2, $3)", [name, phone, siteId ?? null]);
       return rows[0] as MarketerRow;
     },
 
-    async siteOfMarketer(id): Promise<string | null> {
-      const { rows } = await query("SELECT public.fn_marketer_site($1) AS s", [id]);
-      return rows[0]?.s ?? null;
+    async update(id, name, phone): Promise<MarketerRow> {
+      const { rows } = await query("SELECT * FROM public.fn_marketer_update($1, $2, $3)", [id, name ?? null, phone ?? null]);
+      return rows[0] as MarketerRow;
     },
 
     async list(limit, siteId): Promise<MarketerProfile[]> {
@@ -101,6 +102,7 @@ export function makePgMarketerRepo(query: Query): MarketerRepo {
     },
 
     async login(phone, pin, siteId): Promise<string | null> {
+      // 3-arg site-aware RPC (0076). NULL => the function's default site (coalesce inside the RPC).
       const { rows } = await query("SELECT public.fn_marketer_login($1, $2, $3) AS id", [phone, pin, siteId ?? null]);
       return rows[0]?.id ?? null;
     },

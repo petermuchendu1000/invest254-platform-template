@@ -33,7 +33,9 @@ test("Pg repo: calls the RPCs with correct params and parses bigint strings", as
       calls.push({ text, params });
       if (text.includes("fn_open_position")) return { rows: [{ position_id: "p-1", new_balance: "80000" }] };
       if (text.includes("fn_settle_position")) return { rows: [{ settled: true, new_balance: "130000" }] };
-      if (text.includes("real_balance")) return { rows: [{ real_balance: "5000" }] };
+      // getBalance now resolves the spendable bucket (demo for marketers, else real) via
+      // fn_is_marketer_account and aliases it `bal` (migration 0084).
+      if (text.includes("fn_is_marketer_account")) return { rows: [{ bal: "5000" }] };
       return { rows: [] };
     },
   };

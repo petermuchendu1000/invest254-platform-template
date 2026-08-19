@@ -38,6 +38,9 @@ export interface AffiliateSummary {
   commissionAccruedCents: number; commissionPaidCents: number; availableCents: number;
   // Realtime "today" (EAT) figures for the live marketer performance panel.
   referralsToday: number; activePlayersToday: number; commissionTodayCents: number;
+  // Funnel (docs/19): link clicks and first-time-depositors, completing Clicks → Registrations →
+  // FTDs → Active → Commission. `ftdCount` = referred players with >=1 successful deposit.
+  clicks: number; clicksToday: number; ftdCount: number;
 }
 /** One referred player as shown in the marketer's referrals list. */
 export interface ReferralRecord { username: string; joinedAtMs: number; lifetimeGgrCents: number; }
@@ -108,6 +111,8 @@ export interface AffiliateRepository {
   accrueCommissions(period: string, siteId?: string): Promise<AffiliateAccrualResult>;
   /** Marketer dashboard summary, or null if the user is not an enrolled affiliate. */
   affiliateSummary(userId: string): Promise<AffiliateSummary | null>;
+  /** Record a referral-link click (tolerant: unknown/inactive code -> false, never throws). */
+  recordClick(code: string, siteId?: string): Promise<boolean>;
   /** The affiliate's referred players (newest first, cursor-paginated). */
   listReferrals(userId: string, q: PageQuery): Promise<Page<ReferralRecord>>;
   /** The affiliate's daily commission history (newest first, cursor-paginated). */
@@ -203,7 +208,14 @@ export class PgIdentityRepository implements IdentityRepository, AffiliateReposi
            where r.affiliate_id = a.user_id
              and (p.opened_at at time zone 'Africa/Nairobi')::date = (now() at time zone 'Africa/Nairobi')::date) as active_today,
          (select coalesce(sum(c.commission),0) from affiliate_commissions c where c.affiliate_id = a.user_id
-           and c.period = (now() at time zone 'Africa/Nairobi')::date) as commission_today
+           and c.period = (now() at time zone 'Africa/Nairobi')::date) as commission_today,
+         (select count(*) from affiliate_clicks k where k.affiliate_id = a.user_id) as clicks,
+         (select count(*) from affiliate_clicks k where k.affiliate_id = a.user_id
+           and (k.created_at at time zone 'Africa/Nairobi')::date = (now() at time zone 'Africa/Nairobi')::date) as clicks_today,
+         (select count(distinct r.referred_user) from referrals r
+           where r.affiliate_id = a.user_id
+             and exists (select 1 from transactions t
+                          where t.user_id = r.referred_user and t.kind='deposit' and t.status='success')) as ftd_count
        from affiliates a where a.user_id = $1`, [userId]);
     if (!r.rows.length) return null;
     const x = r.rows[0];
@@ -218,7 +230,12 @@ export class PgIdentityRepository implements IdentityRepository, AffiliateReposi
       availableCents: Number(x.available),
       referralsToday: Number(x.referrals_today ?? 0), activePlayersToday: Number(x.active_today ?? 0),
       commissionTodayCents: Number(x.commission_today ?? 0),
+      clicks: Number(x.clicks ?? 0), clicksToday: Number(x.clicks_today ?? 0), ftdCount: Number(x.ftd_count ?? 0),
     };
+  }
+  async recordClick(code: string, siteId?: string): Promise<boolean> {
+    const r = await this.q.query("select fn_affiliate_record_click($1,$2) as ok", [code, siteId ?? null]);
+    return Boolean(r.rows[0]?.ok);
   }
   async requestPayout(userId: string): Promise<PayoutRequestResult> {
     try {
@@ -494,6 +511,7 @@ export class InMemoryIdentityRepository implements IdentityRepository, Affiliate
     const paid = myCommissions.filter((c) => c.status === "paid").reduce((s, c) => s + c.commission, 0);
     // available = accrued buckets not yet reserved by an in-flight payout (payout_id snapshot).
     const available = myCommissions.filter((c) => c.status === "accrued" && c.payoutId === null).reduce((s, c) => s + c.commission, 0);
+    const myClicks = this.affiliateClicks.filter((cid) => cid === userId).length;
     return {
       referralCode: aff.referralCode, referralPath: `/r/${aff.referralCode}`,
       commissionRate: aff.commissionRate, status: aff.status,
@@ -501,7 +519,18 @@ export class InMemoryIdentityRepository implements IdentityRepository, Affiliate
       turnoverCents: turnover, ggrCents: ggr,
       commissionAccruedCents: accrued, commissionPaidCents: paid, availableCents: available,
       referralsToday: activeWithin(1), activePlayersToday: activeWithin(1), commissionTodayCents: 0,
+      clicks: myClicks, clicksToday: myClicks, ftdCount: 0,
     };
+  }
+  /** In-memory click log (affiliate userId per click); mirrors fn_affiliate_record_click tolerance. */
+  private readonly affiliateClicks: string[] = [];
+  async recordClick(code: string, _siteId?: string): Promise<boolean> {
+    const c = (code ?? "").trim().toLowerCase();
+    if (!c) return false;
+    for (const [uid, aff] of this.affiliates) {
+      if (aff.referralCode.toLowerCase() === c && aff.status === "active") { this.affiliateClicks.push(uid); return true; }
+    }
+    return false;
   }
   async listReferrals(userId: string, q: PageQuery): Promise<Page<ReferralRecord>> {
     const rows = this.referrals
@@ -608,6 +637,13 @@ export class InMemoryIdentityRepository implements IdentityRepository, Affiliate
   adminSetRole(userId: string, role: string): void {
     const u = this.byId.get(userId);
     if (u) u.role = role;
+  }
+  /** Test/admin seam: edit a user's phone/username (item 6). Null leaves the field unchanged. */
+  adminSetContact(userId: string, phone: string | null, username: string | null): void {
+    const u = this.byId.get(userId);
+    if (!u) return;
+    if (phone != null) u.phone = phone;
+    if (username != null) u.username = username;
   }
   /** All affiliates' commission terms. */
   adminAffiliates(): AdminAffiliateSnapshot[] {

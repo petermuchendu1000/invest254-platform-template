@@ -20,10 +20,27 @@ export function usePlatformSites() {
   return useQuery({ queryKey: ['platform', 'sites'], queryFn: () => platformApi.sites(t), enabled: !!t });
 }
 
+/** Per-brand performance over a [fromMs, toMs) window (docs/24 performance filters). Disabled until
+ *  a range is active; the query key includes the range so changing dates refetches. */
+export function usePlatformPerformance(fromMs: number | null, toMs: number | null) {
+  const t = useTok();
+  return useQuery({
+    queryKey: ['platform', 'performance', fromMs, toMs],
+    queryFn: () => platformApi.performance(t, fromMs as number, toMs as number),
+    enabled: !!t && fromMs != null && toMs != null && toMs > fromMs,
+  });
+}
+
 /** Cross-brand marketer rollup (docs/22 Task R): per marketer -> per-site clients/GGR/commission + totals. */
 export function usePlatformMarketerRollup() {
   const t = useTok();
   return useQuery({ queryKey: ['platform', 'marketers'], queryFn: () => platformApi.marketerRollup(t), enabled: !!t });
+}
+
+/** Mint a brand-scoped superadmin token so the platform owner can enter a client's admin console. */
+export function useImpersonate() {
+  const t = useTok();
+  return useMutation({ mutationFn: (siteId: string) => platformApi.impersonate(t, siteId) });
 }
 
 /** Invalidate both platform reads after any mutation so the console reflects the change. */
@@ -73,6 +90,16 @@ export function useSetSiteConfig() {
   const invalidate = useInvalidate();
   return useMutation({
     mutationFn: (v: { id: string; patch: Record<string, unknown> }) => platformApi.setConfig(t, v.id, v.patch),
+    onSuccess: invalidate,
+  });
+}
+
+/** Assign/clear a brand's marketer (owner_user_id) — site-owner commission model. */
+export function useSetSiteOwner() {
+  const t = useTok();
+  const invalidate = useInvalidate();
+  return useMutation({
+    mutationFn: (v: { id: string; ownerUserId: string | null }) => platformApi.setSiteOwner(t, v.id, v.ownerUserId),
     onSuccess: invalidate,
   });
 }

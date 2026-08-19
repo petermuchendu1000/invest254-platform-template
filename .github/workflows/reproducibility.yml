@@ -1,0 +1,26 @@
+name: Reproducibility Check
+
+# Nightly provable-fairness guard (docs/28 §4; audit rec #6): recompute a sample of recent settled
+# positions from (seed, config_version, entryT, nonce) and assert they equal the recorded outcome.
+# Requires repo secret DATABASE_URL (the Supabase session-pooler URL, :5432). Writes an audit row to
+# reproducibility_check_runs and fails the job (alert) if the match rate drops below threshold.
+on:
+  schedule:
+    - cron: "20 1 * * *"   # 01:20 UTC daily (~04:20 EAT) — after the UTC day rolls + seeds reveal
+  workflow_dispatch: {}
+
+jobs:
+  reproducibility:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install
+        run: npm ci
+      - name: Run reproducibility check
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: node --import tsx scripts/reproducibility_check.mts --days 2 --limit 500

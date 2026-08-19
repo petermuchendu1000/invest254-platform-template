@@ -77,6 +77,13 @@ export class GameServer {
     private readonly loadOverride?: LoadOverride,
     /** Optional pool-brain integration (docs/25). Governs non-marketer trades when enabled. */
     private readonly pool?: PoolIntegration,
+    /**
+     * Canonical "is this a demo/marketer account?" resolver (migration 0084: fn_is_marketer_account).
+     * When provided it is the SINGLE source of truth for marketer classification, so the pool
+     * exemption (here) and the money routing (fn_open/settle_position -> demo_balance) can never
+     * disagree. Absent (tests/back-compat) -> fall back to the JWT `role` claim.
+     */
+    private readonly loadIsMarketer?: (userId: string) => Promise<boolean>,
   ) {}
 
   /** Per-user pricing settlements, cached by (configVersion, gameDay, winRate, maxMultiplier). */
@@ -175,7 +182,9 @@ export class GameServer {
     // docs/25: when the brand is in pool mode, NON-marketer trades are governed by the pool
     // controller (not the curve) and admin overrides are IGNORED for them (decision E). Marketers
     // keep the statistical path WITH their overrides and are pool-exempt (decision F).
-    const isMarketer = input.role === "marketer";
+    // Canonical marketer classification (migration 0084): prefer the authoritative predicate so the
+    // pool exemption matches the money layer's demo routing exactly; fall back to the role claim.
+    const isMarketer = this.loadIsMarketer ? await this.loadIsMarketer(input.userId) : (input.role === "marketer");
     const poolActive = this.pool?.enabled() ?? false;
     const poolPath = poolActive && !isMarketer;
     const ov = (this.loadOverride && (!poolActive || isMarketer)) ? await this.loadOverride(input.userId) : null;

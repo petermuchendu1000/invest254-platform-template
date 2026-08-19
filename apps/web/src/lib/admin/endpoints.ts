@@ -1,10 +1,11 @@
 import { apiFetch } from '@/lib/api/client';
-import type { Paginated } from '@/lib/api/types';
+import type { Paginated, MarketerExpensesResponse, MarketerExpenseRow } from '@/lib/api/types';
 import type {
   AdjustBalanceResult,
   ResetBalanceResult,
   BulkActionInput,
   BulkActionResult,
+  AdminBulkResult,
   AdminAuditRow,
   AdminNotificationRow,
   NotificationInput,
@@ -29,6 +30,8 @@ import type {
   MpesaConfigPatch,
   MpesaConfigRow,
   RtpMonitor,
+  RealCashRtp,
+  ConfigChangeRow,
   AdminSeedRow,
   SeedRotateResult,
   WithdrawalPoolRow,
@@ -46,6 +49,8 @@ interface Page {
 export const adminApi = {
   overview: (t: string) => apiFetch<AdminOverview>('/admin/overview', { token: t }),
   rtp: (t: string) => apiFetch<RtpMonitor>('/admin/rtp', { token: t }),
+  realCashRtp: (t: string) => apiFetch<RealCashRtp>('/admin/real-cash-rtp', { token: t }),
+  configReview: (t: string, limit = 50) => apiFetch<ConfigChangeRow[]>(`/admin/config-review?limit=${limit}`, { token: t }),
 
   // Users
   users: (
@@ -88,6 +93,8 @@ export const adminApi = {
     apiFetch<SetUserStatusResult>(`/admin/users/${id}/${action}`, { method: 'POST', token: t, body: { reason } }),
   setUserRole: (t: string, id: string, role: string) =>
     apiFetch<SetUserRoleResult>(`/admin/users/${id}/role`, { method: 'POST', token: t, body: { role } }),
+  updateUserDetails: (t: string, id: string, body: { phone?: string; username?: string }) =>
+    apiFetch<{ userId: string; phone: string; username: string }>(`/admin/users/${id}/details`, { method: 'POST', token: t, body }),
   adjustBalance: (t: string, id: string, amountCents: number, reason: string, kind?: 'real' | 'bonus') =>
     apiFetch<AdjustBalanceResult>(`/admin/wallets/${id}/adjust`, { method: 'POST', token: t, body: { amountCents, reason, kind } }),
   clearBalance: (t: string, id: string, kind: 'real' | 'bonus' | 'both', reason: string) =>
@@ -111,6 +118,14 @@ export const adminApi = {
     apiFetch<unknown>(`/admin/withdrawals/${id}/approve`, { method: 'POST', token: t }),
   rejectWithdrawal: (t: string, id: string) =>
     apiFetch<unknown>(`/admin/withdrawals/${id}/reject`, { method: 'POST', token: t }),
+  // Bulk withdrawal moderation (partial success per row; approve dispatches M-Pesa B2C each).
+  bulkWithdrawals: (t: string, body: { action: 'approve' | 'reject'; txIds: string[] }) =>
+    apiFetch<AdminBulkResult>('/admin/withdrawals/bulk', { method: 'POST', token: t, body }),
+  // 0067 — per-brand withdrawal kill switch (owner/admin override).
+  withdrawalsEnabled: (t: string) =>
+    apiFetch<{ enabled: boolean }>('/admin/withdrawals-enabled', { token: t }),
+  setWithdrawalsEnabled: (t: string, enabled: boolean) =>
+    apiFetch<{ enabled: boolean }>('/admin/withdrawals-enabled', { method: 'PUT', token: t, body: { enabled } }),
   deposits: (t: string, p: Page & { status?: string | undefined } = {}) =>
     apiFetch<Paginated<AdminDepositRow>>('/admin/deposits', {
       token: t,
@@ -137,8 +152,16 @@ export const adminApi = {
     apiFetch<unknown>(`/admin/affiliate/payouts/${id}/approve`, { method: 'POST', token: t }),
   rejectPayout: (t: string, id: string) =>
     apiFetch<unknown>(`/admin/affiliate/payouts/${id}/reject`, { method: 'POST', token: t }),
+  // Bulk payout moderation (partial success per row; approve dispatches M-Pesa B2C each).
+  bulkPayouts: (t: string, body: { action: 'approve' | 'reject'; payoutIds: string[] }) =>
+    apiFetch<AdminBulkResult>('/admin/affiliate/payouts/bulk', { method: 'POST', token: t, body }),
   setCommissionRate: (t: string, id: string, rate: number) =>
     apiFetch<unknown>(`/admin/affiliates/${id}/rate`, { method: 'PATCH', token: t, body: { rate } }),
+  // 0068 — marketer expenses (transparency): log a cost against a marketer, and list them.
+  addMarketerExpense: (t: string, body: { marketerUserId: string; category: string; amountCents: number; note?: string }) =>
+    apiFetch<MarketerExpenseRow>('/admin/affiliate/expenses', { method: 'POST', token: t, body }),
+  marketerExpenses: (t: string, marketerUserId: string) =>
+    apiFetch<MarketerExpensesResponse>('/admin/affiliate/expenses', { token: t, query: { marketerUserId } }),
 
   // Game config / RTP / seeds
   gameConfig: (t: string) => apiFetch<GameConfigRow>('/admin/game-config', { token: t }),
@@ -182,6 +205,8 @@ export const adminApi = {
   marketer: (t: string, id: string) => apiFetch<AdminMarketerRow>(`/admin/marketers/${id}`, { token: t }),
   createMarketer: (t: string, body: { name: string; phone: string }) =>
     apiFetch<AdminMarketerRow>('/admin/marketers', { method: 'POST', token: t, body }),
+  updateMarketer: (t: string, id: string, body: { name?: string; phone?: string }) =>
+    apiFetch<AdminMarketerRow>(`/admin/marketers/${id}`, { method: 'PATCH', token: t, body }),
   creditMarketer: (t: string, id: string, amountCents: number, ref?: string) =>
     apiFetch<{ balanceCents: number }>(`/admin/marketers/${id}/credit`, { method: 'POST', token: t, body: { amountCents, ref } }),
   withdrawMarketer: (t: string, id: string, amountCents: number, ref?: string, method?: string) =>
@@ -196,6 +221,11 @@ export const adminApi = {
     apiFetch<{ ok: boolean }>(`/admin/marketers/${id}/pin`, { method: 'POST', token: t, body: { pin } }),
   setMarketerStatus: (t: string, id: string, status: 'active' | 'suspended' | 'disabled') =>
     apiFetch<{ status: string }>(`/admin/marketers/${id}/status`, { method: 'PATCH', token: t, body: { status } }),
+  // Bulk marketer actions: status change (activate|suspend|disable) or a flat credit to many.
+  bulkMarketers: (
+    t: string,
+    body: { action: 'activate' | 'suspend' | 'disable' | 'credit'; marketerIds: string[]; amountCents?: number; ref?: string },
+  ) => apiFetch<AdminBulkResult>('/admin/marketers/bulk', { method: 'POST', token: t, body }),
 
   // User notifications (J7) — raise a sticky banner for a player; list + resolve.
   userNotifications: (t: string, id: string) =>

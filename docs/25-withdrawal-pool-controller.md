@@ -1,12 +1,12 @@
-# 25 — Withdrawal-Pool Controller (the "managed-book" brain) — DESIGN / SPEC
+# 25 — Withdrawal-Pool Controller (the "managed-book" brain)
 
-> **Status: DESIGN. No engine code is written from this doc yet.** This is the demystification,
-> scenario analysis, data model, and phased plan for replacing the current statistical-edge brain
-> with a **daily pool-budgeted, dynamically-controlled** brain. Implementation proceeds ONLY after
-> the Decision Points (§12) are answered, in the phases of §13, with cautious commits.
->
-> Companion: `scripts/winrate_monitor.py` (realized-vs-configured monitor), docs/02 (current engine),
-> docs/14 (compliance). A simulation of every mechanic below lives in the chat that produced this doc.
+> **Status: PARTIALLY IMPLEMENTED (Phases 1–3b live).** The pool ledger, per-brand `pool_mode` flag,
+> superadmin pool RPCs, and the engine `PoolController` (decide → reserve → commit, EAT-day pacing) are
+> in code (migrations 0062–0066; `apps/engine/src/poolcontroller.ts`; `packages/shared` pool brain).
+> `pool_mode=true` on invest254 + tamutraders. **Caveat:** historically the controller governed <1% of
+> trades (see docs/26 §2) — most settled statistically. Under pool mode the **RTP monitor reflects the
+> virtual curve, not real cash** (docs/26 §3). The Decision Points in §12 remain the source of truth for
+> unshipped behaviour (full pacing, SELL rule, marketer routing, legal sign-off).
 
 ---
 

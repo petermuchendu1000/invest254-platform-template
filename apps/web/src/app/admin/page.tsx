@@ -1,13 +1,13 @@
 'use client';
 
 import { useMemo } from 'react';
-import Link from 'next/link';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { Money } from '@/components/ui/Money';
 import { useSession } from '@/lib/auth/session';
 import { PageHeader, StatCard, Section, TableWrap, Th, Td, Empty } from '@/components/admin/ui';
 import { AreaChart, GroupedBars, ChartCard, LegendDot, KpiCard, kesCompact, type Point } from '@/components/admin/charts';
 import { useOverview, useRtp, useReportDaily } from '@/lib/admin/hooks';
+import { RealCashRtpPanel, ConfigChangeReviewPanel } from '@/components/admin/EconomyIntegrityPanels';
 
 function isoDaysAgo(days: number): string {
   const d = new Date();
@@ -28,12 +28,10 @@ export default function AdminOverviewPage() {
         title="Overview"
         subtitle={
           isSuper
-            ? 'System owner view — full operational health plus governance controls.'
+            ? 'System owner view — full operational health across users, finance and game.'
             : 'Operations view — users, finance, affiliate and game health.'
         }
       />
-
-      {isSuper ? <GovernancePanel /> : null}
 
       <TrendsSection />
 
@@ -139,41 +137,20 @@ export default function AdminOverviewPage() {
           </div>
         )}
       </Section>
+
+      {/* Economy integrity (rec #7 + docs/28 §4): real-cash truth + config change review. Owner tier. */}
+      {isSuper && (
+        <>
+          <RealCashRtpPanel />
+          <ConfigChangeReviewPanel />
+        </>
+      )}
     </>
   );
 }
 
 function pct(v: number): string {
   return `${(v * 100).toFixed(1)}%`;
-}
-
-/** Owner-only quick access to the governance controls a plain admin doesn't have. */
-function GovernancePanel() {
-  const links = [
-    { href: '/admin/users', title: 'Roles & users', desc: 'Promote / demote admins, marketers, players', glyph: '👤' },
-    { href: '/admin/game', title: 'Game economy', desc: 'House edge, RTP, stake limits, fairness seeds', glyph: '🎲' },
-    { href: '/admin/mpesa', title: 'M-Pesa rails', desc: 'Paybill, callbacks and credentials', glyph: '📲' },
-    { href: '/admin/audit', title: 'Audit log', desc: 'Every privileged action, who and when', glyph: '📜' },
-  ];
-  return (
-    <Section title="Governance — owner only">
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        {links.map((l) => (
-          <Link
-            key={l.href}
-            href={l.href}
-            className="flex items-start gap-3 rounded-2xl border border-warn/40 bg-warn/5 p-4 transition hover:bg-warn/10"
-          >
-            <span className="text-xl leading-none">{l.glyph}</span>
-            <span className="flex flex-col">
-              <span className="text-sm font-semibold text-fg">{l.title}</span>
-              <span className="text-xs text-muted">{l.desc}</span>
-            </span>
-          </Link>
-        ))}
-      </div>
-    </Section>
-  );
 }
 
 /** 30-day financial trend charts, derived from the daily report time series. */

@@ -3,12 +3,14 @@ import {
   InMemoryGameRepository, PgGameRepository, type GameRepository, type Querier,
 } from "./wallet.js";
 import { StaticConfigProvider, SiteGameConfigStore, type ConfigProvider, type ListenClient } from "./gameconfig.js";
+import { SitesStore } from "./sitesstore.js";
 import { PgUserOverridesRepository, type UserOverridesRepository } from "./overrides.js";
 import { PoolController, PgPoolRepo } from "./poolcontroller.js";
 import { makePgPools } from "./pgpools.js";
 import { SiteRegistry } from "./siteregistry.js";
 import { SiteResolver, type SiteLookup } from "./siteresolver.js";
 import { startMultiEngine } from "./multiengine.js";
+import { DepositNotifier, type DepositListenClient } from "./platformlive.js";
 import { makeVerifier } from "./auth.js";
 import { DEFAULT_VERSIONED_CONFIG } from "@invest254/shared";
 
@@ -43,9 +45,15 @@ let configFor: (siteId: string) => ConfigProvider | Promise<ConfigProvider>;
 let masterSeedFor: ((siteId: string) => string | undefined) | undefined;
 // docs/25: pool controller (shared; site passed per-call) + per-brand pool_mode flag. Only in DB mode.
 let poolController: PoolController | undefined;
-const poolModeBySite = new Map<string, boolean>();
+// docs/25 + migration 0088: pool_mode is kept LIVE via SitesStore (LISTEN sites_changed + poll), so a
+// toggle or a new brand applies without redeploy. Replaces the old boot-time static map.
+let sitesStore: SitesStore | undefined;
+// docs/25 + migration 0084: canonical marketer/demo classifier, shared by pool exemption + money routing.
+let loadIsMarketer: ((userId: string) => Promise<boolean>) | undefined;
 /** host/slug/id -> siteId resolution table, seeded at boot from `sites`. */
 const siteAliases = new Map<string, string>();
+/** Opens a dedicated LISTEN connection (session pooler) for the platform live deposit feed. */
+let listenConnect: (() => Promise<DepositListenClient>) | undefined;
 /** Brand resolver: fast alias cache + (with a DB) a live lookup so brands onboarded AFTER boot
  *  resolve without a restart (GAP 2). Assigned in both the Pg and in-memory branches below. */
 let resolver: SiteResolver;
@@ -56,6 +64,7 @@ if (usingDb) {
   // per-brand LISTEN connections via the SESSION pooler (:5432, required for NOTIFY). This stops the
   // engine from starving the scarce session pool under load while keeping live config hot-reload.
   const { queryPool, listenPool } = makePgPools(Pool, (m) => console.log(`[engine] ${m}`));
+  listenConnect = () => listenPool.connect() as unknown as Promise<DepositListenClient>;
   const pool = queryPool;
   const q = pool as unknown as Querier;
   repo = new PgGameRepository(q);
@@ -72,11 +81,38 @@ if (usingDb) {
     if (r.slug) siteAliases.set(String(r.slug), id);
     if (r.primary_domain) siteAliases.set(String(r.primary_domain), id);
     if (r.master_seed_ref && process.env[String(r.master_seed_ref)]) masterRefBySite.set(id, process.env[String(r.master_seed_ref)]!);
-    if (r.pool_mode === true) poolModeBySite.set(id, true);
   }
   masterSeedFor = (siteId) => masterRefBySite.get(siteId);
   poolController = new PoolController(new PgPoolRepo(q));
-  console.log(`[engine] pool controller ready; pool_mode brands: ${[...poolModeBySite.keys()].length}`);
+  // Live pool_mode: LISTEN sites_changed (migration 0088) + poll fallback, so toggles / new brands
+  // apply without a redeploy. Uses the session pooler for LISTEN, like the per-brand config stores.
+  sitesStore = new SitesStore(q, {
+    connect: () => listenPool.connect() as unknown as Promise<ListenClient>,
+    onChange: (siteId, poolMode) => console.log(`[engine] pool_mode ${siteId} -> ${poolMode} (live; no redeploy)`),
+    onError: (err, ctx) => console.error(`[engine] sites ${ctx}:`, err.message),
+  });
+  await sitesStore.init();
+  console.log(`[engine] pool controller ready; pool_mode brands: ${sitesStore.poolModeBrandCount()} (live)`);
+
+  // Canonical "is this a demo/marketer account?" (migration 0084: fn_is_marketer_account). One source
+  // of truth for the pool exemption AND the money layer's demo routing, so they can never diverge. A
+  // short TTL cache keeps it off the trade hot path (marketer status changes rarely).
+  const marketerCache = new Map<string, { v: boolean; exp: number }>();
+  loadIsMarketer = async (userId: string): Promise<boolean> => {
+    const now = Date.now();
+    const hit = marketerCache.get(userId);
+    if (hit && hit.exp > now) return hit.v;
+    try {
+      const r = await q.query("select fn_is_marketer_account($1) as m", [userId]);
+      const v = r.rows[0]?.m === true;
+      marketerCache.set(userId, { v, exp: now + 60_000 });
+      return v;
+    } catch {
+      // On a lookup failure, DON'T treat a real player as a marketer (fail toward the real path, which
+      // the DB RPC still guards); and don't cache the miss.
+      return hit?.v ?? false;
+    }
+  };
 
   // Each brand gets its own live store: LISTEN site_game_config_changed (filtered to the brand's
   // payload) + a poll fallback, with historical versions resolved from site_game_config_versions.
@@ -128,7 +164,8 @@ const registry = new SiteRegistry({
   configFor,
   ...(masterSeedFor ? { masterSeedFor } : {}),
   ...(overridesRepo ? { loadOverride: (uid: string) => overridesRepo!.getForUser(uid) } : {}),
-  ...(poolController ? { poolController, poolModeFor: (siteId: string) => poolModeBySite.get(siteId) === true } : {}),
+  ...(poolController ? { poolController, poolModeFor: (siteId: string) => sitesStore!.poolModeFor(siteId) } : {}),
+  ...(loadIsMarketer ? { loadIsMarketer } : {}),
 });
 
 // Deterministic crash recovery across every brand with open positions, before accepting traffic.
@@ -165,6 +202,18 @@ const handle = await startMultiEngine({
 
 if (!verifier) console.warn("[engine] WARNING: no JWT verifier — DEV auth (trusts client userId). Not for production.");
 console.log(`[engine] multiplexed WS listening on :${PORT}  store=${usingDb ? "postgres" : "in-memory"}  auth=${verifier ? "jwt" : "dev"}  onlineFloor=${ONLINE_FLOOR}`);
+
+// docs/24: platform live deposit feed. LISTEN `deposit_confirmed` (migration 0071) and fan each
+// confirmed deposit out to connected platform_superadmin sockets. DB mode only.
+if (listenConnect) {
+  const depositNotifier = new DepositNotifier({
+    connect: listenConnect,
+    onDeposit: (dep) => handle.emitPlatformDeposit(dep),
+    onError: (err, ctx) => console.error(`[engine] deposit-notify ${ctx}:`, err.message),
+  });
+  await depositNotifier.init();
+  console.log("[engine] platform live deposit feed armed (LISTEN deposit_confirmed)");
+}
 
 // Rotate every brand's seed at the UTC day boundary (reveals yesterday, commits today per brand).
 setInterval(() => {

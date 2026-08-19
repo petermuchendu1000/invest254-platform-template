@@ -1,15 +1,16 @@
 import {
   PgGameRepository, PgEngagementRepository, PgPaymentRepository, PgIdentityRepository,
-  PaymentService, AuthService, AffiliateService, AdminService, PgAdminRepository, PgReferralRepository, PlatformService, PgPlatformRepository, makeDarajaClientFromConfig, loadDarajaConfigFromDb, makeVerifier,
+  PaymentService, AuthService, AffiliateService, AdminService, PgAdminRepository, PlatformService, PgPlatformRepository, makeDarajaClientFromConfig, loadDarajaConfigFromDb, makeVerifier,
   NotificationService, PgNotificationRepository,
   GameConfigStore, mapConfigRow, makePgPools,
   type GameRepository, type EngagementRepository, type PaymentRepository,
   type Querier, type FairnessRecord, type ListenClient,
 } from "@invest254/engine";
 import { createApp, type ApiDeps, type WalletBalance, type BonusStatus, type Brand } from "./app.js";
-import { normalizeHost, type VersionedGameConfig } from "@invest254/shared";
+import { normalizeHost, type VersionedGameConfig, type Cents } from "@invest254/shared";
 import { BrandOriginAllowlist } from "./cors.js";
 import { makePgMarketerRepo } from "./marketers.pg.js";
+import { makePgReferralRepo } from "./referral.pg.js";
 import { makePgSupportDeps } from "./support.pg.js";
 import { makeDomainProvisioner } from "./domains.js";
 import type { PlatformOnboardDeps, OnboardInput, OnboardResult } from "./app.platform.js";
@@ -23,6 +24,19 @@ import type { PlatformOnboardDeps, OnboardInput, OnboardResult } from "./app.pla
  * lookups) rather than widening the engine repository contract for two read paths.
  */
 const PORT = Number(process.env.PORT ?? 8081);
+
+/** Map a marketer_expenses row (from the 0068 RPCs) to the MarketerExpenseRow DTO. */
+function mapExpenseRow(x: Record<string, unknown>) {
+  const created = x.created_at;
+  return {
+    id: String(x.id),
+    category: String(x.category),
+    amountCents: Number(x.amount_cents) || 0,
+    note: x.note == null ? null : String(x.note),
+    createdAtMs: created instanceof Date ? created.getTime() : new Date(String(created)).getTime(),
+    createdBy: x.created_by == null ? null : String(x.created_by),
+  };
+}
 
 async function buildDeps(): Promise<ApiDeps> {
   const verifier = makeVerifier();
@@ -58,12 +72,74 @@ async function buildDeps(): Promise<ApiDeps> {
 
   // M-Pesa config is admin-managed in the DB (table 0024); fall back to env per field.
   const daraja = makeDarajaClientFromConfig(await loadDarajaConfigFromDb(q));
+
+  // Site-aware minimum withdrawal (multi-tenant). GET /game/config serves each brand its own
+  // `site_game_config.min_withdrawal` (via gameConfigForSite below), so the browser validates
+  // against the brand's floor. This resolver reads that SAME per-brand row — keyed by the
+  // withdrawing request's `siteId` — so the server enforces the identical floor and never rejects
+  // a client-valid amount as BELOW_MIN. Falls back to the platform-default `game_config` (exactly
+  // GET /game/config's own fallback) when the site has no row or the value is unusable, so a
+  // missing/bad per-brand value can never open the floor below the safe default.
+  const siteMinWithdrawalCents = async (siteId: string | undefined): Promise<Cents> => {
+    const fallback = gameConfig.active().minWithdrawalCents;
+    if (!siteId) return fallback;
+    try {
+      const r = await q.query(
+        "select min_withdrawal from site_game_config where site_id = $1::uuid limit 1",
+        [siteId],
+      );
+      if (r.rows.length) {
+        const v = Math.round(Number((r.rows[0] as Record<string, unknown>).min_withdrawal));
+        if (Number.isInteger(v) && v > 0) return v as Cents;
+      }
+    } catch (err) {
+      console.error(`[api] site min_withdrawal lookup failed for ${siteId}:`, (err as Error).message);
+    }
+    return fallback;
+  };
+
+  // Per-brand withdrawal kill switch (0067). Read live from `sites.withdrawals_enabled` so an
+  // owner/admin toggle in the panel halts payouts on the very next request with no redeploy.
+  // Fail-open (enabled) on a missing row or a transient error, so a glitch never blocks payouts.
+  const siteWithdrawalsEnabled = async (siteId: string | undefined): Promise<boolean> => {
+    if (!siteId) return true;
+    try {
+      const r = await q.query("select withdrawals_enabled from sites where id = $1::uuid", [siteId]);
+      if (r.rows.length) return (r.rows[0] as Record<string, unknown>).withdrawals_enabled !== false;
+    } catch (err) {
+      console.error(`[api] withdrawals_enabled lookup failed for ${siteId}:`, (err as Error).message);
+    }
+    return true;
+  };
+
+  // Per-brand STK AccountReference: the prompt shows the DEPOSITING brand's account (its name),
+  // not a hardcoded "Invest254". Cached per site (brand names are effectively static at runtime).
+  const brandRefCache = new Map<string, string>();
+  const siteAccountRef = async (siteId?: string): Promise<string> => {
+    const id = siteId ?? "00000000-0000-0000-0000-000000000001";
+    const cached = brandRefCache.get(id);
+    if (cached) return cached;
+    try {
+      const r = await q.query("select name, slug from sites where id = $1", [id]);
+      const row = r.rows[0] as { name?: string; slug?: string } | undefined;
+      const ref = (row?.name || row?.slug || "Invest254");
+      brandRefCache.set(id, ref);
+      return ref;
+    } catch { return "Invest254"; }
+  };
+
   const payments = new PaymentService(payRepo, daraja, {
     // Verify STK callbacks against Safaricom (STKPushQuery) before crediting — defeats forged
     // callbacks. Set MPESA_VERIFY_CALLBACKS=false only if the callback source is otherwise trusted.
     verifyStkCallbacks: process.env.MPESA_VERIFY_CALLBACKS !== "false",
-    // Live minimum withdrawal: read straight from the same game_config store the engine uses,
-    // so an admin's edit in the panel gates the very next withdrawal with no redeploy.
+    // Site-aware STK AccountReference (multi-tenant): "Account no. <Brand>" per depositing brand.
+    accountRefForSite: (siteId) => siteAccountRef(siteId),
+    // Per-brand withdrawal floor: enforce the withdrawing site's own min so client and server agree.
+    minWithdrawalForSite: (siteId) => siteMinWithdrawalCents(siteId),
+    // Per-brand withdrawal kill switch: refuse ALL withdrawal initiations for a site when disabled.
+    withdrawalsEnabledForSite: (siteId) => siteWithdrawalsEnabled(siteId),
+    // Process-wide fallback (single-tenant / default brand, and if the per-site lookup yields nothing):
+    // the platform-default game_config, read live so an admin edit gates the next withdrawal with no redeploy.
     minWithdrawalProvider: () => gameConfig.active().minWithdrawalCents,
     events: {
       onWithdrawalSuccess: ({ userId, amountCents }) => {
@@ -89,7 +165,6 @@ async function buildDeps(): Promise<ApiDeps> {
   });
   const affiliate = new AffiliateService(identity, daraja);
   const admin = new AdminService(new PgAdminRepository(q));
-  const referral = new PgReferralRepository(q);
   const platform = new PlatformService(new PgPlatformRepository(q));
   const notifications = new NotificationService(new PgNotificationRepository(q));
   const support = makePgSupportDeps(q);
@@ -175,7 +250,21 @@ async function buildDeps(): Promise<ApiDeps> {
     notifications,
     corsAllowOrigin: (origin: string) => brandCors.allows(origin),
     marketers: makePgMarketerRepo((sql, params) => q.query(sql, params ?? [])),
-    referral,
+    referral: makePgReferralRepo((sql, params) => q.query(sql, params ?? [])),
+    marketerExpenses: {
+      async add(actorId, actorRole, siteId, marketerUserId, category, amountCents, note) {
+        const r = await q.query(
+          "select id, category, amount_cents, note, created_at, created_by from fn_admin_add_marketer_expense($1,$2,$3::uuid,$4::uuid,$5,$6,$7)",
+          [actorId, actorRole, siteId, marketerUserId, category, amountCents, note]);
+        return mapExpenseRow(r.rows[0]);
+      },
+      async list(marketerUserId, limit) {
+        const r = await q.query(
+          "select id, category, amount_cents, note, created_at, created_by from fn_marketer_expenses($1::uuid,$2)",
+          [marketerUserId, limit]);
+        return r.rows.map(mapExpenseRow);
+      },
+    },
     config: () => gameConfig.active(),
     // Brand-aware public config: resolve a site ref (slug|domain|id) -> that brand's live
     // site_game_config (the row the engine prices from), so GET /game/config matches the engine's

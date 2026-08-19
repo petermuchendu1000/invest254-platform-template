@@ -42,9 +42,9 @@ test("makeUsername: synthetic, no spaces, reasonable length", () => {
 });
 
 test("activityMessage: formats KES and multiplier", () => {
-  assert.match(activityMessage("withdrawal", "brian_254", 5_000_00), /@brian_254 cashed out KES 5,000\.00 to M-Pesa/);
-  assert.match(activityMessage("win", "njeri.ke", 1_250_00, 3.5), /@njeri\.ke just won KES 1,250\.00 on a ×3\.50 trade/);
-  assert.match(activityMessage("bonus", "mrkamau", 100_00), /BONUS of KES 100\.00 issued to @mrkamau/);
+  assert.match(activityMessage("withdrawal", "brian_254", 5_000_00), /@brian_254 cashed out KES 5,000 to M-Pesa/);
+  assert.match(activityMessage("win", "njeri.ke", 1_250_00, 3.5), /@njeri\.ke just won KES 1,250 on a ×3\.50 trade/);
+  assert.match(activityMessage("bonus", "mrkamau", 100_00), /BONUS of KES 100 issued to @mrkamau/);
   assert.equal(activityMessage("signup", "joy_7", null), "@joy_7 just joined Invest254");
 });
 

@@ -24,6 +24,14 @@ export function useRtp() {
   const t = useTok();
   return useQuery({ queryKey: ['admin', 'rtp'], queryFn: () => adminApi.rtp(t), enabled: !!t });
 }
+export function useRealCashRtp() {
+  const t = useTok();
+  return useQuery({ queryKey: ['admin', 'real-cash-rtp'], queryFn: () => adminApi.realCashRtp(t), enabled: !!t });
+}
+export function useConfigReview(limit = 50) {
+  const t = useTok();
+  return useQuery({ queryKey: ['admin', 'config-review', limit], queryFn: () => adminApi.configReview(t, limit), enabled: !!t });
+}
 
 // ── Users ──
 export interface UsersFilter {
@@ -83,6 +91,22 @@ export function useSetUserRole() {
       void qc.invalidateQueries({ queryKey: ['admin', 'user', v.id] });
       void qc.invalidateQueries({ queryKey: ['admin', 'users'] });
       void qc.invalidateQueries({ queryKey: ['admin', 'overview'] });
+    },
+  });
+}
+export function useUpdateUserDetails() {
+  const t = useTok();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { id: string; phone?: string; username?: string }) => {
+      const body: { phone?: string; username?: string } = {};
+      if (v.phone !== undefined) body.phone = v.phone;
+      if (v.username !== undefined) body.username = v.username;
+      return adminApi.updateUserDetails(t, v.id, body);
+    },
+    onSuccess: (_d, v) => {
+      void qc.invalidateQueries({ queryKey: ['admin', 'user', v.id] });
+      void qc.invalidateQueries({ queryKey: ['admin', 'users'] });
     },
   });
 }
@@ -167,6 +191,46 @@ export function useWithdrawalAction() {
       void qc.invalidateQueries({ queryKey: ['admin', 'withdrawals'] });
       void qc.invalidateQueries({ queryKey: ['admin', 'overview'] });
     },
+  });
+}
+
+/** Per-brand withdrawal kill switch (0067): read the current state. */
+export function useWithdrawalsEnabled() {
+  const t = useTok();
+  return useQuery({
+    queryKey: ['admin', 'withdrawals-enabled'],
+    enabled: !!t,
+    queryFn: () => adminApi.withdrawalsEnabled(t),
+  });
+}
+/** Toggle the per-brand withdrawal kill switch (admin/superadmin). */
+export function useSetWithdrawalsEnabled() {
+  const t = useTok();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (enabled: boolean) => adminApi.setWithdrawalsEnabled(t, enabled),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['admin', 'withdrawals-enabled'] });
+    },
+  });
+}
+
+/** 0068 — marketer expenses (transparency): list + add. */
+export function useMarketerExpenses(marketerUserId: string) {
+  const t = useTok();
+  return useQuery({
+    queryKey: ['admin', 'marketer-expenses', marketerUserId],
+    enabled: !!t && !!marketerUserId,
+    queryFn: () => adminApi.marketerExpenses(t, marketerUserId),
+  });
+}
+export function useAddMarketerExpense(marketerUserId: string) {
+  const t = useTok();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { category: string; amountCents: number; note?: string }) =>
+      adminApi.addMarketerExpense(t, { marketerUserId, ...body }),
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: ['admin', 'marketer-expenses', marketerUserId] }); },
   });
 }
 
@@ -373,6 +437,21 @@ export function useCreateMarketer() {
     },
   });
 }
+export function useUpdateMarketer() {
+  const t = useTok();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { id: string; name?: string; phone?: string }) => {
+      const body: { name?: string; phone?: string } = {};
+      if (v.name !== undefined) body.name = v.name;
+      if (v.phone !== undefined) body.phone = v.phone;
+      return adminApi.updateMarketer(t, v.id, body);
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['admin', 'marketers'] });
+    },
+  });
+}
 export function useMarketerCredit(id: string) {
   const t = useTok();
   const qc = useQueryClient();
@@ -448,5 +527,46 @@ export function useFlyRestart() {
   const t = useTok();
   return useMutation({
     mutationFn: () => adminApi.flyRestart(t),
+  });
+}
+
+// ── Bulk actions (finance / affiliate / marketer) ────────────────────────────────────────────
+/** Bulk approve/reject withdrawals. Invalidates the withdrawals queue + overview KPIs. */
+export function useBulkWithdrawals() {
+  const t = useTok();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { action: 'approve' | 'reject'; txIds: string[] }) => adminApi.bulkWithdrawals(t, body),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['admin', 'withdrawals'] });
+      void qc.invalidateQueries({ queryKey: ['admin', 'overview'] });
+    },
+  });
+}
+
+/** Bulk approve/reject affiliate payouts. Invalidates the payouts queue + overview KPIs. */
+export function useBulkPayouts() {
+  const t = useTok();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { action: 'approve' | 'reject'; payoutIds: string[] }) => adminApi.bulkPayouts(t, body),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['admin', 'payouts'] });
+      void qc.invalidateQueries({ queryKey: ['admin', 'overview'] });
+    },
+  });
+}
+
+/** Bulk marketer status change or flat credit. Invalidates the marketers list. */
+export function useBulkMarketers() {
+  const t = useTok();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { action: 'activate' | 'suspend' | 'disable' | 'credit'; marketerIds: string[]; amountCents?: number; ref?: string }) =>
+      adminApi.bulkMarketers(t, body),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['admin', 'marketers'] });
+      void qc.invalidateQueries({ queryKey: ['admin', 'overview'] });
+    },
   });
 }

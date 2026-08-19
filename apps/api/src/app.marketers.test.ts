@@ -112,3 +112,26 @@ test("statement lists ledger newest-first", async () => {
     assert.equal(rows[1].entry_type, "credit");
   } finally { await api.close(); }
 });
+
+test("admin edits a marketer's name + phone; duplicate phone rejected; players gated", async () => {
+  const api = await startTestApi();
+  try {
+    const a = await json(await req(api, "POST", "/api/v1/admin/marketers", { token: ADMIN, body: { name: "Alpha", phone: "0722000010" } }));
+    await json(await req(api, "POST", "/api/v1/admin/marketers", { token: ADMIN, body: { name: "Beta", phone: "0722000011" } }));
+
+    // edit name + phone
+    const upd = await req(api, "PATCH", `/api/v1/admin/marketers/${a.id}`, { token: ADMIN, body: { name: "Alpha Renamed", phone: "0722000099" } });
+    assert.equal(upd.status, 200);
+    const um = await json(upd);
+    assert.equal(um.name, "Alpha Renamed");
+    assert.equal(um.phone, "0722000099");
+
+    // duplicate phone (a -> b's phone) rejected
+    const dup = await req(api, "PATCH", `/api/v1/admin/marketers/${a.id}`, { token: ADMIN, body: { phone: "0722000011" } });
+    assert.equal(dup.status, 409);
+    assert.equal((await json(dup)).error.code, "PHONE_TAKEN");
+
+    // players cannot edit marketers
+    assert.equal((await req(api, "PATCH", `/api/v1/admin/marketers/${a.id}`, { token: PLAYER, body: { name: "x" } })).status, 403);
+  } finally { await api.close(); }
+});

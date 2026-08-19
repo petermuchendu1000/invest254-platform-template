@@ -13,7 +13,7 @@ import { useToast } from '@/lib/toast/ToastProvider';
 import { formatDateTime, formatRelativeTime } from '@/lib/format';
 import { useSession } from '@/lib/auth/session';
 import { PageHeader, StatCard, Section, Empty, ConfirmButton, TableWrap, Th, Td, Toolbar, FilterSelect } from '@/components/admin/ui';
-import { useUser, useUserActivity, useSetUserStatus, useAdjustBalance, useClearBalance, useResetBalance, useSetCommissionRate, useSetUserRole, useUserNotifications, useSendNotification, useResolveNotification, useUserOverrides, useSetOverrides, useGameConfig } from '@/lib/admin/hooks';
+import { useUser, useUserActivity, useSetUserStatus, useAdjustBalance, useClearBalance, useResetBalance, useSetCommissionRate, useSetUserRole, useUpdateUserDetails, useUserNotifications, useSendNotification, useResolveNotification, useUserOverrides, useSetOverrides, useGameConfig, useMarketerExpenses, useAddMarketerExpense } from '@/lib/admin/hooks';
 import type { AdminUserActivityRow, AdminNotificationRow, NotificationLevel, UserOverridePatch } from '@/lib/admin/types';
 
 const ROLES = ['player', 'marketer', 'admin'] as const;
@@ -43,8 +43,18 @@ export default function UserDetailPage({ params }: { params: { id: string } }) {
           />
 
           <Section title="Balances">
+            {q.data.isMarketer && (
+              <p className="mb-2 rounded-md bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                Demo / social-proof account — plays on a non-withdrawable <strong>demo balance</strong>; its
+                winnings are excluded from real cash (GGR/RTP) and can never be withdrawn to M-Pesa.
+              </p>
+            )}
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-              <StatCard label="Real balance" money={q.data.realBalanceCents} />
+              {q.data.isMarketer ? (
+                <StatCard label="Demo balance (non-withdrawable)" money={q.data.demoBalanceCents} />
+              ) : (
+                <StatCard label="Real balance" money={q.data.realBalanceCents} />
+              )}
               <StatCard label="Bonus balance" money={q.data.bonusBalanceCents} />
               <StatCard label="Turnover" money={q.data.turnoverCents} />
               <StatCard label="Net revenue (GGR)" money={q.data.ggrCents} tone={q.data.ggrCents >= 0 ? 'up' : 'down'} />
@@ -85,12 +95,14 @@ export default function UserDetailPage({ params }: { params: { id: string } }) {
           ) : (
             <>
               <StatusActions id={id} status={q.data.status} />
+              <EditDetails id={id} phone={q.data.phone} username={q.data.username} />
               <RoleManage id={id} current={q.data.role} />
               <BalanceAdjust id={id} />
               <ResetBalance id={id} />
               <OverridesPanel id={id} />
               <NotificationSend id={id} />
               {q.data.role === 'marketer' ? <CommissionRate id={id} /> : null}
+              {q.data.role === 'marketer' ? <MarketerExpenses id={id} /> : null}
             </>
           )}
         </>
@@ -105,7 +117,7 @@ const ACTIVITY_KINDS = [
   { value: 'withdrawal', label: 'Withdrawals' },
   { value: 'bet', label: 'Bets' },
 ];
-const KIND_LABEL: Record<string, string> = { deposit: 'Deposit', withdrawal: 'Withdrawal', bet: 'Bet' };
+const KIND_LABEL: Record<string, string> = { deposit: 'Deposit', withdrawal: 'Withdrawal', bet: 'Bet', adjustment: 'Manual adjustment' };
 
 function ActivityTimeline({ id }: { id: string }) {
   const [kind, setKind] = useState('');
@@ -170,7 +182,9 @@ function ActivityRow({ r }: { r: AdminUserActivityRow }) {
               ? 'bg-up/10 text-up'
               : r.kind === 'withdrawal'
                 ? 'bg-down/10 text-down'
-                : 'bg-surface-2 text-fg',
+                : r.kind === 'adjustment'
+                  ? 'bg-warn/10 text-warn'
+                  : 'bg-surface-2 text-fg',
           )}
         >
           {KIND_LABEL[r.kind]}
@@ -251,15 +265,65 @@ function StatusActions({ id, status }: { id: string; status: string }) {
   );
 }
 
+function EditDetails({ id, phone, username }: { id: string; phone: string; username: string }) {
+  const m = useUpdateUserDetails();
+  const toast = useToast();
+  const myRole = useSession((s) => s.user?.role);
+  const [ph, setPh] = useState(phone ?? '');
+  const [un, setUn] = useState(username ?? '');
+
+  // Admin+ may edit contact details (the API also confines a plain admin to non-admin targets).
+  if (myRole !== 'admin' && myRole !== 'superadmin' && myRole !== 'platform_superadmin') return null;
+
+  function run() {
+    const body: { id: string; phone?: string; username?: string } = { id };
+    if (ph.trim() && ph.trim() !== (phone ?? '')) body.phone = ph.trim();
+    if (un.trim() && un.trim() !== (username ?? '')) body.username = un.trim();
+    if (body.phone === undefined && body.username === undefined) {
+      toast.push({ tone: 'info', title: 'No changes', description: 'Edit the phone or name first.' });
+      return;
+    }
+    m.mutate(body, {
+      onSuccess: () => toast.push({ tone: 'success', title: 'Details updated', description: 'Phone/name saved.' }),
+      onError: (e) => toast.push({ tone: 'error', title: 'Update failed', description: e instanceof ApiError ? e.message : 'Try again.' }),
+    });
+  }
+
+  return (
+    <Section title="Edit details">
+      <Card className="flex flex-col gap-3 sm:flex-row sm:items-end">
+        <label className="flex flex-1 flex-col gap-1 text-sm">
+          <span className="text-muted">Phone</span>
+          <input value={ph} onChange={(e) => setPh(e.target.value)} inputMode="tel" placeholder="07XXXXXXXX"
+            className="h-10 w-full rounded-xl border border-border bg-surface-2 px-3 text-sm text-fg outline-none focus:border-accent" />
+        </label>
+        <label className="flex flex-1 flex-col gap-1 text-sm">
+          <span className="text-muted">Username</span>
+          <input value={un} onChange={(e) => setUn(e.target.value)}
+            className="h-10 w-full rounded-xl border border-border bg-surface-2 px-3 text-sm text-fg outline-none focus:border-accent" />
+        </label>
+        <Button onClick={run} disabled={m.isPending} className="whitespace-nowrap">
+          {m.isPending ? 'Saving…' : 'Save'}
+        </Button>
+      </Card>
+    </Section>
+  );
+}
+
 function RoleManage({ id, current }: { id: string; current: string }) {
   const m = useSetUserRole();
   const toast = useToast();
   const myRole = useSession((s) => s.user?.role);
   const [role, setRole] = useState(current);
 
-  // Role changes are sensitive — owner-tier only (the API enforces this too). platform_superadmin
-  // outranks superadmin, so it must pass this gate rather than be excluded by a strict ===.
-  if (myRole !== 'superadmin' && myRole !== 'platform_superadmin') return null;
+  // Owner-tier can set any role; a plain admin may promote/demote player<->marketer only (the API
+  // enforces this too). platform_superadmin outranks superadmin.
+  const isOwnerTier = myRole === 'superadmin' || myRole === 'platform_superadmin';
+  const isAdmin = myRole === 'admin';
+  if (!isOwnerTier && !isAdmin) return null;
+  // An admin can only act on player/marketer accounts, and only choose player/marketer.
+  if (isAdmin && current !== 'player' && current !== 'marketer') return null;
+  const roleOptions = isOwnerTier ? ROLES : ['player', 'marketer'];
 
   function run() {
     m.mutate(
@@ -281,7 +345,7 @@ function RoleManage({ id, current }: { id: string; current: string }) {
             onChange={(e) => setRole(e.target.value)}
             className="h-10 w-full rounded-xl border border-border bg-surface-2 px-3 text-sm text-fg outline-none focus:border-accent"
           >
-            {ROLES.map((r) => (
+            {roleOptions.map((r) => (
               <option key={r} value={r}>
                 {r}
               </option>
@@ -760,6 +824,85 @@ function OverridesPanel({ id }: { id: string }) {
           </p>
         ) : null}
       </Card>
+    </Section>
+  );
+}
+
+const EXPENSE_CATEGORIES = [
+  { value: 'tiktok_promo', label: 'TikTok promo' },
+  { value: 'data_bundles', label: 'Data bundles' },
+  { value: 'advance', label: 'Advance payment' },
+  { value: 'airtime', label: 'Airtime' },
+  { value: 'transport', label: 'Transport' },
+  { value: 'other', label: 'Other' },
+];
+
+/** Admin-logged marketer expenses (transparency, 0068). Everything logged here is visible to the
+ *  marketer in their hidden dashboard, so payouts and advances are never a black box. */
+function MarketerExpenses({ id }: { id: string }) {
+  const q = useMarketerExpenses(id);
+  const add = useAddMarketerExpense(id);
+  const toast = useToast();
+  const [category, setCategory] = useState('tiktok_promo');
+  const [amountKes, setAmountKes] = useState('');
+  const [note, setNote] = useState('');
+
+  const rows = q.data?.items ?? [];
+  const total = q.data?.totalCents ?? 0;
+
+  function submit(e: React.FormEvent) {
+    e.preventDefault();
+    const kes = Number(amountKes);
+    if (!Number.isFinite(kes) || kes <= 0) { toast.push({ tone: 'error', title: 'Enter a valid amount' }); return; }
+    const body: { category: string; amountCents: number; note?: string } = { category, amountCents: Math.round(kes * 100) };
+    const trimmed = note.trim();
+    if (trimmed) body.note = trimmed;
+    add.mutate(
+      body,
+      {
+        onSuccess: () => { setAmountKes(''); setNote(''); toast.push({ tone: 'success', title: 'Expense logged', description: 'Visible to the marketer immediately.' }); },
+        onError: (err) => toast.push({ tone: 'error', title: 'Could not log expense', description: err instanceof ApiError ? err.message : 'Try again.' }),
+      },
+    );
+  }
+
+  return (
+    <Section title="Marketer expenses & advances">
+      <form onSubmit={submit} className="mb-3 grid grid-cols-1 gap-2 sm:grid-cols-4">
+        <select value={category} onChange={(e) => setCategory(e.target.value)} className="h-10 rounded-lg border border-border bg-surface-2 px-3 text-sm text-fg outline-none focus:border-accent">
+          {EXPENSE_CATEGORIES.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
+        </select>
+        <input value={amountKes} onChange={(e) => setAmountKes(e.target.value.replace(/[^0-9.]/g, ''))} inputMode="decimal" placeholder="Amount (KES)" className="h-10 rounded-lg border border-border bg-surface-2 px-3 text-sm text-fg outline-none focus:border-accent" />
+        <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Note (optional)" className="h-10 rounded-lg border border-border bg-surface-2 px-3 text-sm text-fg outline-none focus:border-accent" />
+        <Button type="submit" disabled={add.isPending}>{add.isPending ? 'Adding…' : 'Add expense'}</Button>
+      </form>
+      {q.isLoading ? (
+        <Skeleton className="h-20 w-full" />
+      ) : rows.length === 0 ? (
+        <Empty title="No expenses logged" description="Log promo spend, data bundles or advances — the marketer sees them for full transparency." />
+      ) : (
+        <TableWrap>
+          <thead>
+            <tr className="border-b border-border">
+              <Th>Category</Th>
+              <Th>Note</Th>
+              <Th className="text-right">Amount</Th>
+              <Th className="text-right">When</Th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((e) => (
+              <tr key={e.id} className="border-b border-border last:border-0">
+                <Td className="capitalize">{e.category.replace(/_/g, ' ')}</Td>
+                <Td className="text-muted">{e.note ?? '—'}</Td>
+                <Td className="text-right font-medium tabular-nums text-down">−<Money cents={e.amountCents} /></Td>
+                <Td className="text-right text-xs text-muted">{formatRelativeTime(e.createdAtMs)} ago</Td>
+              </tr>
+            ))}
+          </tbody>
+        </TableWrap>
+      )}
+      <p className="mt-2 text-right text-sm">Total logged: <span className="font-bold tabular-nums text-down"><Money cents={total} /></span></p>
     </Section>
   );
 }

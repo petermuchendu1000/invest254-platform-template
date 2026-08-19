@@ -45,13 +45,20 @@ export default function ReportsPage() {
   const [tab, setTab] = useState<Tab>('day');
   const [from, setFrom] = useState(isoDaysAgo(30));
   const [to, setTo] = useState(isoDaysAgo(0));
+  // Top-players ranking direction: 'losers' = GGR desc (most net revenue to the house, i.e. biggest
+  // net losers) first; 'winners' = GGR asc (players who are net-winning — a risk signal) first.
+  const [usersSort, setUsersSort] = useState<'losers' | 'winners'>('losers');
 
   const range = { from, to };
   const daily = useReportDaily(range);
   const users = useReportUsers(range);
 
   const dailyRows = useMemo(() => daily.data?.items ?? [], [daily.data]);
-  const userRows = useMemo(() => users.data?.items ?? [], [users.data]);
+  const userRows = useMemo(() => {
+    const rows = users.data?.items ?? [];
+    // API returns GGR desc; reverse for the "winners" view. Copy so we never mutate the cache.
+    return usersSort === 'winners' ? [...rows].sort((a, b) => a.ggrCents - b.ggrCents) : rows;
+  }, [users.data, usersSort]);
 
   function exportCsv() {
     if (tab === 'daily') {
@@ -108,9 +115,25 @@ export default function ReportsPage() {
           ))}
         </div>
         {tab !== 'day' ? (
-          <Button variant="outline" size="sm" onClick={exportCsv} disabled={!hasRows}>
-            Export CSV
-          </Button>
+          <div className="flex items-center gap-2">
+            {tab === 'users' ? (
+              <div className="inline-flex rounded-lg border border-border bg-surface p-0.5">
+                <button
+                  onClick={() => setUsersSort('losers')}
+                  className={usersSort === 'losers' ? 'rounded-md bg-accent/15 px-2.5 py-1 text-xs font-medium text-accent' : 'rounded-md px-2.5 py-1 text-xs font-medium text-muted hover:text-fg'}
+                  title="Highest GGR first — players the house earned the most from"
+                >Biggest losers (house +)</button>
+                <button
+                  onClick={() => setUsersSort('winners')}
+                  className={usersSort === 'winners' ? 'rounded-md bg-accent/15 px-2.5 py-1 text-xs font-medium text-accent' : 'rounded-md px-2.5 py-1 text-xs font-medium text-muted hover:text-fg'}
+                  title="Lowest (negative) GGR first — players who are net-winning (risk)"
+                >Biggest winners (house −)</button>
+              </div>
+            ) : null}
+            <Button variant="outline" size="sm" onClick={exportCsv} disabled={!hasRows}>
+              Export CSV
+            </Button>
+          </div>
         ) : null}
       </div>
 
@@ -125,9 +148,27 @@ export default function ReportsPage() {
           ) : !hasRows ? (
             <Empty title="No data in range" description="Adjust the date range to see activity." />
           ) : tab === 'daily' ? (
-            <DailyTable rows={dailyRows} />
+            <div className="flex flex-col gap-2">
+              <ReportNote>
+                One row per calendar day in range. <b>Deposits/Withdrawals</b> = successful M‑Pesa
+                transactions (withdrawals exclude internal marketer transfers). <b>Turnover</b> = Σ stakes
+                on settled trades; <b>GGR</b> = Σ&nbsp;stakes&nbsp;−&nbsp;Σ&nbsp;payouts (positive = house
+                profit). Internal marketer accounts are excluded. Computed live from transactions + settled
+                positions — no cached table.
+              </ReportNote>
+              <DailyTable rows={dailyRows} />
+            </div>
           ) : (
-            <UsersTable rows={userRows} />
+            <div className="flex flex-col gap-2">
+              <ReportNote>
+                One row per player active in range, <b>ranked by GGR</b> (net revenue to the house).
+                {' '}<b>{usersSort === 'losers' ? 'Biggest losers first' : 'Biggest winners first'}</b>:
+                a <span className="text-up">positive</span> GGR means the house profited from that player
+                (they net‑lost); a <span className="text-down">negative</span> GGR means the player is
+                net‑winning. <b>Turnover</b> = Σ stakes. Internal marketer accounts are excluded.
+              </ReportNote>
+              <UsersTable rows={userRows} />
+            </div>
           )}
         </Section>
       )}
@@ -138,6 +179,15 @@ export default function ReportsPage() {
 function pct(n: number, d: number): string {
   if (!d) return '—';
   return `${((n / d) * 100).toFixed(1)}%`;
+}
+
+/** Small inline explanation so every table's numbers are traceable in-product. */
+function ReportNote({ children }: { children: React.ReactNode }) {
+  return (
+    <p className="rounded-lg border border-border bg-surface-2 px-3 py-2 text-[11px] leading-relaxed text-muted">
+      {children}
+    </p>
+  );
 }
 
 /** Single-day (EAT) comprehensive stats with a calendar picker + prev/next stepper. Mobile-first. */
@@ -211,6 +261,12 @@ function DayBody({ d }: { d: AdminDayReport }) {
   const winRate = pct(d.winningPositions, d.settledPositions);
   return (
     <div className="flex flex-col gap-5">
+      <ReportNote>
+        All figures are for the selected day and <b>exclude internal marketer accounts</b>.
+        <b> Net revenue (GGR)</b> = turnover − payouts (a <i>game</i> metric from settled trades) — it is
+        <b> not</b> a deposit. <b>Deposits</b> below is real cash in via M‑Pesa. A day can show GGR with
+        zero deposits when players trade an existing balance.
+      </ReportNote>
       {/* Headline: the three numbers an operator scans first. */}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <StatCard label="Net revenue (GGR)" money={d.ggrCents} tone={d.ggrCents >= 0 ? 'up' : 'down'} hint="turnover − payouts" />

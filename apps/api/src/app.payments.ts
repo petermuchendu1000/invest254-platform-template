@@ -22,6 +22,7 @@ const DOMAIN_STATUS: Readonly<Record<string, number>> = {
   NOT_INTEGER_CENTS: 400,
   BELOW_MIN: 400,
   INVALID_PHONE: 400,
+  WITHDRAWALS_DISABLED: 403,
   INSUFFICIENT_FUNDS: 402,
   ACCOUNT_NOT_ACTIVE: 403,
   WALLET_NOT_FOUND: 404,
@@ -51,10 +52,18 @@ function asObject(body: unknown): Record<string, unknown> {
   return body as Record<string, unknown>;
 }
 
+// M-Pesa caps a single STK push / B2C at ~KES 150,000. We reject anything above KES 250,000
+// (25,000,000 cents) as an impossible/junk amount so it never pollutes the ledger or finance
+// reconciliation (an unbounded amount previously let a KES 55.8M "deposit" attempt through).
+const MAX_AMOUNT_CENTS = 25_000_000;
+
 function requireIntAmount(body: Record<string, unknown>): number {
   const amount = body.amount;
   if (typeof amount !== "number" || !Number.isInteger(amount) || amount <= 0) {
     throw new ApiError("VALIDATION", "amount must be a positive integer (cents)", 400);
+  }
+  if (amount > MAX_AMOUNT_CENTS) {
+    throw new ApiError("VALIDATION", "amount exceeds the maximum allowed (KES 250,000)", 400);
   }
   return amount;
 }
@@ -185,5 +194,32 @@ export function registerProtectedRoutes(router: Router, deps: ApiDeps): void {
   router.post(`${BASE}/admin/withdrawals/:id/reject`, auth, admin, async (ctx: Ctx) => {
     assertTargetSiteInScope(ctx, await deps.admin.siteOfTransaction(ctx.params.id!));
     return domain(() => deps.payments.rejectWithdrawal(ctx.params.id!, ctx.claims!.userId));
+  });
+
+  // Bulk moderation: apply approve/reject to many withdrawals in one call. Each row is brand-guarded
+  // and executed independently, so one failure (wrong state, cross-brand, B2C error) fails ONLY that
+  // row (partial success) — mirrors /admin/users/bulk. Approval dispatches the M-Pesa B2C per row;
+  // the underlying RPCs are idempotent, so a re-run over already-actioned rows is safe.
+  router.post(`${BASE}/admin/withdrawals/bulk`, auth, admin, async (ctx: Ctx) => {
+    const body = ctx.body && typeof ctx.body === "object" ? (ctx.body as Record<string, unknown>) : {};
+    const action = body.action === "approve" || body.action === "reject" ? body.action : "";
+    if (!action) throw new ApiError("VALIDATION", "action must be 'approve' or 'reject'", 400);
+    const raw = Array.isArray(body.txIds) ? body.txIds : [];
+    const txIds = [...new Set(raw.filter((x): x is string => typeof x === "string" && x.length > 0))];
+    if (txIds.length === 0) throw new ApiError("VALIDATION", "txIds must be a non-empty array", 400);
+    if (txIds.length > 200) throw new ApiError("VALIDATION", "at most 200 withdrawals per bulk action", 400);
+    const results = await Promise.all(txIds.map(async (id) => {
+      try {
+        assertTargetSiteInScope(ctx, await deps.admin.siteOfTransaction(id));
+        const result = action === "approve"
+          ? await deps.payments.approveWithdrawal(id, ctx.claims!.userId)
+          : await deps.payments.rejectWithdrawal(id, ctx.claims!.userId);
+        return { id, ok: true, result };
+      } catch (e) {
+        return { id, ok: false, error: (e as { message?: string })?.message ?? "ERROR" };
+      }
+    }));
+    const okCount = results.filter((r) => r.ok).length;
+    return { action, total: txIds.length, okCount, failCount: results.length - okCount, results };
   });
 }

@@ -27,7 +27,10 @@ export function centsToKes(c: Cents): number {
 /** Format cents as "KES 1,234.50". */
 export function formatKes(c: Cents): string {
   const kes = centsToKes(c);
-  return `KES ${kes.toLocaleString("en-KE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  // Show decimals only when there's a real fractional part, so whole shillings read as clean KES
+  // ("KES 250", not "KES 250.00") — players were reading the ".00" as cents.
+  const hasFraction = Math.round(kes * 100) % 100 !== 0;
+  return `KES ${kes.toLocaleString("en-KE", { minimumFractionDigits: hasFraction ? 2 : 0, maximumFractionDigits: 2 })}`;
 }
 
 export function addCents(a: Cents, b: Cents): Cents {

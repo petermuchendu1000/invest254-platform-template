@@ -216,10 +216,11 @@ export class InMemoryPaymentRepository implements PaymentRepository {
     this.ledger.push({ userId, type: "adjustment", amount: amountCents, ref: "admin_actions" });
     return next;
   }
-  /** Total real-balance liability across all wallets. */
-  adminWalletLiabilityCents(): Cents {
+  /** Total real-balance liability across all wallets. When `userIds` is given, only those wallets
+   *  are summed (used to scope the admin dashboard's liability to one brand's users). */
+  adminWalletLiabilityCents(userIds?: ReadonlySet<string>): Cents {
     let sum = 0;
-    for (const v of this.balances.values()) sum += v;
+    for (const [uid, v] of this.balances.entries()) if (!userIds || userIds.has(uid)) sum += v;
     return sum;
   }
 }
