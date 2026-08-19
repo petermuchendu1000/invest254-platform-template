@@ -2,7 +2,7 @@ import { randomBytes, scrypt as _scrypt, timingSafeEqual, type ScryptOptions } f
 import { SignJWT } from "jose";
 import { validatePassword, validateUsername, validateReferralCode, normalizeMsisdn,
   generateTotpSecret, verifyTotp, otpauthUrl, generateRecoveryCodes, normalizeRecoveryCode } from "@invest254/shared";
-import type { IdentityRepository, MfaRecord } from "./identity.js";
+import type { IdentityRepository, MfaRecord, CredentialRecord } from "./identity.js";
 
 /**
  * AuthService — self-managed phone + password authentication (no OTP, no Supabase Auth).
@@ -147,21 +147,43 @@ export class AuthService {
    * Privileged roles that have not enrolled yet are still admitted but flagged with
    * `mfaEnrolmentRequired` so enabling MFA can never lock an operator out of their own back office.
    */
-  async login(input: { phone: string; password: string; totp?: string; recoveryCode?: string; siteId?: string }): Promise<AuthSession> {
+  async login(input: { phone: string; password: string; totp?: string; recoveryCode?: string; siteId?: string; anyBrand?: boolean }): Promise<AuthSession> {
     let phone: string;
     try { phone = normalizeMsisdn(input.phone); } catch { throw new Error("INVALID_CREDENTIALS"); }
-    const rec = await this.repo.findByPhone(phone, input.siteId);
-    const ok = await verifyPassword(input.password, rec?.passwordHash ?? (await DUMMY_HASH));
-    if (!rec || !ok) throw new Error("INVALID_CREDENTIALS");
+
+    // Candidate set:
+    //  - siteId given (the web, which knows its brand from the host) -> scope to that brand.
+    //  - anyBrand (the marketer apps: one generic build that CANNOT know the marketer's brand, and
+    //    send no site) -> every brand's account on this phone; the PASSWORD then identifies which
+    //    brand's account is signing in, and its brand becomes the session's site. This is OPT-IN so
+    //    it never weakens the default per-brand identity isolation of the normal web login.
+    //  - otherwise (default) -> the legacy single lookup (scoped/default bucket): brand isolation.
+    const candidates = input.anyBrand && !input.siteId
+      ? await this.repo.findAllByPhone(phone)
+      : await this.repo.findByPhone(phone, input.siteId).then((r) => (r ? [r] : []));
+
+    // Constant-ish time + anti-enumeration: verify against each candidate; if none exist, still run
+    // one verify against a dummy hash so a bad phone costs the same as a bad password.
+    let rec: CredentialRecord | null = null;
+    if (candidates.length === 0) {
+      await verifyPassword(input.password, await DUMMY_HASH);
+    } else {
+      for (const c of candidates) {
+        if (await verifyPassword(input.password, c.passwordHash)) { rec = c; break; }
+      }
+    }
+    if (!rec) throw new Error("INVALID_CREDENTIALS");
     // Account status does NOT gate login. A limited/suspended/banned player can still sign in
     // so they can DEPOSIT and see their balance. Trading and withdrawal are gated separately at
     // the money layer (fn_open_position / fn_create_withdrawal reject a non-active account), so a
     // limited account can top up but cannot open new trades or cash out. Deposits stay open.
     const mfa = await this.repo.getMfa(rec.userId);
     if (mfa?.enabled) await this.assertSecondFactor(rec.userId, mfa, input.totp, input.recoveryCode);
-    const token = await this.issueToken(rec.userId, rec.role, input.siteId);
+    // The brand is the matched account's own site (falling back to an explicit siteId for the web).
+    const resolvedSite = input.siteId ?? rec.siteId ?? undefined;
+    const token = await this.issueToken(rec.userId, rec.role, resolvedSite);
     const needsEnrolment = this.mfaRoles.has(rec.role) && !mfa?.enabled;
-    const site = input.siteId ? { site: input.siteId } : {};
+    const site = resolvedSite ? { site: resolvedSite } : {};
     return needsEnrolment
       ? { token, userId: rec.userId, role: rec.role, mfaEnrolmentRequired: true, ...site }
       : { token, userId: rec.userId, role: rec.role, ...site };
@@ -261,13 +283,15 @@ export class AuthService {
    * The response is identical whether or not the account exists (and the hash is computed either
    * way) so this cannot be used to enumerate registered phone numbers.
    */
-  async resetPassword(phone: string, newPassword: string): Promise<{ reset: boolean }> {
+  async resetPassword(phone: string, newPassword: string, siteId?: string): Promise<{ reset: boolean }> {
     if (!this.allowUnverifiedReset) throw new Error("RESET_DISABLED");
     const pw = validatePassword(newPassword);
     if (!pw.ok) throw new Error(`PASSWORD_${pw.reason}`);
     let normalized: string;
     try { normalized = normalizeMsisdn(phone); } catch { throw new Error("INVALID_PHONE"); }
-    const rec = await this.repo.findByPhone(normalized);
+    // Scope to the caller's brand so a phone shared across brands can't cross-reset the wrong
+    // account. Undefined siteId preserves single-tenant behaviour (default site).
+    const rec = await this.repo.findByPhone(normalized, siteId);
     const hash = await hashPassword(newPassword); // computed unconditionally: uniform timing
     if (rec) await this.repo.setPasswordHash(rec.userId, hash);
     return { reset: true };

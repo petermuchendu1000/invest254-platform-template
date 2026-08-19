@@ -182,7 +182,12 @@ export function registerAuthRoutes(router: Router, deps: ApiDeps): void {
     const body = asObject(ctx.body);
     const phone = requireString(body, "phone");
     const newPassword = requireString(body, "new_password");
-    return domain(() => deps.auth.resetPassword(phone, newPassword));
+    // Brand-scope the reset the same way register/login are scoped. A phone is unique only WITHIN a
+    // brand, so without this the reset targeted whichever account (across brands) findByPhone
+    // returned first — it could silently rewrite the wrong brand's password (and report success),
+    // leaving the real account unchanged. No hint → default site (single-tenant behaviour).
+    const siteId = await resolveSiteId(ctx, body, deps);
+    return domain(() => deps.auth.resetPassword(phone, newPassword, siteId));
   });
 
   router.get(`${BASE}/auth/me`, auth, async (ctx: Ctx) => {

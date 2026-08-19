@@ -154,6 +154,24 @@ function optStr(o: Record<string, unknown>, key: string): string | null {
   const v = o[key];
   return typeof v === "string" && v.trim().length > 0 ? v.trim() : null;
 }
+
+/**
+ * OPTIONAL brand hint for a marketer login (mirrors app.auth.ts resolveSiteId). Brand-aware callers
+ * (the web, tests) MAY name the brand via `site`/`host` (slug, domain or id) and brandByHost
+ * validates it against the ACTIVE sites. The marketer apps are a single generic build and CANNOT
+ * know the marketer's brand, so they send NO hint (returns undefined) — the brand is then resolved
+ * from the credential itself: auth.login matches the password across every brand holding the phone
+ * (login-web), and fn_marketer_login matches the PIN across them (login). A phone is unique only
+ * within a brand, so the secret is what disambiguates — never a client-supplied brand or a default.
+ */
+async function resolveSiteId(ctx: Ctx, body: Record<string, unknown>, deps: ApiDeps): Promise<string | undefined> {
+  const ref =
+    optStr(body, "site") ?? ctx.query.get("site") ??
+    optStr(body, "host") ?? ctx.query.get("host") ?? undefined;
+  if (!ref) return undefined;
+  const brand = await deps.brandByHost(ref.toLowerCase());
+  return brand?.siteId;
+}
 /** Positive integer cents (for credit/withdraw). */
 function reqPositiveCents(o: Record<string, unknown>, key = "amountCents"): number {
   const raw = o[key];
@@ -284,7 +302,13 @@ export function registerMarketerRoutes(router: Router, deps: ApiDeps): void {
     const b = bodyObj(ctx);
     const phone = reqStr(b, "phone");
     const pin = reqPin(b, "pin");
-    const id = await domain(() => deps.marketers.login(phone, pin));
+    // The marketer apps are a single generic build and DON'T know their brand, so they send only
+    // phone + PIN. A phone is unique only within a brand, so fn_marketer_login resolves the marketer
+    // by matching the PIN across every brand that holds this phone (see 0093) — no brand hint, no
+    // default-brand fallback that authenticated the wrong marketer (the Patricia bug). `site` stays
+    // an OPTIONAL hint for brand-aware callers (the web/tests); the apps omit it.
+    const siteId = await resolveSiteId(ctx, b, deps);
+    const id = await domain(() => deps.marketers.login(phone, pin, siteId));
     if (!id) throw new ApiError("INVALID_CREDENTIALS", "invalid phone or PIN", 401);
     const token = await deps.auth.issueToken(id, "marketer");
     const marketerProfile = await deps.marketers.profile(id);
@@ -307,15 +331,27 @@ export function registerMarketerRoutes(router: Router, deps: ApiDeps): void {
     const password = typeof b.password === "string" ? b.password : "";
     if (password.length === 0) throw new ApiError("VALIDATION", "password is required", 400);
 
-    // 1) Prove the website account (phone + password). Any failure collapses to a generic 401.
+    // The marketer app is a single generic build and CANNOT know the marketer's brand, so it sends
+    // only phone + password. `site` is an OPTIONAL hint for brand-aware callers (the web/tests).
+    const siteHint = await resolveSiteId(ctx, b, deps);
+
+    // 1) Prove the website account (phone + password). With no site hint, auth.login matches the
+    //    PASSWORD across every brand holding this phone and returns the VERIFIED account's brand —
+    //    the credential itself identifies the brand, so a phone shared across brands resolves to the
+    //    right account. Any failure collapses to a generic 401.
+    let session: { site?: string };
     try {
-      await deps.auth.login({ phone, password });
+      // anyBrand: with no site hint, match the password across every brand holding this phone (the
+      // apps can't name a brand). Opt-in so the normal web login keeps its per-brand isolation.
+      session = await deps.auth.login({ phone, password, anyBrand: true, ...(siteHint ? { siteId: siteHint } : {}) });
     } catch {
       throw new ApiError("INVALID_CREDENTIALS", "invalid phone or password", 401);
     }
 
-    // 2) The website identity must be linked to an ACTIVE marketer wallet (same phone).
-    const profile = await domain(() => deps.marketers.profileByPhone(phone));
+    // 2) Resolve the marketer wallet on the SAME brand as the verified website account. This ties
+    //    the two together so the correct marketer is loaded even when the phone exists on >1 brand.
+    const brand = siteHint ?? session.site;
+    const profile = await domain(() => deps.marketers.profileByPhone(phone, brand));
     if (!profile) throw new ApiError("NOT_MARKETER", "not a marketer account", 403);
     if (profile.status !== "active") throw new ApiError("MARKETER_INACTIVE", `marketer is ${profile.status}`, 403);
 

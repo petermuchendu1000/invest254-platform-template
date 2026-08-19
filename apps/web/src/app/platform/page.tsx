@@ -47,7 +47,15 @@ export default function PlatformOverviewPage() {
   const [customTo, setCustomTo] = useState('');
   const [sort, setSort] = useState<{ key: string; dir: 'asc' | 'desc' }>({ key: 'ggr', dir: 'desc' });
 
-  const { fromMs, toMs } = resolveRange(preset, customFrom, customTo);
+  // Stabilise the window: resolveRange reads Date.now() for the relative presets (today/7d/30d),
+  // so calling it inline recomputes fromMs/toMs on EVERY render. That changed the react-query key
+  // ['platform','performance', fromMs, toMs] each render, so selecting a time preset kicked off an
+  // endless refetch loop (each fetch → re-render → new key → new fetch) and the columns never left
+  // their loading/zero state — i.e. the time filters "did nothing". Memoising on the actual inputs
+  // (preset + custom dates) snaps `now` to selection time, so the key is stable and the window
+  // holds until the operator changes it. (This is why only 'All-time' and fixed custom dates worked.)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const { fromMs, toMs } = useMemo(() => resolveRange(preset, customFrom, customTo), [preset, customFrom, customTo]);
   const rangeActive = fromMs != null && toMs != null;
   const perf = usePlatformPerformance(fromMs, toMs);
   const perfById = useMemo(

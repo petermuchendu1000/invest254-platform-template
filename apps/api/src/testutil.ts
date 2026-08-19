@@ -73,8 +73,12 @@ export function makeInMemoryReferralRepo(): InMemoryReferralRepo {
 
 /** In-memory MarketerRepo mirroring the SQL RPCs (0033): overdraw guard, idempotency, initials. */
 export function makeInMemoryMarketerRepo(): MarketerRepo {
-  interface Rec { id: string; name: string; phone: string; status: string; created_at: string; updated_at: string; balance: number; fuliza: number; airtime: number; }
+  interface Rec { id: string; name: string; phone: string; status: string; created_at: string; updated_at: string; balance: number; fuliza: number; airtime: number; site_id: string; }
   const byId = new Map<string, Rec>();
+  // Keyed by phone WITHIN a brand: a phone is only unique per site, so two brands may each own a
+  // marketer with the same number (mirrors the SQL `marketers (phone, site_id)` scoping).
+  const DEF_SITE = "00000000-0000-0000-0000-000000000001";
+  const pkey = (phone: string, siteId?: string) => `${phone}::${siteId ?? DEF_SITE}`;
   const byPhone = new Map<string, string>();
   const ledgers = new Map<string, MarketerLedgerRow[]>();
   const refs = new Map<string, { balance: number; ledgerId: number }>();
@@ -91,20 +95,21 @@ export function makeInMemoryMarketerRepo(): MarketerRepo {
     return row.id;
   };
   return {
-    async create(name: string, phone: string): Promise<MarketerRow> {
-      const existing = byPhone.get(phone);
+    async create(name: string, phone: string, siteId?: string): Promise<MarketerRow> {
+      const site = siteId ?? DEF_SITE;
+      const existing = byPhone.get(pkey(phone, site));
       if (existing) { const m = byId.get(existing)!; m.name = name; m.updated_at = now(); return { id: m.id, name: m.name, phone: m.phone, status: m.status, created_at: m.created_at, updated_at: m.updated_at }; }
       const id = `m-${++mseq}`; const ts = now();
-      const m: Rec = { id, name, phone, status: "active", created_at: ts, updated_at: ts, balance: 0, fuliza: 0, airtime: 0 };
-      byId.set(id, m); byPhone.set(phone, id); ledgers.set(id, []);
+      const m: Rec = { id, name, phone, status: "active", created_at: ts, updated_at: ts, balance: 0, fuliza: 0, airtime: 0, site_id: site };
+      byId.set(id, m); byPhone.set(pkey(phone, site), id); ledgers.set(id, []);
       return { id, name, phone, status: "active", created_at: ts, updated_at: ts };
     },
     async update(id: string, name: string | null, phone: string | null): Promise<MarketerRow> {
       const m = byId.get(id); if (!m) throw new Error("MARKETER_NOT_FOUND");
       if (phone && phone.trim() && phone.trim() !== m.phone) {
-        const other = byPhone.get(phone.trim());
+        const other = byPhone.get(pkey(phone.trim(), m.site_id));
         if (other && other !== id) throw new Error("PHONE_TAKEN");
-        byPhone.delete(m.phone); m.phone = phone.trim(); byPhone.set(m.phone, id);
+        byPhone.delete(pkey(m.phone, m.site_id)); m.phone = phone.trim(); byPhone.set(pkey(m.phone, m.site_id), id);
       }
       if (name && name.trim()) m.name = name.trim();
       m.updated_at = now();
@@ -114,7 +119,12 @@ export function makeInMemoryMarketerRepo(): MarketerRepo {
       return [...byId.values()].sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, limit).map(profileOf);
     },
     async profile(id: string): Promise<MarketerProfile | null> { const m = byId.get(id); return m ? profileOf(m) : null; },
-    async profileByPhone(phone: string): Promise<MarketerProfile | null> { const id = byPhone.get(phone); const m = id ? byId.get(id) : undefined; return m ? profileOf(m) : null; },
+    async profileByPhone(phone: string, siteId?: string): Promise<MarketerProfile | null> {
+      // Site-scoped when a brand is supplied; else first match across brands (single-tenant callers).
+      if (siteId) { const id = byPhone.get(pkey(phone, siteId)); const m = id ? byId.get(id) : undefined; return m ? profileOf(m) : null; }
+      const m = [...byId.values()].find((r) => r.phone === phone);
+      return m ? profileOf(m) : null;
+    },
     async credit(id: string, amountCents: number, ref: string | null, meta: unknown): Promise<number> {
       if (amountCents <= 0) throw new Error("AMOUNT_MUST_BE_POSITIVE");
       if (ref && refs.has(ref)) return refs.get(ref)!.balance;
@@ -139,10 +149,18 @@ export function makeInMemoryMarketerRepo(): MarketerRepo {
     async setAirtime(id: string, amountCents: number): Promise<number> { if (amountCents < 0) throw new Error("AMOUNT_MUST_BE_NONNEGATIVE"); const m = byId.get(id); if (!m) throw new Error("MARKETER_NOT_FOUND"); m.airtime = amountCents; m.updated_at = now(); return amountCents; },
     async statement(id: string, limit: number): Promise<MarketerLedgerRow[]> { return (ledgers.get(id) ?? []).slice().reverse().slice(0, limit); },
     async setPin(id: string, pin: string): Promise<void> { if (!/^\d{4,6}$/.test(pin)) throw new Error("INVALID_PIN"); if (!byId.has(id)) throw new Error("MARKETER_NOT_FOUND"); pins.set(id, pin); },
-    async login(phone: string, pin: string): Promise<string | null> {
-      const id = byPhone.get(phone); if (!id) return null;
-      const m = byId.get(id)!; if (!pins.has(id) || m.status !== "active") return null;
-      return pins.get(id) === pin ? id : null;
+    async login(phone: string, pin: string, siteId?: string): Promise<string | null> {
+      // Mirrors fn_marketer_login (0093): a phone is unique only within a brand, so match the PIN
+      // across every brand holding this phone (or scope to one brand when siteId is given). The PIN
+      // — not a client-supplied brand — identifies the marketer, so a shared phone never leaks.
+      const candidates = [...byId.values()]
+        .filter((m) => m.phone === phone && (siteId == null || m.site_id === siteId))
+        .sort((a, b) => a.created_at.localeCompare(b.created_at));
+      for (const m of candidates) {
+        if (m.status !== "active") continue;
+        if (pins.get(m.id) === pin) return m.id;
+      }
+      return null;
     },
     async changePin(id: string, currentPin: string, newPin: string): Promise<void> {
       if (!/^\d{4,6}$/.test(newPin)) throw new Error("INVALID_PIN");

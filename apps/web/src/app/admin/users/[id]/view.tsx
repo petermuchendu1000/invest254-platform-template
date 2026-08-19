@@ -426,6 +426,7 @@ function ResetBalance({ id }: { id: string }) {
 }
 
 function BalanceAdjust({ id }: { id: string }) {
+  const q = useUser(id);
   const m = useAdjustBalance();
   const clear = useClearBalance();
   const toast = useToast();
@@ -433,6 +434,13 @@ function BalanceAdjust({ id }: { id: string }) {
   const [dir, setDir] = useState<'credit' | 'debit'>('credit');
   const [kind, setKind] = useState<'real' | 'bonus'>('real');
   const [reason, setReason] = useState('');
+
+  // Marketer/demo accounts spend the DEMO bucket (their real_balance is 0 and non-withdrawable).
+  // The DB routes a `real` adjustment on a marketer straight to demo_balance
+  // (fn_admin_adjust_balance_kind / fn_admin_clear_balance), so we keep the wire value `real` but
+  // relabel the control as "Demo" so the operator can SEE which bucket they are crediting/debiting.
+  const isMarketer = q.data?.isMarketer ?? false;
+  const spendableLabel = isMarketer ? 'Demo' : 'Real';
 
   const cents = Math.round(Number(amount) * 100);
   const valid = Number.isFinite(cents) && cents > 0 && reason.trim().length > 0;
@@ -473,7 +481,7 @@ function BalanceAdjust({ id }: { id: string }) {
             onChange={(e) => setKind(e.target.value as 'real' | 'bonus')}
             className="h-10 rounded-xl border border-border bg-surface-2 px-3 text-sm text-fg outline-none focus:border-accent"
           >
-            <option value="real">Real</option>
+            <option value="real">{isMarketer ? 'Demo (spendable)' : 'Real'}</option>
             <option value="bonus">Bonus</option>
           </select>
           <select
@@ -499,7 +507,7 @@ function BalanceAdjust({ id }: { id: string }) {
           className="h-10 w-full rounded-xl border border-border bg-surface-2 px-3 text-sm text-fg outline-none focus:border-accent"
         />
         <ConfirmButton
-          label={`${dir === 'credit' ? 'Credit' : 'Debit'} ${kind} wallet`}
+          label={`${dir === 'credit' ? 'Credit' : 'Debit'} ${kind === 'real' ? spendableLabel.toLowerCase() : 'bonus'} wallet`}
           confirmLabel="Confirm adjustment"
           variant={dir === 'credit' ? 'primary' : 'down'}
           size="md"
@@ -509,11 +517,15 @@ function BalanceAdjust({ id }: { id: string }) {
         />
         <div className="flex flex-wrap gap-2 border-t border-border pt-3">
           <span className="w-full text-xs font-semibold text-muted">Clear balance (needs a reason)</span>
-          <ConfirmButton label="Clear real" confirmLabel="Confirm clear real" variant="down" size="sm" busy={clear.isPending} disabled={!clearValid} onConfirm={() => runClear('real')} />
+          <ConfirmButton label={`Clear ${spendableLabel.toLowerCase()}`} confirmLabel={`Confirm clear ${spendableLabel.toLowerCase()}`} variant="down" size="sm" busy={clear.isPending} disabled={!clearValid} onConfirm={() => runClear('real')} />
           <ConfirmButton label="Clear bonus" confirmLabel="Confirm clear bonus" variant="down" size="sm" busy={clear.isPending} disabled={!clearValid} onConfirm={() => runClear('bonus')} />
           <ConfirmButton label="Clear both" confirmLabel="Confirm clear both" variant="down" size="sm" busy={clear.isPending} disabled={!clearValid} onConfirm={() => runClear('both')} />
         </div>
-        <p className="text-xs text-muted">Adjusts/clears the chosen wallet with an immutable ledger entry. No overdraw on debit.</p>
+        <p className="text-xs text-muted">
+          {isMarketer
+            ? 'This is a demo/marketer account: the “Demo (spendable)” option credits or debits the non-withdrawable demo balance the account actually plays on (its real wallet stays 0). Bonus is unaffected.'
+            : 'Adjusts/clears the chosen wallet with an immutable ledger entry. No overdraw on debit.'}
+        </p>
       </Card>
     </Section>
   );

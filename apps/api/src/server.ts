@@ -337,7 +337,18 @@ async function buildDeps(): Promise<ApiDeps> {
     platformGate,
     resolveHandle,
     walletBalance: async (userId: string, siteId?: string): Promise<WalletBalance> => {
-      const r = await q.query("select real_balance, bonus_balance, currency from wallets where user_id = $1 and ($2::uuid is null or site_id = $2)", [userId, siteId ?? null]);
+      // Spendable balance must match the game engine's source of truth (PgGameRepository
+      // .getWalletSnapshot, migration 0084): marketer/demo accounts spend the DEMO bucket, players
+      // spend real_balance. Previously this returned real_balance unconditionally, so a marketer's
+      // /wallet reported 0 while the game WS (correctly) showed their demo balance. Any refetch of
+      // ['wallet'] — e.g. the invalidation fired by a withdrawal — then clobbered the live balance
+      // with 0 until a full refresh re-seeded it from the socket. Surfacing demo as `real` here
+      // makes the REST wallet authoritative and consistent with the socket.
+      const r = await q.query(
+        `select case when fn_is_marketer_account(user_id) then demo_balance else real_balance end as real_balance,
+                bonus_balance, currency
+           from wallets where user_id = $1 and ($2::uuid is null or site_id = $2)`,
+        [userId, siteId ?? null]);
       const toCents = (v: unknown): number => (typeof v === "string" ? Number(v) : (v as number)) || 0;
       const base = !r.rows.length
         ? { real: 0, bonus: 0, currency: "KES" }
