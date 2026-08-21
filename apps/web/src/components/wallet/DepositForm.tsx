@@ -3,7 +3,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { centsToKes, formatKes, kesToCents } from '@invest254/shared/money';
-import { bonusPctForDeposit } from '@invest254/shared/bonus';
 import { normalizeMsisdn, MIN_DEPOSIT_CENTS } from '@invest254/shared/payments';
 import { Input } from '@/components/ui/Input';
 import { Button } from '@/components/ui/Button';
@@ -195,23 +194,8 @@ export function DepositForm() {
         className="text-lg font-semibold"
       />
 
-      {/* Deposit bonus preview (tiered: 50% / 25% / 15%, 10x wagering — disclosed upfront) */}
-      {(() => {
-        const cents = kesToCents(Number(amount) || 0);
-        const pct = cents > 0 ? bonusPctForDeposit(cents) : 0;
-        if (pct <= 0) return null;
-        const bonusCents = Math.floor(cents * pct);
-        return (
-          <div className="rounded-xl border border-up/40 bg-up/10 px-3.5 py-3 text-sm">
-            <span className="font-semibold text-up">
-              +{formatKes(bonusCents)} bonus ({Math.round(pct * 100)}%)
-            </span>
-            <p className="mt-0.5 text-xs text-muted">
-              Credited instantly as bonus balance. Wager it 10× to convert it to withdrawable cash.
-            </p>
-          </div>
-        );
-      })()}
+      {/* Deposit-bonus preview removed: the only bonus in the system is the sign-up welcome bonus
+          (see docs/31). Deposit bonuses are not granted, so we no longer advertise one here. */}
 
       {/* M-Pesa number: only collected once signed in (prefilled from the account, read-only unless changed) */}
       {token ? (

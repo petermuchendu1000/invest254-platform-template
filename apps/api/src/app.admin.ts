@@ -146,10 +146,11 @@ function listLimit(ctx: Ctx, def: number, max = 100): number {
   return Math.min(Math.floor(n), max);
 }
 
-/** Parse a partial game_config patch (J5): numeric fields only, at least one, integers where required. */
+/** Parse a partial game_config patch (J5): numeric fields only, at least one, integers where required.
+ *  0095: `poolMode` (boolean) is also accepted — it flips sites.pool_mode via fn_admin_set_pool_mode. */
 function parseGameConfigPatch(ctx: Ctx): GameConfigPatch {
   const body = ctx.body && typeof ctx.body === "object" ? (ctx.body as Record<string, unknown>) : {};
-  const patch: Record<string, number> = {};
+  const patch: Record<string, number | boolean> = {};
   for (const key of CONFIG_FIELDS) {
     const raw = body[key];
     if (raw === undefined || raw === null) continue;
@@ -157,6 +158,10 @@ function parseGameConfigPatch(ctx: Ctx): GameConfigPatch {
     if (!Number.isFinite(n)) throw new ApiError("VALIDATION", `${key} must be a finite number`, 400);
     if (CONFIG_INT_FIELDS.has(key) && !Number.isInteger(n)) throw new ApiError("VALIDATION", `${key} must be an integer (cents/seconds/ms)`, 400);
     patch[key] = n;
+  }
+  if (body.poolMode !== undefined && body.poolMode !== null) {
+    if (typeof body.poolMode !== "boolean") throw new ApiError("VALIDATION", "poolMode must be a boolean", 400);
+    patch.poolMode = body.poolMode;
   }
   if (Object.keys(patch).length === 0) throw new ApiError("VALIDATION", "provide at least one config field to update", 400);
   return patch as GameConfigPatch;

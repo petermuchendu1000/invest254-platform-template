@@ -12,6 +12,8 @@ export interface AuthResult {
   role: 'player' | 'marketer' | 'admin' | 'superadmin' | 'platform_superadmin';
   /** The brand (site_id) this token is scoped to, echoed when the account is brand-scoped. */
   site?: string;
+  /** Cents credited by the one-time sign-up welcome bonus (0094). Present on register only when > 0. */
+  welcomeBonusCents?: number;
 }
 
 export interface MeDto {

@@ -151,6 +151,54 @@ function GameBody() {
                 </span>
               </span>
             </div>
+            <SuperadminOnly>
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-surface-2 p-3">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-fg">Pool mode (players)</p>
+                  <p className="mt-0.5 text-xs text-muted">
+                    Default for every brand. Player trades are decided by the daily withdrawal pool; marketers always
+                    stay on the statistical path with their overrides. Applies live — no redeploy.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={cfg.poolMode}
+                  aria-label="Toggle pool mode"
+                  disabled={update.isPending}
+                  onClick={() =>
+                    update.mutate(
+                      { poolMode: !cfg.poolMode },
+                      {
+                        onSuccess: (row) =>
+                          toast.push({
+                            tone: 'success',
+                            title: row.poolMode ? 'Pool mode ON' : 'Pool mode OFF',
+                            description: row.poolMode
+                              ? 'Player trades are now governed by the daily withdrawal pool.'
+                              : 'Player trades are back on the statistical brain.',
+                          }),
+                        onError: (e) =>
+                          toast.push({
+                            tone: 'error',
+                            title: 'Could not toggle pool mode',
+                            description: e instanceof ApiError ? e.message : 'Try again shortly.',
+                          }),
+                      },
+                    )
+                  }
+                  className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors disabled:opacity-50 ${
+                    cfg.poolMode ? 'bg-accent' : 'bg-border'
+                  }`}
+                >
+                  <span
+                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                      cfg.poolMode ? 'translate-x-6' : 'translate-x-1'
+                    }`}
+                  />
+                </button>
+              </div>
+            </SuperadminOnly>
             {cfg.poolMode ? (
               <div className="rounded-xl border border-accent/40 bg-accent/5 p-3 text-xs text-muted">
                 <span className="font-semibold text-fg">Pool mode is ON.</span> Payouts are governed by the{' '}

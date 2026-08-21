@@ -68,10 +68,12 @@ export function BetPanel() {
     return kesToCents(n);
   }, [stake]);
 
-  const balanceReal = wallet?.real ?? 0;
+  // Bonus funds are stakeable (bonus-first; migration 0094), so affordability counts real + bonus.
+  // This is what lets a KES 200 welcome bonus + a small top-up reach the min stake.
+  const spendable = (wallet?.real ?? 0) + (wallet?.bonus ?? 0);
   const validStake = Number.isInteger(stakeCents) && stakeCents >= minStakeCents;
   const overMax = maxStakeCents !== undefined && Number.isFinite(stakeCents) && stakeCents > maxStakeCents;
-  const overBalance = !!token && Number.isFinite(stakeCents) && stakeCents > balanceReal;
+  const overBalance = !!token && Number.isFinite(stakeCents) && stakeCents > spendable;
   const connecting = status !== 'open';
 
   // Editing the stake invalidates the "funds added" hint from a previous top-up.
@@ -82,10 +84,10 @@ export function BetPanel() {
   // places the trade -- we never auto-fire real money, and we never demand an extra tap.
   useEffect(() => {
     if (!pendingTrade || activePosition || status !== 'open') return;
-    if (!Number.isFinite(balanceReal) || balanceReal < pendingTrade.stakeCents) return;
+    if (!Number.isFinite(spendable) || spendable < pendingTrade.stakeCents) return;
     setResumeDir(pendingTrade.direction);
     clearPending();
-  }, [pendingTrade, activePosition, status, balanceReal, clearPending]);
+  }, [pendingTrade, activePosition, status, spendable, clearPending]);
 
   const errorHint = (() => {
     if (!Number.isFinite(stakeCents)) return null;

@@ -49,7 +49,7 @@ export function WalletWidget() {
         <div key={b.bonusId} className="flex flex-col gap-1 border-t border-border pt-3">
           <div className="flex items-center justify-between text-sm">
             <span className="text-muted">
-              Deposit bonus <Money cents={b.amount} /> ({b.wageringX}× wagering)
+              Bonus <Money cents={b.amount} /> ({b.wageringX}× wagering)
             </span>
           </div>
           <WageringBar wagered={b.wagered} required={b.required} />

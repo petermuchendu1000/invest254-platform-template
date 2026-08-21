@@ -117,7 +117,8 @@ export function registerAuthRoutes(router: Router, deps: ApiDeps): void {
     const s = await domain(() => deps.auth.register({ phone, username, password,
       ...(referralCode !== undefined ? { referralCode } : {}),
       ...(siteId ? { siteId } : {}) }));
-    return { status: 201, body: { token: s.token, userId: s.userId, role: s.role, ...(s.site ? { site: s.site } : {}) } };
+    return { status: 201, body: { token: s.token, userId: s.userId, role: s.role, ...(s.site ? { site: s.site } : {}),
+      ...(s.welcomeBonusCents ? { welcomeBonusCents: s.welcomeBonusCents } : {}) } };
   });
 
   router.post(`${BASE}/auth/login`, authLimit, async (ctx: Ctx) => {

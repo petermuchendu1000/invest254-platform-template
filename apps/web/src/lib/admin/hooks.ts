@@ -8,7 +8,7 @@ import {
 } from '@tanstack/react-query';
 import { adminApi } from '@/lib/admin/endpoints';
 import type { Paginated } from '@/lib/api/types';
-import type { MpesaConfigPatch } from '@/lib/admin/types';
+import type { MpesaConfigPatch, GameConfigPatch } from '@/lib/admin/types';
 import { useSession } from '@/lib/auth/session';
 
 /** Bearer token for admin calls. */
@@ -307,7 +307,7 @@ export function useUpdateGameConfig() {
   const t = useTok();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (patch: Record<string, number>) => adminApi.updateGameConfig(t, patch),
+    mutationFn: (patch: GameConfigPatch) => adminApi.updateGameConfig(t, patch),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['admin', 'game-config'] });
       void qc.invalidateQueries({ queryKey: ['admin', 'rtp'] });

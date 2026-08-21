@@ -15,7 +15,6 @@
     "./curve": "./src/curve.ts",
     "./engagement": "./src/engagement.ts",
     "./activity": "./src/activity.ts",
-    "./bonus": "./src/bonus.ts",
     "./chatfilter": "./src/chatfilter.ts"
   }
 }

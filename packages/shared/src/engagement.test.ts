@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   variableRatioMultiplier, winMultiplier, solveTruncExpBeta, isNearMiss, isLossDisguisedAsWin, presentOutcome,
-  bonusPctForDeposit, DEFAULT_BONUS_TIERS, DEFAULT_WIN_SPREAD,
+  DEFAULT_WIN_SPREAD,
 } from "./engagement.js";
 import { SeededRng } from "./prng.js";
 
@@ -157,23 +157,6 @@ test("presentOutcome: headlines are truthful about money", () => {
   assert.equal(presentOutcome({ result: "win", multiplier: 1.1, signedMove: 0.5, tau: 0.1 }).headline, "small_win");
   assert.equal(presentOutcome({ result: "loss", multiplier: 0, signedMove: 0.095, tau: 0.1 }).headline, "near_miss");
   assert.equal(presentOutcome({ result: "loss", multiplier: 0, signedMove: -0.4, tau: 0.1 }).headline, "loss");
-});
-
-test("bonusPctForDeposit: tier boundaries match the published offer", () => {
-  // below KES 1,000 -> nothing
-  assert.equal(bonusPctForDeposit(99_999), 0);
-  // KES 1,000–5,000 -> 50%
-  assert.equal(bonusPctForDeposit(100_000), 0.5);
-  assert.equal(bonusPctForDeposit(500_000), 0.5);
-  // >5,000–10,000 -> 25%
-  assert.equal(bonusPctForDeposit(500_001), 0.25);
-  assert.equal(bonusPctForDeposit(1_000_000), 0.25);
-  // >10,000 -> 15%
-  assert.equal(bonusPctForDeposit(1_000_001), 0.15);
-  assert.equal(bonusPctForDeposit(50_000_000), 0.15);
-  // custom tiers honored
-  assert.equal(bonusPctForDeposit(100_000, [{ minCents: 0, maxCents: null, pct: 1 }]), 1);
-  assert.ok(DEFAULT_BONUS_TIERS.length === 3);
 });
 
 test("win spread defaults: small share is the majority", () => {

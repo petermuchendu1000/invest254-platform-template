@@ -166,6 +166,3 @@ export function presentOutcome(input: {
 export function positionRng(serverSeed: string, nonce: number): SeededRng {
   return new SeededRng(serverSeed, `engage:${nonce}`);
 }
-
-/** Wagering-tier helpers live in ./bonus.js (dependency-free, browser-safe). */
-export { DEFAULT_BONUS_TIERS, bonusPctForDeposit, type BonusTier } from "./bonus.js";

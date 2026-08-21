@@ -267,6 +267,9 @@ export interface GameConfigPatch {
   driftBias?: number;
   volatility?: number;
   targetWinRate?: number;
+  /** docs/25 + 0095: toggle the brand between the pool brain (true, default) and the
+   *  statistical brain (false). Superadmin only; applies live with no redeploy. */
+  poolMode?: boolean;
 }
 /** docs/25: a brand's daily withdrawal-pool budget (EAT day). availableCents = amount - paid - reserved. */
 export interface WithdrawalPoolRow {

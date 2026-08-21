@@ -53,7 +53,9 @@ export async function verifyPassword(password: string, stored: string): Promise<
 }
 
 /** A successful authentication: a signed token plus the verified identity. */
-export interface AuthSession { token: string; userId: string; role: string; site?: string; mfaEnrolmentRequired?: boolean; }
+export interface AuthSession { token: string; userId: string; role: string; site?: string; mfaEnrolmentRequired?: boolean;
+  /** Cents credited by the one-time sign-up welcome bonus (0094). Present on register only when > 0. */
+  welcomeBonusCents?: number; }
 
 /** Profile view returned by `/me`. */
 export interface Profile {
@@ -138,7 +140,14 @@ export class AuthService {
     const hash = await hashPassword(input.password);
     const { userId, role } = await this.repo.register(phone, input.username, hash, referralCode, input.siteId);
     const token = await this.issueToken(userId, role, input.siteId);
-    return { token, userId, role, ...(input.siteId ? { site: input.siteId } : {}) };
+    // One-time welcome bonus (0094). Idempotent + config-aware in the DB, so a transient failure here
+    // never blocks sign-up and can be safely retried; we surface the credited amount so the client can
+    // celebrate it with the winning-card animation.
+    let welcomeBonusCents = 0;
+    try { welcomeBonusCents = await this.repo.grantWelcomeBonus(userId); }
+    catch { welcomeBonusCents = 0; /* non-fatal: registration already succeeded */ }
+    return { token, userId, role, ...(input.siteId ? { site: input.siteId } : {}),
+      ...(welcomeBonusCents > 0 ? { welcomeBonusCents } : {}) };
   }
 
   /**

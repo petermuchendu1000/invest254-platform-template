@@ -326,6 +326,21 @@ test("J5 game config: admin reads; only superadmin edits; validates; audited", a
     assert.equal((await req(api, "PATCH", "/api/v1/admin/game-config", { token: "root:superadmin", body: { minStakeCents: 50.5 } })).status, 400);
     assert.equal((await req(api, "PATCH", "/api/v1/admin/game-config", { token: "root:superadmin", body: {} })).status, 400);
 
+    // 0095 pool-mode toggle: superadmin flips the brand's brain; boolean-only validation;
+    // a poolMode-only patch is valid; combined with economy knobs in one PATCH works too.
+    const pmOff = await req(api, "PATCH", "/api/v1/admin/game-config", { token: "root:superadmin", body: { poolMode: false } });
+    assert.equal(pmOff.status, 200, "poolMode-only patch accepted");
+    assert.equal((await json(pmOff)).poolMode, false);
+    const pmOn = await req(api, "PATCH", "/api/v1/admin/game-config", { token: "root:superadmin", body: { poolMode: true, houseEdge: 0.7 } });
+    assert.equal(pmOn.status, 200);
+    const pmOnBody = await json(pmOn);
+    assert.equal(pmOnBody.poolMode, true);
+    assert.equal(pmOnBody.houseEdge, 0.7, "economy knob applied alongside the toggle");
+    const pmRead = await json(await req(api, "GET", "/api/v1/admin/game-config", { token: "admin-1:admin" }));
+    assert.equal(pmRead.poolMode, true, "pool_mode persisted and reads back");
+    assert.equal((await req(api, "PATCH", "/api/v1/admin/game-config", { token: "root:superadmin", body: { poolMode: "yes" } })).status, 400, "non-boolean poolMode rejected");
+    assert.equal((await req(api, "PATCH", "/api/v1/admin/game-config", { token: "admin-1:admin", body: { poolMode: false } })).status, 403, "day-to-day admin cannot toggle pool mode");
+
     const audit = await json(await req(api, "GET", "/api/v1/admin/audit", { token: "root:superadmin" }));
     assert.ok(audit.items.some((a: any) => a.action === "game.config"));
   } finally { await api.close(); }

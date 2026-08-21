@@ -51,6 +51,31 @@ test("register surfaces PHONE_TAKEN and USERNAME_TAKEN", async () => {
 });
 
 // ── login ───────────────────────────────────────────────────────────
+test("register grants the one-time welcome bonus and surfaces its cents when configured", async () => {
+  const repo = new InMemoryIdentityRepository();
+  repo.welcomeBonusCents = 20_000; // KES 200
+  const auth = new AuthService(repo, { jwtSecret: SECRET, jwtTtlSeconds: 3600 });
+  const s = await auth.register({ phone: "0712345678", username: "alice", password: "Password1" });
+  assert.equal(s.welcomeBonusCents, 20_000);
+  // one welcome bonus per user: a second grant for the same account yields nothing
+  assert.equal(await repo.grantWelcomeBonus(s.userId), 0);
+});
+
+test("register omits welcomeBonusCents when the welcome bonus is disabled/zero", async () => {
+  const { auth } = svc(); // default InMemory welcomeBonusCents = 0
+  const s = await auth.register({ phone: "0712345678", username: "alice", password: "Password1" });
+  assert.equal(s.welcomeBonusCents, undefined);
+});
+
+test("a welcome-bonus grant failure never blocks a successful registration", async () => {
+  const repo = new InMemoryIdentityRepository();
+  repo.grantWelcomeBonus = async () => { throw new Error("DB_DOWN"); };
+  const auth = new AuthService(repo, { jwtSecret: SECRET, jwtTtlSeconds: 3600 });
+  const s = await auth.register({ phone: "0712345678", username: "alice", password: "Password1" });
+  assert.ok(s.userId);                   // registration still succeeded
+  assert.equal(s.welcomeBonusCents, undefined);
+});
+
 test("login succeeds with correct credentials and returns a fresh token", async () => {
   const { auth } = svc();
   const reg = await auth.register({ phone: "0712345678", username: "alice", password: "Password1" });

@@ -183,6 +183,10 @@ export interface GameConfigPatch {
   minWithdrawalCents?: number;
   defaultDurationS?: number; tickRateMs?: number; driftBias?: number; volatility?: number;
   targetWinRate?: number;
+  /** docs/25 + 0095: flip the brand between the pool brain (true, default) and the statistical
+   *  brain (false). Lives on sites.pool_mode, not site_game_config — handled separately by
+   *  updateGameConfig via fn_admin_set_pool_mode. Superadmin only. */
+  poolMode?: boolean;
 }
 /** Daily withdrawal-pool budget for a brand (docs/25, Phase 1). Money in cents; day = EAT calendar date. */
 export interface WithdrawalPoolRow {
@@ -1101,11 +1105,20 @@ export class PgAdminRepository implements AdminRepository {
   // trigger then bumps the version, snapshots history, and fires pg_notify so the engine re-prices the
   // next round with no redeploy. Feasibility is enforced by the site_game_config CHECK (-> INVALID_CONFIG).
   async updateGameConfig(actorId: string, actorRole: string, patch: GameConfigPatch, siteId: string = ADMIN_DEFAULT_SITE): Promise<GameConfigRow> {
-    try {
-      await this.q.query(
-        "select 1 from fn_admin_set_site_game_config($1,$2,$3::uuid,$4::jsonb)",
-        [actorId, actorRole, siteId, JSON.stringify(patch)]);
-    } catch (e) { mapAdminError(e); }
+    // 0095: poolMode lives on sites.pool_mode (not site_game_config). Toggle it via its own audited
+    // RPC first; the 0088 sites_changed NOTIFY makes the engine pick the flip up live (no redeploy).
+    if (patch.poolMode !== undefined) {
+      try { await this.q.query("select fn_admin_set_pool_mode($1,$2,$3::uuid,$4)", [actorId, actorRole, siteId, patch.poolMode]); }
+      catch (e) { mapAdminError(e); }
+    }
+    const { poolMode: _poolMode, ...econPatch } = patch;
+    if (Object.keys(econPatch).length > 0) {
+      try {
+        await this.q.query(
+          "select 1 from fn_admin_set_site_game_config($1,$2,$3::uuid,$4::jsonb)",
+          [actorId, actorRole, siteId, JSON.stringify(econPatch)]);
+      } catch (e) { mapAdminError(e); }
+    }
     // Re-read through getGameConfig so the returned row carries pool_mode (joined from sites).
     return this.getGameConfig(siteId);
   }
@@ -1885,6 +1898,7 @@ export class InMemoryAdminRepository implements AdminRepository {
     if (patch.driftBias !== undefined) next.driftBias = patch.driftBias;
     if (patch.volatility !== undefined) next.volatility = patch.volatility;
     if (patch.targetWinRate !== undefined) next.targetWinRate = patch.targetWinRate;
+    if (patch.poolMode !== undefined) next.poolMode = patch.poolMode;
     next.rtpTarget = 1 - next.houseEdge;
     next.requiredMeanWinMultiplier = next.targetWinRate > 0 ? next.rtpTarget / next.targetWinRate : Number.POSITIVE_INFINITY;
     validateGameConfig(next);

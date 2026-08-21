@@ -81,6 +81,12 @@ export interface IdentityRepository {
    * never blocks signup. Throws PHONE_TAKEN / USERNAME_TAKEN / REGISTRATION_CONFLICT.
    */
   register(phone: string, username: string, passwordHash: string, referralCode?: string, siteId?: string): Promise<RegisteredUser>;
+  /**
+   * Grant the one-time sign-up welcome bonus (migration 0094 fn_grant_welcome_bonus). Idempotent,
+   * brand + config aware, and skips demo/marketer accounts. Returns the cents credited to
+   * bonus_balance (0 = nothing granted). A business no-op returns 0 rather than throwing.
+   */
+  grantWelcomeBonus(userId: string): Promise<number>;
   /** Load credential + account state by (normalized) phone within a brand, or null. `siteId` scopes it (multi-tenant). */
   findByPhone(phone: string, siteId?: string): Promise<CredentialRecord | null>;
   /**
@@ -178,6 +184,11 @@ export class PgIdentityRepository implements IdentityRepository, AffiliateReposi
       const x = r.rows[0];
       return { userId: String(x.user_id), role: String(x.role) };
     } catch (e) { mapPgError(e); }
+  }
+  async grantWelcomeBonus(userId: string): Promise<number> {
+    // Idempotent + config/brand aware; returns cents credited (0 = none). service-role RPC (0094).
+    const r = await this.q.query("select public.fn_grant_welcome_bonus($1) as cents", [userId]);
+    return Number(r.rows[0]?.cents ?? 0);
   }
   async enrollAffiliate(userId: string): Promise<AffiliateView> {
     try {
@@ -420,6 +431,15 @@ export class InMemoryIdentityRepository implements IdentityRepository, Affiliate
   private readonly payouts = new Map<string, MemPayout>();              // payoutId -> payout
   private readonly mfa = new Map<string, { secret: string; enabled: boolean; recoveryCodeHashes: string[] }>();
   private seq = 0;
+  /** Test knob: cents the in-memory welcome-bonus grant credits (default 0 = inert in tests). */
+  welcomeBonusCents = 0;
+  private readonly welcomeGranted = new Set<string>();
+  /** Mirror of fn_grant_welcome_bonus: idempotent, returns cents granted (0 = none). */
+  async grantWelcomeBonus(userId: string): Promise<number> {
+    if (this.welcomeBonusCents <= 0 || this.welcomeGranted.has(userId)) return 0;
+    this.welcomeGranted.add(userId);
+    return this.welcomeBonusCents;
+  }
   async register(phone: string, username: string, passwordHash: string, referralCode?: string, siteId?: string): Promise<RegisteredUser> {
     if (phone.length < 8) throw new Error("INVALID_PHONE");
     if (username.length < 3) throw new Error("INVALID_USERNAME");

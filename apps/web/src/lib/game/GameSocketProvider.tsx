@@ -350,6 +350,9 @@ export function GameSocketProvider({ children }: { children: React.ReactNode }) 
           if (typeof d.balance === 'number') setWalletReal(d.balance);
           void qc.invalidateQueries({ queryKey: ['positions'] });
           void qc.invalidateQueries({ queryKey: ['ledger'] });
+          // Refresh real + bonus + wagering progress: a settle can spend/convert bonus funds
+          // (migration 0094), and only /wallet carries the authoritative bonus + wagering figures.
+          void qc.invalidateQueries({ queryKey: ['wallet'] });
 
           const won = d.result === 'win';
           // stake is recoverable from the authoritative figures: payout − pnl.
