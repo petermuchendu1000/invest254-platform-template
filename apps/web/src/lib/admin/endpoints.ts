@@ -16,6 +16,7 @@ import type {
   AdminTransactionRow,
   AdminOverview,
   AdminPayoutRow,
+  AdminCommissionPayoutRow,
   AdminUserActivityRow,
   AdminUserDetail,
   AdminUserRow,
@@ -150,8 +151,8 @@ export const adminApi = {
     }),
   approvePayout: (t: string, id: string) =>
     apiFetch<unknown>(`/admin/affiliate/payouts/${id}/approve`, { method: 'POST', token: t }),
-  rejectPayout: (t: string, id: string) =>
-    apiFetch<unknown>(`/admin/affiliate/payouts/${id}/reject`, { method: 'POST', token: t }),
+  rejectPayout: (t: string, id: string, reason?: string) =>
+    apiFetch<unknown>(`/admin/affiliate/payouts/${id}/reject`, { method: 'POST', token: t, body: reason ? { reason } : {} }),
   // Bulk payout moderation (partial success per row; approve dispatches M-Pesa B2C each).
   bulkPayouts: (t: string, body: { action: 'approve' | 'reject'; payoutIds: string[] }) =>
     apiFetch<AdminBulkResult>('/admin/affiliate/payouts/bulk', { method: 'POST', token: t, body }),
@@ -162,6 +163,18 @@ export const adminApi = {
     apiFetch<MarketerExpenseRow>('/admin/affiliate/expenses', { method: 'POST', token: t, body }),
   marketerExpenses: (t: string, marketerUserId: string) =>
     apiFetch<MarketerExpensesResponse>('/admin/affiliate/expenses', { token: t, query: { marketerUserId } }),
+  // Deposit-referral commission payouts (0079) — SEPARATE queue from the GGR affiliate payouts.
+  commissionPayouts: (t: string, status?: string) =>
+    apiFetch<{ items: AdminCommissionPayoutRow[] }>('/admin/commission-payouts', {
+      token: t,
+      query: { status: status && status !== 'all' ? status : undefined, limit: 200 },
+    }),
+  approveCommissionPayout: (t: string, id: string) =>
+    apiFetch<unknown>(`/admin/commission-payouts/${id}/approve`, { method: 'POST', token: t }),
+  markCommissionPayoutPaid: (t: string, id: string, ref?: string) =>
+    apiFetch<unknown>(`/admin/commission-payouts/${id}/paid`, { method: 'POST', token: t, body: ref ? { ref } : {} }),
+  rejectCommissionPayout: (t: string, id: string, reason?: string) =>
+    apiFetch<unknown>(`/admin/commission-payouts/${id}/reject`, { method: 'POST', token: t, body: reason ? { reason } : {} }),
 
   // Game config / RTP / seeds
   gameConfig: (t: string) => apiFetch<GameConfigRow>('/admin/game-config', { token: t }),

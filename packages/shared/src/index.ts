@@ -6,6 +6,7 @@ export * from "./activity.js";
 export * from "./chatfilter.js";
 export * from "./payments.js";
 export * from "./credentials.js";
+export * from "./security-questions.js";
 export * from "./totp.js";
 export * from "./config.js";
 export * from "./types.js";

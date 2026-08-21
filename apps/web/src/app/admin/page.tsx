@@ -1,11 +1,12 @@
 'use client';
 
 import { useMemo } from 'react';
+import Link from 'next/link';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { Money } from '@/components/ui/Money';
 import { useSession } from '@/lib/auth/session';
 import { PageHeader, StatCard, Section, TableWrap, Th, Td, Empty } from '@/components/admin/ui';
-import { AreaChart, GroupedBars, ChartCard, LegendDot, KpiCard, kesCompact, type Point } from '@/components/admin/charts';
+import { KpiCard, kesCompact, type Point } from '@/components/admin/charts';
 import { useOverview, useRtp, useReportDaily } from '@/lib/admin/hooks';
 import { RealCashRtpPanel, ConfigChangeReviewPanel } from '@/components/admin/EconomyIntegrityPanels';
 
@@ -41,16 +42,20 @@ export default function AdminOverviewPage() {
         <Empty title="Couldn't load overview" description="Check your connection and try again." />
       ) : (
         <>
+          {/* Compact users summary — the full population table + per-user actions live on /admin/users. */}
           <Section title="Users">
-            <div className="card-grid grid grid-cols-2 gap-3 sm:grid-cols-4">
-              <StatCard label="Total users" value={o.data.users.total} hint={`${o.data.users.active} active`} />
-              <StatCard label="Players" value={o.data.users.players} />
-              <StatCard label="Marketers" value={o.data.users.marketers} />
-              <StatCard
-                label="Suspended / banned"
-                value={`${o.data.users.suspended} / ${o.data.users.banned}`}
-                tone={o.data.users.banned > 0 ? 'down' : 'default'}
-              />
+            <div className="flex flex-col gap-2">
+              <div className="grid grid-cols-2 gap-3">
+                <StatCard label="Total users" value={o.data.users.total} hint={`${o.data.users.active} active · ${o.data.users.players} players · ${o.data.users.marketers} marketers`} />
+                <StatCard
+                  label="Suspended / banned"
+                  value={`${o.data.users.suspended} / ${o.data.users.banned}`}
+                  tone={o.data.users.banned > 0 ? 'down' : 'default'}
+                />
+              </div>
+              <Link href="/admin/users" className="self-start text-xs font-medium text-accent hover:underline">
+                Manage all users (players, marketers, staff) →
+              </Link>
             </div>
           </Section>
 
@@ -198,29 +203,11 @@ function TrendsSection() {
             <KpiCard label="Net revenue (GGR)" value={kesCompact(ggrTotal)} series={ggr} tone={ggrTotal >= 0 ? 'up' : 'down'} deltaPct={deltaPct(ggr)} />
           </div>
 
-          {/* Two charts, each answering a distinct question the KPI totals can't: daily cash in-vs-out,
-              and the shape of profitability over time (incl. any loss days below the zero line). */}
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-            <ChartCard
-              title="Cash flow — daily"
-              readout={`net ${kesCompact(sum(deposits) - sum(withdrawals))}`}
-              legend={
-                <>
-                  <LegendDot tone="up" label="Deposits" />
-                  <LegendDot tone="down" label="Withdrawals" />
-                </>
-              }
-            >
-              <GroupedBars
-                a={{ label: 'Deposits', points: deposits, tone: 'up' }}
-                b={{ label: 'Withdrawals', points: withdrawals, tone: 'down' }}
-              />
-            </ChartCard>
-
-            <ChartCard title="Net revenue (GGR) — daily" readout={kesCompact(ggrTotal)}>
-              <AreaChart points={ggr} tone={ggrTotal >= 0 ? 'up' : 'down'} />
-            </ChartCard>
-          </div>
+          {/* Full daily cash-flow + GGR charts and per-day/per-player breakdowns live on Reports —
+              linked here (not duplicated) so the Overview stays a compact launchpad. */}
+          <Link href="/admin/reports" className="self-start text-xs font-medium text-accent hover:underline">
+            Full daily / date-range breakdowns → Reports
+          </Link>
         </div>
       )}
     </Section>

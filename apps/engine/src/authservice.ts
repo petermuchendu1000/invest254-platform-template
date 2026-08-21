@@ -1,8 +1,37 @@
 import { randomBytes, scrypt as _scrypt, timingSafeEqual, type ScryptOptions } from "node:crypto";
 import { SignJWT } from "jose";
 import { validatePassword, validateUsername, validateReferralCode, normalizeMsisdn,
-  generateTotpSecret, verifyTotp, otpauthUrl, generateRecoveryCodes, normalizeRecoveryCode } from "@invest254/shared";
-import type { IdentityRepository, MfaRecord, CredentialRecord } from "./identity.js";
+  generateTotpSecret, verifyTotp, otpauthUrl, generateRecoveryCodes, normalizeRecoveryCode,
+  normalizeSecurityAnswer, validateSecurityAnswerSet, isValidSecurityQuestionKey,
+  SECURITY_ANSWERS_REQUIRED } from "@invest254/shared";
+import type { IdentityRepository, MfaRecord, CredentialRecord, SecurityAnswerHash } from "./identity.js";
+
+/**
+ * Roles for which a password reset is a knowledge-second-factor gate (0097). These accounts run the
+ * back office (approve withdrawals, adjust balances, change RTP), so a phone-only reset is account
+ * takeover. NOTE the production role set is player/marketer/admin/platform_superadmin — there is no
+ * literal "superadmin" row today, but it is included for forward-compatibility with ROLE_RANK, and
+ * platform_superadmin (the real top role) MUST be here or the actual superadmin goes unprotected.
+ */
+export const PRIVILEGED_ROLES: ReadonlySet<string> = new Set([
+  "admin", "superadmin", "platform_admin", "platform_superadmin",
+]);
+
+/** True when `role` is an administrative role gated by the security-question second factor. */
+export function isPrivilegedRole(role: string | undefined | null): boolean {
+  return typeof role === "string" && PRIVILEGED_ROLES.has(role);
+}
+
+/**
+ * Pure force-logout check (0097): is a token issued at `iatSeconds` (standard JWT `iat`, seconds)
+ * still valid given the account's force-logout epoch `sessionsValidAfterMs` (ms, or null)? A token
+ * issued strictly before the epoch is revoked. Exported so it can be unit-tested in isolation.
+ */
+export function isTokenSessionValid(iatSeconds: number | undefined, sessionsValidAfterMs: number | null): boolean {
+  if (sessionsValidAfterMs == null) return true;                 // never force-logged-out
+  if (typeof iatSeconds !== "number" || !Number.isFinite(iatSeconds)) return false; // no iat → fail closed
+  return iatSeconds * 1000 >= sessionsValidAfterMs;
+}
 
 /**
  * AuthService — self-managed phone + password authentication (no OTP, no Supabase Auth).
@@ -292,18 +321,123 @@ export class AuthService {
    * The response is identical whether or not the account exists (and the hash is computed either
    * way) so this cannot be used to enumerate registered phone numbers.
    */
-  async resetPassword(phone: string, newPassword: string, siteId?: string): Promise<{ reset: boolean }> {
-    if (!this.allowUnverifiedReset) throw new Error("RESET_DISABLED");
+  async resetPassword(
+    phone: string,
+    newPassword: string,
+    opts: { siteId?: string; answers?: ReadonlyArray<{ key: string; answer: string }> } = {},
+  ): Promise<{ reset: boolean }> {
     const pw = validatePassword(newPassword);
     if (!pw.ok) throw new Error(`PASSWORD_${pw.reason}`);
     let normalized: string;
     try { normalized = normalizeMsisdn(phone); } catch { throw new Error("INVALID_PHONE"); }
+    const { siteId, answers } = opts;
     // Scope to the caller's brand so a phone shared across brands can't cross-reset the wrong
     // account. Undefined siteId preserves single-tenant behaviour (default site).
     const rec = await this.repo.findByPhone(normalized, siteId);
+
+    // ── PRIVILEGED accounts (admin / superadmin / platform_superadmin) ──────────────────────────
+    // The reset is gated by the security-question SECOND FACTOR, INDEPENDENT of the
+    // allowUnverifiedReset flag. It FAILS CLOSED: if the account has not set its answers yet the
+    // reset is refused entirely (SECURITY_QUESTIONS_NOT_SET), so the phone-only takeover vector is
+    // shut even before the operator finishes setup. All three answers must verify.
+    if (rec && isPrivilegedRole(rec.role)) {
+      const stored = await this.repo.getSecurityAnswers(rec.userId);
+      if (stored.length < SECURITY_ANSWERS_REQUIRED) throw new Error("SECURITY_QUESTIONS_NOT_SET");
+      const ok = await this.verifyAllSecurityAnswers(stored, answers ?? []);
+      if (!ok) throw new Error("SECURITY_ANSWERS_MISMATCH");
+      await this.repo.setPasswordHash(rec.userId, await hashPassword(newPassword));
+      return { reset: true };
+    }
+
+    // ── NON-privileged (players): unchanged legacy stop-gap ─────────────────────────────────────
+    // Still gated by the opt-in flag; the account lookup ran first so timing/response is uniform
+    // whether or not the phone exists (anti-enumeration) and privileged accounts are handled above.
+    if (!this.allowUnverifiedReset) throw new Error("RESET_DISABLED");
     const hash = await hashPassword(newPassword); // computed unconditionally: uniform timing
     if (rec) await this.repo.setPasswordHash(rec.userId, hash);
     return { reset: true };
+  }
+
+  /**
+   * Verify that EVERY stored security answer has a matching provided answer (0097). Runs a scrypt
+   * verify for every stored answer with NO early exit, so response time does not leak which answer
+   * was wrong. A missing/blank supplied answer verifies against the empty string (always false).
+   */
+  private async verifyAllSecurityAnswers(
+    stored: ReadonlyArray<SecurityAnswerHash>,
+    provided: ReadonlyArray<{ key: string; answer: string }>,
+  ): Promise<boolean> {
+    if (stored.length < SECURITY_ANSWERS_REQUIRED) return false;
+    const byKey = new Map<string, string>();
+    for (const p of provided) {
+      if (isValidSecurityQuestionKey(p.key) && typeof p.answer === "string" && !byKey.has(p.key)) {
+        byKey.set(p.key, p.answer);
+      }
+    }
+    let allOk = true;
+    for (const s of stored) {
+      const supplied = byKey.get(s.questionKey);
+      const norm = supplied === undefined ? "" : normalizeSecurityAnswer(supplied);
+      const ok = await verifyPassword(norm, s.answerHash);
+      if (!ok) allOk = false; // keep looping: uniform timing
+    }
+    return allOk;
+  }
+
+  /**
+   * Set (replace) the caller's security answers (0097). Enforces >= 3 DISTINCT valid catalog keys
+   * with non-trivial answers; each NORMALIZED answer is scrypt-hashed (same scheme as passwords) so
+   * plaintext never touches the database. Allowed for any account (harmless), but only privileged
+   * roles are REQUIRED to have them (see securitySetupRequired).
+   */
+  async setSecurityAnswers(userId: string, answers: ReadonlyArray<{ key: string; answer: string }>): Promise<{ set: true }> {
+    const check = validateSecurityAnswerSet(answers.map((a) => ({ key: a.key, answer: a.answer })));
+    if (!check.ok) throw new Error(`SECURITY_ANSWERS_${check.reason}`);
+    const hashed: SecurityAnswerHash[] = await Promise.all(
+      answers.map(async (a) => ({ questionKey: a.key, answerHash: await hashPassword(normalizeSecurityAnswer(a.answer)) })),
+    );
+    await this.repo.setSecurityAnswers(userId, hashed);
+    return { set: true };
+  }
+
+  /**
+   * Does this account still need to set up security questions? True only for a PRIVILEGED role that
+   * has fewer than the required number of answers stored. Drives the mandatory client setup gate and
+   * the /auth/me flag; enforcement of the reset itself is server-side in resetPassword (fail-closed).
+   */
+  async securitySetupRequired(userId: string): Promise<boolean> {
+    const profile = await this.repo.getProfile(userId);
+    if (!profile || !isPrivilegedRole(profile.role)) return false;
+    const n = await this.repo.countSecurityAnswers(userId);
+    return n < SECURITY_ANSWERS_REQUIRED;
+  }
+
+  /**
+   * Public reset flow step 1: the question keys a privileged account must answer to reset. Returns
+   * an EMPTY array for a non-privileged/unknown phone or one without answers set (anti-enumeration:
+   * always 200, never reveals via an error whether a given phone is a privileged account beyond the
+   * presence of keys). Brand-scoped like the reset itself.
+   */
+  async getResetQuestionKeys(phone: string, siteId?: string): Promise<string[]> {
+    let normalized: string;
+    try { normalized = normalizeMsisdn(phone); } catch { return []; }
+    const rec = await this.repo.findByPhone(normalized, siteId);
+    if (!rec || !isPrivilegedRole(rec.role)) return [];
+    const stored = await this.repo.getSecurityAnswers(rec.userId);
+    if (stored.length < SECURITY_ANSWERS_REQUIRED) return [];
+    return stored.map((s) => s.questionKey);
+  }
+
+  /**
+   * Force-logout enforcement (0097) for the API verifier: throw SESSION_REVOKED when a PRIVILEGED
+   * token was issued before the account's force-logout epoch. A no-op for non-privileged roles, so
+   * high-volume player traffic pays no extra DB read — only the handful of admin tokens do.
+   */
+  async assertSessionValid(userId: string, role: string | undefined, iat: unknown): Promise<void> {
+    if (!isPrivilegedRole(role)) return;
+    const va = await this.repo.getSessionsValidAfterMs(userId);
+    const iatSeconds = typeof iat === "number" ? iat : undefined;
+    if (!isTokenSessionValid(iatSeconds, va)) throw new Error("SESSION_REVOKED");
   }
 
   /** Read the caller's profile. Throws NOT_FOUND if no such identity. */  async me(userId: string): Promise<Profile> {

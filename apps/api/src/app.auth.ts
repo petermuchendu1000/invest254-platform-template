@@ -1,4 +1,5 @@
 import { Router, ApiError, requireAuth, rateLimit, type Ctx } from "./http.js";
+import { SECURITY_QUESTIONS } from "@invest254/shared";
 import type { ApiDeps } from "./app.js";
 
 /**
@@ -26,13 +27,18 @@ const AUTH_STATUS: Readonly<Record<string, number>> = {
   MFA_INVALID: 401,
   MFA_NOT_ENROLLING: 400,
   RESET_DISABLED: 403,
+  // Security-question second factor (0097). Privileged reset gating + setup validation.
+  SECURITY_QUESTIONS_NOT_SET: 403, // privileged account has not set answers → reset fails closed
+  SECURITY_ANSWERS_MISMATCH: 401,  // one or more supplied answers did not verify
   USER_NOT_FOUND: 404,
   NOT_FOUND: 404,
 };
 
 function statusFor(code: string): number {
   if (AUTH_STATUS[code]) return AUTH_STATUS[code]!;
-  if (code.startsWith("PASSWORD_") || code.startsWith("USERNAME_")) return 400;
+  // Setup-validation failures (SECURITY_ANSWERS_TOO_FEW / _INVALID_KEY / _DUPLICATE_KEY / …) are
+  // client input errors → 400. The explicit AUTH_STATUS entries above (MISMATCH 401) win first.
+  if (code.startsWith("PASSWORD_") || code.startsWith("USERNAME_") || code.startsWith("SECURITY_ANSWERS_")) return 400;
   return 0; // unknown → let the router map to 500
 }
 
@@ -67,6 +73,28 @@ function optionalString(body: Record<string, unknown>, key: string): string | un
   if (v === undefined || v === null) return undefined;
   if (typeof v !== "string") throw new ApiError("VALIDATION", `${key} must be a string`, 400);
   return v;
+}
+
+/**
+ * Parse `body.answers` into a clean [{key, answer}] list for the security-question flows (0097).
+ * Tolerant of a missing field (→ []) but rejects a present-but-malformed shape so the engine's
+ * validator sees well-typed input. Deep validation (distinct keys, count, length) lives in
+ * AuthService/shared; this is only the transport shape guard.
+ */
+function parseSecurityAnswers(body: Record<string, unknown>): Array<{ key: string; answer: string }> {
+  const raw = body["answers"];
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) throw new ApiError("VALIDATION", "answers must be an array", 400);
+  return raw.map((item, i) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new ApiError("VALIDATION", `answers[${i}] must be an object`, 400);
+    }
+    const o = item as Record<string, unknown>;
+    if (typeof o.key !== "string" || typeof o.answer !== "string") {
+      throw new ApiError("VALIDATION", `answers[${i}] requires string key + answer`, 400);
+    }
+    return { key: o.key, answer: o.answer };
+  });
 }
 
 /**
@@ -183,12 +211,43 @@ export function registerAuthRoutes(router: Router, deps: ApiDeps): void {
     const body = asObject(ctx.body);
     const phone = requireString(body, "phone");
     const newPassword = requireString(body, "new_password");
+    // Security-question second factor (0097): for a PRIVILEGED account these are REQUIRED and must
+    // all verify, independent of the unverified-reset flag; the engine fails closed if unset. A
+    // player's reset ignores them (unchanged legacy behaviour).
+    const answers = parseSecurityAnswers(body);
     // Brand-scope the reset the same way register/login are scoped. A phone is unique only WITHIN a
     // brand, so without this the reset targeted whichever account (across brands) findByPhone
     // returned first — it could silently rewrite the wrong brand's password (and report success),
     // leaving the real account unchanged. No hint → default site (single-tenant behaviour).
     const siteId = await resolveSiteId(ctx, body, deps);
-    return domain(() => deps.auth.resetPassword(phone, newPassword, siteId));
+    return domain(() => deps.auth.resetPassword(phone, newPassword, { ...(siteId ? { siteId } : {}), answers }));
+  });
+
+  // ── Security questions (0097): the knowledge second factor for privileged password resets ──────
+  // Public catalog of selectable questions (labels shown in the setup + reset UI). No secrets; light
+  // rate-limit only. The web can also import these from @invest254/shared, but the endpoint keeps the
+  // catalog server-authoritative and available without bundling coupling.
+  router.get(`${BASE}/auth/security-questions/catalog`, authLimit, async () => ({
+    questions: SECURITY_QUESTIONS.map((q) => ({ key: q.key, label: q.label })),
+  }));
+
+  // Authenticated: set (replace) MY three security answers. Used by the mandatory setup gate after a
+  // privileged account is force-logged-out and logs back in. Throttled per user.
+  router.post(`${BASE}/auth/security-questions`, auth, mfaLimit, async (ctx: Ctx) => {
+    const body = asObject(ctx.body);
+    const answers = parseSecurityAnswers(body);
+    return domain(() => deps.auth.setSecurityAnswers(ctx.claims!.userId, answers));
+  });
+
+  // Public reset step 1: which question keys must be answered to reset this phone's password. Returns
+  // { keys: [] } for a non-privileged/unknown phone or one without answers set (anti-enumeration:
+  // always 200). Same brand scoping + throttle as the reset itself.
+  router.post(`${BASE}/auth/password/reset-questions`, resetLimit, async (ctx: Ctx) => {
+    const body = asObject(ctx.body);
+    const phone = requireString(body, "phone");
+    const siteId = await resolveSiteId(ctx, body, deps);
+    const keys = await domain(() => deps.auth.getResetQuestionKeys(phone, siteId));
+    return { keys };
   });
 
   router.get(`${BASE}/auth/me`, auth, async (ctx: Ctx) => {
@@ -199,11 +258,16 @@ export function registerAuthRoutes(router: Router, deps: ApiDeps): void {
       throw e;
     });
     const username = profile?.username ?? (await deps.resolveHandle(userId));
+    // Security-question setup gate (0097): true only for a privileged account that has not yet set
+    // its answers. The client uses this to force the mandatory setup screen; the reset endpoint
+    // enforces the same server-side (fail-closed), so a bypassed client cannot skip it.
+    const securitySetupRequired = await deps.auth.securitySetupRequired(userId).catch(() => false);
     return {
       userId,
       role: profile?.role ?? ctx.claims!.role ?? "player",
       username,
       phone: profile?.phone ?? null,
+      securitySetupRequired,
     };
   });
 

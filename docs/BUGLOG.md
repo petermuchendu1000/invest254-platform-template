@@ -39,3 +39,26 @@ entry: what, evidence, root cause, impact, and resolution.
 - **Status:** documented, NOT fixed under issue 1 (unrelated to the welcome bonus; changing day-report
   timezone handling on a live financial report warrants its own scoped fix + decision on the canonical
   reporting timezone).
+
+## #4 — Phone-only password reset is account takeover for admins/superadmins — FIXED (issue 2 / migration 0097)
+- **What:** `POST /api/v1/auth/password/reset` sets a new password from phone + new password alone
+  (no possession proof), gated only by `ALLOW_UNVERIFIED_PASSWORD_RESET`. For a privileged account
+  (admin / superadmin / platform_superadmin) anyone who knows the phone number could seize the back
+  office.
+- **Evidence:** `AuthService.resetPassword` had no second factor for privileged roles; the only reset
+  path is that public endpoint (no admin-panel reset exists). Production roles are player/marketer/
+  admin/platform_superadmin — note there is NO literal `superadmin`, so the real top account is
+  `platform_superadmin` and had to be included in the privileged set.
+- **Impact:** full account takeover of any admin whose phone number is known. `ALLOW_UNVERIFIED_PASSWORD_RESET`
+  IS set as a Fly secret on `invest254-api` (confirmed via `fly secrets list`; value hidden but presence
+  implies enabled), so this was very likely LIVE-exploitable before the fix. (An earlier partial GraphQL
+  secret listing wrongly suggested the flag was absent.)
+- **Resolution (migration 0097 + code):** privileged resets now REQUIRE all three security-question
+  answers to verify, independent of the flag, and fail CLOSED when answers are unset. Added
+  `user_security_answers` (scrypt-hashed, RLS/service-role only) + `profiles.sessions_valid_after`
+  force-logout epoch (privileged tokens issued before it are rejected). `/auth/me` exposes
+  `securitySetupRequired`; the web shows a mandatory non-dismissible setup gate. See docs/32.
+  ROLLOUT COMPLETED 2026-08-21: migration 0097 applied; API deployed to Fly invest254-api; web deployed
+  via Cloudflare Pages (commit 26b630a); force-logout stamped for all 3 privileged accounts. Verified in
+  prod: reset on a real admin phone returns 403 SECURITY_QUESTIONS_NOT_SET (fail-closed, no change).
+  Full suite 610 pass / 0 fail.

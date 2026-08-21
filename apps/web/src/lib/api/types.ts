@@ -22,6 +22,17 @@ export interface MeDto {
   username: string;
   /** Account M-Pesa number (MSISDN, e.g. 254712345678) — used to prefill deposit/withdraw. */
   phone: string | null;
+  /**
+   * True when this (privileged) account must still set its security questions before its password
+   * reset is protected (0097). The web forces a mandatory, non-dismissible setup gate when true.
+   */
+  securitySetupRequired?: boolean;
+}
+
+/** One selectable security question (0097): stable key + human label. */
+export interface SecurityQuestionDto {
+  key: string;
+  label: string;
 }
 
 export interface BonusStatusDto {

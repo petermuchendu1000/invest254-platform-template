@@ -130,8 +130,10 @@ export function registerAffiliateRoutes(router: Router, deps: ApiDeps): void {
   router.post(`${BASE}/admin/affiliate/payouts/:id/reject`, auth, admin, async (ctx: Ctx) =>
     domain(async () => {
       assertTargetSiteInScope(ctx, await deps.affiliate.siteOfPayout(ctx.params.id!));
-      const rejected = await deps.affiliate.rejectPayout(ctx.params.id!, ctx.claims!.userId);
-      await deps.admin.recordAction(ctx.claims!.userId, ctx.claims!.role ?? "player", "affiliate.payout.reject", "affiliate_payout", ctx.params.id!, { rejected });
+      const b = ctx.body && typeof ctx.body === "object" ? (ctx.body as Record<string, unknown>) : {};
+      const reason = typeof b.reason === "string" && b.reason.trim() ? b.reason.trim() : undefined;
+      const rejected = await deps.affiliate.rejectPayout(ctx.params.id!, ctx.claims!.userId, reason);
+      await deps.admin.recordAction(ctx.claims!.userId, ctx.claims!.role ?? "player", "affiliate.payout.reject", "affiliate_payout", ctx.params.id!, { rejected, reason: reason ?? null });
       return { rejected };
     }));
 

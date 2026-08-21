@@ -122,12 +122,17 @@ export default function FinancePage() {
         {overview.isLoading ? (
           <Skeleton className="h-24 w-full" />
         ) : (
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-            <StatCard label="Deposits (success)" money={fin?.depositsCents ?? 0} tone="up" />
-            <StatCard label="Withdrawals (M-Pesa)" money={fin?.withdrawalsCents ?? 0} tone="down" hint="real cash out" />
-            <StatCard label="Net cash in" money={netCents} tone={netCents >= 0 ? 'up' : 'down'} hint="deposits − real withdrawals" />
-            <StatCard label="Pending withdrawals" value={fin?.pendingWithdrawals ?? 0} tone="warn" hint="awaiting moderation" />
-            <StatCard label="Wallet liability" money={fin?.walletLiabilityCents ?? 0} hint="owed to players" />
+          <div className="flex flex-col gap-2">
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <StatCard label="Deposits (success)" money={fin?.depositsCents ?? 0} tone="up" />
+              <StatCard label="Withdrawals (M-Pesa)" money={fin?.withdrawalsCents ?? 0} tone="down" hint="real cash out" />
+              <StatCard label="Net cash in" money={netCents} tone={netCents >= 0 ? 'up' : 'down'} hint="deposits − real withdrawals" />
+              <StatCard label="Wallet liability" money={fin?.walletLiabilityCents ?? 0} hint="owed to players" />
+            </div>
+            {/* Pending-withdrawal MODERATION lives in the Withdrawals queue (single owner) — link, don't duplicate the KPI. */}
+            <Link href="/admin/withdrawals" className="self-start text-xs font-medium text-accent hover:underline">
+              {fin?.pendingWithdrawals ?? 0} withdrawal{(fin?.pendingWithdrawals ?? 0) === 1 ? '' : 's'} awaiting moderation → Withdrawals queue
+            </Link>
           </div>
         )}
       </Section>

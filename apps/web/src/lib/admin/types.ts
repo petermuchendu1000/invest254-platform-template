@@ -233,6 +233,23 @@ export interface AdminPayoutRow {
   createdAtMs: number;
 }
 
+/** Deposit-referral commission payout as the admin queue sees it (0079). Separate stream from the
+ *  GGR affiliate payouts above. `status`: requested → approved → paid (or rejected). */
+export interface AdminCommissionPayoutRow {
+  id: string;
+  amountCents: Cents;
+  status: string;
+  requestedAtMs: number;
+  approvedAtMs: number | null;
+  paidAtMs: number | null;
+  paidRef: string | null;
+  note: string | null;
+  beneficiaryUser: string;
+  username: string | null;
+  phone: string | null;
+  siteId: string;
+}
+
 
 export interface GameConfigRow {
   houseEdge: number;

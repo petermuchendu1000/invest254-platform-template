@@ -10,7 +10,7 @@ import { Modal } from '@/components/ui/Modal';
 import { ApiError } from '@/lib/api/client';
 import { useToast } from '@/lib/toast/ToastProvider';
 import { formatDateTime } from '@/lib/format';
-import { PageHeader, TableWrap, Th, Td, Empty, Toolbar, FilterSelect, ConfirmButton, StatCard, Section } from '@/components/admin/ui';
+import { TableWrap, Th, Td, Empty, Toolbar, FilterSelect, ConfirmButton, StatCard, Section } from '@/components/admin/ui';
 import {
   useMarketers,
   useMarketer,
@@ -27,6 +27,14 @@ import {
 } from '@/lib/admin/hooks';
 import { useRowSelection, SelectAllCheckbox, RowCheckbox, BulkBar, downloadCsv, copyText } from '@/components/admin/BulkSelect';
 import type { AdminMarketerRow } from '@/lib/admin/types';
+
+/*
+ * MarketersPanel — full marketer wallet management, ported verbatim from the former standalone
+ * /admin/marketers page (consolidation A1) so NO function is lost: status filter, floats KPIs, row
+ * selection, bulk status/credit, copy phones, CSV export, create modal, and the full Manage modal
+ * (edit, wallet pay/withdraw, Fuliza/airtime, PIN, status, statement). Only the PageHeader was
+ * replaced with an inline header so it can live inside the finance hub's "Marketer wallets" tab.
+ */
 
 const STATUS_OPTIONS = [
   { value: '', label: 'All' },
@@ -57,7 +65,7 @@ function errMsg(e: unknown): string {
   return e instanceof ApiError ? e.message : 'Something went wrong. Try again.';
 }
 
-export default function MarketersPage() {
+export function MarketersPanel() {
   const [status, setStatus] = useState('');
   const [selected, setSelected] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
@@ -116,19 +124,17 @@ export default function MarketersPage() {
   }
 
   return (
-    <>
-      <PageHeader
-        title="Marketers"
-        subtitle="Marketers are special players who receive payments. Manage their wallets, Fuliza, airtime, PINs and status here."
-        actions={
-          <Toolbar>
-            <FilterSelect label="Status" value={status} onChange={setStatus} options={STATUS_OPTIONS} />
-            <Button size="sm" onClick={() => setCreating(true)}>
-              New marketer
-            </Button>
-          </Toolbar>
-        }
-      />
+    <div className="flex flex-col gap-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h3 className="text-sm font-semibold tracking-tight text-fg">Marketer wallets</h3>
+          <p className="text-xs text-muted">Wallets, Fuliza, airtime, PINs and status for marketers who receive payments.</p>
+        </div>
+        <Toolbar>
+          <FilterSelect label="Status" value={status} onChange={setStatus} options={STATUS_OPTIONS} />
+          <Button size="sm" onClick={() => setCreating(true)}>New marketer</Button>
+        </Toolbar>
+      </div>
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <StatCard label="Outstanding balances" money={totals.balance} hint={`${rows.length} marketer${rows.length === 1 ? '' : 's'}`} />
@@ -170,22 +176,12 @@ export default function MarketersPage() {
                   </span>
                 </Td>
                 <Td className="tabular-nums">{m.phone}</Td>
-                <Td className="font-medium tabular-nums">
-                  <Money cents={m.balance_cents} />
-                </Td>
-                <Td className="tabular-nums">
-                  <Money cents={m.available_fuliza_cents} />
-                </Td>
-                <Td className="tabular-nums">
-                  <Money cents={m.airtime_balance_cents} />
-                </Td>
-                <Td>
-                  <StatusBadge status={m.status} />
-                </Td>
+                <Td className="font-medium tabular-nums"><Money cents={m.balance_cents} /></Td>
+                <Td className="tabular-nums"><Money cents={m.available_fuliza_cents} /></Td>
+                <Td className="tabular-nums"><Money cents={m.airtime_balance_cents} /></Td>
+                <Td><StatusBadge status={m.status} /></Td>
                 <Td className="text-right">
-                  <Button variant="outline" size="sm" onClick={() => setSelected(m.id)}>
-                    Manage
-                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => setSelected(m.id)}>Manage</Button>
                 </Td>
               </tr>
             ))}
@@ -205,7 +201,7 @@ export default function MarketersPage() {
       <BulkCreditModal open={crediting} marketerIds={sel.selectedRows.map((m) => m.id)} onClose={() => setCrediting(false)} onDone={sel.clear} />
       <CreateMarketerModal open={creating} onClose={() => setCreating(false)} />
       <ManageMarketerModal id={selected} onClose={() => setSelected(null)} />
-    </>
+    </div>
   );
 }
 
@@ -240,9 +236,7 @@ function CreateMarketerModal({ open, onClose }: { open: boolean; onClose: () => 
         <Input label="Full name" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Peter Muchendu" required />
         <Input label="Phone" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="e.g. 0722000001" required />
         <div className="flex justify-end gap-2">
-          <Button variant="ghost" onClick={onClose} disabled={create.isPending}>
-            Cancel
-          </Button>
+          <Button variant="ghost" onClick={onClose} disabled={create.isPending}>Cancel</Button>
           <Button onClick={submit} disabled={create.isPending || !name.trim() || !phone.trim()}>
             {create.isPending ? 'Saving…' : 'Save marketer'}
           </Button>
@@ -336,7 +330,7 @@ function WalletActions({ m }: { m: AdminMarketerRow }) {
     const cents = kesToCents(payAmount);
     if (!cents) return;
     credit.mutate(
-      { amountCents: cents, ref: payRef.trim() || undefined },
+      { amountCents: cents, ...(payRef.trim() ? { ref: payRef.trim() } : {}) },
       {
         onSuccess: () => {
           toast.push({ tone: 'success', title: 'Payment credited', description: `${m.first_name}'s wallet was topped up.` });
@@ -541,12 +535,8 @@ function Statement({ id }: { id: string }) {
             {rows.map((r) => (
               <tr key={r.id} className="border-b border-border last:border-0">
                 <Td className="font-medium">{r.entry_type}</Td>
-                <Td className="tabular-nums">
-                  <Money cents={r.amount_cents} />
-                </Td>
-                <Td className="tabular-nums">
-                  <Money cents={r.balance_after_cents} />
-                </Td>
+                <Td className="tabular-nums"><Money cents={r.amount_cents} /></Td>
+                <Td className="tabular-nums"><Money cents={r.balance_after_cents} /></Td>
                 <Td className="text-xs text-muted">{r.ref ?? '—'}</Td>
                 <Td className="whitespace-nowrap text-xs text-muted">{formatDateTime(Date.parse(r.created_at))}</Td>
               </tr>

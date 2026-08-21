@@ -39,9 +39,9 @@ function mapExpenseRow(x: Record<string, unknown>) {
 }
 
 async function buildDeps(): Promise<ApiDeps> {
-  const verifier = makeVerifier();
+  const baseVerifier = makeVerifier();
   const usingDb = Boolean(process.env.DATABASE_URL);
-  if (usingDb && !verifier) {
+  if (usingDb && !baseVerifier) {
     throw new Error("AUTH: a JWT verifier is required when DATABASE_URL is set (set SUPABASE_JWT_SECRET or SUPABASE_JWKS_URL)");
   }
   if (!usingDb) throw new Error("DATABASE_URL is required to run the API server");
@@ -163,6 +163,18 @@ async function buildDeps(): Promise<ApiDeps> {
     ...(process.env.SUPABASE_JWT_ISSUER ? { issuer: process.env.SUPABASE_JWT_ISSUER } : {}),
     ...(process.env.SUPABASE_JWT_AUD ? { audience: process.env.SUPABASE_JWT_AUD } : {}),
   });
+  // Force-logout enforcement (0097): wrap the JWT verifier so a PRIVILEGED token issued before the
+  // account's sessions_valid_after epoch is rejected (→ 401 in requireAuth → re-login). This gives
+  // every authenticated route the force-logout for free with no call-site changes. Non-privileged
+  // (player) tokens skip the DB read entirely, so high-volume traffic is unaffected. A DB error in
+  // the check fails CLOSED for privileged tokens (safer than admitting a possibly-revoked session).
+  const verifier = baseVerifier
+    ? (async (token: string) => {
+        const claims = await baseVerifier(token);
+        await auth.assertSessionValid(claims.userId, claims.role, (claims.raw as { iat?: unknown })?.iat);
+        return claims;
+      })
+    : null;
   const affiliate = new AffiliateService(identity, daraja);
   // Platform-wide master switches (migration 0092). 5s cache; fails open on read error.
   const platformGate = new PlatformGate((sql: string, p?: unknown[]) => q.query(sql, p ?? []));

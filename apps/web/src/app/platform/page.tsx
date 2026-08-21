@@ -13,7 +13,7 @@ import { downloadCsv } from '@/components/admin/BulkSelect';
 const money = (cents: number, cur = 'KES') => `${cur} ${(cents / 100).toLocaleString()}`;
 
 /** Preset windows for the performance filters. `all` ⇒ use the all-time overview snapshot. */
-type RangePreset = 'all' | 'today' | '7d' | '30d' | 'custom';
+type RangePreset = 'all' | 'today' | 'yesterday' | '7d' | '30d' | 'custom';
 
 /** Resolve a preset (+ optional custom yyyy-mm-dd inputs) to an epoch-ms window, or null for all-time. */
 function resolveRange(preset: RangePreset, from: string, to: string): { fromMs: number | null; toMs: number | null } {
@@ -21,6 +21,8 @@ function resolveRange(preset: RangePreset, from: string, to: string): { fromMs: 
   const DAY = 24 * 60 * 60 * 1000;
   if (preset === 'all') return { fromMs: null, toMs: null };
   if (preset === 'today') { const d = new Date(); d.setHours(0, 0, 0, 0); return { fromMs: d.getTime(), toMs: now }; }
+  // yesterday: local midnight yesterday .. local midnight today (a full closed calendar day).
+  if (preset === 'yesterday') { const end = new Date(); end.setHours(0, 0, 0, 0); return { fromMs: end.getTime() - DAY, toMs: end.getTime() }; }
   if (preset === '7d') return { fromMs: now - 7 * DAY, toMs: now };
   if (preset === '30d') return { fromMs: now - 30 * DAY, toMs: now };
   // custom: local midnight of `from` .. end-of-day of `to` (inclusive). Fall back to all-time if unset.
@@ -42,7 +44,7 @@ export default function PlatformOverviewPage() {
   const [q, setQ] = useState('');
   const [status, setStatus] = useState('all');
   const [currency, setCurrency] = useState('all');
-  const [preset, setPreset] = useState<RangePreset>('all');
+  const [preset, setPreset] = useState<RangePreset>('today');
   const [customFrom, setCustomFrom] = useState('');
   const [customTo, setCustomTo] = useState('');
   const [sort, setSort] = useState<{ key: string; dir: 'asc' | 'desc' }>({ key: 'ggr', dir: 'desc' });
@@ -132,6 +134,7 @@ export default function PlatformOverviewPage() {
 
   const rangeLabel = preset === 'all' ? 'All-time'
     : preset === 'today' ? 'Today'
+    : preset === 'yesterday' ? 'Yesterday'
     : preset === '7d' ? 'Last 7 days'
     : preset === '30d' ? 'Last 30 days'
     : (customFrom && customTo ? `${customFrom} → ${customTo}` : 'Custom (pick dates)');
@@ -180,6 +183,7 @@ export default function PlatformOverviewPage() {
             options={[
               { value: 'all', label: 'All-time' },
               { value: 'today', label: 'Today' },
+              { value: 'yesterday', label: 'Yesterday' },
               { value: '7d', label: 'Last 7 days' },
               { value: '30d', label: 'Last 30 days' },
               { value: 'custom', label: 'Custom…' },

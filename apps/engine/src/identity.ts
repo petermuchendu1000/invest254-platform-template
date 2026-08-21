@@ -73,6 +73,9 @@ export interface AdminPayoutSnapshot { payoutId: string; affiliateId: string; us
 /** Stored MFA state for an account. Secret + recovery hashes never leave the service layer. */
 export interface MfaRecord { userId: string; secret: string; enabled: boolean; recoveryCodeHashes: string[]; }
 
+/** One stored security answer: a catalog question key + the scrypt hash of the normalized answer (0097). */
+export interface SecurityAnswerHash { questionKey: string; answerHash: string; }
+
 export interface IdentityRepository {
   /**
    * Atomically create profile + wallet + credentials. An optional referral code (already
@@ -111,6 +114,21 @@ export interface IdentityRepository {
   consumeRecoveryCode(userId: string, codeHash: string): Promise<boolean>;
   /** Turn MFA off and forget the secret + recovery codes. */
   disableMfa(userId: string): Promise<void>;
+  /**
+   * Replace ALL of a user's security answers with exactly the given set (0097). Hashes are computed
+   * in the app layer (AuthService, scrypt); this is a pure durable write. Keys not in `answers` are
+   * removed, so re-setting always leaves precisely the submitted set. Atomic (single statement).
+   */
+  setSecurityAnswers(userId: string, answers: SecurityAnswerHash[]): Promise<void>;
+  /** Load a user's stored security answers (question key + hash); empty array when none set. */
+  getSecurityAnswers(userId: string): Promise<SecurityAnswerHash[]>;
+  /** Count how many security answers a user has stored (fast gate: >= 3 means "set"). */
+  countSecurityAnswers(userId: string): Promise<number>;
+  /**
+   * Force-logout epoch in epoch-ms for a user, or null if never set (0097). The API verifier
+   * compares a privileged token's `iat` against this to invalidate pre-logout sessions.
+   */
+  getSessionsValidAfterMs(userId: string): Promise<number | null>;
 }
 
 /**
@@ -143,8 +161,9 @@ export interface AffiliateRepository {
    * move accrued->paid); failure => 'rejected' (reservation released, buckets stay accrued).
    */
   completePayout(payoutId: string, resultCode: number, conversationId: string | null, receipt: string | null, resultDesc: string | null, raw: unknown): Promise<PayoutCompleteResult>;
-  /** Admin rejects a pre-dispatch ('requested') payout, releasing its reservation. Idempotent. */
-  rejectPayout(payoutId: string, adminId: string): Promise<boolean>;
+  /** Admin rejects a pre-dispatch ('requested') payout, releasing its reservation. Optional reason
+   *  is stored for audit (0098). Idempotent. */
+  rejectPayout(payoutId: string, adminId: string, reason?: string): Promise<boolean>;
   /** Resolve the brand a payout belongs to (admin write-path scope guard, docs/22 Task H). A legacy
    *  null site normalizes to the default brand; an unknown/untracked payout resolves to null — a
    *  null never blocks, so the site-aware RPC remains the ultimate guard (the in-memory mirror does
@@ -285,9 +304,9 @@ export class PgIdentityRepository implements IdentityRepository, AffiliateReposi
       return { applied: Boolean(x.applied), status: String(x.status) };
     } catch (e) { mapPgError(e); }
   }
-  async rejectPayout(payoutId: string, adminId: string): Promise<boolean> {
+  async rejectPayout(payoutId: string, adminId: string, reason?: string): Promise<boolean> {
     try {
-      const r = await this.q.query("select fn_affiliate_reject_payout($1,$2) as ok", [payoutId, adminId]);
+      const r = await this.q.query("select fn_affiliate_reject_payout($1,$2,$3) as ok", [payoutId, adminId, reason ?? null]);
       return Boolean(r.rows[0]?.ok);
     } catch (e) { mapPgError(e); }
   }
@@ -402,6 +421,40 @@ export class PgIdentityRepository implements IdentityRepository, AffiliateReposi
       userId: String(x.id), username: String(x.username), phone: String(x.phone), role: String(x.role), status: String(x.status),
     };
   }
+  async setSecurityAnswers(userId: string, answers: SecurityAnswerHash[]): Promise<void> {
+    // Single atomic statement: upsert the submitted (key, hash) pairs and delete any stored key not
+    // in the new set, so the persisted set is EXACTLY `answers`. unnest() zips the two arrays.
+    const keys = answers.map((a) => a.questionKey);
+    const hashes = answers.map((a) => a.answerHash);
+    await this.q.query(
+      `with input as (
+         select question_key, answer_hash
+           from unnest($2::text[], $3::text[]) as t(question_key, answer_hash)
+       ), del as (
+         delete from user_security_answers
+          where user_id = $1 and question_key not in (select question_key from input)
+       )
+       insert into user_security_answers (user_id, question_key, answer_hash)
+       select $1, question_key, answer_hash from input
+       on conflict (user_id, question_key)
+         do update set answer_hash = excluded.answer_hash, updated_at = now()`,
+      [userId, keys, hashes]);
+  }
+  async getSecurityAnswers(userId: string): Promise<SecurityAnswerHash[]> {
+    const r = await this.q.query(
+      "select question_key, answer_hash from user_security_answers where user_id = $1 order by question_key", [userId]);
+    return r.rows.map((x: Record<string, unknown>) => ({ questionKey: String(x.question_key), answerHash: String(x.answer_hash) }));
+  }
+  async countSecurityAnswers(userId: string): Promise<number> {
+    const r = await this.q.query("select count(*)::int as n from user_security_answers where user_id = $1", [userId]);
+    return Number(r.rows[0]?.n ?? 0);
+  }
+  async getSessionsValidAfterMs(userId: string): Promise<number | null> {
+    const r = await this.q.query("select sessions_valid_after from profiles where id = $1", [userId]);
+    if (!r.rows.length) return null;
+    const v = r.rows[0].sessions_valid_after;
+    return v == null ? null : toMs(v);
+  }
 }
 
 interface MemUser {
@@ -416,7 +469,7 @@ interface MemAffiliate { userId: string; referralCode: string; commissionRate: n
 interface MemPlay { referredUser: string; period: string; stakeCents: number; payoutCents: number; openedAtMs: number; }
 interface MemCommission { id: number; affiliateId: string; referredUser: string; period: string; ggr: number; commission: number; status: string; createdAtMs: number; payoutId: string | null; }
 interface MemReferral { id: number; affiliateId: string; referredUser: string; createdAtMs: number; }
-interface MemPayout { id: string; affiliateId: string; amount: number; status: string; approvedBy: string | null; conversationId: string | null; receipt: string | null; resultCode: number | null; createdAtMs: number; }
+interface MemPayout { id: string; affiliateId: string; amount: number; status: string; approvedBy: string | null; conversationId: string | null; receipt: string | null; resultCode: number | null; createdAtMs: number; rejectReason?: string | null; }
 
 /** In-memory identity store mirroring the RPC contracts (tests + dev). */
 export class InMemoryIdentityRepository implements IdentityRepository, AffiliateRepository {
@@ -430,6 +483,9 @@ export class InMemoryIdentityRepository implements IdentityRepository, Affiliate
   private readonly commissions: MemCommission[] = [];
   private readonly payouts = new Map<string, MemPayout>();              // payoutId -> payout
   private readonly mfa = new Map<string, { secret: string; enabled: boolean; recoveryCodeHashes: string[] }>();
+  // 0097: per-user security answers (question key -> scrypt hash) + force-logout epoch (ms).
+  private readonly securityAnswers = new Map<string, Map<string, string>>();
+  private readonly sessionsValidAfter = new Map<string, number>();
   private seq = 0;
   /** Test knob: cents the in-memory welcome-bonus grant credits (default 0 = inert in tests). */
   welcomeBonusCents = 0;
@@ -505,6 +561,32 @@ export class InMemoryIdentityRepository implements IdentityRepository, Affiliate
   async getProfile(userId: string): Promise<ProfileRow | null> {
     const u = this.byId.get(userId);
     return u ? this.toProfile(u) : null;
+  }
+  async setSecurityAnswers(userId: string, answers: SecurityAnswerHash[]): Promise<void> {
+    // Replace the whole set (mirror the Pg upsert-and-prune): the stored map becomes exactly `answers`.
+    this.securityAnswers.set(userId, new Map(answers.map((a) => [a.questionKey, a.answerHash])));
+  }
+  async getSecurityAnswers(userId: string): Promise<SecurityAnswerHash[]> {
+    const m = this.securityAnswers.get(userId);
+    if (!m) return [];
+    return [...m.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([questionKey, answerHash]) => ({ questionKey, answerHash }));
+  }
+  async countSecurityAnswers(userId: string): Promise<number> {
+    return this.securityAnswers.get(userId)?.size ?? 0;
+  }
+  async getSessionsValidAfterMs(userId: string): Promise<number | null> {
+    return this.sessionsValidAfter.get(userId) ?? null;
+  }
+  /** TEST-ONLY: elevate a user's role (registration always creates role='player'). */
+  _setRole(userId: string, role: string): void {
+    const u = this.byId.get(userId);
+    if (u) u.role = role;
+  }
+  /** TEST-ONLY: stamp a user's force-logout epoch (ms), mirroring the 0097 SQL stamp. */
+  _forceLogout(userId: string, atMs: number = Date.now()): void {
+    this.sessionsValidAfter.set(userId, atMs);
   }
   async enrollAffiliate(userId: string): Promise<AffiliateView> {
     const u = this.byId.get(userId);
@@ -641,11 +723,11 @@ export class InMemoryIdentityRepository implements IdentityRepository, Affiliate
     for (const c of this.commissions) if (c.payoutId === payoutId && c.status === "accrued") c.payoutId = null; // release
     return { applied: true, status: "rejected" };
   }
-  async rejectPayout(payoutId: string, adminId: string): Promise<boolean> {
+  async rejectPayout(payoutId: string, adminId: string, reason?: string): Promise<boolean> {
     const p = this.payouts.get(payoutId);
     if (!p) throw new Error("PAYOUT_NOT_FOUND");
     if (p.status !== "requested") return false;
-    p.status = "rejected"; p.approvedBy = adminId;
+    p.status = "rejected"; p.approvedBy = adminId; p.rejectReason = reason ?? null;
     for (const c of this.commissions) if (c.payoutId === payoutId && c.status === "accrued") c.payoutId = null; // release
     return true;
   }

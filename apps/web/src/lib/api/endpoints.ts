@@ -18,6 +18,7 @@ import type {
   PositionDetailDto,
   PositionDto,
   ReferralRecord,
+  SecurityQuestionDto,
   TransactionDto,
   TransactionKind,
   WalletDto,
@@ -67,9 +68,26 @@ export const api = {
     apiFetch<AuthResult>('/auth/login', { method: 'POST', body }),
   me: (token: string) => apiFetch<MeDto>('/auth/me', { token }),
   refreshToken: (token: string) => apiFetch<AuthResult>('/auth/refresh', { method: 'POST', token }),
-  /** Set a new password from the phone number alone (no OTP). Server-side feature-gated. */
-  resetPassword: (body: { phone: string; new_password: string }) =>
-    apiFetch<{ reset: boolean }>('/auth/password/reset', { method: 'POST', body }),
+  /**
+   * Set a new password (0097). For a PRIVILEGED account (admin/superadmin/platform_superadmin) the
+   * three security `answers` are REQUIRED and verified server-side; for a player they are ignored and
+   * the flow is server-side feature-gated (unchanged). `site` scopes it to the caller's brand.
+   */
+  resetPassword: (body: {
+    phone: string;
+    new_password: string;
+    answers?: Array<{ key: string; answer: string }>;
+    site?: string;
+  }) => apiFetch<{ reset: boolean }>('/auth/password/reset', { method: 'POST', body }),
+  /** Public catalog of selectable security questions (labels shown in setup + reset UI) (0097). */
+  securityQuestionsCatalog: () =>
+    apiFetch<{ questions: SecurityQuestionDto[] }>('/auth/security-questions/catalog'),
+  /** Reset step 1: which question keys this phone must answer to reset (empty for non-privileged). */
+  resetQuestions: (body: { phone: string; site?: string }) =>
+    apiFetch<{ keys: string[] }>('/auth/password/reset-questions', { method: 'POST', body }),
+  /** Authenticated: set (replace) my three security answers — used by the mandatory setup gate. */
+  setSecurityQuestions: (token: string, answers: Array<{ key: string; answer: string }>) =>
+    apiFetch<{ set: boolean }>('/auth/security-questions', { method: 'POST', token, body: { answers } }),
   /** Change your own password; requires the current one. Always available when logged in. */
   changePassword: (token: string, body: { current_password: string; new_password: string }) =>
     apiFetch<{ changed: boolean }>('/auth/password/change', { method: 'POST', token, body }),

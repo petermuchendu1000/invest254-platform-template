@@ -73,7 +73,8 @@ export interface ApiDeps {
   /** Self-managed phone+password auth + basic-KYC profile (G3/G4/H1). */
   auth: Pick<AuthService, "register" | "login" | "me" | "issueToken"
     | "beginMfaEnrolment" | "confirmMfa" | "disableMfa" | "mfaStatus"
-    | "changePassword" | "resetPassword">;
+    | "changePassword" | "resetPassword"
+    | "setSecurityAnswers" | "securitySetupRequired" | "getResetQuestionKeys" | "assertSessionValid">;
   /** Marketer enrollment, commission accrual, dashboard reads (I1/I2/I3) + payouts (I4). */
   affiliate: Pick<AffiliateService,
     "enroll" | "accrueDaily" | "summary" | "listReferrals" | "listCommissions"

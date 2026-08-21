@@ -29,7 +29,6 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
     const actions: Cmd[] = [
       { id: 'overview', label: 'Overview', hint: 'All brands', group: 'Go to', run: () => go('/platform') },
       { id: 'onboard', label: 'Onboard a client', hint: 'New brand', group: 'Actions', run: () => go('/platform/onboard') },
-      { id: 'marketers', label: 'Marketer rollup', hint: 'Cross-brand', group: 'Go to', run: () => go('/platform/marketers') },
     ];
     const brandCmds: Cmd[] = brands.map((s) => ({
       id: `brand-${s.siteId}`,

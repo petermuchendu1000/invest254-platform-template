@@ -281,8 +281,8 @@ export function usePayoutAction() {
   const t = useTok();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (v: { id: string; action: 'approve' | 'reject' }) =>
-      v.action === 'approve' ? adminApi.approvePayout(t, v.id) : adminApi.rejectPayout(t, v.id),
+    mutationFn: (v: { id: string; action: 'approve' | 'reject'; reason?: string }) =>
+      v.action === 'approve' ? adminApi.approvePayout(t, v.id) : adminApi.rejectPayout(t, v.id, v.reason),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['admin', 'payouts'] });
       void qc.invalidateQueries({ queryKey: ['admin', 'overview'] });
@@ -295,6 +295,32 @@ export function useSetCommissionRate() {
   return useMutation({
     mutationFn: (v: { id: string; rate: number }) => adminApi.setCommissionRate(t, v.id, v.rate),
     onSuccess: (_d, v) => void qc.invalidateQueries({ queryKey: ['admin', 'user', v.id] }),
+  });
+}
+
+// ── Deposit-referral commission payouts (0079) — separate money-out queue from GGR payouts ──
+export function useCommissionPayouts(status?: string) {
+  const t = useTok();
+  return useQuery({
+    queryKey: ['admin', 'commission-payouts', status ?? 'all'],
+    enabled: !!t,
+    queryFn: () => adminApi.commissionPayouts(t, status),
+  });
+}
+export function useCommissionPayoutAction() {
+  const t = useTok();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { id: string; action: 'approve' | 'paid' | 'reject'; ref?: string; reason?: string }) =>
+      v.action === 'approve'
+        ? adminApi.approveCommissionPayout(t, v.id)
+        : v.action === 'paid'
+          ? adminApi.markCommissionPayoutPaid(t, v.id, v.ref)
+          : adminApi.rejectCommissionPayout(t, v.id, v.reason),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['admin', 'commission-payouts'] });
+      void qc.invalidateQueries({ queryKey: ['admin', 'overview'] });
+    },
   });
 }
 

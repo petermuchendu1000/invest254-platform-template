@@ -89,8 +89,8 @@ export class AffiliateService {
   }
 
   /** Finance admin rejects a pre-dispatch payout request (releases the reservation). Idempotent. */
-  rejectPayout(payoutId: string, adminId: string): Promise<boolean> {
-    return this.repo.rejectPayout(payoutId, adminId);
+  rejectPayout(payoutId: string, adminId: string, reason?: string): Promise<boolean> {
+    return this.repo.rejectPayout(payoutId, adminId, reason);
   }
 
   /** Resolve the brand a payout belongs to (null = unknown) — admin write-path scope guard (Task H). */

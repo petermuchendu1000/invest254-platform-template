@@ -10,6 +10,7 @@
     "./config": "./src/config.ts",
     "./types": "./src/types.ts",
     "./credentials": "./src/credentials.ts",
+    "./security-questions": "./src/security-questions.ts",
     "./totp": "./src/totp.ts",
     "./payments": "./src/payments.ts",
     "./curve": "./src/curve.ts",

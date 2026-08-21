@@ -11,6 +11,7 @@ import { api } from '@/lib/api/endpoints';
 import { useAuthUi } from '@/lib/auth/ui';
 import { useDepositUi } from '@/lib/wallet/depositUi';
 import { useAuthActions } from '@/lib/auth/useAuthActions';
+import { useBrand } from '@/lib/brand/BrandProvider';
 import { authErrorMessage } from '@/lib/auth/errors';
 import { phoneError, usernameError, passwordError, referralError } from '@/lib/auth/validation';
 import { REF_KEY } from '@/lib/auth/referral';
@@ -132,6 +133,7 @@ function StrengthMeter({ password }: { password: string }) {
 export function AuthModal() {
   const { open, mode, openAuth, close } = useAuthUi();
   const { login, register } = useAuthActions();
+  const brand = useBrand();
   // If the user arrived here from a logged-out deposit, reopen that sheet once they're in.
   const resumeAfterAuth = useDepositUi((s) => s.resumeAfterAuth);
   const resumeDeposit = useDepositUi((s) => s.resumeDeposit);
@@ -147,6 +149,13 @@ export function AuthModal() {
   const [serverError, setServerError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [resetDone, setResetDone] = useState(false);
+  // Security-question reset (0097): for a PRIVILEGED phone the reset requires the account's three
+  // security answers. `resetKeys` is the (possibly empty) set of question keys the server says this
+  // phone must answer; empty ⇒ a normal (player) reset with no extra step. `resetLabels` maps a key
+  // to its human question. `resetAnswers` holds the typed answers keyed by question key.
+  const [resetKeys, setResetKeys] = useState<string[]>([]);
+  const [resetLabels, setResetLabels] = useState<Record<string, string>>({});
+  const [resetAnswers, setResetAnswers] = useState<Record<string, string>>({});
 
   const isRegister = mode === 'register';
   const isReset = mode === 'reset';
@@ -172,7 +181,57 @@ export function AuthModal() {
     setShowPw(false);
     setConfirm('');
     setResetDone(false);
+    setResetKeys([]);
+    setResetAnswers({});
   }, [open, mode]);
+
+  // Load the question labels once when the reset flow opens (needed to render a privileged account's
+  // questions by their human wording).
+  useEffect(() => {
+    if (!open || !isReset) return;
+    let active = true;
+    api
+      .securityQuestionsCatalog()
+      .then((r) => {
+        if (active) setResetLabels(Object.fromEntries(r.questions.map((q) => [q.key, q.label])));
+      })
+      .catch(() => {
+        /* labels are cosmetic; keys still render if this fails */
+      });
+    return () => {
+      active = false;
+    };
+  }, [open, isReset]);
+
+  // When a full phone is entered in reset mode, look up which security questions (if any) this
+  // account must answer. Debounced. A non-privileged/unknown phone returns an empty set (200), so the
+  // normal single-step reset renders unchanged.
+  useEffect(() => {
+    if (!open || !isReset) {
+      setResetKeys([]);
+      return;
+    }
+    const digits = phone.replace(/\D/g, '');
+    if (digits.length < 9) {
+      setResetKeys([]);
+      return;
+    }
+    let active = true;
+    const t = setTimeout(() => {
+      api
+        .resetQuestions({ phone, site: brand.slug })
+        .then((r) => {
+          if (active) setResetKeys(r.keys);
+        })
+        .catch(() => {
+          if (active) setResetKeys([]);
+        });
+    }, 350);
+    return () => {
+      active = false;
+      clearTimeout(t);
+    };
+  }, [open, isReset, phone, brand.slug]);
 
   const copy = useMemo(() => {
     if (isReset) return { title: 'Reset password', sub: 'Set a new password for your account.', cta: 'Update password' };
@@ -191,6 +250,13 @@ export function AuthModal() {
     if (isRegister || isReset) {
       next['confirm'] = confirm === password ? undefined : 'Passwords do not match.';
     }
+    // Privileged reset: every required security answer must be filled (server verifies correctness).
+    if (isReset && resetKeys.length) {
+      for (const k of resetKeys) {
+        const a = resetAnswers[k];
+        next[`ans_${k}`] = a && a.trim().length >= 2 ? undefined : 'Required';
+      }
+    }
     setErrors(next);
     return !Object.values(next).some(Boolean);
   }
@@ -202,7 +268,13 @@ export function AuthModal() {
     setBusy(true);
     try {
       if (isReset) {
-        await api.resetPassword({ phone, new_password: password });
+        const answers = resetKeys.map((k) => ({ key: k, answer: resetAnswers[k] ?? '' }));
+        await api.resetPassword({
+          phone,
+          new_password: password,
+          site: brand.slug,
+          ...(answers.length ? { answers } : {}),
+        });
         setResetDone(true);
         return;
       }
@@ -377,6 +449,31 @@ export function AuthModal() {
             onChange={(e) => setConfirm(e.target.value)}
             error={errors['confirm']}
           />
+        ) : null}
+
+        {/* Privileged (admin) reset: answer the account's security questions as a second factor (0097). */}
+        {isReset && resetKeys.length ? (
+          <div className="flex flex-col gap-3 rounded-brand border border-border bg-surface-2/40 p-3">
+            <div className="flex items-center gap-1.5 text-xs font-medium text-fg">
+              <span className="text-up">
+                <ShieldIcon />
+              </span>
+              <span>Admin account — verify your security questions</span>
+            </div>
+            {resetKeys.map((k) => (
+              <Input
+                key={k}
+                label={resetLabels[k] ?? k}
+                name={`ans_${k}`}
+                autoComplete="off"
+                placeholder="Your answer"
+                value={resetAnswers[k] ?? ''}
+                onChange={(e) => setResetAnswers((prev) => ({ ...prev, [k]: e.target.value }))}
+                error={errors[`ans_${k}`]}
+              />
+            ))}
+            <p className="text-[11px] leading-relaxed text-muted">Matching is case-insensitive.</p>
+          </div>
         ) : null}
 
         {/* Referral stays collapsed so the default signup path is two fields, not four. */}
