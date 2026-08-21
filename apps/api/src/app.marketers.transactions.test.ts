@@ -54,6 +54,59 @@ test("marketer transactions feed renders a game withdrawal as an M-PESA 'receive
   } finally { await api.close(); }
 });
 
+test("game-withdrawal confirmation reads the marketer's OWN brand, not the flagship (0096)", async () => {
+  const api = await startTestApi();
+  try {
+    // Register two brands' display names, exactly as the 0096 view resolves them from sites.name.
+    const MADOLAR = "site-madolar";
+    const THOUSAND = "site-1000wins";
+    (api.deps.marketers as any)._setBrandName(MADOLAR, "Madolar");
+    (api.deps.marketers as any)._setBrandName(THOUSAND, "1000Wins");
+
+    // Onboard a marketer under EACH brand (admin token carries the site claim -> adminScopeSite).
+    const mk = async (site: string, name: string, phone: string): Promise<string> => {
+      const id = (await json(await req(api, "POST", "/api/v1/admin/marketers", { token: `u-admin:admin:${site}`, body: { name, phone } }))).id as string;
+      assert.equal((await req(api, "POST", `/api/v1/admin/marketers/${id}/pin`, { token: ADMIN, body: { pin: "1234" } })).status, 200);
+      return id;
+    };
+    const madolarId = await mk(MADOLAR, "Alice Wanjiru", "0733000001");
+    const thousandId = await mk(THOUSAND, "Bob Otieno", "0733000002");
+
+    // Credit each with a game withdrawal.
+    for (const [id, ref] of [[madolarId, "game:md-1"], [thousandId, "game:tw-1"]] as const) {
+      assert.equal((await req(api, "POST", `/api/v1/admin/marketers/${id}/credit`, {
+        token: ADMIN, body: { amountCents: 120000, ref, meta: { source: "game_withdrawal" } },
+      })).status, 200);
+    }
+
+    const madolarTx = (await json(await req(api, "GET", "/api/v1/marketers/me/transactions", { token: mtok(madolarId) }))).items[0];
+    const thousandTx = (await json(await req(api, "GET", "/api/v1/marketers/me/transactions", { token: mtok(thousandId) }))).items[0];
+
+    // Each marketer sees their OWN brand as the M-PESA sender — never the flagship.
+    assert.equal(madolarTx.mpesa.party, "MADOLAR");
+    assert.match(madolarTx.mpesa.message, /Confirmed\.You have received Ksh1,200\.00 from MADOLAR on /);
+    assert.doesNotMatch(madolarTx.mpesa.message, /INVEST254/);
+
+    assert.equal(thousandTx.mpesa.party, "1000WINS");
+    assert.match(thousandTx.mpesa.message, /from 1000WINS on /);
+    assert.doesNotMatch(thousandTx.mpesa.message, /INVEST254/);
+  } finally { await api.close(); }
+});
+
+test("brandless / default-site marketer still falls back to INVEST254 (behaviour-preserving)", async () => {
+  const api = await startTestApi();
+  try {
+    // No _setBrandName for this marketer's (default) site beyond the built-in Invest254 default.
+    const id = await onboard(api, "Carol Njeri", "0733000003");
+    assert.equal((await req(api, "POST", `/api/v1/admin/marketers/${id}/credit`, {
+      token: ADMIN, body: { amountCents: 50000, ref: "game:def-1", meta: { source: "game_withdrawal" } },
+    })).status, 200);
+    const tx = (await json(await req(api, "GET", "/api/v1/marketers/me/transactions", { token: mtok(id) }))).items[0];
+    assert.equal(tx.mpesa.party, "INVEST254");
+    assert.match(tx.mpesa.message, /from INVEST254 on /);
+  } finally { await api.close(); }
+});
+
 test("transactions feed is newest-first and gated to marketers", async () => {
   const api = await startTestApi();
   try {

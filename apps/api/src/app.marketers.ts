@@ -30,6 +30,10 @@ export interface MarketerProfile {
   phone: string; status: string;
   balance_cents: number; available_fuliza_cents: number; airtime_balance_cents: number;
   currency: string;
+  /** The marketer's brand (site) id and display name (0096). `brand_name` is the M-PESA sender
+   *  shown on game-withdrawal confirmations, so each white-label client reads its own name. */
+  site_id?: string | null;
+  brand_name?: string | null;
 }
 export interface MarketerLedgerRow {
   id: number; entry_type: string; amount_cents: number; balance_after_cents: number;
@@ -57,16 +61,23 @@ export interface MarketerTxDto {
   mpesa: { code: string; party: string; amountText: string; message: string };
 }
 
-/** Map a raw ledger row to the app DTO, generating the M-PESA confirmation text. */
-export function ledgerToTxDto(r: MarketerLedgerRow): MarketerTxDto {
+/**
+ * Map a raw ledger row to the app DTO, generating the M-PESA confirmation text.
+ * `brandName` is the marketer's own brand (site) name (0096); game-winnings withdrawals read as
+ * coming FROM that brand (e.g. "from MADOLAR"), so each white-label client sees its own sender
+ * instead of the platform flagship. Falls back to "Invest254" when no brand is resolvable.
+ */
+export function ledgerToTxDto(r: MarketerLedgerRow, brandName?: string | null): MarketerTxDto {
   const createdAtMs = Number.isFinite(Date.parse(r.created_at)) ? Date.parse(r.created_at) : Date.now();
   const meta = (r.meta && typeof r.meta === "object" ? r.meta : {}) as Record<string, unknown>;
   const source = typeof meta.source === "string" ? meta.source : null;
   const direction: "in" | "out" = r.amount_cents >= 0 ? "in" : "out";
   // Counterparty on the confirmation. Game winnings paid instantly into the mpesa wallet read as
-  // coming from the platform; otherwise honour an explicit meta.name, else the generic "M-PESA".
+  // coming from the marketer's OWN brand (0096); otherwise honour an explicit meta.name, else the
+  // generic "M-PESA". Empty/whitespace brand names fall back to the platform default.
+  const brand = typeof brandName === "string" && brandName.trim() ? brandName.trim() : "Invest254";
   const rawParty = source === "game_withdrawal"
-    ? "Invest254"
+    ? brand
     : (typeof meta.name === "string" && meta.name.trim() ? meta.name.trim() : "M-PESA");
   const party = rawParty.toUpperCase();
   const code = mpesaCode(createdAtMs, r.id);
@@ -367,8 +378,11 @@ export function registerMarketerRoutes(router: Router, deps: ApiDeps): void {
   // confirmation. The app polls this to raise "money received" notifications when a game
   // withdrawal lands in the wallet. The token subject IS the marketer id (see requireMarketer).
   router.get(`${BASE}/marketers/me/transactions`, auth, marketer, async (ctx: Ctx) => {
+    // The marketer's brand (loaded by the `marketer` gate) becomes the M-PESA sender on
+    // game-withdrawal confirmations, so each white-label client reads its own name (0096).
+    const brandName = marketerCtx.get(ctx)?.brand_name ?? null;
     const rows = await domain(() => deps.marketers.statement(ctx.claims!.userId, limitOf(ctx)));
-    return { items: rows.map(ledgerToTxDto) };
+    return { items: rows.map((r) => ledgerToTxDto(r, brandName)) };
   });
 
   // Change own PIN (proves possession of the current PIN).

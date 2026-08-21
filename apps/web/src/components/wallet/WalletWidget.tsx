@@ -38,12 +38,18 @@ export function WalletWidget() {
   return (
     <Card className="flex flex-col gap-3">
       <div>
-        <p className="text-sm text-muted">Real balance</p>
-        <Money cents={data.real} className="text-3xl font-semibold" />
+        <p className="text-sm text-muted">Balance</p>
+        <Money cents={data.real + data.bonus} className="text-3xl font-semibold" />
+        {data.bonus > 0 ? (
+          <p className="mt-1 text-xs text-muted">
+            Includes <Money cents={data.bonus} className="font-medium text-fg" /> bonus — stakeable now,
+            withdrawable after wagering.
+          </p>
+        ) : null}
       </div>
       <div className="flex items-center justify-between border-t border-border pt-3 text-sm">
-        <span className="text-muted">Bonus balance</span>
-        <Money cents={data.bonus} className="font-medium" />
+        <span className="text-muted">Withdrawable (real cash)</span>
+        <Money cents={data.real} className="font-medium" />
       </div>
       {activeBonuses.map((b) => (
         <div key={b.bonusId} className="flex flex-col gap-1 border-t border-border pt-3">

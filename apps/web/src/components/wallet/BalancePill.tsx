@@ -23,10 +23,16 @@ export function BalancePill() {
   const { data } = useWallet();
   const openWithdraw = useDepositUi((s) => s.openWithdraw);
 
+  // One spendable number, not two buckets: the player sees real + bonus combined (the same
+  // total BetPanel stakes against). The engine/ledger still track the buckets separately —
+  // bonus is restricted (non-withdrawable until wagered) — but a "KES 0 + bonus" display reads
+  // as "I have nothing" and kills the endowment effect the welcome bonus exists for (docs/31).
   const real = data?.real ?? 0;
-  const shown = useCountUp(real, 700, real);
+  const bonus = data?.bonus ?? 0;
+  const total = real + bonus;
+  const shown = useCountUp(total, 700, total);
   const [bump, setBump] = useState(false);
-  const prevRef = useRef(real);
+  const prevRef = useRef(total);
 
   // Pulse when the OutcomeOverlay's payout chip arrives, or on any balance increase.
   useEffect(() => {
@@ -40,14 +46,14 @@ export function BalancePill() {
   }, []);
 
   useEffect(() => {
-    if (real > prevRef.current) {
+    if (total > prevRef.current) {
       setBump(true);
       const t = setTimeout(() => setBump(false), 750);
-      prevRef.current = real;
+      prevRef.current = total;
       return () => clearTimeout(t);
     }
-    prevRef.current = real;
-  }, [real]);
+    prevRef.current = total;
+  }, [total]);
 
   if (!hydrated || !token || !data) return null;
 

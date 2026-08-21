@@ -18,6 +18,8 @@ function toProfile(r: any): MarketerProfile {
     available_fuliza_cents: num(r.available_fuliza_cents),
     airtime_balance_cents: num(r.airtime_balance_cents),
     currency: r.currency,
+    site_id: r.site_id ?? null,
+    brand_name: r.brand_name ?? null,
   };
 }
 

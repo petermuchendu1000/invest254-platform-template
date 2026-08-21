@@ -207,3 +207,25 @@ test("multiplex: per-brand stake bounds are enforced independently", async () =>
     assert.ok(ok.data.positionId);
   } finally { b.close(); await handle.close(); }
 });
+
+test("bonus visibility: auth + open_position balance frames carry the bonus bucket (0094)", async () => {
+  const { handle, repo, url } = await boot();
+  const c = new Client(url(SITE_A));
+  try {
+    await c.open(); await c.waitFor("hello");
+    c.send("auth", { userId: "bonusUser" });
+    const bal = await c.waitFor("balance");
+    // The auth frame must be a full snapshot: real AND bonus present (bonus 0 for a fresh user).
+    assert.equal(typeof bal.data.real, "number");
+    assert.equal(typeof bal.data.bonus, "number", "auth balance frame carries bonus");
+    assert.equal(bal.data.bonus, 0);
+
+    // Open a trade: the post-open frame must also carry bonus (bonus-first staking moves both buckets).
+    c.send("open_position", { stakeCents: 25000, direction: "buy", durationS: 1 });
+    await c.waitFor("position_opened");
+    const frames = c.of("balance");
+    const postOpen = frames[frames.length - 1];
+    assert.equal(typeof postOpen.data.bonus, "number", "open_position balance frame carries bonus");
+    assert.ok(postOpen.data.real < bal.data.real, "stake debited");
+  } finally { c.close(); await handle.close(); }
+});

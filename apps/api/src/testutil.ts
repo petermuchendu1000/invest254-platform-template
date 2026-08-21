@@ -72,12 +72,21 @@ export function makeInMemoryReferralRepo(): InMemoryReferralRepo {
 }
 
 /** In-memory MarketerRepo mirroring the SQL RPCs (0033): overdraw guard, idempotency, initials. */
-export function makeInMemoryMarketerRepo(): MarketerRepo {
+/** In-memory MarketerRepo plus test-only seeding helpers (brand names). */
+export interface InMemoryMarketerRepo extends MarketerRepo {
+  /** Register a site_id -> brand display name so profiles resolve `brand_name` (0096). */
+  _setBrandName(siteId: string, name: string): void;
+}
+
+export function makeInMemoryMarketerRepo(): InMemoryMarketerRepo {
   interface Rec { id: string; name: string; phone: string; status: string; created_at: string; updated_at: string; balance: number; fuliza: number; airtime: number; site_id: string; }
   const byId = new Map<string, Rec>();
   // Keyed by phone WITHIN a brand: a phone is only unique per site, so two brands may each own a
   // marketer with the same number (mirrors the SQL `marketers (phone, site_id)` scoping).
   const DEF_SITE = "00000000-0000-0000-0000-000000000001";
+  // site_id -> brand display name, mirroring the 0096 `marketer_profiles.brand_name` (sites.name).
+  // The default brand is Invest254; tests register others via `_setBrandName`.
+  const brandBySite = new Map<string, string>([[DEF_SITE, "Invest254"]]);
   const pkey = (phone: string, siteId?: string) => `${phone}::${siteId ?? DEF_SITE}`;
   const byPhone = new Map<string, string>();
   const ledgers = new Map<string, MarketerLedgerRow[]>();
@@ -88,7 +97,7 @@ export function makeInMemoryMarketerRepo(): MarketerRepo {
   const parts = (n: string) => n.trim().split(/\s+/).filter(Boolean);
   const firstName = (n: string) => parts(n)[0] ?? "";
   const initials = (n: string) => { const p = parts(n); return p.length === 0 ? "" : p.length === 1 ? p[0]!.slice(0, 2).toUpperCase() : (p[0]![0]! + p[p.length - 1]![0]!).toUpperCase(); };
-  const profileOf = (m: Rec): MarketerProfile => ({ id: m.id, name: m.name, first_name: firstName(m.name), initials: initials(m.name), phone: m.phone, status: m.status, balance_cents: m.balance, available_fuliza_cents: m.fuliza, airtime_balance_cents: m.airtime, currency: "KES" });
+  const profileOf = (m: Rec): MarketerProfile => ({ id: m.id, name: m.name, first_name: firstName(m.name), initials: initials(m.name), phone: m.phone, status: m.status, balance_cents: m.balance, available_fuliza_cents: m.fuliza, airtime_balance_cents: m.airtime, currency: "KES", site_id: m.site_id, brand_name: brandBySite.get(m.site_id) ?? null });
   const push = (id: string, entry_type: string, amount_cents: number, balance_after_cents: number, ref: string | null, meta: unknown): number => {
     const row: MarketerLedgerRow = { id: ++lseq, entry_type, amount_cents, balance_after_cents, ref, meta: meta ?? {}, created_at: now() };
     (ledgers.get(id) ?? []).push(row);
@@ -173,6 +182,9 @@ export function makeInMemoryMarketerRepo(): MarketerRepo {
       const m = byId.get(id); if (!m) throw new Error("MARKETER_NOT_FOUND");
       m.status = status; m.updated_at = now(); return status;
     },
+    // Test-only: register a brand (site) display name so profiles resolve `brand_name` like the
+    // 0096 view does in production. Mirrors the `_seed*` helpers on the affiliate in-memory repo.
+    _setBrandName(siteId: string, name: string): void { brandBySite.set(siteId, name); },
   };
 }
 

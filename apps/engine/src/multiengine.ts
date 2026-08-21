@@ -126,11 +126,17 @@ export async function startMultiEngine(opts: MultiEngineOptions): Promise<MultiE
           const p = rt.game.getPosition(u.positionId);
           if (p) toSiteUser(siteId, p.userId, "position_update", u);
         },
-        onSettled: (e) =>
+        onSettled: (e) => {
           toSiteUser(siteId, e.position.userId, "position_settled", {
             positionId: e.position.id, result: e.position.outcome.result, lockedMultiplier: e.lockedMultiplier,
             payoutCents: e.payoutCents, pnlCents: e.pnlCents, balance: e.balance, mode: e.mode, presentation: e.presentation,
-          }),
+          });
+          // A settle can convert wagered bonus into real cash (0094 FIFO conversion) — push the
+          // full wallet snapshot so the client's bonus figure updates live, not on next refetch.
+          void opts.repo.getWalletSnapshot(e.position.userId).then((snap) =>
+            toSiteUser(siteId, e.position.userId, "balance", { real: snap.real, bonus: snap.bonus, currency: snap.currency }),
+          ).catch(() => { /* non-fatal: the client also invalidates ['wallet'] on settle */ });
+        },
         onError: (err, c) => report(err, `${siteId}:${c}`),
       });
       rt.game.start();
@@ -184,7 +190,10 @@ export async function startMultiEngine(opts: MultiEngineOptions): Promise<MultiE
               const um = perSiteUser.get(siteId) ?? perSiteUser.set(siteId, new Map()).get(siteId)!;
               (um.get(userId) ?? um.set(userId, new Set()).get(userId)!).add(ws);
               if (opts.devSeedBalance) await opts.devSeedBalance(siteId, userId);
-              return send(ws, "balance", { real: await opts.repo.getBalance(userId), currency: "KES" });
+              // Full snapshot (real + bonus) so a freshly granted welcome bonus (0094) shows in the
+              // client wallet immediately on connect, not only after the next REST /wallet refetch.
+              const snap = await opts.repo.getWalletSnapshot(userId);
+              return send(ws, "balance", { real: snap.real, bonus: snap.bonus, currency: snap.currency });
             }
             case "open_position": {
               const userId = userOf.get(ws); if (!userId) return send(ws, "error", { code: "AUTH_REQUIRED" });
@@ -195,7 +204,10 @@ export async function startMultiEngine(opts: MultiEngineOptions): Promise<MultiE
                 role: roleOf.get(ws) ?? "player",
               });
               send(ws, "position_opened", { positionId: p.id, entryRate: p.outcome.entryRate, direction: p.direction, stakeCents: p.stakeCents, durationS: p.durationS, expiresAtMs: p.expiresAtMs });
-              return send(ws, "balance", { real: balance, currency: "KES" });
+              // Bonus-first staking (0094) spends bonus_balance before real, so the stake usually
+              // moves BOTH buckets — push the full snapshot or the client bonus figure goes stale.
+              const afterOpen = await opts.repo.getWalletSnapshot(userId);
+              return send(ws, "balance", { real: afterOpen.real, bonus: afterOpen.bonus, currency: afterOpen.currency });
             }
             case "sell": {
               const userId = userOf.get(ws); if (!userId) return send(ws, "error", { code: "AUTH_REQUIRED" });
