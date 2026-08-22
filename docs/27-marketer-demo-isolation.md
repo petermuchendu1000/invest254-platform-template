@@ -69,3 +69,36 @@ Rejected alternatives: (a) statistical settlement on `real_balance` (the status 
   `demo_balance` (not `real_balance`) going forward, to match the isolation.
 - Reporting can now additionally exclude `balance_kind='demo'` ledger rows from real-cash GGR/RTP as a
   second safety net (the cohort exclusion already covers it).
+
+---
+
+## Canonical real/demo VIEWS — the un-pollutable analytics boundary (migration 0101)
+
+The cohort exclusion above is correct but was applied *ad hoc* in each report, so any query (including
+one-off ops queries) that forgot `where user_id not in (select user_id from marketer_account_ids)`
+silently mixed marketer funny-money into real analytics — e.g. a raw `sum(positions.stake)` reported
+millions of KES of demo turnover as real. Migration 0101 makes the split a **first-class, enforced
+interface** so this class of error is impossible.
+
+**Design (chosen after comparing alternatives):**
+- *Physical demo tables / partitioning* — rejected: needs refactoring the live money-movement RPCs +
+  recovery (high blast radius).
+- *Stamped `is_demo` column + insert trigger* — rejected: adds latency/risk to the money hot-path and
+  drifts when an account is re/de-classified (0100-style changes).
+- **Real/demo VIEWS over the live classifier** — chosen: correct **by construction** and **drift-free**
+  (the classifier `marketer_account_ids = profiles where fn_is_marketer_account(id)` is evaluated live),
+  with **no money-path change**.
+
+**What 0101 adds:**
+- `v_real_profiles / v_real_positions / v_real_ledger_entries / v_real_transactions / v_real_wallets`
+  (and the `v_demo_*` complements). A `v_real_*` view can **never** contain a demo-cohort row.
+- `fn_demo_isolation_report()` → `(table_name, real_rows, demo_rows, leaked)`. `leaked` is the isolation
+  invariant: rows visible in a `v_real_*` view that are actually in the demo cohort — **always 0**;
+  a non-zero value means a view was mis-edited (use in monitoring/tests).
+- `fn_platform_overview` is **rewired onto the `v_real_*` views** (output byte-identical, verified live)
+  so "real" has exactly ONE definition.
+
+**Convention going forward:** all real-money analytics (dashboards, ad-hoc queries, engine demand
+forecasts) read `v_real_*`; marketer/demo dashboards read `v_demo_*`. The engine's dynamic-pool demand
+already reads `position_decision` (pool decisions are non-marketer by construction), which is a subset of
+the real cohort. Covered by `packages/db/_testkit/e2e_demo_isolation.py` and a live rolled-back check.

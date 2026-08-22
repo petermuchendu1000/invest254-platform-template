@@ -136,3 +136,19 @@ entry: what, evidence, root cause, impact, and resolution.
   the `SettlementEngine` calibrates to), so pool base win-prob = `targetWinRate`. Both engines now share
   `targetWinRate` and both deliver RTP = `1 − house_edge`. `game.ts` threads `cfg.targetWinRate` into the
   controller; an infeasible config falls back to the default multiplier (defence-in-depth).
+
+## #9 — Marketer/demo funny-money polluted real analytics (raw-table queries) — FIXED (migration 0101)
+- **What:** money-bearing rows (positions/ledger/transactions/wallets) for the marketer/demo cohort
+  live in the same tables as real players. Reports that used the cohort exclusion were correct, but any
+  query that omitted it mixed demo funny-money into real figures — e.g. a raw `sum(positions.stake)`
+  read ~KES 9.75M of demo turnover as real, producing a wildly wrong demand/RTP interpretation.
+- **Evidence:** `positions` held 8,391 rows but the dashboard (which excludes `marketer_account_ids`)
+  counted 2,128 real bets; the excess 6,263 were marketer demo bets (incl. a KES 4.7M single-day burst).
+- **Root cause:** no enforced "real data" surface — cohort exclusion was applied per-query, so it could
+  be forgotten.
+- **Resolution (0101):** canonical `v_real_*` / `v_demo_*` views over the live classifier
+  (`marketer_account_ids`), correct-by-construction and drift-free; `fn_demo_isolation_report()` proves
+  0 leakage; `fn_platform_overview` rewired onto the views (identical output). Data hygiene: the
+  6,263 marketer demo positions + 12,087 demo ledger rows + 426 demo transactions were removed and the
+  demo wallets reset (real player data provably untouched); a bug-inflated madolar test account was
+  deleted; and seeded pool caps were zeroed. See docs/27.

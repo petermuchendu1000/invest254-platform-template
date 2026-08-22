@@ -80,6 +80,16 @@ function asObject(body: unknown): Record<string, unknown> {
   return body as Record<string, unknown>;
 }
 
+/** Parse the optional dynamic-pool-demand query params (all optional; engine applies defaults). */
+function parsePoolDemandQuery(ctx: Ctx) {
+  const g = ctx.query;
+  const numOrU = (k: string) => { const v = g.get(k); return v == null || v === "" ? undefined : Number(v); };
+  return {
+    lookbackDays: numOrU("lookbackDays"), totalCents: numOrU("totalCents"),
+    alpha: numOrU("alpha"), floorFrac: numOrU("floorFrac"), capMult: numOrU("capMult"),
+  };
+}
+
 /**
  * Fold the flat per-(affiliate, site) rollup rows (Task R) into one entry per marketer — grouped by
  * `marketerGlobalId` when linked, else standalone per affiliate — with a per-site breakdown and the
@@ -300,6 +310,27 @@ export function registerPlatformRoutes(router: Router, deps: ApiDeps): void {
   router.get(`${BASE}/platform/pool/distributions`, auth, platform, async (ctx: Ctx) => {
     const limit = Math.min(Math.max(Number(ctx.query.get("limit")) || 20, 1), 100);
     return { distributions: await domain(() => deps.platform.listPoolDistributions(limit)) };
+  });
+
+  // ── Dynamic (demand-based) pool distribution (docs/25 §15) ──
+  // Preview: forecasts each active pool-mode brand's demand and returns the suggested allocation. No apply.
+  router.get(`${BASE}/platform/pool/demand`, auth, platform, async (ctx: Ctx) => {
+    const opts = parsePoolDemandQuery(ctx);
+    return { preview: await domain(() => deps.platform.poolDemand(opts)) };
+  });
+  // Apply: computes the demand-based allocation and applies it via the audited per-site distributor.
+  router.post(`${BASE}/platform/pool/distribute-dynamic`, auth, platform, async (ctx: Ctx) => {
+    const body = asObject(ctx.body);
+    const opts = {
+      lookbackDays: body.lookbackDays != null ? Number(body.lookbackDays) : undefined,
+      totalCents: body.totalCents != null ? Number(body.totalCents) : undefined,
+      alpha: body.alpha != null ? Number(body.alpha) : undefined,
+      floorFrac: body.floorFrac != null ? Number(body.floorFrac) : undefined,
+      capMult: body.capMult != null ? Number(body.capMult) : undefined,
+    };
+    if (opts.totalCents != null && (!Number.isFinite(opts.totalCents) || opts.totalCents < 0))
+      throw new ApiError("VALIDATION", "totalCents must be a non-negative number", 400);
+    return { result: await domain(() => deps.platform.distributePoolDynamic(ctx.claims!.userId, ctx.claims!.role ?? "player", opts)) };
   });
 
   // ── Task R: cross-brand marketer rollup (reporting only; money stays per site) ──

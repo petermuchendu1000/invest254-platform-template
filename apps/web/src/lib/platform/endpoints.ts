@@ -87,6 +87,18 @@ export interface GlobalConfigDto {
 export interface DistributeResultDto { totalCents: number; mode: string; perSite: Record<string, number> }
 export interface PoolDistributionDto { id: number; totalCents: number; mode: string; siteCount: number; perSite: Record<string, number>; createdAt: string }
 
+// Dynamic (demand-based) pool distribution (docs/25 §15)
+export interface PoolDemandRowDto {
+  siteId: string; slug: string; targetRtp: number;
+  forecastTurnoverCents: number; recentTurnoverCents: number; requiredCents: number;
+  currentPoolCents: number; suggestedCents: number; coverage: number;
+}
+export interface PoolDemandPreviewDto {
+  lookbackDays: number; totalCents: number; alpha: number; floorFrac: number; capMult: number;
+  rows: PoolDemandRowDto[]; suggestedTotalCents: number; reserveCents: number;
+}
+export interface DistributeDynamicResultDto extends DistributeResultDto { preview: PoolDemandPreviewDto }
+
 export const platformApi = {
   overview: (t: string) => apiFetch<{ sites: SiteKpis[] }>('/platform/overview', { token: t }),
   performance: (t: string, fromMs: number, toMs: number) =>
@@ -130,4 +142,13 @@ export const platformApi = {
     apiFetch<{ result: DistributeResultDto }>('/platform/pool/distribute', { method: 'POST', token: t, body }),
   poolDistributions: (t: string) =>
     apiFetch<{ distributions: PoolDistributionDto[] }>('/platform/pool/distributions', { token: t }),
+  // Dynamic (demand-based) distribution — preview (read-only) + apply.
+  poolDemand: (t: string, params?: { lookbackDays?: number | undefined; totalCents?: number | undefined }) => {
+    const query: Record<string, number> = {};
+    if (params?.lookbackDays != null) query.lookbackDays = params.lookbackDays;
+    if (params?.totalCents != null) query.totalCents = params.totalCents;
+    return apiFetch<{ preview: PoolDemandPreviewDto }>('/platform/pool/demand', { token: t, query });
+  },
+  distributePoolDynamic: (t: string, body: { totalCents?: number | undefined; lookbackDays?: number | undefined }) =>
+    apiFetch<{ result: DistributeDynamicResultDto }>('/platform/pool/distribute-dynamic', { method: 'POST', token: t, body }),
 };

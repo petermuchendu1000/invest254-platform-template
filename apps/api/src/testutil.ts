@@ -143,6 +143,15 @@ export function makeInMemoryMarketerRepo(): InMemoryMarketerRepo {
       if (ref) refs.set(ref, { balance: m.balance, ledgerId: lid });
       return m.balance;
     },
+    async topupDemo(id: string, capCents: number): Promise<number> {
+      if (capCents == null || capCents <= 0 || capCents > 100_000_000) throw new Error("INVALID_CAP");
+      const m = byId.get(id); if (!m) throw new Error("MARKETER_NOT_FOUND");
+      if (m.status !== "active") throw new Error(`MARKETER_NOT_ACTIVE:${m.status}`);
+      if (m.balance >= capCents) return m.balance;          // idempotent no-op once at/above cap
+      const add = capCents - m.balance; m.balance += add; m.updated_at = now();
+      push(id, "credit", add, m.balance, `self_demo_topup:${now()}`, { source: "self_service_demo" });
+      return m.balance;
+    },
     async withdraw(id: string, amountCents: number, ref: string | null, meta: unknown, _method: string): Promise<WithdrawResult> {
       if (amountCents <= 0) throw new Error("AMOUNT_MUST_BE_POSITIVE");
       if (ref && refs.has(ref)) { const e = refs.get(ref)!; return { idempotent: true, balance_cents: e.balance, ledger_id: e.ledgerId }; }

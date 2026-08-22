@@ -1,5 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { parseCohort, parsePayments, type CohortEconomy, type PaymentsEconomy } from "@invest254/shared";
+import {
+  parseCohort, parsePayments, distributeDynamicPool, emaForecast,
+  type CohortEconomy, type PaymentsEconomy,
+} from "@invest254/shared";
 import type { Querier } from "./wallet.js";
 
 /**
@@ -54,6 +57,37 @@ export interface PoolDistribution {
   perSite: Record<string, number>; createdAt: string;
 }
 
+// ── Dynamic (demand-based) pool distribution (docs/25 §15) ──
+export interface PoolDemandOpts {
+  /** Days of history to forecast from (EAT). Default 14, clamped [3,90]. */
+  lookbackDays?: number | undefined;
+  /** Global pool total to allocate. Null/omitted ⇒ current sum of active pool-mode brand budgets. */
+  totalCents?: number | null | undefined;
+  /** EMA smoothing (default 0.4), floor per active brand as fraction of total (default 0.015),
+   *  per-brand cap as a multiple of required (default 2.5). */
+  alpha?: number | undefined; floorFrac?: number | undefined; capMult?: number | undefined;
+}
+export interface PoolDemandRow {
+  siteId: string; slug: string; targetRtp: number;
+  forecastTurnoverCents: number; recentTurnoverCents: number; requiredCents: number;
+  currentPoolCents: number; suggestedCents: number;
+  /** suggested / required — <1 means the brand is under-funded for its target RTP at forecast demand. */
+  coverage: number;
+}
+export interface PoolDemandPreview {
+  lookbackDays: number; totalCents: number; alpha: number; floorFrac: number; capMult: number;
+  rows: PoolDemandRow[]; suggestedTotalCents: number; reserveCents: number;
+}
+export type DistributeDynamicResult = DistributeResult & { preview: PoolDemandPreview };
+
+/** EAT (UTC+3) day strings for the last n days, oldest→newest — the forecast window. */
+function eatWindowDays(n: number): string[] {
+  const out: string[] = [];
+  const nowEat = Date.now() + 3 * 3600 * 1000;
+  for (let i = n - 1; i >= 0; i--) out.push(new Date(nowEat - i * 86_400_000).toISOString().slice(0, 10));
+  return out;
+}
+
 /** One (affiliate, site) row of the cross-brand marketer rollup (docs/22 Task R). A person spans
  *  brands via `marketerGlobalId`; a null id is an unlinked (single-brand) marketer. */
 export interface MarketerRollupRow {
@@ -83,6 +117,10 @@ export interface PlatformRepository {
   setGlobalConfig(actorId: string, actorRole: string, patch: JsonPatch): Promise<GlobalConfig>;
   distributePool(actorId: string, actorRole: string, totalCents: number | null, mode: string, overrides?: Record<string, number> | null): Promise<DistributeResult>;
   listPoolDistributions(limit?: number): Promise<PoolDistribution[]>;
+  /** Preview demand-based allocation (read-only; does NOT apply). */
+  poolDemand(opts: PoolDemandOpts): Promise<PoolDemandPreview>;
+  /** Compute the demand-based allocation and APPLY it via the audited per-site distributor. */
+  distributePoolDynamic(actorId: string, actorRole: string, opts: PoolDemandOpts): Promise<DistributeDynamicResult>;
 }
 
 const num = (v: unknown): number => (typeof v === "string" ? Number(v) : (v as number)) || 0;
@@ -271,6 +309,76 @@ export class PgPlatformRepository implements PlatformRepository {
       id: num(x.id), totalCents: num(x.total_cents), mode: String(x.mode), siteCount: num(x.site_count),
       perSite: (x.per_site as Record<string, number>) ?? {}, createdAt: String(x.created_at),
     }));
+  }
+
+  /**
+   * Demand-based allocation preview (docs/25 §15). Forecasts each ACTIVE pool-mode brand's daily
+   * player turnover via an EMA over `lookbackDays` of position_decision history (player-only by
+   * construction — marketers never produce pool decisions), then runs the shared water-fill allocator.
+   * Read-only: computes but does not apply.
+   */
+  async poolDemand(opts: PoolDemandOpts): Promise<PoolDemandPreview> {
+    const lookbackDays = Math.min(90, Math.max(3, Math.floor(opts.lookbackDays ?? 14)));
+    const alpha = opts.alpha ?? 0.4, floorFrac = opts.floorFrac ?? 0.015, capMult = opts.capMult ?? 2.5;
+    const sitesR = await this.q.query(
+      `select s.id, s.slug, s.default_daily_pool_cents, coalesce(g.house_edge, 0.05) as house_edge
+         from public.sites s left join public.site_game_config g on g.site_id = s.id
+        where s.status = 'active' and s.pool_mode = true
+        order by s.created_at`, []);
+    const turnR = await this.q.query(
+      `select d.site_id::text as site_id, (d.pool_day)::text as day, coalesce(sum(p.stake), 0)::bigint as turnover
+         from public.position_decision d join public.positions p on p.id = d.position_id
+        where d.pool_day > current_date - $1::int
+        group by d.site_id, d.pool_day`, [lookbackDays]);
+
+    const perSiteDay = new Map<string, Map<string, number>>();
+    for (const row of turnR.rows) {
+      const sid = String(row.site_id), day = String(row.day);
+      if (!perSiteDay.has(sid)) perSiteDay.set(sid, new Map());
+      perSiteDay.get(sid)!.set(day, num(row.turnover));
+    }
+    const days = eatWindowDays(lookbackDays);
+    const brands = sitesR.rows.map((s: Record<string, unknown>) => {
+      const sid = String(s.id);
+      const m = perSiteDay.get(sid) ?? new Map<string, number>();
+      const series = days.map((d) => m.get(d) ?? 0);
+      return {
+        siteId: sid, slug: String(s.slug), houseEdge: num(s.house_edge),
+        currentPoolCents: num(s.default_daily_pool_cents),
+        recentTurnoverCents: series.reduce((a, b) => a + b, 0),
+        forecastTurnoverCents: emaForecast(series, alpha),
+      };
+    });
+    const totalCents = opts.totalCents != null
+      ? Math.max(0, Math.floor(opts.totalCents))
+      : brands.reduce((a, b) => a + b.currentPoolCents, 0);
+
+    const alloc = distributeDynamicPool(
+      brands.map((b) => ({ siteId: b.siteId, houseEdge: b.houseEdge, forecastTurnoverCents: b.forecastTurnoverCents })),
+      totalCents, { floorFrac, capMult });
+    const allocById = new Map(alloc.map((a) => [a.siteId, a]));
+
+    const rows: PoolDemandRow[] = brands.map((b) => {
+      const a = allocById.get(b.siteId)!;
+      return {
+        siteId: b.siteId, slug: b.slug, targetRtp: a.targetRtp,
+        forecastTurnoverCents: Math.round(b.forecastTurnoverCents), recentTurnoverCents: b.recentTurnoverCents,
+        requiredCents: a.requiredCents, currentPoolCents: b.currentPoolCents, suggestedCents: a.allocCents,
+        coverage: a.requiredCents > 0 ? a.allocCents / a.requiredCents : 1,
+      };
+    });
+    const suggestedTotalCents = rows.reduce((a, b) => a + b.suggestedCents, 0);
+    return { lookbackDays, totalCents, alpha, floorFrac, capMult, rows, suggestedTotalCents, reserveCents: totalCents - suggestedTotalCents };
+  }
+
+  async distributePoolDynamic(actorId: string, actorRole: string, opts: PoolDemandOpts): Promise<DistributeDynamicResult> {
+    const preview = await this.poolDemand(opts);
+    if (!preview.rows.length) throw new Error("NO_ACTIVE_SITES");
+    const overrides: Record<string, number> = {};
+    for (const r of preview.rows) overrides[r.siteId] = r.suggestedCents; // includes 0 for idle brands (explicit)
+    // Reuse the audited per-site distributor (0092): sets each brand's recurring default_daily_pool_cents.
+    const result = await this.distributePool(actorId, actorRole, preview.totalCents, "per_site", overrides);
+    return { ...result, preview };
   }
 }
 
@@ -471,6 +579,34 @@ export class InMemoryPlatformRepository implements PlatformRepository {
     return { totalCents: totalCents ?? applied, mode, perSite };
   }
   async listPoolDistributions(limit = 20): Promise<PoolDistribution[]> { return this.dists.slice(0, limit); }
+
+  /** Test/dev demand preview: no turnover history is tracked in-memory, so forecasts are 0 (all idle). */
+  async poolDemand(opts: PoolDemandOpts): Promise<PoolDemandPreview> {
+    const alpha = opts.alpha ?? 0.4, floorFrac = opts.floorFrac ?? 0.015, capMult = opts.capMult ?? 2.5;
+    const active = [...this.sites.values()].filter((s) => s.status === "active");
+    const totalCents = opts.totalCents != null ? Math.max(0, Math.floor(opts.totalCents)) : 0;
+    const alloc = distributeDynamicPool(
+      active.map((s) => ({ siteId: s.siteId, houseEdge: s.config.houseEdge, forecastTurnoverCents: 0 })),
+      totalCents, { floorFrac, capMult });
+    const byId = new Map(alloc.map((a) => [a.siteId, a]));
+    const rows: PoolDemandRow[] = active.map((s) => {
+      const a = byId.get(s.siteId)!;
+      return { siteId: s.siteId, slug: s.slug, targetRtp: a.targetRtp, forecastTurnoverCents: 0,
+        recentTurnoverCents: 0, requiredCents: 0, currentPoolCents: 0, suggestedCents: a.allocCents,
+        coverage: 1 };
+    });
+    return { lookbackDays: Math.floor(opts.lookbackDays ?? 14), totalCents, alpha, floorFrac, capMult,
+      rows, suggestedTotalCents: rows.reduce((x, r) => x + r.suggestedCents, 0),
+      reserveCents: totalCents - rows.reduce((x, r) => x + r.suggestedCents, 0) };
+  }
+
+  async distributePoolDynamic(actorId: string, actorRole: string, opts: PoolDemandOpts): Promise<DistributeDynamicResult> {
+    const preview = await this.poolDemand(opts);
+    const overrides: Record<string, number> = {};
+    for (const r of preview.rows) overrides[r.siteId] = r.suggestedCents;
+    const result = await this.distributePool(actorId, actorRole, preview.totalCents, "per_site", overrides);
+    return { ...result, preview };
+  }
 }
 
 /** Thin service over the repo: input validation + a stable surface for the API + console. */
@@ -530,4 +666,10 @@ export class PlatformService {
     return this.repo.distributePool(actorId, actorRole, totalCents, mode, overrides ?? null);
   }
   listPoolDistributions(limit?: number): Promise<PoolDistribution[]> { return this.repo.listPoolDistributions(limit); }
+
+  // ── Dynamic (demand-based) pool distribution (docs/25 §15) ──
+  poolDemand(opts: PoolDemandOpts): Promise<PoolDemandPreview> { return this.repo.poolDemand(opts ?? {}); }
+  distributePoolDynamic(actorId: string, actorRole: string, opts: PoolDemandOpts): Promise<DistributeDynamicResult> {
+    return this.repo.distributePoolDynamic(actorId, actorRole, opts ?? {});
+  }
 }

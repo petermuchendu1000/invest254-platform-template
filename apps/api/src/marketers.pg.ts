@@ -60,6 +60,10 @@ export function makePgMarketerRepo(query: Query): MarketerRepo {
       return rows.length ? toProfile(rows[0]) : null;
     },
 
+    async topupDemo(id, capCents): Promise<number> {
+      const { rows } = await query("SELECT public.fn_marketer_topup_demo($1, $2) AS balance", [id, capCents]);
+      return num(rows[0].balance);
+    },
     async credit(id, amountCents, ref, meta): Promise<number> {
       const { rows } = await query(
         "SELECT public.fn_marketer_credit($1, $2, $3, $4::jsonb) AS balance",

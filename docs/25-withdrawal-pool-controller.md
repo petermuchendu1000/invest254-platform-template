@@ -268,3 +268,62 @@ The redesign is the *enabler* for coherent RTP. Its live effect depends on each 
   below target — the pool must be sized `≥ targetRtp × expected_turnover` to actually pay the target RTP.
 Set `house_edge`/`targetWinRate` and pool sizes deliberately **before/at** rollout; the code guarantees
 RTP ≤ target and a positive edge, but the *level* of the target is the operator's dial.
+
+---
+
+## 15. Dynamic (demand-based) pool distribution
+
+The global withdrawal pool used to be fanned across brands **equally** or by **manual** per-brand
+amounts. Neither tracks demand: idle brands hold capital while busy brands starve (observed live —
+`tamutraders`/`cpfmarket` held 200k idle each while `madolar`, the #2 brand by turnover, held only 100k).
+Dynamic distribution allocates the global total by **forecast demand**, tied directly to the RTP-redesigned
+engine (§14), which pays realized RTP = min(target, pool/turnover).
+
+### 15.1 Demand metric
+For each active pool-mode brand: `required_i = targetRtp_i × forecastTurnover_i`, where
+`targetRtp_i = clamp(1 − house_edge_i, 0.05, 0.95)` and `forecastTurnover_i` is an **EMA** (default
+alpha 0.4) of the brand's recent daily **player** pool turnover (from `position_decision ⋈ positions` —
+marketer trades never produce pool decisions, so demand is player-only by construction). `required` is
+exactly the pool a brand needs to fully fund its target RTP.
+
+### 15.2 Algorithm — weighted proportional-fair water-filling
+Selected empirically over Equal, Proportional-to-turnover, and several floor/cap variants (simulated on
+demand traces modelled on the real per-brand distribution). Capital efficiency jumped from **56% (equal)
+to ~99% (demand-based)**; the floor+cap water-fill gave the best brand-RTP and lowest starvation while
+staying responsive (activation lag 2–8 days) and stable (churn ~6.5%). Steps, given global total `G`:
+1. **Floor** — brands with any recent demand get a small guaranteed floor (default 1.5% of `G`, never
+   above their own cap) to bootstrap/avoid starvation. Idle brands (forecast 0) get **nothing**.
+2. **Water-fill** — distribute the remainder proportional to `required`, each brand capped at
+   `capMult × required` (default 2.5×) so no brand hoards beyond its need + spike headroom; freed
+   capital is redistributed to brands still under their cap (iterated to convergence).
+3. **Reserve** — any capital beyond total capped need stays **undistributed** (a platform reserve);
+   the total is a ceiling, not a mandate to spend. When `G < Σ required` (the common, capital-constrained
+   case) this reduces to proportional rationing `alloc_i ≈ G × required_i / Σ required`.
+`Σ alloc ≤ min(G, Σ cap)` always. Pure + deterministic:
+`packages/shared/src/pooldistribution.ts` (`distributeDynamicPool`, `emaForecast`), unit-tested in
+`pooldistribution.test.ts`.
+
+### 15.3 Surfaces
+- **Engine** `PlatformService.poolDemand()` forecasts per brand and returns a preview;
+  `distributePoolDynamic()` computes the allocation and **applies it via the audited per-site distributor**
+  (`fn_platform_distribute_pool` per_site → each brand's recurring `default_daily_pool_cents`) — no new
+  money-mutating DB surface, no migration.
+- **API** `GET /platform/pool/demand` (preview, read-only) and `POST /platform/pool/distribute-dynamic`
+  (apply), platform_superadmin-gated.
+- **Console** the Global-config page gains a "Dynamic distribution — allocate by demand" panel: a demand
+  table (forecast/day, required, current, suggested, coverage) with a confirm-before-apply flow.
+
+### 15.4 Notes
+- Re-run daily (manually or on a schedule) so allocations track demand; a newly-active brand is picked
+  up within the EMA window. A brand set to 0 pays nobody until the next run — acceptable for idle brands
+  and resolved by a daily cadence.
+- The allocation only sets pool CAPS; it never moves player money. Fully audited via the existing
+  `platform_pool_distributions` + `admin_actions` trail.
+
+### 15.5 Scheduled autonomous distribution (#5)
+`.github/workflows/pool-distribute.yml` runs `scripts/pool_distribute_daily.mts` daily at **21:15 UTC
+(00:15 EAT)** — it re-sizes every brand's pool cap from demand with no superadmin, via the same audited
+`PlatformService.distributePoolDynamic` path. **Guarded + opt-in:** it is INERT until the operator sets
+the repo variable `POOL_DAILY_TOTAL_CENTS` (the global envelope, integer cents); without it the script
+cleanly no-ops (never spends unallocated money). `Σ alloc ≤ envelope` by construction, fully audited.
+Manual `workflow_dispatch` supports a `dry_run` preview. Requires the existing `DATABASE_URL` repo secret.

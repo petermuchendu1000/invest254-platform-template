@@ -1,5 +1,6 @@
 import { apiFetch } from '@/lib/api/client';
 import type {
+  MarketerProfileDto,
   AffiliateEnrollment,
   AffiliateSummary,
   AuthResult,
@@ -124,6 +125,11 @@ export const api = {
   affiliateEnroll: (token: string) =>
     apiFetch<AffiliateEnrollment>('/affiliate/enroll', { method: 'POST', token }),
   affiliateSummary: (token: string) => apiFetch<AffiliateSummary>('/affiliate/summary', { token }),
+  // Marketer self-service (funny-money demo wallet). marketerMe returns the simulated wallet balance;
+  // marketerDemoTopup tops it up to the policy cap (no real cash — migration 0102).
+  marketerMe: (token: string) => apiFetch<MarketerProfileDto>('/marketers/me', { token }),
+  marketerDemoTopup: (token: string) =>
+    apiFetch<{ balanceCents: number; capCents: number }>('/marketers/me/demo-topup', { method: 'POST', token }),
   // Public: record a referral-link click from the /r/<code> landing page (fire-and-forget, no auth).
   recordAffiliateClick: (code: string, site?: string) =>
     apiFetch<{ recorded: boolean }>('/affiliate/click', { method: 'POST', body: site ? { code, site } : { code } }),

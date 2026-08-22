@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/Input';
 import { Modal } from '@/components/ui/Modal';
 import {
   useGlobalConfig, useSetGlobalConfig, useDistributePool, usePoolDistributions, usePlatformSites,
+  usePoolDemand, useDistributePoolDynamic,
 } from '@/lib/platform/hooks';
 import type { GlobalConfigDto } from '@/lib/platform/endpoints';
 import { CohortEconomySection, PaymentsEconomySection } from '@/components/platform/GlobalEconomy';
@@ -43,6 +44,14 @@ export default function GlobalConfigPage() {
   const [totalKes, setTotalKes] = useState('');
   const [perSiteKes, setPerSiteKes] = useState<Record<string, string>>({});
   const [poolConfirm, setPoolConfirm] = useState(false);
+
+  // ── Dynamic (demand-based) distributor state (docs/25 §15) ──
+  const dynMut = useDistributePoolDynamic();
+  const [dynTotalKes, setDynTotalKes] = useState('');
+  const [dynConfirm, setDynConfirm] = useState(false);
+  const dynTotalCents = dynTotalKes ? Math.round(Number(dynTotalKes) * 100) : undefined;
+  const demandQ = usePoolDemand({ totalCents: dynTotalCents, lookbackDays: 14 });
+  const demand = demandQ.data?.preview;
 
   const anyOff = cfg ? SYSTEMS.some((s) => cfg[s.key] === false) : false;
 
@@ -213,6 +222,77 @@ export default function GlobalConfigPage() {
         </Card>
       </Section>
 
+      {/* ── Dynamic distribution: allocate the global pool by DEMAND (docs/25 §15) ── */}
+      <Section title="Dynamic distribution — allocate by demand">
+        <Card className="flex flex-col gap-4">
+          <p className="text-xs text-muted">
+            Allocates the global pool across brands in proportion to <strong className="text-fg">forecast demand</strong> —
+            an EMA of recent player turnover × each brand&apos;s target RTP (1 − house edge) — water-filled with a floor and a cap.
+            Idle brands get nothing; high-demand brands get more. Because the engine now pays realized RTP = min(target,
+            pool/turnover), this funds each brand toward its house-edge target with minimal idle capital.
+          </p>
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:gap-3">
+            <div className="flex-1">
+              <Input
+                label="Global total (KES) — blank = keep current sum"
+                inputMode="numeric"
+                value={dynTotalKes}
+                onChange={(e) => setDynTotalKes(e.target.value.replace(/[^0-9.]/g, ''))}
+                placeholder="e.g. 1700000"
+              />
+            </div>
+            <p className="text-xs text-muted sm:pb-2">Forecast window: last 14 days · marketer trades excluded (player demand only).</p>
+          </div>
+
+          {demandQ.isLoading ? (
+            <p className="text-sm text-muted">Computing demand…</p>
+          ) : demand ? (
+            <TableWrap>
+              <table className="w-full text-sm">
+                <thead>
+                  <tr>
+                    <Th>Brand</Th>
+                    <Th className="text-right">Forecast/day</Th>
+                    <Th className="text-right">Required</Th>
+                    <Th className="text-right">Current</Th>
+                    <Th className="text-right">Suggested</Th>
+                    <Th className="text-right">Coverage</Th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {demand.rows.map((r) => (
+                    <tr key={r.siteId} className="border-t border-border">
+                      <Td>{r.slug}</Td>
+                      <Td className="text-right tabular-nums">{money(r.forecastTurnoverCents)}</Td>
+                      <Td className="text-right tabular-nums">{money(r.requiredCents)}</Td>
+                      <Td className="text-right tabular-nums text-muted">{money(r.currentPoolCents)}</Td>
+                      <Td className="text-right tabular-nums font-semibold">{money(r.suggestedCents)}</Td>
+                      <Td className="text-right tabular-nums">
+                        {r.requiredCents > 0
+                          ? <span className={r.coverage >= 0.999 ? 'text-up' : r.coverage >= 0.8 ? 'text-fg' : 'text-down'}>{Math.round(r.coverage * 100)}%</span>
+                          : <span className="text-muted">—</span>}
+                      </Td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </TableWrap>
+          ) : (
+            <p className="text-sm text-muted">No demand data.</p>
+          )}
+
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-sm text-muted">
+              Suggested total: <strong className="text-fg tabular-nums">{money(demand?.suggestedTotalCents ?? 0)}</strong>
+              {(demand?.reserveCents ?? 0) > 0 ? <> · reserve {money(demand!.reserveCents)}</> : null}
+            </span>
+            <Button onClick={() => setDynConfirm(true)} disabled={!demand || demand.suggestedTotalCents <= 0 || dynMut.isPending}>
+              {dynMut.isPending ? 'Distributing…' : 'Distribute by demand'}
+            </Button>
+          </div>
+        </Card>
+      </Section>
+
       {/* ── Distribution history ── */}
       <Section title="Distribution history">
         {(distQ.data?.distributions ?? []).length === 0 ? (
@@ -274,6 +354,33 @@ export default function GlobalConfigPage() {
             <Button variant="outline" size="sm" onClick={() => setPoolConfirm(false)}>Cancel</Button>
             <Button size="sm" onClick={runDistribute} disabled={distMut.isPending}>
               {distMut.isPending ? 'Distributing…' : 'Confirm & distribute'}
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* ── Confirm: dynamic (demand-based) distribution ── */}
+      <Modal open={dynConfirm} onClose={() => setDynConfirm(false)} title="Confirm demand-based distribution">
+        <div className="flex flex-col gap-3">
+          <p className="text-sm text-muted">Sets each brand&apos;s daily withdrawal-pool cap from forecast demand:</p>
+          <div className="max-h-60 overflow-auto rounded-xl border border-border">
+            <table className="w-full text-sm">
+              <tbody>
+                {(demand?.rows ?? []).map((r) => (
+                  <tr key={r.siteId} className="border-b border-border last:border-0">
+                    <Td>{r.slug}</Td>
+                    <Td className="text-right tabular-nums">{money(r.suggestedCents)}</Td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="text-sm">Total: <strong className="tabular-nums">{money(demand?.suggestedTotalCents ?? 0)}</strong></p>
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" size="sm" onClick={() => setDynConfirm(false)}>Cancel</Button>
+            <Button size="sm" disabled={dynMut.isPending}
+              onClick={() => dynMut.mutate({ totalCents: dynTotalCents, lookbackDays: 14 }, { onSuccess: () => setDynConfirm(false) })}>
+              {dynMut.isPending ? 'Distributing…' : 'Confirm & distribute'}
             </Button>
           </div>
         </div>

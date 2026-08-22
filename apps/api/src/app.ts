@@ -91,7 +91,8 @@ export interface ApiDeps {
   /** Platform-superadmin console (docs/22 Task H): cross-brand onboarding + economy + KPIs. */
   platform: Pick<PlatformService, "listSites" | "overview" | "performance" | "createSite" | "updateSite" | "setSiteConfig"
     | "marketerRollup" | "createMarketerGlobal" | "linkMarketer" | "setSiteTheme" | "setSiteOwner"
-    | "getGlobalConfig" | "setGlobalConfig" | "distributePool" | "listPoolDistributions">;
+    | "getGlobalConfig" | "setGlobalConfig" | "distributePool" | "listPoolDistributions"
+    | "poolDemand" | "distributePoolDynamic">;
   /** Per-user sticky notifications: admin/system raise; player reads active + dismisses (J7). */
   notifications: Pick<NotificationService, "create" | "listActive" | "adminList" | "dismiss" | "resolve" | "resolveByCategory">;
   /** Marketer payments module (0033): create/credit/withdraw + admin-set Fuliza/airtime + statement. */

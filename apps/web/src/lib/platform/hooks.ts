@@ -43,6 +43,28 @@ export function usePoolDistributions() {
   return useQuery({ queryKey: ['platform', 'pool-distributions'], queryFn: () => platformApi.poolDistributions(t), enabled: !!t });
 }
 
+// Dynamic (demand-based) distribution (docs/25 §15)
+export function usePoolDemand(params: { lookbackDays?: number | undefined; totalCents?: number | undefined }, enabled = true) {
+  const t = useTok();
+  return useQuery({
+    queryKey: ['platform', 'pool-demand', params.lookbackDays ?? null, params.totalCents ?? null],
+    queryFn: () => platformApi.poolDemand(t, params),
+    enabled: !!t && enabled,
+  });
+}
+export function useDistributePoolDynamic() {
+  const t = useTok(); const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { totalCents?: number | undefined; lookbackDays?: number | undefined }) => platformApi.distributePoolDynamic(t, body),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['platform', 'pool-distributions'] });
+      void qc.invalidateQueries({ queryKey: ['platform', 'pool-demand'] });
+      void qc.invalidateQueries({ queryKey: ['platform', 'global-config'] });
+      void qc.invalidateQueries({ queryKey: ['platform', 'sites'] });
+    },
+  });
+}
+
 export function usePlatformSites() {
   const t = useTok();
   return useQuery({ queryKey: ['platform', 'sites'], queryFn: () => platformApi.sites(t), enabled: !!t });

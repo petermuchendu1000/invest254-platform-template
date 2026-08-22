@@ -1,0 +1,42 @@
+name: Dynamic Pool Distribution
+
+# Autonomy (#5): re-sizes every brand's withdrawal-pool cap from DEMAND once a day, with no superadmin.
+# Reuses the audited engine path (PlatformService.distributePoolDynamic -> fn_platform_distribute_pool).
+#
+# GUARDED + opt-in: the job is INERT until the operator sets the repo variable POOL_DAILY_TOTAL_CENTS
+# (the global envelope, integer cents). Without it the script cleanly no-ops. Requires repo secret
+# DATABASE_URL (Supabase session-pooler URL, :5432). Trigger manually anytime via "Run workflow".
+on:
+  schedule:
+    - cron: "15 21 * * *"   # 21:15 UTC daily = 00:15 EAT (Africa/Nairobi, UTC+3) — start of the new EAT day
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Preview only (do not apply)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: pool-distribute
+  cancel-in-progress: false
+
+jobs:
+  distribute:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install
+        run: npm ci
+      - name: Distribute pool by demand
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          POOL_DAILY_TOTAL_CENTS: ${{ vars.POOL_DAILY_TOTAL_CENTS }}
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "No DATABASE_URL secret — skipping (non-prod mirror)."; exit 0
+          fi
+          node --import tsx scripts/pool_distribute_daily.mts ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) && '--dry-run' || '' }}

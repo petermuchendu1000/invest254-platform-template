@@ -29,6 +29,28 @@ export function useMarketerLiveSummary(enabled: boolean) {  const token = useSes
   });
 }
 
+/** The marketer's own profile incl. the simulated (funny-money) wallet balance. */
+export function useMarketerProfile(enabled: boolean) {
+  const token = useSession((s) => s.token);
+  return useQuery({
+    queryKey: ['marketer', 'me'],
+    queryFn: () => api.marketerMe(token as string),
+    enabled: !!token && enabled,
+    retry: false,
+    staleTime: 0,
+  });
+}
+
+/** Self-service: top the marketer's own demo wallet up to the policy cap (no real cash). */
+export function useMarketerDemoTopup() {
+  const token = useSession((s) => s.token);
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.marketerDemoTopup(token as string),
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: ['marketer', 'me'] }); },
+  });
+}
+
 export function useAffiliateReferrals(enabled: boolean) {
   const token = useSession((s) => s.token);
   return useInfiniteQuery({

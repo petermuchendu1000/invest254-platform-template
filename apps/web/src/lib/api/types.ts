@@ -157,6 +157,22 @@ export interface AffiliateEnrollment {
 }
 
 /** GET /affiliate/summary — marketer dashboard aggregates (monetary fields in cents). */
+/** GET /marketers/me — the marketer's own profile incl. the SIMULATED (funny-money) wallet balance. */
+export interface MarketerProfileDto {
+  id: string;
+  name: string;
+  first_name: string;
+  initials: string;
+  phone: string;
+  status: string;
+  balance_cents: number;
+  available_fuliza_cents: number;
+  airtime_balance_cents: number;
+  currency: string;
+  site_id: string | null;
+  brand_name: string | null;
+}
+
 export interface AffiliateSummary {
   referralCode: string;
   referralPath: string;

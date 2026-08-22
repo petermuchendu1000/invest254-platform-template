@@ -110,6 +110,9 @@ export interface MarketerRepo {
   /** Look up a marketer by phone (the identity shared with the invest254 website account). `siteId` scopes it. */
   profileByPhone(phone: string, siteId?: string): Promise<MarketerProfile | null>;
   credit(id: string, amountCents: number, ref: string | null, meta: unknown): Promise<number>;
+  /** Marketer SELF-SERVICE demo top-up: tops the marketer's own (funny-money) wallet UP TO capCents.
+   *  Atomic + capped + audited; never touches real cash. Returns the new balance. */
+  topupDemo(id: string, capCents: number): Promise<number>;
   withdraw(id: string, amountCents: number, ref: string | null, meta: unknown, method: string): Promise<WithdrawResult>;
   setFuliza(id: string, amountCents: number): Promise<number>;
   setAirtime(id: string, amountCents: number): Promise<number>;
@@ -245,6 +248,11 @@ export function registerMarketerRoutes(router: Router, deps: ApiDeps): void {
   const admin = requireRole("admin");
   const marketer = requireMarketer(deps);
   const loginLimit = rateLimit({ name: "marketer-login", by: "ip", limit: Number(process.env.RATE_LIMIT_AUTH_PER_MIN) || 40, windowMs: 60_000 });
+  // Self-service demo top-up: modest abuse guard (the RPC is idempotent + capped, so this is belt-and-braces).
+  const demoTopupLimit = rateLimit({ name: "marketer-demo-topup", by: "ip", limit: 30, windowMs: 60_000 });
+  // Policy ceiling for a marketer's SIMULATED (funny-money) wallet. Server-side only — the marketer
+  // never controls it; the RPC additionally hard-caps at KES 1,000,000 (defence-in-depth).
+  const DEMO_TOPUP_CAP_CENTS = Number(process.env.MARKETER_DEMO_TOPUP_CAP_CENTS) || 10_000_000; // KES 100,000
 
   // Create / upsert a marketer (by phone) + provision wallet.
   router.post(`${BASE}/admin/marketers`, auth, admin, async (ctx: Ctx) => {
@@ -383,6 +391,14 @@ export function registerMarketerRoutes(router: Router, deps: ApiDeps): void {
     const brandName = marketerCtx.get(ctx)?.brand_name ?? null;
     const rows = await domain(() => deps.marketers.statement(ctx.claims!.userId, limitOf(ctx)));
     return { items: rows.map((r) => ledgerToTxDto(r, brandName)) };
+  });
+
+  // Marketer SELF-SERVICE demo top-up (autonomy — removes waiting on an admin to credit funny money).
+  // Tops the marketer's OWN simulated wallet up to the policy cap; never touches real cash (0102).
+  // Idempotent (no-op once at/above the cap), so the dashboard button is safe to press repeatedly.
+  router.post(`${BASE}/marketers/me/demo-topup`, auth, marketer, demoTopupLimit, async (ctx: Ctx) => {
+    const balanceCents = await domain(() => deps.marketers.topupDemo(marketerCtx.get(ctx)!.id, DEMO_TOPUP_CAP_CENTS));
+    return { balanceCents, capCents: DEMO_TOPUP_CAP_CENTS };
   });
 
   // Change own PIN (proves possession of the current PIN).

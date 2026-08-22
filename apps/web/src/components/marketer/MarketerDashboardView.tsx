@@ -12,6 +12,8 @@ import {
   useReferral,
   useMyCommissions,
   useRequestCommissionPayout,
+  useMarketerProfile,
+  useMarketerDemoTopup,
 } from '@/lib/affiliate/hooks';
 
 /**
@@ -36,6 +38,9 @@ export function MarketerDashboardView() {
   const healAttempted = useRef(false);
   const [payoutMsg, setPayoutMsg] = useState<{ tone: 'up' | 'down'; text: string } | null>(null);
   const [copied, setCopied] = useState(false);
+  const demoWallet = useMarketerProfile(true);        // simulated (funny-money) wallet balance
+  const demoTopup = useMarketerDemoTopup();            // self-service top-up (no real cash)
+  const [demoMsg, setDemoMsg] = useState<string | null>(null);
 
   const s = q.data;
   const isNotAffiliate = q.error instanceof ApiError && q.error.code === 'NOT_AFFILIATE';
@@ -76,6 +81,14 @@ export function MarketerDashboardView() {
             : 'Could not request payout. Try again shortly.';
         setPayoutMsg({ tone: 'down', text });
       },
+    });
+  };
+
+  const topUpDemo = () => {
+    setDemoMsg(null);
+    demoTopup.mutate(undefined, {
+      onSuccess: (r) => setDemoMsg(`Demo balance topped up to ${formatKes(r.balanceCents)}.`),
+      onError: () => setDemoMsg('Could not top up demo balance. Try again shortly.'),
     });
   };
 
@@ -165,6 +178,22 @@ export function MarketerDashboardView() {
             ) : (
               <p className="mt-2 text-[11px] text-muted">Paid to M-Pesa after admin approval · min {formatKes(minPayoutCents)}.</p>
             )}
+          </section>
+
+          {/* Demo wallet: self-service funny-money top-up (no admin needed — migration 0102) */}
+          <section className="rounded-2xl border border-border bg-card p-4">
+            <p className="text-[11px] font-medium uppercase tracking-wide text-muted">Demo balance (for showcasing the game)</p>
+            <p className="mt-1 text-2xl font-black tabular-nums text-fg">{formatKes(demoWallet.data?.balance_cents ?? 0)}</p>
+            <button
+              onClick={topUpDemo}
+              disabled={demoTopup.isPending}
+              className="mt-3 w-full rounded-xl border border-up/40 bg-up/10 py-2.5 text-sm font-bold text-up transition hover:bg-up/20 disabled:opacity-50 sm:w-auto sm:px-8"
+            >
+              {demoTopup.isPending ? 'Topping up…' : 'Top up demo balance'}
+            </button>
+            <p className="mt-2 text-[11px] text-muted">
+              {demoMsg ?? 'Instant, self-service demo funds to showcase the game — not real money, no admin needed.'}
+            </p>
           </section>
 
           {/* KPI grid */}
