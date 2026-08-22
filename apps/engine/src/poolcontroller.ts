@@ -41,6 +41,9 @@ export interface PoolRepo {
   /** Optional: seed a player's session from today's settled trades (durable across restarts).
    *  When absent, sessions start empty in memory. */
   sessionSeed?(siteId: string, userId: string, day: string): Promise<PlayerSession>;
+  /** Optional: seed the site-day cumulative PLAYER turnover (staked cents) from persisted pool
+   *  decisions, so turnover pacing survives restarts. When absent, turnover starts at 0 in memory. */
+  turnoverSeed?(siteId: string, day: string): Promise<number>;
 }
 
 export class PoolController {
@@ -62,6 +65,24 @@ export class PoolController {
     }
     return s;
   }
+  /**
+   * Cumulative PLAYER turnover (staked cents) per brand EAT day, keyed `${day}:${siteId}`.
+   * Seeded from the DB on first access (durable across restarts, like sessions) then incremented on
+   * every pool decision. Turnover is site-day GLOBAL (all players on the brand), and player-only by
+   * construction — marketers never reach the pool controller (game.ts routes them to the statistical
+   * path). It drives RTP pacing in sessionWinProbability (docs/25 redesign).
+   */
+  private readonly turnover = new Map<string, number>();
+  private async getTurnover(siteId: string, day: string): Promise<number> {
+    const key = `${day}:${siteId}`;
+    let t = this.turnover.get(key);
+    if (t === undefined) {
+      t = this.repo.turnoverSeed ? await this.repo.turnoverSeed(siteId, day) : 0;
+      this.turnover.set(key, t);
+    }
+    return t;
+  }
+
   /** Update a player's session at settle: win -> returned/wins up, streak reset; loss -> streak up. */
   settleSession(userId: string, day: string, result: "win" | "loss", payoutCents: number): void {
     const key = `${day}:${userId}`;
@@ -78,13 +99,43 @@ export class PoolController {
     balanceAfterStakeCents: number; minWithdrawalCents: number;
     /** Target session RTP for pool mode = 1 - house_edge (operator-tuned via site_game_config). */
     targetRtp: number;
+    /**
+     * Target win frequency for pool mode = the brand's site_game_config.target_win_rate. Unifies the
+     * pool engine's win frequency with the statistical engine (docs/25 §unify): the pool's mean
+     * winning multiplier is derived as targetRtp/targetWinRate (the same rtp/winRate the calibrator
+     * pins), so pool base win-prob = targetRtp/meanMultiplier = targetWinRate and both engines
+     * deliver RTP = 1 - house_edge at the same win frequency.
+     */
+    targetWinRate: number;
   }): Promise<PoolOutcome> {
     const day = eatDay(a.openedAtMs);
     const st = await this.repo.poolState(a.siteId, day);
     const session = await this.getSession(a.siteId, a.userId, day);
-    const knobs: PoolKnobs = { ...this.knobs, maxMultiplier: a.maxMultiplier, targetSessionRtp: a.targetRtp };
+
+    // ── Unify win frequency (docs/25): derive the pool's mean winning multiplier from the brand's
+    //    (targetRtp, targetWinRate) exactly as the statistical calibrator does. Guard against an
+    //    infeasible/degenerate config by falling back to the controller default meanMultiplier —
+    //    site_game_config is feasibility-checked on write, so this is defence-in-depth only. ──
+    const wr = a.targetWinRate;
+    const derivedMean = wr > 0 ? a.targetRtp / wr : NaN;
+    const meanMultiplier =
+      Number.isFinite(derivedMean) && derivedMean > 1 && derivedMean <= a.maxMultiplier
+        ? derivedMean
+        : this.knobs.meanMultiplier;
+    // pCap = base = targetRtp/meanMultiplier (= targetWinRate when the derivation is used). This is
+    // the edge invariant: p ≤ base ⇒ E[RTP/trade] ≤ targetRtp < 1.
+    const pCap = a.targetRtp / meanMultiplier;
+
+    // Turnover BEFORE this trade, plus this trade's stake, so the pace budget (target·turnover)
+    // accounts for the current trade. Player-only + site-day global.
+    const turnoverCents = (await this.getTurnover(a.siteId, day)) + a.stakeCents;
+
+    const knobs: PoolKnobs = {
+      ...this.knobs, maxMultiplier: a.maxMultiplier,
+      targetSessionRtp: a.targetRtp, meanMultiplier, pCap,
+    };
     const decision = decidePoolOutcome({
-      stakeCents: a.stakeCents, pool: st, dayFraction: eatDayFraction(a.openedAtMs),
+      stakeCents: a.stakeCents, pool: { ...st, turnoverCents }, dayFraction: eatDayFraction(a.openedAtMs),
       knobs, serverSeed: a.serverSeed, nonce: a.nonce, session,
       balanceAfterStakeCents: a.balanceAfterStakeCents, minWithdrawalCents: a.minWithdrawalCents,
     });
@@ -99,8 +150,9 @@ export class PoolController {
         payoutCents = reserved; multiplier = reserved / a.stakeCents;
       }
     }
-    // Advance the session by THIS trade (prior state fed the decision above).
+    // Advance the session AND the site-day turnover by THIS trade (prior state fed the decision).
     session.trades += 1; session.stakedCents += a.stakeCents;
+    this.turnover.set(`${day}:${a.siteId}`, (this.turnover.get(`${day}:${a.siteId}`) ?? 0) + a.stakeCents);
     await this.repo.saveDecision({
       positionId: a.positionId, siteId: a.siteId, poolDay: day,
       result, multiplier, payoutCents, seed: a.serverSeed, nonce: a.nonce,
@@ -183,6 +235,21 @@ export class PgPoolRepo implements PoolRepo {
     for (const row of s.rows) { if (row.result === "loss") streak++; else break; }
     return { stakedCents: n(x.staked), returnedCents: n(x.returned), trades: n(x.trades), wins: n(x.wins), lossStreak: streak };
   }
+  /**
+   * Site-day cumulative PLAYER turnover: sum of stakes over every persisted pool DECISION for the
+   * brand's EAT day. position_decision rows exist ONLY for pool-decided (non-marketer) trades and are
+   * written at open, so this counts open + settled pool trades and excludes marketers by construction
+   * — the exact turnover the in-memory accumulator tracks live. Survives restarts.
+   */
+  async turnoverSeed(siteId: string, day: string): Promise<number> {
+    const r = await this.q.query(
+      `select coalesce(sum(p.stake),0) as turnover
+         from position_decision d
+         join positions p on p.id = d.position_id
+        where d.site_id = $1 and d.pool_day = $2::date`,
+      [siteId, day]);
+    return n(r.rows[0]?.turnover);
+  }
 }
 
 // ── In-memory impl (tests/dev): mirrors the RPC semantics exactly (clamp/idempotent/hard-cap) ───────
@@ -220,4 +287,8 @@ export class InMemoryPoolRepo implements PoolRepo {
   }
   async saveDecision(d: StoredDecision): Promise<void> { this.decisions.set(d.positionId, d); }
   async getDecision(positionId: string): Promise<StoredDecision | null> { return this.decisions.get(positionId) ?? null; }
+  /** Optional turnover restart-seed, keyed `${site}:${day}` (defaults to 0). Set for restart tests. */
+  private turnoverSeeds = new Map<string, number>();
+  setTurnoverSeed(siteId: string, day: string, cents: number): void { this.turnoverSeeds.set(`${siteId}:${day}`, cents); }
+  async turnoverSeed(siteId: string, day: string): Promise<number> { return this.turnoverSeeds.get(`${siteId}:${day}`) ?? 0; }
 }

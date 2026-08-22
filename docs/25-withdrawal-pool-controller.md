@@ -203,3 +203,68 @@ Edge cases the implementation MUST handle:
 - **Phase 4 — Full controller:** pacing + controlled P&L path + SELL rule + marketer routing.
 - **Phase 5 — Crash recovery, reconciliation job, admin dashboards, load test, legal sign-off.**
 Each phase: unit + in-memory e2e + live rolled-back RPC e2e + typecheck, behind the per-brand flag.
+
+---
+
+## 14. RTP redesign — pace to turnover, cap to a hard RTP budget, unify win frequency
+
+The original controller paced payouts against **pool size × elapsed-day-fraction**. That coupled realized
+RTP to how big the daily pool was rather than to the operator's `house_edge`, and left the aggregate edge
+unguaranteed. This redesign decouples the two: **`house_edge` is the RTP dial; the pool is only a cash
+ceiling.** It fixes three bugs (see BUGLOG #6/#7/#8) and keeps the near-miss / streak-nudge / no-scoop
+engagement logic untouched.
+
+### 14.1 The model (all three engines now agree)
+- **Unified win frequency.** The pool derives its mean winning multiplier the same way the statistical
+  `SettlementEngine` calibrates it: `meanMultiplier = targetRtp / targetWinRate` (with `targetRtp = 1 −
+  house_edge`). The pool's base win-probability is then `targetRtp / meanMultiplier = targetWinRate`, so
+  **both engines share `targetWinRate` as the single win-frequency knob** and both deliver RTP = `1 −
+  house_edge`. (An infeasible/degenerate config falls back to the controller's default multiplier;
+  `site_game_config` is feasibility-checked on write, so this is defence-in-depth.)
+- **Turnover pacing (not pool pacing).** `sessionWinProbability` paces realized RTP toward `targetRtp`
+  using cumulative **player** turnover for the brand's EAT day: the pace error is `targetRtp −
+  paid/turnover`. Behind pace nudges the win-prob up toward — but never above — `base`; ahead of pace
+  pulls it below `base`.
+- **Edge invariant (probability).** The win-prob is capped at `base = targetRtp/meanMultiplier`, so
+  `E[RTP per trade] = p · meanMultiplier ≤ targetRtp < 1` — a structurally positive expected edge, and a
+  **downward-only** correction (which is what makes realized RTP ≤ target, not just ≈ target).
+- **HARD RTP-BUDGET CEILING (the definitive edge guarantee).** In `decidePoolOutcome`, a win's payout is
+  additionally clamped so that **`paid + reserved ≤ ⌊targetRtp × turnover⌋` at all times.** This makes the
+  positive-edge guarantee hold at **every volume** — including thin/low-volume days, where a probability
+  cap alone leaves the house underwater on a large fraction of days (measured: up to ~29% of days at 8
+  trades/day under the cap-only design). Subtracting **reserved** (in-flight, not-yet-settled wins) makes
+  it concurrency-safe: many simultaneously open positions can never collectively commit past the budget.
+  The pool `available()` remains the absolute cash fuse. Net effect: **realized RTP = min(targetRtp,
+  pool/turnover)** — the pool binds only when it is undersized relative to `targetRtp × turnover`.
+
+### 14.2 Turnover tracking (no schema change)
+Cumulative player turnover is tracked in-memory per `${eatDay}:${siteId}` in the `PoolController`
+(mirroring how player sessions are tracked) and **seeded from the database on first access** via
+`PoolRepo.turnoverSeed`, which sums stakes over the day's persisted `position_decision` rows (joined to
+`positions`). Because `position_decision` rows exist **only for pool-decided, non-marketer trades** and
+are written at open, this turnover is **player-only by construction** and survives restarts — no migration
+and no change to the money-critical reserve/commit/release RPCs.
+
+### 14.3 Marketer / player separation (unchanged, and now load-bearing)
+Marketers never reach the pool: `game.ts` routes `poolPath = poolActive && !isMarketer`, so marketer
+trades settle on the statistical path with their own economy (`marketer_economy`) and never contribute to
+pool turnover, pacing, or the RTP budget. Players in a pool-mode brand are governed entirely by the pool
+using the **player** `house_edge`/`targetWinRate`.
+
+### 14.4 Validation (derived from the engine's own output, not assumed)
+Simulations driving the real `decidePoolOutcome`/`PoolController` confirm: realized RTP tracks
+`1 − house_edge` and never exceeds it at any volume; `maxIntradayRTP = target` exactly (ceiling holds);
+win frequency = `targetWinRate`; pool binds only when undersized (`RTP = pool/turnover`); determinism and
+graceful zero-pool/zero-turnover behaviour. Covered by `packages/shared/src/pool.redesign.test.ts` and
+`apps/engine/src/poolcontroller.redesign.test.ts`; the legacy (no-turnover) path is byte-identical and all
+pre-existing pool tests stay green.
+
+### 14.5 ⚠ Operational note (RTP activation is a config decision, not code)
+The redesign is the *enabler* for coherent RTP. Its live effect depends on each brand's `house_edge`,
+`targetWinRate`, and daily pool size:
+- If pools are **large** relative to turnover, realized player RTP will now settle at `1 − house_edge`
+  (bounded there) instead of drifting above it — i.e. payouts drop toward the configured edge.
+- If pools are **small** relative to `targetRtp × turnover`, RTP is capped by `pool/turnover` and can sit
+  below target — the pool must be sized `≥ targetRtp × expected_turnover` to actually pay the target RTP.
+Set `house_edge`/`targetWinRate` and pool sizes deliberately **before/at** rollout; the code guarantees
+RTP ≤ target and a positive edge, but the *level* of the target is the operator's dial.

@@ -16,7 +16,21 @@ import { winMultiplier } from "./engagement.js";
  */
 
 /** Live budget for a brand's EAT day. available = amount - paid - reserved (never < 0). */
-export interface PoolState { amountCents: number; paidCents: number; reservedCents: number; }
+export interface PoolState {
+  amountCents: number;
+  paidCents: number;
+  reservedCents: number;
+  /**
+   * OPTIONAL cumulative PLAYER turnover (staked cents) for this brand's EAT day, INCLUDING the
+   * current trade's stake. When supplied, sessionWinProbability paces realized RTP against
+   * `targetSessionRtp x turnover` (docs/25 redesign) so house_edge cleanly sets RTP and the pool
+   * `available()` is only a hard cash fuse. When ABSENT (undefined), pacing falls back to the legacy
+   * `amount x dayFraction` behaviour verbatim, so callers/tests that don't track turnover are
+   * unchanged. Marketers never reach the pool (game.ts routes them to the statistical path), so this
+   * turnover is player-only by construction.
+   */
+  turnoverCents?: number;
+}
 
 /** Controller tuning. Defaults from the day-simulation research (docs/25 §6, G). */
 export interface PoolKnobs {
@@ -92,8 +106,27 @@ export function winProbability(pool: PoolState, dayFraction: number, k: PoolKnob
  */
 export function sessionWinProbability(s: PlayerSession, pool: PoolState, dayFraction: number, k: PoolKnobs): number {
   if (pool.amountCents <= 0) return 0;
-  let p = k.targetSessionRtp / k.meanMultiplier;                      // variable-ratio base (EV = target RTP)
+  const base = k.targetSessionRtp / k.meanMultiplier;                 // variable-ratio base (EV = target RTP)
+  let p = base;
   if (s.lossStreak >= k.softLossStreak) p += k.streakNudge * (s.lossStreak - k.softLossStreak + 1); // soft anti-churn
+
+  if (pool.turnoverCents != null && pool.turnoverCents > 0) {
+    // ── REDESIGN (docs/25 §RTP): pace realized RTP toward `targetSessionRtp` using cumulative
+    //    turnover, NOT pool size. The pace error is (target − realizedRTP): behind pace (paid below
+    //    target·turnover) nudges p up; ahead nudges it down. house_edge is the RTP dial; the pool's
+    //    available() (applied in decidePoolOutcome) is only the hard cash ceiling. ────────────────
+    const realizedRtp = pool.paidCents / pool.turnoverCents;
+    const err = k.targetSessionRtp - realizedRtp;                     // >0 behind, <0 ahead
+    p *= Math.max(0, Math.min(3, 1 + k.gain * err));
+    // pCap INVARIANT (docs/25 §edge): cap at base = targetSessionRtp/meanMultiplier so
+    //   E[RTP per trade] = p·meanMultiplier ≤ targetSessionRtp < 1  ⇒ structurally positive edge.
+    // The downward-only correction (p ≤ base) is what makes realized RTP ≤ target a guarantee, not
+    // just an expectation. `min` with k.pCap keeps any operator-set cap as an extra ceiling.
+    const pCapEff = Math.min(k.pCap, base);
+    return Math.min(pCapEff, Math.max(k.pFloor, p));
+  }
+
+  // ── LEGACY pacing (no turnover supplied): amount × dayFraction. Unchanged behaviour. ──
   const pace = (paceTarget(pool.amountCents, dayFraction) - pool.paidCents) / pool.amountCents;
   p *= Math.max(0, Math.min(3, 1 + k.gain * pace));                   // global budget pacing (shared by all)
   return Math.min(k.pCap, Math.max(k.pFloor, p));
@@ -126,7 +159,19 @@ export function decidePoolOutcome(args: {
   let payout = Math.round(args.stakeCents * draw);
   // caps: global remaining budget AND the per-player no-scoop share (fraction of the day's pool).
   const playerCap = s ? Math.max(0, Math.floor(k.playerShare * args.pool.amountCents) - s.returnedCents) : avail;
-  payout = Math.min(payout, avail, playerCap);
+  // ── HARD RTP-BUDGET CEILING (docs/25 §edge, REDESIGN): when turnover is tracked, cumulative paid may
+  //    NEVER exceed targetSessionRtp × turnover. This makes the positive-edge guarantee STRUCTURAL at
+  //    EVERY volume (not just in expectation): realized RTP ≤ target on any day, low-volume included —
+  //    closing the money-losing hole a probability cap alone leaves on thin days. The pool available()
+  //    remains the absolute cash fuse. Disabled (Infinity) on the legacy path (no turnover supplied). ──
+  //    Subtract BOTH paid AND reserved (in-flight, not-yet-settled wins) so concurrent open positions
+  //    can never collectively commit past the budget: paid + reserved ≤ floor(target × turnover) at all
+  //    times ⇒ committed RTP ≤ target even with many trades in flight. (reserved = 0 on the immediate
+  //    reserve→commit test path, so unit expectations are unaffected.)
+  const rtpBudget = args.pool.turnoverCents != null && args.pool.turnoverCents > 0
+    ? Math.max(0, Math.floor(k.targetSessionRtp * args.pool.turnoverCents) - args.pool.paidCents - args.pool.reservedCents)
+    : Infinity;
+  payout = Math.min(payout, avail, playerCap, rtpBudget);
   // ── Min-withdrawal near-miss (goal-gradient): a win that would reach the withdrawal line is
   //    (mostly) held just below it, so the player lands "so close" and keeps chasing. A small
   //    let-through crosses (real withdrawal -> social proof). Only engages near the line. ──

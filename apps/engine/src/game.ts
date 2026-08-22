@@ -218,6 +218,9 @@ export class GameServer {
         balanceAfterStakeCents: newBalance, minWithdrawalCents: this.cfg.minWithdrawalCents,
         // Pool RTP is driven by the operator's house edge (unified config): targetSessionRtp = 1 - edge.
         targetRtp: Math.min(0.95, Math.max(0.05, 1 - this.cfg.houseEdge)),
+        // Win frequency unified with the statistical engine (docs/25): the pool derives its mean
+        // winning multiplier from (targetRtp, targetWinRate) so both engines share this knob.
+        targetWinRate: this.cfg.targetWinRate,
       });
       const payoutCents = po.result === "win" ? po.payoutCents : 0;
       const outcome: Outcome = {
