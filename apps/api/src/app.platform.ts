@@ -1,4 +1,5 @@
 import { Router, ApiError, requireAuth, requireRole, type Ctx } from "./http.js";
+import { COHORT_KEYS, PAYMENT_KEYS } from "@invest254/shared";
 import type { MarketerRollupRow } from "@invest254/engine";
 import type { ApiDeps } from "./app.js";
 import type { ProvisionResult, DomainStatus } from "./domains.js";
@@ -250,6 +251,24 @@ export function registerPlatformRoutes(router: Router, deps: ApiDeps): void {
       if (m !== null && typeof m !== "string") throw new ApiError("VALIDATION", "maintenance_message must be string or null", 400);
       patch.maintenance_message = m;
     }
+    // Economy blocks (migration 0099): structural validation here (known keys + {v:number,on:boolean}
+    // shape); authoritative BOUNDS + cross-field feasibility are enforced by the DB RPC / engine.
+    const validateEconomyBlock = (raw: unknown, allowed: readonly string[], label: string): Record<string, { v: number; on: boolean }> => {
+      if (raw === null || typeof raw !== "object" || Array.isArray(raw)) throw new ApiError("VALIDATION", `${label} must be an object`, 400);
+      const out: Record<string, { v: number; on: boolean }> = {};
+      for (const [k, val] of Object.entries(raw as Record<string, unknown>)) {
+        if (!allowed.includes(k)) throw new ApiError("VALIDATION", `unknown ${label} field: ${k}`, 400);
+        if (val === null || typeof val !== "object" || Array.isArray(val)) throw new ApiError("VALIDATION", `${label}.${k} must be {v,on}`, 400);
+        const f = val as Record<string, unknown>;
+        if (typeof f.v !== "number" || !Number.isFinite(f.v)) throw new ApiError("VALIDATION", `${label}.${k}.v must be a finite number`, 400);
+        if (typeof f.on !== "boolean") throw new ApiError("VALIDATION", `${label}.${k}.on must be boolean`, 400);
+        out[k] = { v: f.v, on: f.on };
+      }
+      return out;
+    };
+    if ("player_economy" in body) patch.player_economy = validateEconomyBlock(body.player_economy, COHORT_KEYS, "player_economy");
+    if ("marketer_economy" in body) patch.marketer_economy = validateEconomyBlock(body.marketer_economy, COHORT_KEYS, "marketer_economy");
+    if ("payments" in body) patch.payments = validateEconomyBlock(body.payments, PAYMENT_KEYS, "payments");
     if (Object.keys(patch).length === 0) throw new ApiError("VALIDATION", "no recognised fields to update", 400);
     return { config: await domain(() => deps.platform.setGlobalConfig(ctx.claims!.userId, ctx.claims!.role ?? "player", patch)) };
   });

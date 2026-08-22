@@ -137,6 +137,21 @@ fly machine restart <id> -a invest254-engine-pm       # rolling restart (per mac
 > Always deploy with an explicit config: `-c fly.api.toml` (API) or `-c fly.engine.toml` (engine).
 > A bare `fly deploy` will now error (no config) rather than silently deploy to the wrong app.
 
+#### 2.6.1 Automated deploy on merge to `main` (`.github/workflows/deploy.yml`)
+Merging backend changes to `main` now **auto-deploys both Fly apps** (the manual `fly deploy` commands
+above are the fallback / for hotfixes). The workflow:
+1. `verify` — `npm ci` + backend typecheck (`tsc -b packages/shared apps/engine apps/api`) + `npm test`
+   (DB-independent), so a broken `main` is never deployed;
+2. `deploy-api` / `deploy-engine` — `flyctl deploy --config fly.{api,engine}.toml --remote-only` in parallel.
+It triggers only when backend paths change (skips docs-only merges) and can also be run manually from the
+Actions tab (`workflow_dispatch`). Web is unaffected (Cloudflare Pages deploys it separately).
+
+**Required repo secret:** `FLY_API_TOKEN` (Actions secret). It currently holds a Fly **org** token. When
+you rotate credentials, update it — ideally to a scoped **deploy token**:
+`fly tokens create deploy -a invest254-api` (and `-a invest254-engine-pm`) or an org deploy token, then
+`gh secret set FLY_API_TOKEN` (or Settings → Secrets → Actions). If the secret is missing/expired, the
+`verify` job still runs but the deploy jobs fail fast — `main` is never left half-built, only un-deployed.
+
 ### 2.7 Legacy / deprecated apps (do not use — decommission)
 | App | URL | What it is | Status |
 |-----|-----|------------|--------|

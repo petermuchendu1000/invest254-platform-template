@@ -406,3 +406,63 @@ whenever the theme changes — the hard requirement a baked AI raster cannot mee
 iOS apple-touch-icon and PWA 192/512 (which need PNG), rasterise the mark to PNG at apply time
 (canvas) and add `apple`/`icon` sizes in `layout.tsx` metadata — a follow-up that needs the PNGs
 stored (small column or R2). The visible tab favicon + in-app logo are fully theme-aware today.
+
+---
+
+## 14. IMPLEMENTED — Global economy overrides (migration 0099, "one console overrides every client")
+
+**Status: shipped** (branch `feat/platform-global-config-comprehensive`). Extends the basic global
+console (§ migration 0092: 5 master switches + banner + pool distributor) into a comprehensive economy
+control plane. **Operator decisions (locked): HARD-ENFORCE per field · SEPARATE player/marketer game
+economies · GLOBAL WINS (an enforced field beats site_game_config AND per-user user_overrides).**
+
+### 14.1 Data model
+`platform_global_config` gains three additive jsonb blocks (default `{}` ⇒ behaviour-neutral until a
+field is enforced): `player_economy`, `marketer_economy`, `payments`. Each field is
+`{ "v": <number>, "on": <boolean> }`; only `on:true` is enforced platform-wide.
+- Cohort fields (player + marketer): `houseEdge`, `targetWinRate`, `maxMultiplier`, `minStakeCents`,
+  `maxStakeCents`, `defaultDurationS` (6 × 2 = 12).
+- Payments: `minDepositCents` (was a HARDCODED constant before this), `maxDepositCents`, `minWithdrawalCents`.
+DB: `fn_platform_validate_economy` (per-field bounds) + extended `fn_platform_set_global_config`
+(shallow per-field merge, validate, version→`platform_global_config_versions`, audit→`admin_actions`,
+`pg_notify('platform_config_changed')`). platform_superadmin-gated, idempotent.
+
+### 14.2 Enforcement points (where "override every client" actually happens)
+- **Game economy (statistical / pool-OFF path):** `packages/shared/globaleconomy.ts` + engine
+  `globaloverride.ts::composeGlobalOverride` fold the enforced cohort economy INTO the `UserOverride`
+  that BOTH `GameServer.openPosition` and `RecoveryService` consume via `loadOverride` — so open and
+  crash-recovery reprice identically, reusing the tested per-user `SettlementEngine` calibration
+  (`overrides.ts`) and its infeasible-fallback. Cohort = marketer vs player via `fn_is_marketer_account`.
+  In pool mode, non-marketers are governed by the pool controller (global economy is dormant — matching
+  "when pool mode is off"); marketers are pool-exempt and always take the statistical path.
+- **Payments:** `PaymentService` gains `minDepositForGlobal` / `maxDepositForGlobal` /
+  `minWithdrawalForGlobal` (highest precedence, fail-open) wired from `PlatformGate.economy()` in
+  `apps/api/src/server.ts`.
+- **Read side:** `PlatformGate` (already LISTENs `platform_config_changed`, 5s TTL, fail-open) now also
+  parses + caches the economy blocks, so a change propagates within one TTL with no redeploy.
+
+### 14.3 Safety
+- Behaviour-neutral by default; every write is versioned + audited.
+- Feasibility (`RTP/winRate ∈ (1, maxMultiplier]`) is checked with the SAME `checkFeasible` the engine
+  uses — live in the console (representative + per-brand) AND as an engine fail-safe: an infeasible
+  enforced set for a given brand safely FALLS BACK to that brand's own pricing (never bricks a user).
+- Caveat (documented, identical class to the existing per-user-override caveat): changing a global field
+  while a position is open + a crash in that window reprices under the new value; the outcome direction
+  is committed at open and config is versioned. Curve-shape fields (tickRate/drift/volatility) are
+  intentionally NOT in the enforce set — they are day/curve-version-bound and out of scope here.
+
+### 14.4 UI
+`/platform/config` gains Player-economy, Marketer-economy and Payments sections
+(`components/platform/GlobalEconomy.tsx`): per-field enforce toggles with inheritance/lock badges
+("Enforced · all clients" vs "Clients keep own"), pct/KES/×/s inputs, LIVE feasibility (representative +
+names the clients that would fall back), dirty-tracking + Reset, and a blast-radius confirmation modal
+showing the diff before committing (System-1 → System-2 positive friction). Built on the existing design
+tokens; no external template.
+
+### 14.5 Tests
+Shared unit (parse/resolve/feasibility/payments), engine composition (cohort selection, global-wins,
+fail-open), PaymentService (global min/max-deposit + min-withdrawal precedence, fail-open), API
+(economy patch validation + persistence + merge), and **e2e through the real `GameServer.openPosition`**
+(stake gate, forced duration, player/marketer split, global-wins-over-user-override, un-enforced
+fall-through, neutral default). Migration validated against the live DB in a rolled-back transaction.
+Full suite: 638/638 green; Next build + typecheck green. **Not yet applied to production** (deploy step).

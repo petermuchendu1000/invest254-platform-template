@@ -518,7 +518,12 @@ const ms = (v: unknown): number => (v instanceof Date ? v.getTime() : new Date(S
 /** Normalize any timestamp/date value to a `YYYY-MM-DD` (UTC) day key. */
 const day = (v: unknown): string => (v instanceof Date ? v.toISOString() : String(v)).slice(0, 10);
 /** Day key (UTC) for an epoch-ms timestamp. */
-const dayOfMs = (msVal: number): string => new Date(msVal).toISOString().slice(0, 10);
+// BUGFIX (Africa/Nairobi day-boundary): bucket report days in EAT, matching the production
+// PgAdminRepo SQL (`at time zone 'Africa/Nairobi'`) and the callers' EAT `today`. Using UTC here
+// mis-bucketed cash facts during the 00:00–03:00 EAT window (UTC still the previous day), which made
+// the finance-isolation e2e assert deposits=0 when run late at night. en-CA yields YYYY-MM-DD.
+const dayOfMs = (msVal: number): string =>
+  new Date(msVal).toLocaleDateString("en-CA", { timeZone: "Africa/Nairobi" });
 /** True when `d` (YYYY-MM-DD) falls within an inclusive ReportRange. */
 const inRange = (d: string, r: ReportRange): boolean => (r.from == null || d >= r.from) && (r.to == null || d <= r.to);
 

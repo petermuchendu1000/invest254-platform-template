@@ -25,7 +25,7 @@ entry: what, evidence, root cause, impact, and resolution.
   system is now the sign-up welcome bonus. (Legacy `bonus_config.tiers/wagering_x` columns are left
   inert.)
 
-## #3 — Admin "day" finance report is timezone-fragile (fails 00:00–03:00 EAT) — OPEN (pre-existing)
+## #3 — Admin "day" finance report is timezone-fragile (fails 00:00–03:00 EAT) — FIXED (issue 1 / global-config)
 - **What:** `app.admin.isolation.e2e.test.ts` → "finance reports (daily/day/users) are brand-scoped"
   fails: `day report: brand A only` expects 40000, gets 0.
 - **Evidence:** Reproduced on a clean `main` (pre-existing; independent of issue 1). The test derives
@@ -36,9 +36,20 @@ entry: what, evidence, root cause, impact, and resolution.
 - **Impact:** the `/admin/reports/day` aggregation and/or the test are not timezone-consistent; the
   report can under-count near the UTC/EAT day boundary. Test is flaky by wall-clock (green during Nairobi
   daytime).
-- **Status:** documented, NOT fixed under issue 1 (unrelated to the welcome bonus; changing day-report
-  timezone handling on a live financial report warrants its own scoped fix + decision on the canonical
-  reporting timezone).
+- **Refined root cause (this fix):** the *production* report (`PgAdminRepo.reportDay`, apps/engine/src/admin.ts)
+  was already correct — it groups by `(created_at at time zone 'Africa/Nairobi')::date`. The defect was in
+  the **in-memory test harness** helper `dayOfMs` (apps/engine/src/admin.ts:521), which used
+  `toISOString().slice(0,10)` (UTC). The harness therefore bucketed cash facts under the UTC day while the
+  test (and production) use the EAT day — diverging only in the 00:00–03:00 EAT window.
+- **Resolution:** `dayOfMs` now returns the EAT calendar date
+  (`toLocaleDateString('en-CA', { timeZone: 'Africa/Nairobi' })`), matching production SQL and the callers'
+  EAT `today`. **No production financial-reporting behaviour changed** (only the harness), so the prior
+  concern about touching a live report does not apply. Baseline test suite is now fully green (610/610),
+  and the finance-isolation e2e is deterministic regardless of wall-clock.
+- **Follow-on:** two `app.admin.test.ts` report tests computed their expected day in UTC
+  (`toISOString().slice(0,10)`) and were the mirror of the isolation test (they only passed during
+  Nairobi daytime). Aligned both to the EAT calendar date so ALL day-report tests now agree with the
+  production EAT boundary and each other.
 
 ## #4 — Phone-only password reset is account takeover for admins/superadmins — FIXED (issue 2 / migration 0097)
 - **What:** `POST /api/v1/auth/password/reset` sets a new password from phone + new password alone

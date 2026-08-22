@@ -10,6 +10,7 @@ import {
   useGlobalConfig, useSetGlobalConfig, useDistributePool, usePoolDistributions, usePlatformSites,
 } from '@/lib/platform/hooks';
 import type { GlobalConfigDto } from '@/lib/platform/endpoints';
+import { CohortEconomySection, PaymentsEconomySection } from '@/components/platform/GlobalEconomy';
 
 const money = (cents: number, cur = 'KES') => `${cur} ${(cents / 100).toLocaleString()}`;
 
@@ -144,6 +145,21 @@ export default function GlobalConfigPage() {
           </div>
         </Card>
       </Section>
+
+      {/* ── Global game economy: separate PLAYER and MARKETER sets (pool-off / statistical path) ── */}
+      <CohortEconomySection
+        apiKey="player_economy" kind="players" title="Player economy"
+        description="Overrides the game economy for regular players on every client when pool mode is OFF (the statistical settlement path). Enforced fields beat each brand's site config and per-user overrides."
+        server={cfg.playerEconomy} sites={sites} version={cfg.version} setCfg={setCfg}
+      />
+      <CohortEconomySection
+        apiKey="marketer_economy" kind="marketers" title="Marketer economy"
+        description="A SEPARATE economy for marketer/affiliate accounts (always statistical, pool-exempt). Use it to run a distinct win-rate/edge/cap for marketers across every client."
+        server={cfg.marketerEconomy} sites={sites} version={cfg.version} setCfg={setCfg}
+      />
+
+      {/* ── Payments (min/max deposit + min withdrawal) ── */}
+      <PaymentsEconomySection server={cfg.payments} activeCount={activeSites.length} setCfg={setCfg} />
 
       {/* ── Global withdrawal-pool distributor ── */}
       <Section title="Global withdrawal pool — distribute to all clients">

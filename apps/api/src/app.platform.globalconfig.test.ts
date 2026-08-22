@@ -77,3 +77,43 @@ test("pool distribute: per_site exact amounts", async () => {
     assert.equal(res.perSite[id], 250_000);
   } finally { await api.close(); }
 });
+
+// ── Global ECONOMY overrides (migration 0099): separate player/marketer + payments, per-field enforce ──
+
+test("global-config: economy blocks — set player/marketer/payments, merge, reflect on re-read", async () => {
+  const api = await startTestApi();
+  try {
+    const patched = (await json(await req(api, "PATCH", "/api/v1/platform/global-config", {
+      token: PLATFORM,
+      body: {
+        player_economy: { houseEdge: { v: 0.7, on: true }, targetWinRate: { v: 0.2, on: true }, maxMultiplier: { v: 5, on: true } },
+        marketer_economy: { targetWinRate: { v: 0.85, on: true }, houseEdge: { v: 0.05, on: true }, maxMultiplier: { v: 10, on: true } },
+        payments: { minDepositCents: { v: 30000, on: true } },
+      },
+    }))).config;
+    assert.deepEqual(patched.playerEconomy.houseEdge, { v: 0.7, on: true });
+    assert.deepEqual(patched.marketerEconomy.targetWinRate, { v: 0.85, on: true });
+    assert.deepEqual(patched.payments.minDepositCents, { v: 30000, on: true });
+
+    // partial merge: toggle one player field off; the others must survive.
+    const merged = (await json(await req(api, "PATCH", "/api/v1/platform/global-config", {
+      token: PLATFORM, body: { player_economy: { houseEdge: { v: 0.7, on: false } } } }))).config;
+    assert.equal(merged.playerEconomy.houseEdge.on, false, "field toggled off");
+    assert.deepEqual(merged.playerEconomy.targetWinRate, { v: 0.2, on: true }, "sibling field retained via merge");
+
+    const reread = (await json(await req(api, "GET", "/api/v1/platform/global-config", { token: PLATFORM }))).config;
+    assert.deepEqual(reread.marketerEconomy.houseEdge, { v: 0.05, on: true });
+  } finally { await api.close(); }
+});
+
+test("global-config: economy validation — bad shape / unknown key / wrong cohort field => 400", async () => {
+  const api = await startTestApi();
+  try {
+    const bad = (b: unknown) => req(api, "PATCH", "/api/v1/platform/global-config", { token: PLATFORM, body: b });
+    assert.equal((await bad({ player_economy: { houseEdge: { v: "x", on: true } } })).status, 400, "non-numeric v");
+    assert.equal((await bad({ player_economy: { houseEdge: { v: 0.7, on: "yes" } } })).status, 400, "non-boolean on");
+    assert.equal((await bad({ player_economy: { bogus: { v: 1, on: true } } })).status, 400, "unknown cohort field");
+    assert.equal((await bad({ payments: { maxMultiplier: { v: 5, on: true } } })).status, 400, "cohort field not allowed in payments");
+    assert.equal((await bad({ player_economy: [1, 2] })).status, 400, "block must be an object");
+  } finally { await api.close(); }
+});

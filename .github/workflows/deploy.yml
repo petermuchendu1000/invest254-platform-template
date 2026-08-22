@@ -1,0 +1,76 @@
+name: Deploy (Fly)
+
+# Auto-deploys the two backend Fly apps when their code lands on main. The web app is deployed
+# separately by Cloudflare Pages (auto-deploy on main); this workflow covers ONLY the Fly backends:
+#   - invest254-api        (fly.api.toml)
+#   - invest254-engine-pm  (fly.engine.toml)
+# Both build from the same root Dockerfile (see HOSTING.md). Requires repo secret FLY_API_TOKEN.
+#
+# A restart does NOT pick up new code (HOSTING.md §2.5) — only a `fly deploy` does; that is what this
+# runs. The engine is restart-safe: on boot it deterministically recovers open positions (recovery.ts).
+
+on:
+  push:
+    branches: [main]
+    # Only deploy when something the backend image actually ships is touched (skip docs-only merges).
+    paths:
+      - 'apps/api/**'
+      - 'apps/engine/**'
+      - 'packages/**'
+      - 'Dockerfile'
+      - '.dockerignore'
+      - 'fly.api.toml'
+      - 'fly.engine.toml'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig*.json'
+      - '.github/workflows/deploy.yml'
+  workflow_dispatch: {}   # allow a manual deploy of current main from the Actions tab
+
+# Never run two deploys at once, and never cancel a deploy mid-flight.
+concurrency:
+  group: fly-deploy
+  cancel-in-progress: false
+
+jobs:
+  # Gate: don't deploy a broken main. Mirrors the backend half of the CI 'build' job (typecheck + tests).
+  # npm test is DB-independent (in-memory harness), so no DATABASE_URL is needed here.
+  verify:
+    name: verify (typecheck + tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install
+        run: npm ci
+      - name: Typecheck (shared + engine + api)
+        run: npx tsc -b packages/shared apps/engine apps/api
+      - name: Tests
+        run: npm test
+
+  deploy-api:
+    name: deploy invest254-api
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - name: fly deploy (api)
+        run: flyctl deploy --config fly.api.toml --remote-only
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+  deploy-engine:
+    name: deploy invest254-engine-pm
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - name: fly deploy (engine)
+        run: flyctl deploy --config fly.engine.toml --remote-only
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

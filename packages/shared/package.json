@@ -8,6 +8,7 @@
     ".": "./src/index.ts",
     "./money": "./src/money.ts",
     "./config": "./src/config.ts",
+    "./globaleconomy": "./src/globaleconomy.ts",
     "./types": "./src/types.ts",
     "./credentials": "./src/credentials.ts",
     "./security-questions": "./src/security-questions.ts",

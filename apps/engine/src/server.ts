@@ -5,6 +5,7 @@ import {
 import { StaticConfigProvider, SiteGameConfigStore, type ConfigProvider, type ListenClient } from "./gameconfig.js";
 import { SitesStore } from "./sitesstore.js";
 import { PgUserOverridesRepository, type UserOverridesRepository } from "./overrides.js";
+import { composeGlobalOverride } from "./globaloverride.js";
 import { PoolController, PgPoolRepo } from "./poolcontroller.js";
 import { makePgPools } from "./pgpools.js";
 import { SiteRegistry } from "./siteregistry.js";
@@ -166,7 +167,17 @@ const registry = new SiteRegistry({
   repo,
   configFor,
   ...(masterSeedFor ? { masterSeedFor } : {}),
-  ...(overridesRepo ? { loadOverride: (uid: string) => overridesRepo!.getForUser(uid) } : {}),
+  // loadOverride: per-user overrides, COMPOSED with the platform-global cohort economy (0099) when the
+  // gate + marketer classifier are present (DB mode). Global-enforced fields win over per-user; the
+  // same composed loader is handed to the RecoveryService by SiteRegistry, so open + recovery agree.
+  ...(overridesRepo
+    ? {
+        loadOverride:
+          platformGate && loadIsMarketer
+            ? composeGlobalOverride((uid: string) => overridesRepo!.getForUser(uid), platformGate, loadIsMarketer)
+            : (uid: string) => overridesRepo!.getForUser(uid),
+      }
+    : {}),
   ...(poolController ? { poolController, poolModeFor: (siteId: string) => sitesStore!.poolModeFor(siteId) } : {}),
   ...(loadIsMarketer ? { loadIsMarketer } : {}),
 });

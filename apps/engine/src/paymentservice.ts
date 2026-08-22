@@ -35,6 +35,20 @@ export interface PaymentServiceOptions {
    */
   minWithdrawalForSite?: (siteId: string | undefined) => Cents | Promise<Cents>;
   /**
+   * Platform-wide GLOBAL economy overrides (migration 0099 — the platform_superadmin global console).
+   * When the platform owner ENFORCES a value it OVERRIDES every brand (decision: global wins), so these
+   * are consulted with the HIGHEST precedence:
+   *   - minDepositForGlobal  → enforced platform min deposit (before this, min deposit was a hardcoded
+   *                            constant); a valid positive integer wins over the static default.
+   *   - maxDepositForGlobal  → enforced platform max single deposit (null/absent = no cap).
+   *   - minWithdrawalForGlobal → enforced platform min withdrawal; wins over per-site + provider + static.
+   * Each is fail-open: absent, throwing, or a non-positive/non-integer result defers to the existing
+   * chain, so a config glitch can never open a floor below the safe default nor block legitimate payments.
+   */
+  minDepositForGlobal?: () => Cents | Promise<Cents>;
+  maxDepositForGlobal?: () => Cents | null | Promise<Cents | null>;
+  minWithdrawalForGlobal?: () => Cents | Promise<Cents>;
+  /**
    * Per-brand withdrawal kill switch (owner/admin override, migration 0067). Consulted at the top of
    * every withdrawal initiation: when it resolves to `false`, the request is refused with
    * WITHDRAWALS_DISABLED before any money moves — covering BOTH the marketer instant game->mpesa
@@ -68,6 +82,9 @@ export class PaymentService {
   private readonly minWithdrawal: Cents;
   private readonly minWithdrawalProvider?: () => Cents;
   private readonly minWithdrawalForSite?: (siteId: string | undefined) => Cents | Promise<Cents>;
+  private readonly minDepositForGlobal?: () => Cents | Promise<Cents>;
+  private readonly maxDepositForGlobal?: () => Cents | null | Promise<Cents | null>;
+  private readonly minWithdrawalForGlobal?: () => Cents | Promise<Cents>;
   private readonly withdrawalsEnabledForSite?: (siteId: string | undefined) => boolean | Promise<boolean>;
   private readonly accountRefForSite?: (siteId: string | undefined) => string | Promise<string>;
   private readonly defaultAccountRef: string;
@@ -79,6 +96,9 @@ export class PaymentService {
     this.minWithdrawal = opts.minWithdrawalCents ?? MIN_WITHDRAWAL_CENTS;
     if (opts.minWithdrawalProvider) this.minWithdrawalProvider = opts.minWithdrawalProvider;
     if (opts.minWithdrawalForSite) this.minWithdrawalForSite = opts.minWithdrawalForSite;
+    if (opts.minDepositForGlobal) this.minDepositForGlobal = opts.minDepositForGlobal;
+    if (opts.maxDepositForGlobal) this.maxDepositForGlobal = opts.maxDepositForGlobal;
+    if (opts.minWithdrawalForGlobal) this.minWithdrawalForGlobal = opts.minWithdrawalForGlobal;
     if (opts.withdrawalsEnabledForSite) this.withdrawalsEnabledForSite = opts.withdrawalsEnabledForSite;
     if (opts.accountRefForSite) this.accountRefForSite = opts.accountRefForSite;
     this.defaultAccountRef = opts.defaultAccountRef ?? "Invest254";
@@ -93,7 +113,10 @@ export class PaymentService {
   // ── Deposit (STK Push) ──
   async initiateDeposit(userId: string, amountCents: number, phoneRaw: string, siteId?: string): Promise<{ txId: string; checkoutRequestId: string }> {
     if (!Number.isInteger(amountCents) || amountCents <= 0) throw new Error("INVALID_AMOUNT");
-    if (amountCents < this.minDeposit) throw new Error("BELOW_MIN");
+    const minDep = await this.currentMinDeposit();
+    if (amountCents < minDep) throw new Error("BELOW_MIN");
+    const maxDep = await this.currentMaxDeposit();
+    if (maxDep !== null && amountCents > maxDep) throw new Error("ABOVE_MAX");
     const msisdn = normalizeMsisdn(phoneRaw);
     const txId = await this.repo.createDeposit(userId, amountCents, msisdn, siteId);
     // Site-aware AccountReference: show the depositing brand's account, not a hardcoded one. And
@@ -219,6 +242,13 @@ export class PaymentService {
    * transient bad config can never open the floor below the safe default.
    */
   private async currentMinWithdrawal(siteId?: string): Promise<Cents> {
+    // 0. Platform GLOBAL enforce wins over everything (decision: global overrides all clients).
+    if (this.minWithdrawalForGlobal) {
+      try {
+        const g = await this.minWithdrawalForGlobal();
+        if (Number.isInteger(g) && (g as number) > 0) return g as Cents;
+      } catch { /* fail-open to the per-site / provider / static chain */ }
+    }
     if (this.minWithdrawalForSite) {
       try {
         const perSite = await this.minWithdrawalForSite(siteId);
@@ -229,6 +259,32 @@ export class PaymentService {
     }
     const live = this.minWithdrawalProvider?.();
     return Number.isInteger(live) && (live as number) > 0 ? (live as Cents) : this.minWithdrawal;
+  }
+
+  /**
+   * The minimum deposit in force for THIS request. The platform GLOBAL enforced value (0099) wins over
+   * the static default; a non-positive/non-integer/throwing global result defers to the static default,
+   * so a config glitch can never open the floor below the safe minimum.
+   */
+  private async currentMinDeposit(): Promise<Cents> {
+    if (this.minDepositForGlobal) {
+      try {
+        const g = await this.minDepositForGlobal();
+        if (Number.isInteger(g) && (g as number) > 0) return g as Cents;
+      } catch { /* fail-open to the static default */ }
+    }
+    return this.minDeposit;
+  }
+
+  /** The maximum single deposit in force, or null (no cap). Only the platform GLOBAL enforce sets it. */
+  private async currentMaxDeposit(): Promise<Cents | null> {
+    if (this.maxDepositForGlobal) {
+      try {
+        const g = await this.maxDepositForGlobal();
+        if (g !== null && Number.isInteger(g) && (g as number) > 0) return g as Cents;
+      } catch { /* fail-open to no cap */ }
+    }
+    return null;
   }
   /** Finance admin approves: flips to processing and dispatches the B2C payment. */
   async approveWithdrawal(txId: string, adminId: string): Promise<{ approved: boolean; conversationId?: string }> {

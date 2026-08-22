@@ -130,7 +130,10 @@ test("admin reports: per-day & per-user JSON, CSV export, and the date-range fil
     const dep = await api.payRepo.createDeposit(uid, 50_000, "0712000030");
     await api.payRepo.attachStk(dep, "m", "chk-r");
     await api.payRepo.completeDeposit("chk-r", 0, "ok", "RCPT", {});
-    const today = new Date().toISOString().slice(0, 10);
+    // Day reports bucket in EAT (production PgAdminRepo uses `at time zone 'Africa/Nairobi'`; the
+    // in-memory harness matches after BUGLOG #3). Use the EAT calendar date so the assertion is stable
+    // across the UTC/EAT day boundary (00:00–03:00 EAT), not just during Nairobi daytime.
+    const today = new Date().toLocaleDateString("en-CA", { timeZone: "Africa/Nairobi" });
 
     // Per-user JSON.
     const users = (await json(await req(api, "GET", "/api/v1/admin/reports/users", { token: "admin-1:admin" }))).items as any[];
@@ -176,7 +179,10 @@ test("admin reports/day (calendar): comprehensive single-day stats; date-validat
     await api.payRepo.attachStk(dep, "m", "chk-day");
     await api.payRepo.completeDeposit("chk-day", 0, "ok", "RCPT", {});
     // UTC day matches the in-memory grouping used by the reports repo (see reports/daily test).
-    const today = new Date().toISOString().slice(0, 10);
+    // Day reports bucket in EAT (production PgAdminRepo uses `at time zone 'Africa/Nairobi'`; the
+    // in-memory harness matches after BUGLOG #3). Use the EAT calendar date so the assertion is stable
+    // across the UTC/EAT day boundary (00:00–03:00 EAT), not just during Nairobi daytime.
+    const today = new Date().toLocaleDateString("en-CA", { timeZone: "Africa/Nairobi" });
 
     const res = await req(api, "GET", `/api/v1/admin/reports/day?date=${today}`, { token: "admin-1:admin" });
     assert.equal(res.status, 200);

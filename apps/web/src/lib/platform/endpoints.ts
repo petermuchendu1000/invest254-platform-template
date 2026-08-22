@@ -1,4 +1,5 @@
 import { apiFetch } from '@/lib/api/client';
+import type { CohortEconomy, PaymentsEconomy } from '@invest254/shared/globaleconomy';
 
 /** A brand's economy (mirrors site_game_config; cents for money fields). */
 export interface SiteConfig {
@@ -74,11 +75,14 @@ export interface AuditRow {
   id: string; actorId: string; actorRole: string; action: string; targetType: string; targetId: string | null; detail: unknown; createdAtMs: number;
 }
 
-/** Platform-wide master config (migration 0092) — the global console. */
+/** Platform-wide master config (migrations 0092 + 0099) — the global console. */
 export interface GlobalConfigDto {
   depositsEnabled: boolean; withdrawalsEnabled: boolean; playEnabled: boolean;
   marketersEnabled: boolean; registrationsEnabled: boolean;
-  maintenanceMessage: string | null; globalDailyPoolCents: number | null; version: number; updatedAt: string | null;
+  maintenanceMessage: string | null; globalDailyPoolCents: number | null;
+  // Migration 0099 — per-field ENFORCE-able economy overrides (global wins over site + user).
+  playerEconomy: CohortEconomy; marketerEconomy: CohortEconomy; payments: PaymentsEconomy;
+  version: number; updatedAt: string | null;
 }
 export interface DistributeResultDto { totalCents: number; mode: string; perSite: Record<string, number> }
 export interface PoolDistributionDto { id: number; totalCents: number; mode: string; siteCount: number; perSite: Record<string, number>; createdAt: string }

@@ -7,7 +7,7 @@ import {
   type Querier, type FairnessRecord, type ListenClient,
 } from "@invest254/engine";
 import { createApp, type ApiDeps, type WalletBalance, type BonusStatus, type Brand } from "./app.js";
-import { normalizeHost, PlatformGate, type VersionedGameConfig, type Cents } from "@invest254/shared";
+import { normalizeHost, PlatformGate, enforcedValue, type VersionedGameConfig, type Cents } from "@invest254/shared";
 import { BrandOriginAllowlist } from "./cors.js";
 import { makePgMarketerRepo } from "./marketers.pg.js";
 import { makePgReferralRepo } from "./referral.pg.js";
@@ -128,6 +128,11 @@ async function buildDeps(): Promise<ApiDeps> {
     } catch { return "Invest254"; }
   };
 
+  // Platform-wide master switches + GLOBAL economy overrides (migrations 0092/0099). 5s cache; fails
+  // open on read error. Constructed here (before PaymentService) so the global min/max-deposit and
+  // min-withdrawal enforcement can read platformGate.economy(). Reused as the app dep below.
+  const platformGate = new PlatformGate((sql: string, p?: unknown[]) => q.query(sql, p ?? []));
+
   const payments = new PaymentService(payRepo, daraja, {
     // Verify STK callbacks against Safaricom (STKPushQuery) before crediting — defeats forged
     // callbacks. Set MPESA_VERIFY_CALLBACKS=false only if the callback source is otherwise trusted.
@@ -141,6 +146,11 @@ async function buildDeps(): Promise<ApiDeps> {
     // Process-wide fallback (single-tenant / default brand, and if the per-site lookup yields nothing):
     // the platform-default game_config, read live so an admin edit gates the next withdrawal with no redeploy.
     minWithdrawalProvider: () => gameConfig.active().minWithdrawalCents,
+    // Platform GLOBAL economy (0099) — enforced values win over all per-site/provider values. Return a
+    // non-positive sentinel (0) / null when a field isn't enforced so PaymentService defers to the chain.
+    minDepositForGlobal: async () => enforcedValue((await platformGate.economy()).payments, "minDepositCents") ?? 0,
+    maxDepositForGlobal: async () => enforcedValue((await platformGate.economy()).payments, "maxDepositCents"),
+    minWithdrawalForGlobal: async () => enforcedValue((await platformGate.economy()).payments, "minWithdrawalCents") ?? 0,
     events: {
       onWithdrawalSuccess: ({ userId, amountCents }) => {
         void resolveHandle(userId)
@@ -176,8 +186,6 @@ async function buildDeps(): Promise<ApiDeps> {
       })
     : null;
   const affiliate = new AffiliateService(identity, daraja);
-  // Platform-wide master switches (migration 0092). 5s cache; fails open on read error.
-  const platformGate = new PlatformGate((sql: string, p?: unknown[]) => q.query(sql, p ?? []));
   const admin = new AdminService(new PgAdminRepository(q));
   const platform = new PlatformService(new PgPlatformRepository(q));
   const notifications = new NotificationService(new PgNotificationRepository(q));

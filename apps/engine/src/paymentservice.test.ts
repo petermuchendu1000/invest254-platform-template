@@ -308,3 +308,53 @@ test("PaymentService: reconcile survives provider errors and reports them", asyn
   assert.equal(r.settled, 0);
   assert.equal(await repo.getBalance("u"), 100_000);
 });
+
+// ── Platform GLOBAL economy (migration 0099): min/max deposit + min-withdrawal precedence ──
+
+test("PaymentService: global min-deposit ENFORCED wins over the static default", async () => {
+  const repo = new InMemoryPaymentRepository(); repo.seed("u", 1_000_000);
+  const daraja = new StubDarajaClient();
+  const svc = new PaymentService(repo, daraja, { minDepositForGlobal: async () => 30_000 }); // KES 300
+  // Static default is KES 200 (20_000); global raises the floor to 30_000.
+  await assert.rejects(() => svc.initiateDeposit("u", 25_000, "0712345678"), /BELOW_MIN/);
+  const ok = await svc.initiateDeposit("u", 30_000, "0712345678");
+  assert.ok(ok.txId, "at/above the global min is accepted");
+});
+
+test("PaymentService: global min-deposit fail-open (0 / throw) defers to the static default", async () => {
+  const repo = new InMemoryPaymentRepository(); repo.seed("u", 1_000_000);
+  const svc0 = new PaymentService(repo, new StubDarajaClient(), { minDepositForGlobal: async () => 0 });
+  await assert.rejects(() => svc0.initiateDeposit("u", 9_999, "0712345678"), /BELOW_MIN/); // static 20_000 still applies
+  assert.ok((await svc0.initiateDeposit("u", 20_000, "0712345678")).txId);
+  const svcThrow = new PaymentService(repo, new StubDarajaClient(), { minDepositForGlobal: async () => { throw new Error("db"); } });
+  assert.ok((await svcThrow.initiateDeposit("u", 20_000, "0712345678")).txId, "throw => static default, not a block");
+});
+
+test("PaymentService: global max-deposit caps a single deposit (ABOVE_MAX)", async () => {
+  const repo = new InMemoryPaymentRepository(); repo.seed("u", 100_000_000);
+  const svc = new PaymentService(repo, new StubDarajaClient(), { maxDepositForGlobal: async () => 5_000_000 }); // KES 50k cap
+  await assert.rejects(() => svc.initiateDeposit("u", 5_000_001, "0712345678"), /ABOVE_MAX/);
+  assert.ok((await svc.initiateDeposit("u", 5_000_000, "0712345678")).txId, "at the cap is allowed");
+  const svcNoCap = new PaymentService(repo, new StubDarajaClient(), {});
+  assert.ok((await svcNoCap.initiateDeposit("u", 9_000_000, "0712345678")).txId, "no global => no cap");
+});
+
+test("PaymentService: global min-withdrawal WINS over per-site + provider (global overrides all clients)", async () => {
+  const repo = new InMemoryPaymentRepository(); repo.seed("u", 1_000_000);
+  const svc = new PaymentService(repo, new StubDarajaClient(), {
+    minWithdrawalForGlobal: async () => 50_000,          // platform enforce
+    minWithdrawalForSite: () => 10_000,                  // per-brand (lower) — must be overridden
+    minWithdrawalProvider: () => 25_000,
+  });
+  await assert.rejects(() => svc.requestWithdrawal("u", 49_999, "0712345678", "site-a"), /BELOW_MIN/);
+  // (a valid withdrawal at/above 50_000 would proceed to the repo path; the floor is what we assert here.)
+});
+
+test("PaymentService: global min-withdrawal fail-open (0) defers to per-site/provider chain", async () => {
+  const repo = new InMemoryPaymentRepository(); repo.seed("u", 1_000_000);
+  const svc = new PaymentService(repo, new StubDarajaClient(), {
+    minWithdrawalForGlobal: async () => 0,               // not enforced
+    minWithdrawalForSite: () => 40_000,
+  });
+  await assert.rejects(() => svc.requestWithdrawal("u", 39_999, "0712345678", "site-a"), /BELOW_MIN/);
+});

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { parseCohort, parsePayments, type CohortEconomy, type PaymentsEconomy } from "@invest254/shared";
 import type { Querier } from "./wallet.js";
 
 /**
@@ -43,6 +44,8 @@ export interface GlobalConfig {
   depositsEnabled: boolean; withdrawalsEnabled: boolean; playEnabled: boolean;
   marketersEnabled: boolean; registrationsEnabled: boolean;
   maintenanceMessage: string | null; globalDailyPoolCents: number | null;
+  // Migration 0099 — per-field ENFORCE-able economy overrides (global wins over site + user).
+  playerEconomy: CohortEconomy; marketerEconomy: CohortEconomy; payments: PaymentsEconomy;
   version: number; updatedAt: string | null;
 }
 export interface DistributeResult { totalCents: number; mode: string; perSite: Record<string, number>; }
@@ -116,6 +119,9 @@ function mapGlobalConfig(x: Record<string, unknown>): GlobalConfig {
     registrationsEnabled: x.registrations_enabled !== false,
     maintenanceMessage: (x.maintenance_message as string | null) ?? null,
     globalDailyPoolCents: x.global_daily_pool_cents == null ? null : num(x.global_daily_pool_cents),
+    playerEconomy: parseCohort(x.player_economy),
+    marketerEconomy: parseCohort(x.marketer_economy),
+    payments: parsePayments(x.payments),
     version: num(x.version),
     updatedAt: (x.updated_at as string | null) ?? null,
   };
@@ -427,7 +433,8 @@ export class InMemoryPlatformRepository implements PlatformRepository {
 
   private gc: GlobalConfig = {
     depositsEnabled: true, withdrawalsEnabled: true, playEnabled: true, marketersEnabled: true,
-    registrationsEnabled: true, maintenanceMessage: null, globalDailyPoolCents: null, version: 1, updatedAt: null,
+    registrationsEnabled: true, maintenanceMessage: null, globalDailyPoolCents: null,
+    playerEconomy: {}, marketerEconomy: {}, payments: {}, version: 1, updatedAt: null,
   };
   private dists: PoolDistribution[] = [];
   async getGlobalConfig(): Promise<GlobalConfig> { return { ...this.gc }; }
@@ -438,6 +445,10 @@ export class InMemoryPlatformRepository implements PlatformRepository {
       if (snake in patch && typeof patch[snake] === "boolean") this.gc[k] = patch[snake] as boolean;
     }
     if ("maintenance_message" in patch) this.gc.maintenanceMessage = (patch.maintenance_message as string) || null;
+    // Economy blocks (0099): shallow-merge per field over the current block (mirrors the DB RPC's `||`).
+    if ("player_economy" in patch) this.gc.playerEconomy = { ...this.gc.playerEconomy, ...parseCohort(patch.player_economy) };
+    if ("marketer_economy" in patch) this.gc.marketerEconomy = { ...this.gc.marketerEconomy, ...parseCohort(patch.marketer_economy) };
+    if ("payments" in patch) this.gc.payments = { ...this.gc.payments, ...parsePayments(patch.payments) };
     this.gc.version += 1; this.gc.updatedAt = new Date().toISOString();
     return { ...this.gc };
   }

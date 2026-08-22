@@ -11,6 +11,8 @@
  * returns the last-known snapshot (initially all-ON). A read error must NEVER self-inflict a
  * platform-wide outage — turning systems OFF is always a deliberate, recorded admin action.
  */
+import { EMPTY_PLATFORM_ECONOMY, parsePlatformEconomy, type PlatformEconomy } from "./globaleconomy.js";
+
 export interface PlatformFlags {
   depositsEnabled: boolean;
   withdrawalsEnabled: boolean;
@@ -32,21 +34,25 @@ type QueryFn = (sql: string, params?: unknown[]) => Promise<{ rows: Array<Record
 
 export class PlatformGate {
   private cache: PlatformFlags = PLATFORM_ALL_ON;
+  /** Parsed economy overrides (migration 0099); empty (=nothing enforced) is behaviour-neutral. */
+  private economyCache: PlatformEconomy = EMPTY_PLATFORM_ECONOMY;
   private at = 0;
-  private inflight: Promise<PlatformFlags> | null = null;
+  private inflight: Promise<void> | null = null;
 
-  /** @param q injected query fn (null => dev/no-DB: everything ON). @param ttlMs cache TTL. */
+  /** @param q injected query fn (null => dev/no-DB: everything ON, no overrides). @param ttlMs cache TTL. */
   constructor(private readonly q: QueryFn | null, private readonly ttlMs = 5000) {}
 
-  async flags(): Promise<PlatformFlags> {
-    if (!this.q) return this.cache;
-    if (Date.now() - this.at < this.ttlMs) return this.cache;
+  /** Refresh both the flags and the economy overrides from the singleton row (shared TTL + inflight). */
+  private async refresh(): Promise<void> {
+    if (!this.q) return;
+    if (Date.now() - this.at < this.ttlMs) return;
     if (this.inflight) return this.inflight;
     this.inflight = (async () => {
       try {
         const r = await this.q!(
           "select deposits_enabled, withdrawals_enabled, play_enabled, marketers_enabled, " +
-          "registrations_enabled, maintenance_message, version from platform_global_config where id");
+          "registrations_enabled, maintenance_message, version, " +
+          "player_economy, marketer_economy, payments from platform_global_config where id");
         const x = r.rows[0];
         if (x) {
           this.cache = {
@@ -58,12 +64,23 @@ export class PlatformGate {
             maintenanceMessage: (x.maintenance_message as string | null) ?? null,
             version: Number(x.version ?? 0),
           };
+          this.economyCache = parsePlatformEconomy(x as Record<string, unknown>);
         }
-      } catch { /* fail-open: keep last-known snapshot */ }
+      } catch { /* fail-open: keep last-known snapshot (flags + economy) */ }
       this.at = Date.now();
-      return this.cache;
     })();
-    try { return await this.inflight; } finally { this.inflight = null; }
+    try { await this.inflight; } finally { this.inflight = null; }
+  }
+
+  async flags(): Promise<PlatformFlags> {
+    await this.refresh();
+    return this.cache;
+  }
+
+  /** Parsed platform-wide economy overrides (player/marketer cohorts + payments). */
+  async economy(): Promise<PlatformEconomy> {
+    await this.refresh();
+    return this.economyCache;
   }
 
   async allows(system: PlatformSystem): Promise<boolean> {
@@ -77,6 +94,6 @@ export class PlatformGate {
     }
   }
 
-  /** Force the next flags() to re-read (call from a 'platform_config_changed' LISTEN handler). */
+  /** Force the next read to re-fetch (call from a 'platform_config_changed' LISTEN handler). */
   invalidate(): void { this.at = 0; }
 }
