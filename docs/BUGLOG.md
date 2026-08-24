@@ -152,3 +152,29 @@ entry: what, evidence, root cause, impact, and resolution.
   6,263 marketer demo positions + 12,087 demo ledger rows + 426 demo transactions were removed and the
   demo wallets reset (real player data provably untouched); a bug-inflated madolar test account was
   deleted; and seeded pool caps were zeroed. See docs/27.
+
+## #10 — Marketer app login rejected valid phone formats (false NOT_MARKETER) — FIXED (issue: marketer app login)
+- **What:** the generic marketer app (mpesa/truecaller builds) showed "This account isn't registered
+  as a marketer" (403 NOT_MARKETER) and the transaction feed/notifications never loaded, for a
+  marketer whose website password and ledger were valid — whenever she typed her phone in any format
+  other than the exact stored string (e.g. `+254706597235`, `254706597235`, `706597235`,
+  `0706 597 235` vs stored `0706597235`).
+- **Evidence:** read-only production comparison on the affected number (sig9 `706597235`, default
+  brand): the old exact-match query found the row only for the stored format (1/6 formats); the
+  sig9-match query finds it for all 6. Both marketer apps send the phone exactly as typed
+  (no client-side normalization).
+- **Root cause:** `profileByPhone` in `apps/api/src/marketers.pg.ts` matched `phone = $1` on the raw,
+  un-normalized request string, while `auth.login` normalizes via `normalizeMsisdn` — so the password
+  check succeeded but the marketer-wallet lookup missed. It was the one marketer lookup never migrated
+  to the canonical significant-9-digits rule (`fn_phone_sig9`, migrations 0084/0086/0100, docs/29).
+  The route tests passed because the in-memory double in `testutil.ts` replicated the same exact-match
+  flaw and the fixtures never varied the phone format.
+- **Impact:** any marketer typing their number in a non-stored format was locked out of the app with a
+  misleading "not a marketer" error; downstream, the app's poll worker no-ops without a session, so
+  M-Pesa-style transaction notifications silently stopped.
+- **Resolution:** `profileByPhone` now matches on
+  `fn_phone_sig9(phone) = fn_phone_sig9($1)` (with the `length(...) = 9` guard, site-scoped,
+  deterministic `ORDER BY created_at ASC LIMIT 1`) — the same predicate as every other marketer
+  lookup. The in-memory double keys phones by sig9 to stay faithful. New regression test
+  ("login-web accepts the phone in any valid format") covers 6 format variants end to end.
+  Full suite green (672/672); typecheck clean. No schema or write-path changes.

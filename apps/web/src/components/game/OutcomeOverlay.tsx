@@ -96,6 +96,18 @@ export function OutcomeOverlay() {
   // Show / auto-dismiss lifecycle.
   useEffect(() => {
     if (!current) return;
+    // The stake input (BetPanel) has autoFocus and may still hold focus when a position
+    // settles. On mobile that keeps the soft keyboard open, covering the outcome card.
+    // Blur whatever is focused so the keyboard dismisses before the overlay appears.
+    if (typeof document !== 'undefined' && document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+    // Also blur after a microtask: React may re-render BetPanel (removing the active
+    // position card and re-showing the idle stake input) in the same commit, and the
+    // autoFocus on that input would re-open the keyboard immediately after our blur.
+    const t0 = setTimeout(() => {
+      if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+    }, 0);
     setVisible(true);
     // Haptics: celebratory pattern for wins, single soft tap for losses.
     if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
@@ -113,7 +125,7 @@ export function OutcomeOverlay() {
     }
     const ttl = won ? (current.headline === 'big_win' ? 4200 : 3400) : 2400;
     const t = setTimeout(() => setVisible(false), ttl);
-    return () => clearTimeout(t);
+    return () => { clearTimeout(t0); clearTimeout(t); };
   }, [current, won]);
 
   // Remove from the store shortly after the exit transition.

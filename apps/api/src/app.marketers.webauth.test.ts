@@ -133,3 +133,22 @@ test("missing phone or password is a 400", async () => {
     assert.equal((await req(api, "POST", "/api/v1/marketers/auth/login-web", { body: {} })).status, 400);
   } finally { await api.close(); }
 });
+
+test("login-web accepts the phone in any valid format (sig9 match, not exact string)", async () => {
+  // Regression for the production bug where profileByPhone did a raw `phone = $1` exact match while
+  // auth.login normalizes: typing +254…/254…/bare/spaced passed the password check but returned
+  // 403 NOT_MARKETER (the marketer apps send the phone exactly as typed). See docs/BUGLOG.md.
+  const api = await startTestApi();
+  try {
+    await registerWebsiteAccount(api, "0706597235", "gritel254", "gritelpass1");
+    const id = await createMarketer(api, "gritel", "0706597235");
+
+    for (const typed of ["0706597235", "+254706597235", "254706597235", "706597235", "0706 597 235", "+254 706 597 235"]) {
+      const res = await loginWeb(api, typed, "gritelpass1");
+      assert.equal(res.status, 200, `login with ${typed}`);
+      const body = await json(res);
+      assert.equal(body.marketer.id, id, `marketer identity for ${typed}`);
+      assert.equal(body.marketer.name, "gritel");
+    }
+  } finally { await api.close(); }
+});

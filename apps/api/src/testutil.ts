@@ -87,7 +87,10 @@ export function makeInMemoryMarketerRepo(): InMemoryMarketerRepo {
   // site_id -> brand display name, mirroring the 0096 `marketer_profiles.brand_name` (sites.name).
   // The default brand is Invest254; tests register others via `_setBrandName`.
   const brandBySite = new Map<string, string>([[DEF_SITE, "Invest254"]]);
-  const pkey = (phone: string, siteId?: string) => `${phone}::${siteId ?? DEF_SITE}`;
+  // Significant-9-digits phone key, mirroring the DB's fn_phone_sig9 (migration 0086) so the
+  // in-memory repo matches the real Postgres semantics (marketers.pg.ts profileByPhone).
+  const sig9 = (phone: string) => phone.replace(/[^0-9]/g, "").slice(-9);
+  const pkey = (phone: string, siteId?: string) => `${sig9(phone)}::${siteId ?? DEF_SITE}`;
   const byPhone = new Map<string, string>();
   const ledgers = new Map<string, MarketerLedgerRow[]>();
   const refs = new Map<string, { balance: number; ledgerId: number }>();
@@ -131,7 +134,7 @@ export function makeInMemoryMarketerRepo(): InMemoryMarketerRepo {
     async profileByPhone(phone: string, siteId?: string): Promise<MarketerProfile | null> {
       // Site-scoped when a brand is supplied; else first match across brands (single-tenant callers).
       if (siteId) { const id = byPhone.get(pkey(phone, siteId)); const m = id ? byId.get(id) : undefined; return m ? profileOf(m) : null; }
-      const m = [...byId.values()].find((r) => r.phone === phone);
+      const m = [...byId.values()].find((r) => sig9(r.phone) === sig9(phone) && sig9(phone).length === 9);
       return m ? profileOf(m) : null;
     },
     async credit(id: string, amountCents: number, ref: string | null, meta: unknown): Promise<number> {

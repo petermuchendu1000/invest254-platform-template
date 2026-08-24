@@ -54,8 +54,17 @@ export function makePgMarketerRepo(query: Query): MarketerRepo {
     },
 
     async profileByPhone(phone, siteId): Promise<MarketerProfile | null> {
+      // Match on the canonical significant-9-digits rule (fn_phone_sig9, migration 0086) — the same
+      // predicate every other marketer lookup uses (0084/0086/0100). The marketer apps send the phone
+      // exactly as typed, so a raw `phone = $1` exact match missed any format other than the stored
+      // one (e.g. +254…/254…/bare/spaced vs stored 07…) and wrongly returned NOT_MARKETER after a
+      // successful password login (which normalizes via normalizeMsisdn). See docs/BUGLOG.md.
       const { rows } = await query(
-        "SELECT * FROM public.marketer_profiles WHERE phone = $1 AND ($2::uuid IS NULL OR site_id = $2)",
+        `SELECT * FROM public.marketer_profiles
+          WHERE public.fn_phone_sig9(phone) = public.fn_phone_sig9($1)
+            AND length(public.fn_phone_sig9($1)) = 9
+            AND ($2::uuid IS NULL OR site_id = $2)
+          ORDER BY created_at ASC LIMIT 1`,
         [phone, siteId ?? null]);
       return rows.length ? toProfile(rows[0]) : null;
     },
