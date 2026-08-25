@@ -8,8 +8,15 @@
 A **marketer is a player who *also* promotes Invest254.** Becoming an affiliate is **additive** — it
 never removes the player experience. A marketer can still deposit, trade, withdraw, and view history
 exactly like any player (every player route is auth-only and `marketer` outranks `player`, so nothing
-is gated away). On top of that, they get a unique referral link and earn **20% of the net gaming
-revenue** of the players they bring.
+is gated away). On top of that, they get a unique referral link and earn **25% of the deposits** made
+on their brand, distributed up a **hierarchical (unilevel) marketer tree** and always rooted at the
+brand's **default marketer** (`sites.owner_user_id`). See doc 09 §3 for the differential tiers
+(25% / 20% / 17% telescoping to a total of exactly 25% per deposit).
+
+> **Note (model update, migrations 0078/0081/0103):** the programme now pays **25% of deposits**
+> hierarchically, not 20% of GGR. Every deposit credits the brand's default marketer 25% unless a
+> sub-marketer referred the depositor, in which case the 25% is split differentially up the chain to
+> the default marketer at the root. The GGR text elsewhere in this doc is retained for history.
 
 Two consequences that the product must respect:
 1. **Two separate money pools.** A marketer has (a) a **playing wallet** — real/bonus balance funded

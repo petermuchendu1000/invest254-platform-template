@@ -1,10 +1,20 @@
 # 09 — Affiliate / Marketer System
 
-Marketers are players who also **refer others and earn 20% revenue-share**. They can both play and earn.
+Marketers are players who also **promote a brand and earn 25% of deposits**. They can both play and earn.
+
+> **Commission model (authoritative, migrations 0078/0081/0103):** every successful M-Pesa **deposit**
+> on a brand pays a total of **25%** commission into that brand's **marketer hierarchy**, always
+> rooted at the brand's **default marketer** (`sites.owner_user_id`). Marketers are **hierarchical**
+> (unilevel): the recruiter who directly brought the depositor earns the largest share and each
+> upline marketer earns a differential override, with the default marketer at the root. The shares
+> always sum to exactly **25% of the deposit**. See §3.
 
 ## 1. Becoming a marketer ✅ (I1)
 - Any player calls `POST /affiliate/enroll` → creates an `affiliates` row with a unique
-  `referral_code` (and `commission_rate = 0.20`) and sets `profiles.role = 'marketer'`.
+  `referral_code` and sets `profiles.role = 'marketer'`. (The legacy `commission_rate` column is
+  retained but the live model pays **25% of deposits** via the brand hierarchy, not a flat rate.)
+- Each brand has a **default marketer** (`sites.owner_user_id`) who sits at the root of the brand's
+  marketer hierarchy and earns 25% of every deposit not otherwise attributed to a sub-marketer.
 - They get a shareable link: `https://invest254.../r/<referral_code>`.
 - **Implemented (I1):** enrollment is **idempotent** — repeat calls return the existing stable
   code and never re-mint or downgrade a privileged role. The code uses a Crockford-style
@@ -23,14 +33,35 @@ Marketers are players who also **refer others and earn 20% revenue-share**. They
   Self-referral is structurally impossible (phone is unique, so a brand-new account can never be
   the referring affiliate).
 
-## 3. Commission model — 20% revenue-share on net loss (GGR) ✅ (I2)
-- **GGR (net loss)** of a referred player over a period = `Σ stakes − Σ payouts` (only positive
-  contributes; winning days don't create negative commission for the affiliate — carried/zero-floored).
-- **Commission** = `GGR × 0.20`, accrued **daily** into `affiliate_commissions` (`status='accrued'`).
-- Worked example: referred player stakes KES 10,000 in a day, wins back KES 2,500 →
-  GGR = 7,500 → affiliate earns `7,500 × 0.20 = KES 1,500`.
-- Because RTP = 25%, expected GGR ≈ 75% of stakes, so affiliates earn ≈ **15% of referred turnover**
-  on average — strong incentive.
+## 3. Commission model — 25% of deposits, hierarchical (migrations 0078/0081/0103) ✅
+Marketers earn **25% of every deposit** on their brand, distributed up the brand's **marketer
+hierarchy** and **always rooted at the brand's default marketer** (`sites.owner_user_id`). This is
+the live model (`fn_pay_referral_commissions`), writing rows to `deposit_commissions` that the
+marketer dashboard reads via `GET /me/referral`.
+
+**Attribution per deposit (precedence):**
+1. If the depositor was referred by a **sub-marketer** (`profiles.referred_by`), the 25% is split
+   differentially up that recruiter's chain of consecutive same-brand marketers, **then** the
+   brand's default marketer at the root receives the remaining override.
+2. Otherwise (no referrer), the **default marketer earns the full 25%**.
+Self-commission is blocked — a marketer's own deposit never pays themselves; it flows to the upline
+(ultimately the default marketer).
+
+**Differential tiers** (`fn_marketer_tier_rate`): position 1 = 25%, position 2 = 20%, position 3+ =
+17%. Each marketer earns their tier minus the tier of the marketer directly above, so the shares
+telescope to exactly **25%** regardless of depth:
+- 1 level (default marketer only) → **25%**
+- 2 levels (recruiter + default) → 20% + 5% = **25%**
+- 3 levels → 17% + 3% + 5% = **25%**
+
+Worked example: a player deposits KES 20,000 on madolar (default marketer *moha*):
+- No referrer → *moha* earns `20,000 × 0.25 = KES 5,000`.
+- Referred by sub-marketer *Mohane* → *Mohane* earns `20,000 × 0.20 = KES 4,000` and *moha*
+  (root) earns `20,000 × 0.05 = KES 1,000` (total KES 5,000 = 25%).
+
+> **Legacy (deprecated):** an earlier design paid **20% of GGR** (net loss) accrued daily via
+> `fn_accrue_affiliate_commissions` into `affiliate_commissions`. The live payout stream is the
+> **25%-of-deposits** model above; the GGR tables remain only for historical reporting.
 
 > Alternative models (CPA, deposit-%, hybrid) are supported by the schema but **revenue-share is the
 > configured MVP default**. Rate is per-affiliate editable by admin.

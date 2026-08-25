@@ -178,3 +178,29 @@ entry: what, evidence, root cause, impact, and resolution.
   lookup. The in-memory double keys phones by sig9 to stay faithful. New regression test
   ("login-web accepts the phone in any valid format") covers 6 format variants end to end.
   Full suite green (672/672); typecheck clean. No schema or write-path changes.
+
+## #11 — Non–site-owner marketers earned no commission; some brands had no default marketer — FIXED (migration 0103)
+- **What:** marketer dashboards showed no commissions for many marketers (e.g. *joy*, *Mohane*).
+- **Evidence (read-only, production):** of 807 profiles only 4 had `referred_by` set; commissions
+  flowed **only** to site owners via the `sites.owner_user_id` fallback. 4 brands had **no** default
+  marketer (`owner_user_id IS NULL`): invest254, muchwins, tamutraders, 66investors — so every
+  deposit on those brands paid **0%**. Verified *moha* (madolar owner) already earned exactly 25%.
+- **Root cause:** (1) 4 brands were never assigned a default marketer, so their deposits paid no
+  commission; (2) `fn_pay_referral_commissions` (0081) only rooted at the default marketer for
+  **unreferred** deposits — a sub-marketer referral could take the whole 25% and leave the default
+  marketer with nothing, so the hierarchy wasn't guaranteed.
+- **Model (confirmed with operator):** each brand has ONE **default marketer**; **every deposit pays
+  25%** into the brand's **hierarchical** marketer tree, always rooted at the default marketer.
+- **Resolution (0103):**
+  * `fn_pay_referral_commissions` now **always roots the 25% differential chain at the brand's
+    default marketer** — full 25% when unreferred; differential split (recruiter bulk + upline
+    overrides, default marketer at root) when a sub-marketer referred the depositor. Totals always
+    sum to exactly 25%. Self-pay blocked; idempotent via `(deposit_tx_id, beneficiary_user)`.
+  * Default marketers assigned: **invest254 → joy**, **muchwins → sheila** (single-marketer brands
+    auto-assigned generically). **tamutraders** — the lone marketer (a duplicate *joy*) was demoted
+    to player per operator instruction; brand left with no default. **66investors** — no marketer
+    exists; skipped.
+  * Docs 09 §3 and 19 updated to the 25%-of-deposits hierarchical model.
+- **Verification:** rolled-back e2e against the live schema — unreferred→owner 25%; sub-marketer
+  referral→recruiter 20% + default 5%; owner self-deposit→no pay; sub-marketer self-deposit→default
+  25%; idempotent re-run→0 new rows; all marketer totals == 25%. Referral + affiliate TS suites green.
