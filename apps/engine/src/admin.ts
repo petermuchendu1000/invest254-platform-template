@@ -49,6 +49,8 @@ export interface AdminUserRow {
 }
 export interface AdminUserDetail extends AdminUserRow {
   referredBy: string | null;
+  /** True when this user is their brand's current DEFAULT marketer (sites.owner_user_id). */
+  isBrandDefaultMarketer: boolean;
 }
 /**
  * A withdrawal as the admin moderation queue sees it. Beyond the transaction itself it carries the
@@ -668,6 +670,7 @@ export class PgAdminRepository implements AdminRepository {
               coalesce(po.bet_count,0)    as bet_count,
               lt.created_at as last_tx_at, lt.kind as last_tx_kind, lt.amount as last_tx_amount, lt.status as last_tx_status,
               lf.last_funded as last_funded,
+              exists (select 1 from sites s where s.id = p.site_id and s.owner_user_id = p.id) as is_brand_default,
               greatest(coalesce(lt.created_at, 'epoch'::timestamptz), coalesce(po.last_bet_at, 'epoch'::timestamptz)) as last_active_at
          from profiles p
          left join wallets w on w.user_id = p.id
@@ -681,7 +684,7 @@ export class PgAdminRepository implements AdminRepository {
       [userId]);
     if (!r.rows.length) return null;
     const x = r.rows[0];
-    return { ...mapUserRow(x), referredBy: x.referred_by == null ? null : String(x.referred_by) };
+    return { ...mapUserRow(x), referredBy: x.referred_by == null ? null : String(x.referred_by), isBrandDefaultMarketer: x.is_brand_default === true };
   }
 
   // Write-path scope resolvers (docs/22 Task H): the brand a mutation target belongs to. A legacy
@@ -1501,7 +1504,7 @@ export class InMemoryAdminRepository implements AdminRepository {
   async getUserDetail(userId: string): Promise<AdminUserDetail | null> {
     const u = this.identity.adminUser(userId);
     if (!u) return null;
-    return { ...(await this.memUserRow(u)), referredBy: u.referredBy };
+    return { ...(await this.memUserRow(u)), referredBy: u.referredBy, isBrandDefaultMarketer: false };
   }
 
   // Write-path scope resolvers (docs/22 Task H) — mirror the Pg normalization: null/legacy site =>

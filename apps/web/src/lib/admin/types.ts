@@ -94,6 +94,8 @@ export interface AdminUserRow {
 }
 export interface AdminUserDetail extends AdminUserRow {
   referredBy: string | null;
+  /** True when this user is their brand's current DEFAULT marketer (earns 25% of every deposit). */
+  isBrandDefaultMarketer: boolean;
 }
 export interface SetUserStatusResult {
   userId: string;

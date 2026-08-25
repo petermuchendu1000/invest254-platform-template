@@ -94,6 +94,11 @@ export const adminApi = {
     apiFetch<SetUserStatusResult>(`/admin/users/${id}/${action}`, { method: 'POST', token: t, body: { reason } }),
   setUserRole: (t: string, id: string, role: string) =>
     apiFetch<SetUserRoleResult>(`/admin/users/${id}/role`, { method: 'POST', token: t, body: { role } }),
+  // Make / clear this marketer as the brand's default (earns 25% of every deposit) — migration 0104.
+  makeDefaultMarketer: (t: string, id: string) =>
+    apiFetch<{ ownerUserId: string | null }>(`/admin/marketers/${id}/make-default`, { method: 'POST', token: t }),
+  clearDefaultMarketer: (t: string, id: string) =>
+    apiFetch<{ ownerUserId: string | null }>(`/admin/marketers/${id}/clear-default`, { method: 'POST', token: t }),
   updateUserDetails: (t: string, id: string, body: { phone?: string; username?: string }) =>
     apiFetch<{ userId: string; phone: string; username: string }>(`/admin/users/${id}/details`, { method: 'POST', token: t, body }),
   adjustBalance: (t: string, id: string, amountCents: number, reason: string, kind?: 'real' | 'bonus') =>

@@ -13,7 +13,7 @@ import { useToast } from '@/lib/toast/ToastProvider';
 import { formatDateTime, formatRelativeTime } from '@/lib/format';
 import { useSession } from '@/lib/auth/session';
 import { PageHeader, StatCard, Section, Empty, ConfirmButton, TableWrap, Th, Td, Toolbar, FilterSelect } from '@/components/admin/ui';
-import { useUser, useUserActivity, useSetUserStatus, useAdjustBalance, useClearBalance, useResetBalance, useSetCommissionRate, useSetUserRole, useUpdateUserDetails, useUserNotifications, useSendNotification, useResolveNotification, useUserOverrides, useSetOverrides, useGameConfig, useMarketerExpenses, useAddMarketerExpense } from '@/lib/admin/hooks';
+import { useUser, useUserActivity, useSetUserStatus, useAdjustBalance, useClearBalance, useResetBalance, useSetCommissionRate, useSetUserRole, useSetDefaultMarketer, useUpdateUserDetails, useUserNotifications, useSendNotification, useResolveNotification, useUserOverrides, useSetOverrides, useGameConfig, useMarketerExpenses, useAddMarketerExpense } from '@/lib/admin/hooks';
 import type { AdminUserActivityRow, AdminNotificationRow, NotificationLevel, UserOverridePatch } from '@/lib/admin/types';
 
 const ROLES = ['player', 'marketer', 'admin'] as const;
@@ -101,6 +101,7 @@ export default function UserDetailPage({ params }: { params: { id: string } }) {
               <ResetBalance id={id} />
               <OverridesPanel id={id} />
               <NotificationSend id={id} />
+              {q.data.role === 'marketer' ? <DefaultMarketerControl id={id} isDefault={q.data.isBrandDefaultMarketer} username={q.data.username} /> : null}
               {q.data.role === 'marketer' ? <CommissionRate id={id} /> : null}
               {q.data.role === 'marketer' ? <MarketerExpenses id={id} /> : null}
             </>
@@ -364,6 +365,67 @@ function RoleManage({ id, current }: { id: string; current: string }) {
       </Card>
       <p className="text-xs text-muted">
         Promoting to admin or superadmin grants back-office access. Changes are audited and apply on the user’s next login.
+      </p>
+    </Section>
+  );
+}
+
+/** Make (or clear) this marketer as the brand's DEFAULT marketer — earns 25% of every deposit on the
+ *  brand (docs/09 §3). Server-side (migration 0104) the target must be an ACTIVE marketer on the
+ *  admin's own brand, and a brand default can't be banned/suspended until reassigned. */
+function DefaultMarketerControl({ id, isDefault, username }: { id: string; isDefault: boolean; username: string }) {
+  const m = useSetDefaultMarketer();
+  const toast = useToast();
+  const myRole = useSession((s) => s.user?.role);
+  if (myRole !== 'admin' && myRole !== 'superadmin' && myRole !== 'platform_superadmin') return null;
+
+  function run(makeDefault: boolean) {
+    m.mutate(
+      { id, makeDefault },
+      {
+        onSuccess: () => toast.push({
+          tone: 'success',
+          title: makeDefault ? 'Brand default marketer set' : 'Removed as brand default',
+          description: makeDefault ? `@${username} now earns 25% of every deposit on this brand.` : 'This brand has no default marketer until you set one.',
+        }),
+        onError: (e) => toast.push({ tone: 'error', title: 'Update failed', description: e instanceof ApiError ? e.message : 'Try again.' }),
+      },
+    );
+  }
+
+  return (
+    <Section title="Brand default marketer">
+      <Card className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-center gap-2">
+          {isDefault ? (
+            <span className="rounded-full bg-accent/20 px-2.5 py-1 text-xs font-semibold text-accent">★ Current brand default</span>
+          ) : (
+            <span className="text-sm text-muted">Not the brand default.</span>
+          )}
+        </div>
+        {isDefault ? (
+          <ConfirmButton
+            label="Remove as default"
+            confirmLabel="Confirm remove"
+            size="md"
+            variant="down"
+            busy={m.isPending}
+            onConfirm={() => run(false)}
+          />
+        ) : (
+          <ConfirmButton
+            label="Make brand default"
+            confirmLabel="Confirm — earns 25% of deposits"
+            size="md"
+            variant="primary"
+            busy={m.isPending}
+            onConfirm={() => run(true)}
+          />
+        )}
+      </Card>
+      <p className="text-xs text-muted">
+        Every deposit on this brand credits the default marketer 25% (whether or not the player used a referral link).
+        Only one active marketer can be the default at a time.
       </p>
     </Section>
   );

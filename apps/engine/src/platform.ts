@@ -112,6 +112,9 @@ export interface PlatformRepository {
   setSiteTheme(actorId: string, actorRole: string, siteId: string, tokens: JsonPatch): Promise<SiteRow>;
   /** Assign/clear the brand's marketer (owner_user_id) — the site-owner commission model (0081/0082). */
   setSiteOwner(actorId: string, actorRole: string, siteId: string, ownerUserId: string | null): Promise<SiteRow>;
+  /** Admin-panel set/clear the brand's DEFAULT marketer, scoped to the actor's own brand and to an
+   *  ACTIVE marketer (migration 0104). Site is derived from the marketer. makeDefault=false clears. */
+  setDefaultMarketer(actorId: string, actorRole: string, marketerId: string, makeDefault: boolean): Promise<SiteRow>;
   // ── Global config console (migration 0092): master switches + global pool distribution ──
   getGlobalConfig(): Promise<GlobalConfig>;
   setGlobalConfig(actorId: string, actorRole: string, patch: JsonPatch): Promise<GlobalConfig>;
@@ -284,6 +287,12 @@ export class PgPlatformRepository implements PlatformRepository {
   async setSiteOwner(actorId: string, actorRole: string, siteId: string, ownerUserId: string | null): Promise<SiteRow> {
     const r = await this.q.query("select * from fn_platform_set_site_owner($1,$2,$3,$4)",
       [actorId, actorRole, siteId, ownerUserId]);
+    return mapSiteRow(r.rows[0] as Record<string, unknown>);
+  }
+
+  async setDefaultMarketer(actorId: string, actorRole: string, marketerId: string, makeDefault: boolean): Promise<SiteRow> {
+    const r = await this.q.query("select * from fn_admin_set_site_owner($1,$2,$3,$4)",
+      [actorId, actorRole, marketerId, makeDefault]);
     return mapSiteRow(r.rows[0] as Record<string, unknown>);
   }
 
@@ -539,6 +548,17 @@ export class InMemoryPlatformRepository implements PlatformRepository {
     return { ...row };
   }
 
+  // In-memory double: real site-derivation + active-marketer + scope guards live in the DB RPC
+  // (fn_admin_set_site_owner, migration 0104) and are covered by rolled-back live e2e. Here we only
+  // gate the role and apply to the default site so route wiring/tests compile and behave sanely.
+  async setDefaultMarketer(_actorId: string, actorRole: string, marketerId: string, makeDefault: boolean): Promise<SiteRow> {
+    if (!["admin", "superadmin", "platform_superadmin"].includes(actorRole)) throw new Error("NOT_AUTHORIZED");
+    const s = this.sites.get(DEFAULT_SITE_ID)!;
+    s.ownerUserId = makeDefault ? marketerId : (s.ownerUserId === marketerId ? null : s.ownerUserId);
+    const { config, ...row } = s;
+    return { ...row };
+  }
+
   private gc: GlobalConfig = {
     depositsEnabled: true, withdrawalsEnabled: true, playEnabled: true, marketersEnabled: true,
     registrationsEnabled: true, maintenanceMessage: null, globalDailyPoolCents: null,
@@ -651,6 +671,9 @@ export class PlatformService {
   }
   setSiteOwner(actorId: string, actorRole: string, siteId: string, ownerUserId: string | null): Promise<SiteRow> {
     return this.repo.setSiteOwner(actorId, actorRole, siteId, ownerUserId);
+  }
+  setDefaultMarketer(actorId: string, actorRole: string, marketerId: string, makeDefault: boolean): Promise<SiteRow> {
+    return this.repo.setDefaultMarketer(actorId, actorRole, marketerId, makeDefault);
   }
 
   // ── Global config console (migration 0092) ──

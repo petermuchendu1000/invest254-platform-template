@@ -5,6 +5,71 @@ entry: what, evidence, root cause, impact, and resolution.
 
 ---
 
+## #13 — Banned marketer stayed a brand's earning default; no admin-panel way to reassign — FIXED (migration 0104)
+- **Report (operator):** *Mohane* (the only ACTIVE marketer on **madolar**) was still not the brand
+  default; the "Make brand default" control couldn't be found where marketers are actually managed.
+- **Evidence (read-only, production):** madolar had `sites.owner_user_id = moha`, but **moha and Mohan
+  were both `banned`** and *Mohane* was the lone `active` marketer — yet a **banned** marketer remained
+  the brand default and kept accruing 25% of every deposit. The only assignment UI lived in the
+  **Platform Console** (`/platform`, platform_superadmin), not the **Admin panel** (`/admin/users`)
+  operators use; and nothing prevented a default marketer from being banned or stopped a banned user
+  from being (or staying) the default.
+- **Root causes:** (1) surface mismatch — the control was platform-only; (2) `fn_platform_set_site_owner`
+  validated role + site but **not status**, so a banned/suspended marketer could be set/left as default;
+  (3) `fn_admin_set_user_status` had **no guard** against banning/suspending the current default.
+- **Immediate data fix:** reassigned madolar's default from banned *moha* → active *Mohane*
+  (`fn_platform_set_site_owner`, audited). Future deposits now credit Mohane 25%. (Historical
+  commissions already paid to *moha* were left as-is.)
+- **Resolution (branch `feat/admin-default-marketer-guards`, migration 0104 + API + web):**
+  * **0104:** (a) `fn_platform_set_site_owner` now rejects a non-active marketer (`OWNER_NOT_ACTIVE`);
+    (b) new **site-scoped** `fn_admin_set_site_owner(actor, role, marketer, make_default)` lets a brand
+    `admin`/`superadmin` set/clear THEIR OWN brand's default (site derived from the marketer;
+    `SITE_SCOPE_FORBIDDEN` off-brand; active-marketer enforced); (c) `fn_admin_set_user_status` blocks
+    banning/suspending the current default (`DEFAULT_MARKETER_LOCKED`) — reassign first (per operator
+    choice: **block**). Reactivating is always allowed.
+  * **API:** `POST /admin/marketers/:id/make-default` and `/clear-default` (admin-gated, brand-scope
+    enforced), routed via `PlatformRepository.setDefaultMarketer`. `AdminUserDetail` gains
+    `isBrandDefaultMarketer`.
+  * **Web:** `/admin/users/:id` shows a **"Make brand default" / "Remove as default"** control for
+    marketers with a ★ current-default badge — where operators already manage users.
+- **Verification:** rolled-back live e2e (13 scenarios: every guard + valid set/clear) against the real
+  schema; 0104 applied to production and re-checked live (ban-of-default → `DEFAULT_MARKETER_LOCKED`).
+  Typecheck clean (backend + web); full suite 673/673 (added an admin route-wiring/gating test).
+
+## #12 — "Mohane's earnings not populating" — NOT A BUG (by design); default-marketer assignment made a first-class button + docs corrected
+- **Report:** marketer *Mohane*'s dashboard showed no earnings; suspected a regression of #11.
+- **Investigation (read-only, production):** *Mohane* (`0cb63be4…`, role `marketer`, brand **madolar**
+  `776fd02b…`) has **0** `deposit_commissions`, **0** balance (`fn_commission_balance`), **0** direct
+  referrals (`profiles.referred_by = Mohane` is empty), **0** clicks on her code `HYJJJQW2`. The
+  dashboard (`GET /me/referral` → `sum(deposit_commissions.commission_amount)`) is therefore faithfully
+  reporting zero.
+- **Why zero is correct:** madolar's **default marketer** is *moha* (`sites.owner_user_id = a765af32…`).
+  Verified the live model works: **78/78** successful M-Pesa deposits (KES 25,286.00) each generated a
+  commission to *moha* at rate `0.25`, totalling KES 6,321.50 = **exactly 25%** — even though **all 118
+  madolar players have `referred_by = NULL`**. So "default marketer earns 25% of every deposit,
+  regardless of referral link" is already implemented and correct (`fn_pay_referral_commissions`,
+  0103, invoked by `fn_complete_deposit`). *Mohane* is a **non-default** sub-marketer with no attributed
+  deposits, so she correctly earns nothing.
+- **Operator decision:** keep the differential-split model (every deposit still totals 25%, default
+  marketer always at the root — **Model B**, no commission-math change), AND make assigning a brand's
+  default marketer a first-class action.
+- **Root cause of the confusion:** stale docs — `README.md` still described a legacy "20% of GGR / net
+  losses" affiliate model, contradicting the live 25%-of-deposits model.
+- **Resolution (branch `feat/set-default-marketer`, UI + docs only — no schema/money-path change):**
+  * `apps/web/.../platform/ClientDetail.tsx`: added a **"Make brand default"** button (and
+    **"Remove as default"**) in the per-user management panel, plus a **★ default** badge in the user
+    table. Gated on `role = 'marketer'` client-side (backend `fn_platform_set_site_owner` already
+    enforces marketer-on-same-brand + `platform_superadmin`, audited). This fixes a real gap: the
+    pre-existing top-of-list selector only listed marketers from the first 50 loaded rows, so a marketer
+    deeper in the list could not be selected; the search-then-select button reaches **any** marketer.
+  * Docs: `README.md` (both 20% references corrected to the 25%-of-deposits hierarchical model), `docs/09`
+    §3 (added "a brand always credits its default marketer" clarification + how to assign the default
+    marketer), and this entry.
+- **Verification:** rolled-back live e2e of `fn_platform_set_site_owner` — NOT_AUTHORIZED /
+  SITE_NOT_FOUND / OWNER_NOT_FOUND / OWNER_NOT_MARKETER / OWNER_WRONG_SITE all fire; valid set
+  (Mohane→madolar default) and clear-to-NULL both succeed; transaction rolled back (production
+  untouched). Web typecheck clean; platform+referral+affiliate suites green (16/16).
+
 ## #1 — Bonus subsystem was dormant in the live money RPCs — FIXED (issue 1 / migration 0094)
 - **What:** `bonus_balance` was frozen platform-wide — it could never be staked, wagered, or converted.
 - **Evidence:** Live `fn_open_position` (10-arg) and `fn_settle_position` only moved `real`/`demo`

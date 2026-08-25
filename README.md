@@ -22,7 +22,7 @@ administrative back office.
 | 06 | [Authentication & KYC](docs/06-auth-kyc.md) | Phone + password, sessions, age-gate, KYC |
 | 07 | [Wallet & Transactions](docs/07-wallet-transactions.md) | Balances, ledger, atomic settlement |
 | 08 | [M-Pesa Payments](docs/08-payments-mpesa.md) | STK push deposits, B2C withdrawals, Daraja |
-| 09 | [Affiliate / Marketer System](docs/09-affiliate-system.md) | Referrals, 20% rev-share, payouts |
+| 09 | [Affiliate / Marketer System](docs/09-affiliate-system.md) | Referrals, 25%-of-deposits marketer commission (hierarchical, rooted at each brand's default marketer), payouts |
 | 10 | [Admin Back Office](docs/10-admin-panel.md) | User mgmt, finance, config, reports |
 | 11 | [Activity Feed & Chat](docs/11-activity-feed-chat.md) | Live wins feed, chat moderation |
 | 12 | [Bonuses & Promotions](docs/12-bonuses-promotions.md) | Welcome bonus, promo codes, wagering |
@@ -43,7 +43,7 @@ administrative back office.
 | House edge | 75% (RTP 25%) | ⚠️ Business-set; tunable per-game |
 | Default round / trade duration | 10s | Auto-sell timer |
 | Chart timeframes | 30s · 1m · 2m · 5m | Visualization only |
-| Affiliate commission | 20% | Revenue-share on referred net losses |
+| Marketer commission | 25% of every deposit | Paid into the brand's marketer hierarchy, ALWAYS rooted at the brand's **default marketer** (`sites.owner_user_id`). Every deposit credits the default marketer 25% whether or not the player used a referral link; a sub-marketer referral splits that 25% differentially up the chain (default marketer at the root). Assign a brand's default marketer from the Platform Console → client → user → **Make brand default**. See [docs/09](docs/09-affiliate-system.md) §3. (Legacy 20%-of-GGR model deprecated; tables kept for history only.) |
 | Auth | Phone + password | Self-managed (no OTP) |
 | KYC (MVP) | None | Age verification & basic KYC removed (see migration 0018) |
 

@@ -94,6 +94,20 @@ export function useSetUserRole() {
     },
   });
 }
+
+/** Make / clear this marketer as the brand's default marketer (site-owner commission model, 0104). */
+export function useSetDefaultMarketer() {
+  const t = useTok();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { id: string; makeDefault: boolean }) =>
+      v.makeDefault ? adminApi.makeDefaultMarketer(t, v.id) : adminApi.clearDefaultMarketer(t, v.id),
+    onSuccess: (_d, v) => {
+      void qc.invalidateQueries({ queryKey: ['admin', 'user', v.id] });
+      void qc.invalidateQueries({ queryKey: ['admin', 'users'] });
+    },
+  });
+}
 export function useUpdateUserDetails() {
   const t = useTok();
   const qc = useQueryClient();

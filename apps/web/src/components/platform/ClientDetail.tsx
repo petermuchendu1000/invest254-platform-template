@@ -267,6 +267,19 @@ function PlayersSection({ site }: { site: SiteWithConfig }) {
   }
   const pill = (s: string) => `rounded-full px-2 py-0.5 text-xs font-semibold ${s === 'active' ? 'bg-up/20 text-up' : s === 'suspended' ? 'bg-warn/20 text-warn' : 'bg-down/20 text-down'}`;
 
+  // Assign/clear this brand's DEFAULT marketer (owner_user_id). Every deposit on the brand credits
+  // the default marketer 25% (docs/09 §3). The backend (fn_platform_set_site_owner) enforces that the
+  // beneficiary is a marketer on THIS brand, so the button is gated on the same rule client-side.
+  function setBrandDefault(ownerUserId: string | null, ok: string) {
+    setOwner.mutate({ id: site.siteId, ownerUserId }, {
+      onSuccess: () => toast.push({ tone: 'success', title: ok }),
+      onError: (e) => toast.push({ tone: 'error', title: 'Update failed', description: (e as Error).message }),
+    });
+  }
+  // Prefer the freshest role from the live table (a just-promoted marketer updates without reselecting).
+  const selRole = sel ? (rows.find((r) => r.userId === sel.userId)?.role ?? sel.role) : null;
+  const selIsDefault = !!sel && site.ownerUserId === sel.userId;
+
   return (
     <div className="flex flex-col gap-3">
       {/* Brand marketer (commission owner) — every deposit on this brand credits this marketer by default. */}
@@ -304,7 +317,7 @@ function PlayersSection({ site }: { site: SiteWithConfig }) {
           <tbody>
             {rows.map((u) => (
               <tr key={u.userId} onClick={() => setSel(u)} className={`cursor-pointer border-t border-border hover:bg-surface-2 ${sel?.userId === u.userId ? 'bg-surface-2' : ''}`}>
-                <td className="px-3 py-2"><span className="font-medium text-fg">@{u.username}</span> <span className="text-muted">{u.phone}</span></td>
+                <td className="px-3 py-2"><span className="font-medium text-fg">@{u.username}</span> <span className="text-muted">{u.phone}</span>{site.ownerUserId === u.userId ? <span className="ml-2 rounded-full bg-accent/20 px-2 py-0.5 text-[10px] font-semibold text-accent">★ default</span> : null}</td>
                 <td className="px-3 py-2 text-muted">{u.role}</td>
                 <td className="px-3 py-2"><span className={pill(u.status)}>{u.status}</span></td>
                 <td className="px-3 py-2 tabular-nums">{kes(u.realBalanceCents)}</td>
@@ -332,6 +345,25 @@ function PlayersSection({ site }: { site: SiteWithConfig }) {
             <select defaultValue={sel.role} onChange={(e) => run({ kind: 'role', uid: sel.userId, role: e.target.value }, `Role → ${e.target.value}`)} className="h-8 rounded-lg border border-border bg-surface px-2 text-sm text-fg">
               <option value="player">player</option><option value="marketer">marketer</option><option value="admin">admin</option>
             </select>
+          </div>
+          {/* Brand default marketer — make this marketer earn 25% of every deposit on this client. */}
+          <div className="flex flex-wrap items-center gap-2 rounded-brand border border-accent/30 bg-accent/5 p-2">
+            <span className="text-xs font-semibold text-fg">Brand default marketer:</span>
+            {selIsDefault ? (
+              <>
+                <span className="rounded-full bg-accent/20 px-2 py-0.5 text-xs font-semibold text-accent">★ Current default</span>
+                <Button size="sm" variant="outline" disabled={setOwner.isPending} onClick={() => setBrandDefault(null, `@${sel.username} removed as brand default`)}>Remove as default</Button>
+              </>
+            ) : (
+              <>
+                <Button size="sm" disabled={setOwner.isPending || selRole !== 'marketer'} onClick={() => setBrandDefault(sel.userId, `@${sel.username} is now the brand default marketer`)}>Make brand default</Button>
+                <span className="text-[11px] text-muted">
+                  {selRole !== 'marketer'
+                    ? <>Set role to <span className="font-medium text-fg">marketer</span> first.</>
+                    : <>Every deposit on this brand will credit @{sel.username} 25%.</>}
+                </span>
+              </>
+            )}
           </div>
           <div className="flex flex-wrap items-end gap-2">
             <label className="flex flex-col gap-1 text-xs text-muted">Amount (KES)

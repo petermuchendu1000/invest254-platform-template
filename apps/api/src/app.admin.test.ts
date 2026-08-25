@@ -78,6 +78,19 @@ test("admin cannot suspend another admin; a superadmin can", async () => {
   } finally { await api.close(); }
 });
 
+test("admin can make/clear a marketer as brand default; a player token is forbidden (routes wired + gated)", async () => {
+  const api = await startTestApi();
+  try {
+    const mk = await register(api, "0712000090", "defmk");
+    api.identity.adminSetRole(mk, "marketer");
+    // A player token cannot assign the brand default.
+    assert.equal((await req(api, "POST", `/api/v1/admin/marketers/${mk}/make-default`, { token: mk })).status, 403);
+    // An admin can make and then clear the brand default (site-scope + active-marketer guards are DB-enforced, 0104).
+    assert.equal((await req(api, "POST", `/api/v1/admin/marketers/${mk}/make-default`, { token: "root-1:admin" })).status, 200);
+    assert.equal((await req(api, "POST", `/api/v1/admin/marketers/${mk}/clear-default`, { token: "root-1:admin" })).status, 200);
+  } finally { await api.close(); }
+});
+
 test("admin manual balance adjustment credits the wallet, requires a reason, and is audited", async () => {
   const api = await startTestApi();
   try {

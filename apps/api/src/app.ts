@@ -90,7 +90,7 @@ export interface ApiDeps {
     | "siteOfUser" | "siteOfTransaction">;
   /** Platform-superadmin console (docs/22 Task H): cross-brand onboarding + economy + KPIs. */
   platform: Pick<PlatformService, "listSites" | "overview" | "performance" | "createSite" | "updateSite" | "setSiteConfig"
-    | "marketerRollup" | "createMarketerGlobal" | "linkMarketer" | "setSiteTheme" | "setSiteOwner"
+    | "marketerRollup" | "createMarketerGlobal" | "linkMarketer" | "setSiteTheme" | "setSiteOwner" | "setDefaultMarketer"
     | "getGlobalConfig" | "setGlobalConfig" | "distributePool" | "listPoolDistributions"
     | "poolDemand" | "distributePoolDynamic">;
   /** Per-user sticky notifications: admin/system raise; player reads active + dismisses (J7). */

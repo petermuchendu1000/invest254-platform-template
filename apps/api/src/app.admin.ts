@@ -43,6 +43,13 @@ const ADMIN_STATUS: Readonly<Record<string, number>> = {
   INSUFFICIENT_FUNDS: 409,
   USER_NOT_FOUND: 404,
   WALLET_NOT_FOUND: 404,
+  // Default-marketer assignment + lock (migration 0104)
+  SITE_NOT_FOUND: 404,
+  SITE_SCOPE_FORBIDDEN: 403,
+  OWNER_NOT_FOUND: 404,
+  OWNER_NOT_MARKETER: 400,
+  OWNER_NOT_ACTIVE: 409,
+  DEFAULT_MARKETER_LOCKED: 409,
   NOT_AFFILIATE: 404,
   NOT_FOUND: 404,
   // J5 — game config + seed rotation
@@ -326,6 +333,19 @@ export function registerAdminRoutes(router: Router, deps: ApiDeps): void {
     }
     await ensureUserInScope(deps, ctx, ctx.params.id!);
     return domain(() => deps.admin.setUserRole(ctx.claims!.userId, ctx.claims!.role ?? "player", ctx.params.id!, role));
+  });
+
+  // Make this marketer the brand's DEFAULT marketer (earns 25% of every deposit). Brand-scoped:
+  // the site is derived from the marketer and the RPC (fn_admin_set_site_owner, 0104) confines a
+  // site admin to its own brand + an ACTIVE marketer. Symmetric clear-default below.
+  router.post(`${BASE}/admin/marketers/:id/make-default`, auth, admin, async (ctx: Ctx) => {
+    await ensureUserInScope(deps, ctx, ctx.params.id!);
+    return domain(() => deps.platform.setDefaultMarketer(ctx.claims!.userId, ctx.claims!.role ?? "player", ctx.params.id!, true));
+  });
+
+  router.post(`${BASE}/admin/marketers/:id/clear-default`, auth, admin, async (ctx: Ctx) => {
+    await ensureUserInScope(deps, ctx, ctx.params.id!);
+    return domain(() => deps.platform.setDefaultMarketer(ctx.claims!.userId, ctx.claims!.role ?? "player", ctx.params.id!, false));
   });
 
   // Edit a user's contact details — phone and/or username (item 6). Admin+, brand-scoped, unique-per-brand.
