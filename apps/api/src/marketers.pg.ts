@@ -20,6 +20,7 @@ function toProfile(r: any): MarketerProfile {
     currency: r.currency,
     site_id: r.site_id ?? null,
     brand_name: r.brand_name ?? null,
+    affiliate_user_id: r.affiliate_user_id ?? null,
   };
 }
 
@@ -43,7 +44,14 @@ export function makePgMarketerRepo(query: Query): MarketerRepo {
 
     async list(limit, siteId): Promise<MarketerProfile[]> {
       const { rows } = await query(
-        "SELECT * FROM public.marketer_profiles WHERE ($2::uuid IS NULL OR site_id = $2) ORDER BY created_at DESC LIMIT $1",
+        `SELECT mp.*,
+                (select p.id from public.profiles p
+                  where public.fn_phone_sig9(p.phone) = public.fn_phone_sig9(mp.phone)
+                    and p.site_id = mp.site_id and p.role = 'marketer'
+                  order by p.created_at asc limit 1) as affiliate_user_id
+           FROM public.marketer_profiles mp
+          WHERE ($2::uuid IS NULL OR mp.site_id = $2)
+          ORDER BY mp.created_at DESC LIMIT $1`,
         [limit, siteId ?? null]);
       return rows.map(toProfile);
     },

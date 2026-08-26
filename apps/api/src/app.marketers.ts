@@ -34,6 +34,10 @@ export interface MarketerProfile {
    *  shown on game-withdrawal confirmations, so each white-label client reads its own name. */
   site_id?: string | null;
   brand_name?: string | null;
+  /** The linked affiliate account's profiles.id (canonical phone-sig9 + same site, migration 0105).
+   *  Marketer expenses/advances are keyed to THIS id so they land on the marketer's dashboard and
+   *  net their withdrawable. null when this marketer-app account has no website marketer account. */
+  affiliate_user_id?: string | null;
 }
 export interface MarketerLedgerRow {
   id: number; entry_type: string; amount_cents: number; balance_after_cents: number;

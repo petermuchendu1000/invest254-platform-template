@@ -100,6 +100,16 @@ brand pay **no** marketer commission until a new default is assigned.
 - Charts: signups over time, GGR over time.
 - **Payouts:** see §5 below.
 
+**Expenses & advances (migrations 0068 + 0105).** An admin logs costs against a marketer
+(TikTok/data/airtime/advance/other) from either the Admin panel (`/admin/users/:id`) or the
+marketer-finance **Expenses** tab. Every entry is **keyed to the marketer's affiliate `profiles.id`**
+so it appears on that marketer's dashboard. Expenses **reduce the withdrawable balance**:
+`Available to withdraw = earned − held − paid − Σ expenses` (floored at 0, computed in
+`fn_commission_balance`), so a marketer can only cash out commission net of every logged cost/advance —
+and the payout RPC is auto-capped at that net. The marketer-finance selector resolves each marketer-app
+account to its linked website marketer; app accounts with no website marketer can't be charged (nowhere
+to show it).
+
 ## 5. Payouts — request → approve → M-Pesa B2C result ✅ (I4)
 A marketer claims their earned commission; a finance admin authorizes it; the money goes out over
 M-Pesa **B2C** and the asynchronous result settles the books. This mirrors the withdrawal

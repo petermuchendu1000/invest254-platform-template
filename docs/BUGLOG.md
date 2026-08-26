@@ -5,6 +5,37 @@ entry: what, evidence, root cause, impact, and resolution.
 
 ---
 
+## #14 — Marketer expenses/advances never reached the dashboard; didn't affect withdrawable — FIXED (migration 0105)
+- **Report:** expenses/advances logged in admin ("Marketer expenses") weren't reflected on the
+  marketer's dashboard, and the net (withdrawable) math looked wrong.
+- **Root cause (two identity systems):** a marketer exists as BOTH a website affiliate (`profiles`,
+  role='marketer' — where commissions, `/dashboard` and its Expenses/Net section live) AND a
+  marketer-APP identity (`marketer_profiles`/`marketers` — the simulated M-Pesa wallet). Same
+  phone/brand, **different ids**. Migration 0068 defines `marketer_expenses.marketer_user_id` as a
+  `profiles.id`, and the only marketer-facing reader (`GET /affiliate/expenses`, `fn_commission_balance`)
+  keys on `profiles.id`. But the marketer-finance **Expenses** tab listed `marketer_profiles` and logged
+  with `marketer_profiles.id`, so every logged expense was stored under an id **no dashboard reads**.
+- **Evidence (production):** all logged expense rows were keyed to `marketer_profiles.id` (e.g. KES 450
+  "Commission Tests" under *Mohan Abdul* `7965afa2…`, whose website account is *Mohane* `0cb63be4…`).
+  Coverage: 9 marketer-app accounts map to a website marketer, 17 don't (no ambiguous matches).
+- **Operator decision:** ALL logged expenses reduce withdrawable (`Available = earned − held − paid −
+  expenses`, floored at 0).
+- **Resolution (branch `feat/marketer-expenses-affiliate-key`, migration 0105 + API + web):**
+  * **0105:** (a) `fn_commission_balance` now subtracts total logged expenses from `available_cents`
+    (floored at 0); since the payout RPC reads `available_cents`, payouts are auto-capped at the net —
+    timing-safe, never double-counts. (b) Re-keys existing mis-keyed expense rows from
+    `marketer_profiles.id` → the matching affiliate `profiles.id` (`fn_phone_sig9` + same site +
+    role='marketer', oldest); app-only accounts with no website marketer are left untouched. Idempotent.
+  * **API:** the marketers list (`marketers.pg.ts`) now resolves each marketer-app row's linked affiliate
+    `profiles.id` (`affiliate_user_id`) so expenses can be keyed correctly.
+  * **Web:** the marketer-finance **Expenses** tab logs/reads by `affiliate_user_id`; app accounts with no
+    website marketer are disabled ("no website account"). The `/dashboard` needed **no** change — it now
+    populates automatically and `Available to withdraw` is net of expenses.
+- **Verification:** rolled-back live e2e (re-key correctness + netted balances: *Mohane* KES 50 earned −
+  KES 450 expenses → available 0; a +KES 50 expense on *moha* drops available by exactly that; app-only
+  advance left untouched); 0105 applied to production and re-checked live; ledger reconciled (105/105);
+  backend+web typecheck clean; full suite 673/673.
+
 ## #13 — Banned marketer stayed a brand's earning default; no admin-panel way to reassign — FIXED (migration 0104)
 - **Report (operator):** *Mohane* (the only ACTIVE marketer on **madolar**) was still not the brand
   default; the "Make brand default" control couldn't be found where marketers are actually managed.

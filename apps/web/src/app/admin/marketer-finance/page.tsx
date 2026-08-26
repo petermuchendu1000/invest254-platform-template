@@ -221,7 +221,11 @@ function Expenses() {
           <span>Marketer</span>
           <select value={marketerId} onChange={(e) => setMarketerId(e.target.value)} className="h-9 rounded-lg border border-border bg-surface-2 px-2 text-sm text-fg outline-none focus:border-accent">
             <option value="">Select a marketer…</option>
-            {marketers.map((m) => <option key={m.id} value={m.id}>{m.name} · {m.phone}</option>)}
+            {marketers.map((m) => (
+              <option key={m.id} value={m.affiliate_user_id ?? ''} disabled={!m.affiliate_user_id}>
+                {m.name} · {m.phone}{m.affiliate_user_id ? '' : ' (no website account)'}
+              </option>
+            ))}
           </select>
         </label>
         {marketerId ? <span className="text-xs text-muted">Total logged: <Money cents={expenses.data?.totalCents ?? 0} className="text-fg" /></span> : null}

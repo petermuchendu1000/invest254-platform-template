@@ -447,6 +447,9 @@ export interface AdminMarketerRow {
   available_fuliza_cents: Cents;
   airtime_balance_cents: Cents;
   currency: string;
+  /** Linked affiliate profiles.id (migration 0105); null when there's no website marketer account.
+   *  Marketer expenses are keyed to this id so they reach the marketer's dashboard. */
+  affiliate_user_id?: string | null;
 }
 export interface AdminMarketerLedgerRow {
   id: number;
