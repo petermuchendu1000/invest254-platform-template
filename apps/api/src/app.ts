@@ -94,7 +94,7 @@ export interface ApiDeps {
     | "getGlobalConfig" | "setGlobalConfig" | "distributePool" | "listPoolDistributions"
     | "poolDemand" | "distributePoolDynamic">;
   /** Per-user sticky notifications: admin/system raise; player reads active + dismisses (J7). */
-  notifications: Pick<NotificationService, "create" | "listActive" | "adminList" | "dismiss" | "resolve" | "resolveByCategory">;
+  notifications: Pick<NotificationService, "create" | "listActive" | "adminList" | "dismiss" | "resolve" | "resolveByCategory" | "listTemplates" | "audienceCount" | "broadcast" | "resolveCategory">;
   /** Marketer payments module (0033): create/credit/withdraw + admin-set Fuliza/airtime + statement. */
   marketers: MarketerRepo;
   /** Deposit-based referral commissions + separate commission-payout queue (0078/0079). */

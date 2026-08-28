@@ -84,4 +84,43 @@ export function registerNotificationRoutes(router: Router, deps: ApiDeps): void 
     await deps.admin.recordAction(ctx.claims!.userId, ctx.claims!.role ?? "player", "notification.resolve", "notification", String(id), {});
     return { resolved: true };
   });
+
+  // ── Broadcast centre (migration 0106): template library + audience-targeted send + clear ──────
+  // The audience body is passed straight through to the SQL resolver; {} (or omitted) = all active
+  // users, and { "affected_within_hours": 24 } = only users with a failed deposit in the last 24h.
+  const parseAudience = (ctx: Ctx): Record<string, unknown> | null => {
+    const b = ctx.body && typeof ctx.body === "object" ? (ctx.body as Record<string, unknown>) : {};
+    const a = b.audience;
+    return a && typeof a === "object" ? (a as Record<string, unknown>) : null;
+  };
+
+  // The saved system-notification library (deposits down/restored, maintenance, security, etc.).
+  router.get(`${BASE}/admin/notification-templates`, auth, admin, async () => {
+    return { items: await deps.notifications.listTemplates() };
+  });
+
+  // Live recipient count for a proposed audience — powers the preview before sending.
+  router.post(`${BASE}/admin/notifications/audience-count`, auth, admin, async (ctx: Ctx) => {
+    const count = await deps.notifications.audienceCount((parseAudience(ctx) ?? {}) as never);
+    return { count };
+  });
+
+  // Send a template to everyone matching the audience (idempotent per user+category). One click.
+  router.post(`${BASE}/admin/notifications/broadcast`, auth, admin, async (ctx: Ctx) => {
+    const b = ctx.body && typeof ctx.body === "object" ? (ctx.body as Record<string, unknown>) : {};
+    const templateKey = typeof b.templateKey === "string" ? b.templateKey.trim() : "";
+    if (!templateKey) throw new ApiError("VALIDATION", "templateKey is required", 400);
+    const recipients = await deps.notifications.broadcast(
+      ctx.claims!.userId, ctx.claims!.role ?? "player", templateKey, parseAudience(ctx) as never);
+    return { recipients };
+  });
+
+  // Clear an active incident category platform-wide (the "issue is over" button).
+  router.post(`${BASE}/admin/notifications/resolve-category`, auth, admin, async (ctx: Ctx) => {
+    const b = ctx.body && typeof ctx.body === "object" ? (ctx.body as Record<string, unknown>) : {};
+    const category = typeof b.category === "string" ? b.category.trim() : "";
+    if (!category) throw new ApiError("VALIDATION", "category is required", 400);
+    const cleared = await deps.notifications.resolveCategory(ctx.claims!.userId, ctx.claims!.role ?? "player", category);
+    return { cleared };
+  });
 }

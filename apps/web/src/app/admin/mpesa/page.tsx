@@ -12,15 +12,17 @@ import { PageHeader, Section, Empty, FilterSelect } from '@/components/admin/ui'
 import { useMpesaConfig, useUpdateMpesaConfig } from '@/lib/admin/hooks';
 import { SuperadminOnly } from '@/components/admin/SuperadminOnly';
 import type { MpesaConfigPatch, MpesaConfigRow } from '@/lib/admin/types';
+import { env as appEnv } from '@/lib/env';
+import { defaultMpesaEndpoints, DEFAULT_MPESA_ENV } from '@/lib/admin/mpesaDefaults';
 
 // Plain (non-secret) editable string fields and their labels/hints.
 type PlainKey = 'shortcode' | 'stkCallbackUrl' | 'b2cInitiator' | 'b2cResultUrl' | 'b2cTimeoutUrl';
 const PLAIN: { key: PlainKey; label: string; hint: string }[] = [
-  { key: 'shortcode', label: 'Paybill / shortcode', hint: 'Business shortcode that receives STK pushes and sends B2C' },
-  { key: 'stkCallbackUrl', label: 'STK callback URL', hint: 'Daraja posts deposit results here' },
-  { key: 'b2cInitiator', label: 'B2C initiator name', hint: 'API operator username for withdrawals' },
-  { key: 'b2cResultUrl', label: 'B2C result URL', hint: 'Daraja posts payout results here' },
-  { key: 'b2cTimeoutUrl', label: 'B2C timeout URL', hint: 'Queue timeout callback for payouts' },
+  { key: 'shortcode', label: 'Paybill / shortcode', hint: 'From Safaricom. Business shortcode that receives STK pushes and sends B2C' },
+  { key: 'stkCallbackUrl', label: 'STK callback URL', hint: 'Auto-filled for this deployment. Edit only if your paybill posts elsewhere' },
+  { key: 'b2cInitiator', label: 'B2C initiator name', hint: 'From Safaricom. API operator username for withdrawals' },
+  { key: 'b2cResultUrl', label: 'B2C result URL', hint: 'Auto-filled for this deployment. Edit only if different' },
+  { key: 'b2cTimeoutUrl', label: 'B2C timeout URL', hint: 'Auto-filled for this deployment. Edit only if different' },
 ];
 
 // Secret (write-only) fields. Patch keys differ from the masked has_* flags.
@@ -47,20 +49,24 @@ function MpesaBody() {
   const canEdit = role === 'superadmin' || role === 'platform_superadmin';
 
   const cfg = cfgQ.data;
-  const [env, setEnv] = useState('sandbox');
+  const [env, setEnv] = useState(DEFAULT_MPESA_ENV);
   const [plain, setPlain] = useState<Record<string, string>>({});
   const [secrets, setSecrets] = useState<Record<string, string>>({});
 
   // Hydrate plain fields + environment when config arrives. Secrets always start blank (write-only).
+  // OUR own callback endpoints and the production environment are auto-filled whenever unset, so the
+  // operator only enters the Safaricom-issued values (shortcode + keys + passkey; B2C initiator/
+  // credential for withdrawals). Any value already stored is kept as-is.
   useEffect(() => {
     if (!cfg) return;
-    setEnv(cfg.environment);
+    const d = defaultMpesaEndpoints(appEnv.apiBaseUrl);
+    setEnv(cfg.environment || DEFAULT_MPESA_ENV);
     setPlain({
       shortcode: cfg.shortcode,
-      stkCallbackUrl: cfg.stkCallbackUrl,
+      stkCallbackUrl: cfg.stkCallbackUrl || d.stkCallbackUrl,
       b2cInitiator: cfg.b2cInitiator,
-      b2cResultUrl: cfg.b2cResultUrl,
-      b2cTimeoutUrl: cfg.b2cTimeoutUrl,
+      b2cResultUrl: cfg.b2cResultUrl || d.b2cResultUrl,
+      b2cTimeoutUrl: cfg.b2cTimeoutUrl || d.b2cTimeoutUrl,
     });
   }, [cfg]);
 
@@ -176,13 +182,14 @@ function MpesaBody() {
                 <Button
                   variant="ghost"
                   onClick={() => {
-                    setEnv(cfg.environment);
+                    const d = defaultMpesaEndpoints(appEnv.apiBaseUrl);
+                    setEnv(cfg.environment || DEFAULT_MPESA_ENV);
                     setPlain({
                       shortcode: cfg.shortcode,
-                      stkCallbackUrl: cfg.stkCallbackUrl,
+                      stkCallbackUrl: cfg.stkCallbackUrl || d.stkCallbackUrl,
                       b2cInitiator: cfg.b2cInitiator,
-                      b2cResultUrl: cfg.b2cResultUrl,
-                      b2cTimeoutUrl: cfg.b2cTimeoutUrl,
+                      b2cResultUrl: cfg.b2cResultUrl || d.b2cResultUrl,
+                      b2cTimeoutUrl: cfg.b2cTimeoutUrl || d.b2cTimeoutUrl,
                     });
                     setSecrets({});
                   }}

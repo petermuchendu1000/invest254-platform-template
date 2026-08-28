@@ -403,6 +403,27 @@ export interface AdminNotificationRow {
   dismissedAtMs: number | null;
   resolvedAtMs: number | null;
 }
+
+/** Audience filter for a broadcast (mirrors the SQL jsonb). Empty = all active users. */
+export interface BroadcastAudienceInput {
+  status?: string;
+  roles?: string[];
+  sites?: string[];
+  affected_within_hours?: number;
+  affected_kind?: 'deposit' | 'withdrawal';
+}
+/** A saved system-notification template (migration 0106). */
+export interface NotificationTemplateRow {
+  key: string;
+  level: NotificationLevel;
+  title: string;
+  body: string;
+  dismissible: boolean;
+  category: string;
+  resolvesCategory: string | null;
+  defaultAudience: BroadcastAudienceInput;
+  description: string | null;
+}
 export interface NotificationInput {
   title: string;
   body?: string;

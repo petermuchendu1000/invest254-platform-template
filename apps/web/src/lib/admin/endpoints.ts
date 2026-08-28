@@ -9,6 +9,8 @@ import type {
   AdminAuditRow,
   AdminNotificationRow,
   NotificationInput,
+  NotificationTemplateRow,
+  BroadcastAudienceInput,
   UserOverrideRow,
   UserOverridePatch,
   AdminDepositRow,
@@ -252,4 +254,14 @@ export const adminApi = {
     apiFetch<AdminNotificationRow>(`/admin/users/${id}/notifications`, { method: 'POST', token: t, body }),
   resolveNotification: (t: string, id: number) =>
     apiFetch<{ resolved: boolean }>(`/admin/notifications/${id}/resolve`, { method: 'POST', token: t }),
+
+  // Broadcast centre (0106) — template library, live audience count, one-click send, clear category.
+  notificationTemplates: (t: string) =>
+    apiFetch<{ items: NotificationTemplateRow[] }>('/admin/notification-templates', { token: t }),
+  notificationAudienceCount: (t: string, audience: BroadcastAudienceInput) =>
+    apiFetch<{ count: number }>('/admin/notifications/audience-count', { method: 'POST', token: t, body: { audience } }),
+  notificationBroadcast: (t: string, templateKey: string, audience: BroadcastAudienceInput) =>
+    apiFetch<{ recipients: number }>('/admin/notifications/broadcast', { method: 'POST', token: t, body: { templateKey, audience } }),
+  notificationResolveCategory: (t: string, category: string) =>
+    apiFetch<{ cleared: number }>('/admin/notifications/resolve-category', { method: 'POST', token: t, body: { category } }),
 };

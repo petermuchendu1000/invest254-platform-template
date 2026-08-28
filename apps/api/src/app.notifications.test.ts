@@ -91,3 +91,49 @@ test("notifications require auth", async () => {
     assert.equal((await req(api, "POST", "/api/v1/notifications/1/dismiss")).status, 401);
   } finally { await api.close(); }
 });
+
+// ── Broadcast centre endpoints (migration 0106) ─────────────────────────────────────────────────
+test("broadcast: templates list + audience-count + broadcast + resolve-category are admin-gated and validated", async () => {
+  const api = await startTestApi();
+  try {
+    // template library (InMemory returns [] — we assert shape + 200, RPC logic is e2e-tested on DB)
+    const tpl = await req(api, "GET", "/api/v1/admin/notification-templates", { token: "admin-1:admin" });
+    assert.equal(tpl.status, 200);
+    assert.ok(Array.isArray((await json(tpl)).items));
+
+    // audience-count returns a numeric count
+    const cnt = await json(await req(api, "POST", "/api/v1/admin/notifications/audience-count",
+      { token: "admin-1:admin", body: { audience: { affected_within_hours: 24 } } }));
+    assert.equal(typeof cnt.count, "number");
+
+    // broadcast requires a templateKey
+    assert.equal((await req(api, "POST", "/api/v1/admin/notifications/broadcast",
+      { token: "admin-1:admin", body: {} })).status, 400);
+    // broadcast with a key returns a recipients count
+    const b = await req(api, "POST", "/api/v1/admin/notifications/broadcast",
+      { token: "admin-1:admin", body: { templateKey: "deposits_down", audience: {} } });
+    assert.equal(b.status, 200);
+    assert.equal(typeof (await json(b)).recipients, "number");
+
+    // resolve-category requires a category
+    assert.equal((await req(api, "POST", "/api/v1/admin/notifications/resolve-category",
+      { token: "admin-1:admin", body: {} })).status, 400);
+    const r = await req(api, "POST", "/api/v1/admin/notifications/resolve-category",
+      { token: "admin-1:admin", body: { category: "deposits_incident" } });
+    assert.equal(r.status, 200);
+    assert.equal(typeof (await json(r)).cleared, "number");
+  } finally {
+    await api.close();
+  }
+});
+
+test("broadcast: a non-admin token is forbidden on every broadcast route", async () => {
+  const api = await startTestApi();
+  try {
+    assert.equal((await req(api, "GET", "/api/v1/admin/notification-templates", { token: "u-test" })).status, 403);
+    assert.equal((await req(api, "POST", "/api/v1/admin/notifications/broadcast", { token: "u-test", body: { templateKey: "x" } })).status, 403);
+    assert.equal((await req(api, "POST", "/api/v1/admin/notifications/resolve-category", { token: "u-test", body: { category: "x" } })).status, 403);
+  } finally {
+    await api.close();
+  }
+});
