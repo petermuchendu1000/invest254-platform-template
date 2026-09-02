@@ -95,6 +95,20 @@ export function useSetUserRole() {
   });
 }
 
+/** Soft-delete a user/admin (status='deleted', login-blocked, hidden). Server-guarded. */
+export function useDeleteUser() {
+  const t = useTok();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => adminApi.deleteUser(t, id),
+    onSuccess: (_d, id) => {
+      void qc.invalidateQueries({ queryKey: ['admin', 'user', id] });
+      void qc.invalidateQueries({ queryKey: ['admin', 'users'] });
+      void qc.invalidateQueries({ queryKey: ['admin', 'overview'] });
+    },
+  });
+}
+
 /** Make / clear this marketer as the brand's default marketer (site-owner commission model, 0104). */
 export function useSetDefaultMarketer() {
   const t = useTok();
@@ -199,8 +213,8 @@ export function useWithdrawalAction() {
   const t = useTok();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (v: { id: string; action: 'approve' | 'reject' }) =>
-      v.action === 'approve' ? adminApi.approveWithdrawal(t, v.id) : adminApi.rejectWithdrawal(t, v.id),
+    mutationFn: (v: { id: string; action: 'approve' | 'reject'; password?: string }) =>
+      v.action === 'approve' ? adminApi.approveWithdrawal(t, v.id, v.password ?? '') : adminApi.rejectWithdrawal(t, v.id),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['admin', 'withdrawals'] });
       void qc.invalidateQueries({ queryKey: ['admin', 'overview'] });
@@ -325,11 +339,11 @@ export function useCommissionPayoutAction() {
   const t = useTok();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (v: { id: string; action: 'approve' | 'paid' | 'reject'; ref?: string; reason?: string }) =>
+    mutationFn: (v: { id: string; action: 'approve' | 'paid' | 'reject'; ref?: string; reason?: string; password?: string }) =>
       v.action === 'approve'
-        ? adminApi.approveCommissionPayout(t, v.id)
+        ? adminApi.approveCommissionPayout(t, v.id, v.password ?? '')
         : v.action === 'paid'
-          ? adminApi.markCommissionPayoutPaid(t, v.id, v.ref)
+          ? adminApi.markCommissionPayoutPaid(t, v.id, v.ref, v.password ?? '')
           : adminApi.rejectCommissionPayout(t, v.id, v.reason),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['admin', 'commission-payouts'] });
@@ -492,6 +506,19 @@ export function useUpdateMarketer() {
     },
   });
 }
+
+/** HARD-delete a demo marketer (removes the social-proof account; un-demos the matching person). */
+export function useDeleteMarketer() {
+  const t = useTok();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => adminApi.deleteMarketer(t, id),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['admin', 'marketers'] });
+      void qc.invalidateQueries({ queryKey: ['admin', 'overview'] });
+    },
+  });
+}
 export function useMarketerCredit(id: string) {
   const t = useTok();
   const qc = useQueryClient();
@@ -576,7 +603,7 @@ export function useBulkWithdrawals() {
   const t = useTok();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: { action: 'approve' | 'reject'; txIds: string[] }) => adminApi.bulkWithdrawals(t, body),
+    mutationFn: (body: { action: 'approve' | 'reject'; txIds: string[]; password?: string }) => adminApi.bulkWithdrawals(t, body),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['admin', 'withdrawals'] });
       void qc.invalidateQueries({ queryKey: ['admin', 'overview'] });

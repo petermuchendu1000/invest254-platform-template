@@ -299,6 +299,8 @@ export interface AdminRepository {
   setUserStatus(actorId: string, actorRole: string, targetId: string, status: string, reason: string | null): Promise<SetUserStatusResult>;
   setCommissionRate(actorId: string, actorRole: string, targetId: string, rate: number): Promise<SetCommissionRateResult>;
   setUserRole(actorId: string, actorRole: string, targetId: string, role: string): Promise<SetUserRoleResult>;
+  /** Soft-delete a user/admin (status='deleted', force-logout, hidden, login-blocked). History preserved. */
+  deleteUser(actorId: string, actorRole: string, targetId: string): Promise<SetUserStatusResult>;
   /** Edit a user's phone/username (item 6). Admin+ (a plain admin may not edit an admin). Per-brand unique. */
   updateUserDetails(actorId: string, actorRole: string, targetId: string, phone: string | null, username: string | null): Promise<UpdateUserDetailsResult>;
   listWithdrawals(q: AdminWithdrawalListQuery): Promise<Page<AdminWithdrawalRow>>;
@@ -532,7 +534,7 @@ const inRange = (d: string, r: ReportRange): boolean => (r.from == null || d >= 
 /** Re-raise the bare admin error code the RPCs raise instead of the wrapped pg message. */
 function mapAdminError(e: unknown): never {
   const msg = (e as { message?: string })?.message ?? String(e);
-  const m = msg.match(/(NOT_AUTHORIZED|INVALID_STATUS|NO_SELF_ACTION|USER_NOT_FOUND|INSUFFICIENT_PRIVILEGE|INVALID_RATE|NOT_AFFILIATE|REASON_REQUIRED|INVALID_AMOUNT|INVALID_ROLE|INSUFFICIENT_FUNDS|WALLET_NOT_FOUND|INVALID_CONFIG|INVALID_DATE|PAST_DATE|SEED_REVEALED|SUPERADMIN_PROTECTED|NOT_FOUND)/);
+  const m = msg.match(/(NOT_AUTHORIZED|INVALID_STATUS|NO_SELF_ACTION|USER_NOT_FOUND|INSUFFICIENT_PRIVILEGE|INVALID_RATE|NOT_AFFILIATE|REASON_REQUIRED|INVALID_AMOUNT|INVALID_ROLE|INSUFFICIENT_FUNDS|WALLET_NOT_FOUND|INVALID_CONFIG|INVALID_DATE|PAST_DATE|SEED_REVEALED|SUPERADMIN_PROTECTED|DEFAULT_MARKETER_LOCKED|NOT_FOUND)/);
   throw new Error(m ? m[1] : msg);
 }
 
@@ -639,6 +641,7 @@ export class PgAdminRepository implements AdminRepository {
          left join lateral (select amount as last_funded from transactions t where t.user_id = p.id and t.kind='deposit' and t.status='success' order by created_at desc, id desc limit 1) lf on true
         where ($1::text is null or p.role = $1)
           and ($2::text is null or p.status = $2)
+          and (p.status <> 'deleted' or $2 = 'deleted')
           and ($13::uuid is null or p.site_id = $13)
           and ($3::text is null or p.username ilike '%'||$3||'%' or p.phone ilike '%'||$3||'%')
           and ($4::timestamptz is null or (p.created_at, p.id) < ($4::timestamptz, $5::uuid))
@@ -752,6 +755,14 @@ export class PgAdminRepository implements AdminRepository {
       const r = await this.q.query("select user_id, role from fn_admin_set_user_role($1,$2,$3,$4)", [actorId, actorRole, targetId, role]);
       const x = r.rows[0];
       return { userId: String(x.user_id), role: String(x.role) };
+    } catch (e) { mapAdminError(e); }
+  }
+
+  async deleteUser(actorId: string, actorRole: string, targetId: string): Promise<SetUserStatusResult> {
+    try {
+      const r = await this.q.query("select user_id, status from fn_admin_delete_user($1,$2,$3)", [actorId, actorRole, targetId]);
+      const x = r.rows[0];
+      return { userId: String(x.user_id), status: String(x.status) };
     } catch (e) { mapAdminError(e); }
   }
 
@@ -1486,6 +1497,7 @@ export class InMemoryAdminRepository implements AdminRepository {
   async listUsers(q: AdminUserListQuery): Promise<Page<AdminUserRow>> {
     const needle = q.q?.toLowerCase();
     const matched = this.identity.adminUsers().filter((u) =>
+      (q.status === "deleted" || u.status !== "deleted") &&
       (q.role === undefined || u.role === q.role) &&
       (q.status === undefined || u.status === q.status) &&
       siteMatches(u.siteId, q.siteId) &&
@@ -1575,6 +1587,20 @@ export class InMemoryAdminRepository implements AdminRepository {
     this.identity.adminSetRole(targetId, role);
     this.record(actorId, actorRole, "user.role", "user", targetId, { from, to: role });
     return { userId: targetId, role };
+  }
+
+  async deleteUser(actorId: string, actorRole: string, targetId: string): Promise<SetUserStatusResult> {
+    if (!["admin", "superadmin", "platform_superadmin"].includes(actorRole)) throw new Error("NOT_AUTHORIZED");
+    if (actorId === targetId) throw new Error("NO_SELF_ACTION");
+    const u = this.identity.adminUser(targetId);
+    if (!u) throw new Error("USER_NOT_FOUND");
+    if (u.status === "deleted") return { userId: targetId, status: "deleted" }; // idempotent
+    if (u.role === "superadmin" || u.role === "platform_superadmin") throw new Error("SUPERADMIN_PROTECTED");
+    if (u.role === "admin" && !["superadmin", "platform_superadmin"].includes(actorRole)) throw new Error("INSUFFICIENT_PRIVILEGE");
+    const from = u.status;
+    this.identity.adminSetStatus(targetId, "deleted");
+    this.record(actorId, actorRole, "user.delete", "user", targetId, { from, to: "deleted" });
+    return { userId: targetId, status: "deleted" };
   }
 
   async updateUserDetails(actorId: string, actorRole: string, targetId: string, phone: string | null, username: string | null): Promise<UpdateUserDetailsResult> {

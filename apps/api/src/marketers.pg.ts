@@ -138,5 +138,14 @@ export function makePgMarketerRepo(query: Query): MarketerRepo {
       const { rows } = await query("SELECT public.fn_marketer_set_status($1, $2) AS s", [id, status]);
       return rows[0].s as string;
     },
+
+    async delete(id, siteId): Promise<{ deleted: boolean }> {
+      // HARD delete; marketer_wallets/ledger/withdrawals/credentials all CASCADE. Brand-scoped when
+      // siteId is given so a site admin can't delete another brand's marketer.
+      const { rows } = await query(
+        "DELETE FROM public.marketers WHERE id = $1 AND ($2::uuid IS NULL OR site_id = $2) RETURNING id",
+        [id, siteId ?? null]);
+      return { deleted: rows.length > 0 };
+    },
   };
 }

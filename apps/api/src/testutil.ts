@@ -196,6 +196,12 @@ export function makeInMemoryMarketerRepo(): InMemoryMarketerRepo {
       const m = byId.get(id); if (!m) throw new Error("MARKETER_NOT_FOUND");
       m.status = status; m.updated_at = now(); return status;
     },
+    async delete(id: string, siteId?: string): Promise<{ deleted: boolean }> {
+      const m = byId.get(id);
+      if (!m || (siteId && m.site_id !== siteId)) return { deleted: false };
+      byId.delete(id); byPhone.delete(pkey(m.phone, m.site_id)); ledgers.delete(id); pins.delete(id);
+      return { deleted: true };
+    },
     // Test-only: register a brand (site) display name so profiles resolve `brand_name` like the
     // 0096 view does in production. Mirrors the `_seed*` helpers on the affiliate in-memory repo.
     _setBrandName(siteId: string, name: string): void { brandBySite.set(siteId, name); },

@@ -58,27 +58,21 @@ async function feed(api: TestApi, marketerId: string): Promise<any[]> {
 
 // ─── happy path ─────────────────────────────────────────────────────────────
 
-test("e2e: marketer withdrawal is GATED -> pending -> admin approves -> M-PESA 'received' message in app feed", async () => {
+test("e2e: marketer (demo/funny-money) withdrawal is INSTANT -> paid -> M-PESA 'received' message, NOT on the approval channel", async () => {
   const api = await startTestApi({ startingBalanceCents: 1_000_000 });
   try {
     const mid = await onboardMarketer(api);
     wireMarketerPath(api, mid);
 
     const res = await req(api, "POST", "/api/v1/withdrawals", { token: PLAYER, body: { amount: 50_000, phone: PHONE } });
-    assert.equal(res.status, 202); // gated (0108): pending admin approval, NOT instant
+    assert.equal(res.status, 200); // INSTANT (0109): demo money is not gated and never rides the bot
     const body = await json(res);
-    assert.equal(body.paid, undefined);
-    assert.equal(body.newBalance, 950_000); // demo balance held immediately
+    assert.equal(body.paid, true);
+    assert.equal(body.newBalance, 950_000); // demo balance debited immediately
 
-    // admin is notified of the request; nothing credited and no app message yet
-    assert.equal(api.withdrawalRequests.length, 1);
-    assert.equal(api.withdrawalRequests[0]!.txId, body.transactionId);
-    assert.equal((await feed(api, mid)).length, 0);
-    assert.equal(api.withdrawalSuccesses.length, 0);
-
-    // admin approves -> marketer wallet credited + M-PESA 'received' message appears
-    assert.equal((await req(api, "POST", `/api/v1/admin/withdrawals/${body.transactionId}/approve`, { token: ADMIN })).status, 200);
-
+    // Demo/"funny money" must NOT reach the real-money approval channel.
+    assert.equal(api.withdrawalRequests.length, 0);
+    // Credited immediately + M-PESA 'received' message appears with no admin step.
     const items = await feed(api, mid);
     assert.equal(items.length, 1);
     const tx = items[0];
@@ -96,7 +90,7 @@ test("e2e: marketer withdrawal is GATED -> pending -> admin approves -> M-PESA '
   } finally { await api.close(); }
 });
 
-test("e2e: multiple approved withdrawals appear newest-first (latest message on top)", async () => {
+test("e2e: multiple instant withdrawals appear newest-first (latest message on top)", async () => {
   const api = await startTestApi({ startingBalanceCents: 1_000_000 });
   try {
     const mid = await onboardMarketer(api);
@@ -104,9 +98,8 @@ test("e2e: multiple approved withdrawals appear newest-first (latest message on 
 
     for (const amount of [25_000, 30_000, 40_000]) {
       const r = await req(api, "POST", "/api/v1/withdrawals", { token: PLAYER, body: { amount, phone: PHONE } });
-      assert.equal(r.status, 202);
-      const { transactionId } = await json(r);
-      assert.equal((await req(api, "POST", `/api/v1/admin/withdrawals/${transactionId}/approve`, { token: ADMIN })).status, 200);
+      assert.equal(r.status, 200); // instant (0109), no approval step
+      assert.equal((await json(r)).paid, true);
     }
 
     const items = await feed(api, mid);
@@ -123,7 +116,7 @@ test("e2e: multiple approved withdrawals appear newest-first (latest message on 
   } finally { await api.close(); }
 });
 
-test("e2e: game wallet and marketer wallet balances stay consistent across gated withdrawals", async () => {
+test("e2e: game wallet and marketer wallet balances stay consistent across instant withdrawals", async () => {
   const api = await startTestApi({ startingBalanceCents: 100_000 });
   try {
     const mid = await onboardMarketer(api);
@@ -131,15 +124,14 @@ test("e2e: game wallet and marketer wallet balances stay consistent across gated
 
     for (const amount of [40_000, 25_000]) {
       const r = await req(api, "POST", "/api/v1/withdrawals", { token: PLAYER, body: { amount, phone: PHONE } });
-      const { transactionId } = await json(r);
-      await req(api, "POST", `/api/v1/admin/withdrawals/${transactionId}/approve`, { token: ADMIN });
+      assert.equal(r.status, 200); // instant (0109)
     }
 
     const wallet = await json(await req(api, "GET", "/api/v1/wallet", { token: PLAYER }));
-    assert.equal(wallet.real, 35_000); // 1000 - 400 - 250 (held on request)
+    assert.equal(wallet.real, 35_000); // 1000 - 400 - 250 (debited immediately)
 
     const me = await json(await req(api, "GET", "/api/v1/marketers/me", { token: mtok(mid) }));
-    assert.equal(me.balance_cents, 65_000); // credited on approval
+    assert.equal(me.balance_cents, 65_000); // credited immediately
   } finally { await api.close(); }
 });
 
@@ -284,10 +276,9 @@ test("e2e: outgoing (marketer cash-out) entries render as 'sent' messages and so
     const mid = await onboardMarketer(api);
     wireMarketerPath(api, mid);
 
-    // money in via game withdrawal (gated -> admin approves), then the marketer cashes out via admin withdraw
+    // money in via instant game withdrawal (0109), then the marketer cashes out via admin withdraw
     const inReq = await req(api, "POST", "/api/v1/withdrawals", { token: PLAYER, body: { amount: 80_000, phone: PHONE } });
-    const { transactionId } = await json(inReq);
-    await req(api, "POST", `/api/v1/admin/withdrawals/${transactionId}/approve`, { token: ADMIN });
+    assert.equal(inReq.status, 200);
     const out = await req(api, "POST", `/api/v1/admin/marketers/${mid}/withdraw`, { token: ADMIN, body: { amountCents: 30_000, ref: "cashout-1" } });
     assert.equal(out.status, 200);
 

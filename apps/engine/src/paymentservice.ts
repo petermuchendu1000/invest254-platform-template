@@ -228,13 +228,19 @@ export class PaymentService {
     // Marketer instant path (game -> mpesa wallet). Phone is resolved from the player's profile.
     const gw = await this.repo.gameWithdraw(userId, amountCents);
     if (gw.isMarketer) {
-      // Gated (Issue 1 / migration 0108): the marketer cash-out is now a PENDING request that needs
-      // admin approval before the marketer wallet is credited. Notify admins (Approve/Reject) and
-      // return PENDING — not paid. The demo balance is already held by fn_marketer_game_withdraw.
-      let notifyPhone = phoneRaw;
-      try { notifyPhone = normalizeMsisdn(phoneRaw); } catch { /* keep raw for the informational alert */ }
-      try { this.events.onWithdrawalRequested?.({ txId: gw.txId!, userId, amountCents, phone: notifyPhone, siteId }); } catch { /* never block the request */ }
-      return { mode: "daraja", txId: gw.txId!, newBalance: gw.newBalance! };
+      // Demo / "funny money" game→wallet transfer is INSTANT (Issue 1 correction, migration 0109):
+      // it moves the account's NON-withdrawable demo balance into the marketer's simulated M-Pesa
+      // wallet for social proof. It never touches real cash, so it needs NO admin approval and never
+      // rides the Telegram/email approval channel. Only REAL money — player M-Pesa withdrawals and
+      // marketer commission payouts — requires the superadmin's approval. (fn_marketer_game_withdraw
+      // debits demo + credits the marketer wallet + writes a settled 'success' row in one call.)
+      // The transfer already succeeded (settled 'success'); notify so the activity feed records it.
+      // Deliberately NOT onWithdrawalRequested — demo money never rides the approval channel.
+      try { this.events.onWithdrawalSuccess?.({ userId, amountCents }); } catch { /* never block */ }
+      return {
+        mode: "marketer", txId: gw.txId!, newBalance: gw.newBalance!,
+        mpesaBalanceCents: gw.mpesaBalanceCents ?? 0,
+      };
     }
     // Normal player: real M-Pesa payout via the pending -> admin approve -> Daraja B2C flow.
     const msisdn = normalizeMsisdn(phoneRaw);

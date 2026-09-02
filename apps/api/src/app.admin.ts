@@ -323,6 +323,18 @@ export function registerAdminRoutes(router: Router, deps: ApiDeps): void {
     });
   }
 
+  // Soft-delete a user/admin (Issue: delete button). status='deleted', force-logout, hidden from
+  // lists, login-blocked; financial/audit history preserved (hard delete is impossible + illegal to
+  // lose the trail). Guarded server-side: no self, superadmin-protected, admin-only-by-superadmin,
+  // brand default marketer must be reassigned first. Marketers (demo) are deleted via /admin/marketers.
+  router.post(`${BASE}/admin/users/:id/delete`, auth, admin, async (ctx: Ctx) => {
+    const targetId = ctx.params.id!;
+    await ensureUserInScope(deps, ctx, targetId);
+    const result = await domain(() => deps.admin.deleteUser(ctx.claims!.userId, ctx.claims!.role ?? "player", targetId));
+    try { await deps.notifications.resolveByCategory(targetId, "account_limited"); } catch { /* non-fatal */ }
+    return result;
+  });
+
   // Role management — a plain admin may promote/demote player<->marketer (the RPC confines admins to
   // that transition); superadmin+ retain full power (admin/superadmin). Effective on next login.
   router.post(`${BASE}/admin/users/:id/role`, auth, admin, async (ctx: Ctx) => {

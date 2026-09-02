@@ -143,14 +143,17 @@ export class InMemoryPaymentRepository implements PaymentRepository {
     if (!Number.isInteger(amountCents) || amountCents <= 0) throw new Error("INVALID_AMOUNT");
     const bal = this.balances.get(userId) ?? 0;
     if (bal < amountCents) throw new Error("INSUFFICIENT_FUNDS");
-    // Gated (0108): hold the funds now but create a PENDING request — the marketer wallet is credited
-    // only on admin approval. No onMarketerCredit here anymore.
+    // Instant (0109): demo/"funny money" moves immediately from the game wallet into the marketer
+    // wallet and settles 'success'. No admin approval, never on the bot. Mirrors fn_marketer_game_withdraw.
     const next = bal - amountCents;
     this.balances.set(userId, next);
     const txId = `tx-${++this.txSeq}`;
-    this.txns.set(txId, { id: txId, userId, kind: "withdrawal", amount: amountCents, status: "pending", provider: "internal", marketerId, phone: phone!, seq: this.txSeq, createdAtMs: Date.now(), receipt: null });
+    this.txns.set(txId, { id: txId, userId, kind: "withdrawal", amount: amountCents, status: "success", provider: "internal", marketerId, phone: phone!, seq: this.txSeq, createdAtMs: Date.now(), receipt: null });
     this.ledger.push({ userId, type: "withdrawal", amount: -amountCents, ref: `transactions:${txId}` });
-    return { isMarketer: true, txId, newBalance: next, mpesaBalanceCents: this.marketerBalances.get(marketerId) ?? 0 };
+    const mbal = (this.marketerBalances.get(marketerId) ?? 0) + amountCents;
+    this.marketerBalances.set(marketerId, mbal);
+    this.onMarketerCredit?.(marketerId, amountCents, `game:${txId}`);
+    return { isMarketer: true, txId, newBalance: next, mpesaBalanceCents: mbal };
   }
   async approveWithdrawal(txId: string, _adminId: string): Promise<ApproveResult> {
     const tx = this.txns.get(txId);

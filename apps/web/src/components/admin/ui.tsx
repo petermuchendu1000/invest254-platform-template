@@ -172,3 +172,64 @@ export function ConfirmButton({
     </Button>
   );
 }
+
+/**
+ * Approve action gated by the superadmin password (Issue 1). Clicking reveals a password field; the
+ * action only fires once the operator enters a value. The password is passed to `onConfirm`, which
+ * forwards it to the API (the server verifies it against the superadmin credential).
+ */
+export function PasswordConfirmButton({
+  label,
+  confirmLabel,
+  onConfirm,
+  variant = 'primary',
+  size = 'sm',
+  busy,
+  disabled,
+}: {
+  label: string;
+  confirmLabel?: string;
+  onConfirm: (password: string) => void;
+  variant?: React.ComponentProps<typeof Button>['variant'];
+  size?: React.ComponentProps<typeof Button>['size'];
+  busy?: boolean;
+  disabled?: boolean;
+}) {
+  const [open, setOpen] = React.useState(false);
+  const [pw, setPw] = React.useState('');
+  const inputRef = React.useRef<HTMLInputElement>(null);
+  React.useEffect(() => { if (open) inputRef.current?.focus(); }, [open]);
+  function submit() {
+    if (!pw) return;
+    onConfirm(pw);
+    setPw('');
+    setOpen(false);
+  }
+  if (open) {
+    return (
+      <span className="inline-flex items-center gap-1">
+        <input
+          ref={inputRef}
+          type="password"
+          value={pw}
+          onChange={(e) => setPw(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') submit(); if (e.key === 'Escape') { setPw(''); setOpen(false); } }}
+          placeholder="Superadmin password"
+          autoComplete="off"
+          className="h-8 w-44 rounded-md border border-border bg-surface px-2 text-sm outline-none focus:border-accent"
+        />
+        <Button size={size} variant={variant} disabled={busy || !pw} onClick={submit}>
+          {busy ? '…' : confirmLabel ?? 'Authorize'}
+        </Button>
+        <Button size={size} variant="ghost" onClick={() => { setPw(''); setOpen(false); }} disabled={busy}>
+          Cancel
+        </Button>
+      </span>
+    );
+  }
+  return (
+    <Button size={size} variant={variant} onClick={() => setOpen(true)} disabled={disabled || busy}>
+      {label}
+    </Button>
+  );
+}

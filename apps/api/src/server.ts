@@ -4,6 +4,7 @@ import {
   NotificationService, PgNotificationRepository,
   PushService, PgPushSubscriptionRepository,
   GameConfigStore, mapConfigRow, makePgPools,
+  verifyPassword,
   type GameRepository, type EngagementRepository, type PaymentRepository,
   type Querier, type FairnessRecord, type ListenClient,
 } from "@invest254/engine";
@@ -15,8 +16,8 @@ import { makePgReferralRepo } from "./referral.pg.js";
 import { makePgSupportDeps } from "./support.pg.js";
 import { makeDomainProvisioner } from "./domains.js";
 import { makeWebPushTransport } from "./webpush.js";
-import { makeResendSender, buildWithdrawalEmail } from "./email.js";
-import { makeTelegramClient } from "./telegram.js";
+import { makeResendSender, buildPayoutEmail } from "./email.js";
+import { makeTelegramClient, type PayoutAlert, type PayoutDecisionRecord } from "./telegram.js";
 import { signWithdrawalAction } from "./withdrawalactionlink.js";
 import type { PlatformOnboardDeps, OnboardInput, OnboardResult } from "./app.platform.js";
 
@@ -170,33 +171,195 @@ async function buildDeps(): Promise<ApiDeps> {
     } catch { return null; }
   };
 
-  async function emailWithdrawalAlert(e: { txId: string; userId: string; amountCents: number; phone: string }): Promise<void> {
-    if (!emailSender || !actionSecret || alertEmails.length === 0) return;
+  const roleToUserType = (role?: string | null): string =>
+    role === "marketer" ? "Marketer" : role === "player" ? "Player"
+      : role ? role.charAt(0).toUpperCase() + role.slice(1).replace(/_/g, " ") : "User";
+
+  // Rebuild the enriched, bank-grade payout card from the DB (thorough content: user type, client,
+  // amount, destination, timestamp, reference). Shared by email, Telegram, and in-place status edits.
+  const describePayout = async (kind: "withdrawal" | "commission", id: string): Promise<PayoutAlert | null> => {
     try {
-      const who = await resolveHandle(e.userId);
-      const approveUrl = `${apiPublicUrl}/api/v1/w/act?token=${signWithdrawalAction(e.txId, "approve", actionSecret)}`;
-      const rejectUrl = `${apiPublicUrl}/api/v1/w/act?token=${signWithdrawalAction(e.txId, "reject", actionSecret)}`;
-      const mail = buildWithdrawalEmail({ who, amountCents: e.amountCents, phone: e.phone, txId: e.txId, approveUrl, rejectUrl });
+      if (kind === "withdrawal") {
+        const r = await q.query(
+          `select t.amount, t.phone, extract(epoch from t.created_at) * 1000 as ms,
+                  p.username, p.role, s.name as site
+             from transactions t
+             left join profiles p on p.id = t.user_id
+             left join sites s on s.id = t.site_id
+            where t.id = $1::uuid and t.kind = 'withdrawal' limit 1`, [id]);
+        if (!r.rows.length) return null;
+        const x = r.rows[0] as Record<string, unknown>;
+        return { kind: "withdrawal", reference: id, who: String(x.username ?? "user"),
+          userType: roleToUserType(x.role as string | null), client: String(x.site ?? "Invest254"),
+          amountCents: Number(x.amount), phone: String(x.phone ?? ""), requestedAtMs: Number(x.ms) };
+      }
+      const r = await q.query(
+        `select cp.amount_cents, extract(epoch from cp.requested_at) * 1000 as ms,
+                pr.username, pr.phone, s.name as site
+           from commission_payouts cp
+           left join profiles pr on pr.id = cp.beneficiary_user
+           left join sites s on s.id = cp.site_id
+          where cp.id = $1::uuid limit 1`, [id]);
+      if (!r.rows.length) return null;
+      const x = r.rows[0] as Record<string, unknown>;
+      return { kind: "commission", reference: id, who: String(x.username ?? "marketer"),
+        userType: "Marketer", client: String(x.site ?? "Invest254"),
+        amountCents: Number(x.amount_cents), phone: String(x.phone ?? ""), requestedAtMs: Number(x.ms) };
+    } catch (err) { console.warn("[api] describePayout failed:", (err as Error).message); return null; }
+  };
+
+  // Live pending queue + recent decisions (DB truth) for the /pending and /history bot commands.
+  const listPendingPayouts = async (): Promise<PayoutAlert[]> => {
+    try {
+      const out: PayoutAlert[] = [];
+      const w = await q.query(
+        `select t.id, t.amount, t.phone, extract(epoch from t.created_at)*1000 as ms, p.username, p.role, s.name as site
+           from transactions t left join profiles p on p.id = t.user_id left join sites s on s.id = t.site_id
+          where t.kind='withdrawal' and t.status='pending' and t.provider is distinct from 'internal'
+          order by t.created_at asc limit 50`, []);
+      for (const x of w.rows as Record<string, unknown>[]) out.push({ kind: "withdrawal", reference: String(x.id),
+        who: String(x.username ?? "user"), userType: roleToUserType(x.role as string | null), client: String(x.site ?? "Invest254"),
+        amountCents: Number(x.amount), phone: String(x.phone ?? ""), requestedAtMs: Number(x.ms) });
+      const c = await q.query(
+        `select cp.id, cp.amount_cents, extract(epoch from cp.requested_at)*1000 as ms, pr.username, pr.phone, s.name as site
+           from commission_payouts cp left join profiles pr on pr.id = cp.beneficiary_user left join sites s on s.id = cp.site_id
+          where cp.status='requested' order by cp.requested_at asc limit 50`, []);
+      for (const x of c.rows as Record<string, unknown>[]) out.push({ kind: "commission", reference: String(x.id),
+        who: String(x.username ?? "marketer"), userType: "Marketer", client: String(x.site ?? "Invest254"),
+        amountCents: Number(x.amount_cents), phone: String(x.phone ?? ""), requestedAtMs: Number(x.ms) });
+      out.sort((a, b) => (b.requestedAtMs ?? 0) - (a.requestedAtMs ?? 0));
+      return out;
+    } catch (err) { console.warn("[api] listPendingPayouts failed:", (err as Error).message); return []; }
+  };
+  const listRecentPayoutDecisions = async (limit: number): Promise<PayoutDecisionRecord[]> => {
+    try {
+      const recs: PayoutDecisionRecord[] = [];
+      const w = await q.query(
+        `select t.id, t.amount, t.status, extract(epoch from t.updated_at)*1000 as ms, p.username, p.role, s.name as site, ap.username as actor
+           from transactions t left join profiles p on p.id = t.user_id left join sites s on s.id = t.site_id
+                left join profiles ap on ap.id = t.approved_by
+          where t.kind='withdrawal' and t.approved_by is not null and t.status in ('processing','success','reversed')
+          order by t.updated_at desc limit $1`, [limit]);
+      for (const x of w.rows as Record<string, unknown>[]) recs.push({ kind: "withdrawal", reference: String(x.id),
+        who: String(x.username ?? "user"), userType: roleToUserType(x.role as string | null), client: String(x.site ?? "Invest254"),
+        amountCents: Number(x.amount), decision: x.status === "reversed" ? "rejected" : "approved", actor: String(x.actor ?? "admin"), atMs: Number(x.ms) });
+      const c = await q.query(
+        `select cp.id, cp.amount_cents, cp.status,
+                extract(epoch from coalesce(cp.rejected_at, cp.paid_at, cp.approved_at))*1000 as ms,
+                pr.username, s.name as site, coalesce(rb.username, pb.username, apb.username) as actor
+           from commission_payouts cp left join profiles pr on pr.id = cp.beneficiary_user left join sites s on s.id = cp.site_id
+                left join profiles rb on rb.id = cp.rejected_by left join profiles pb on pb.id = cp.paid_by left join profiles apb on apb.id = cp.approved_by
+          where cp.status in ('approved','paid','rejected')
+          order by coalesce(cp.rejected_at, cp.paid_at, cp.approved_at) desc limit $1`, [limit]);
+      for (const x of c.rows as Record<string, unknown>[]) recs.push({ kind: "commission", reference: String(x.id),
+        who: String(x.username ?? "marketer"), userType: "Marketer", client: String(x.site ?? "Invest254"),
+        amountCents: Number(x.amount_cents), decision: x.status === "rejected" ? "rejected" : "approved", actor: String(x.actor ?? "admin"), atMs: Number(x.ms) });
+      recs.sort((a, b) => (b.atMs ?? 0) - (a.atMs ?? 0));
+      return recs.slice(0, limit);
+    } catch (err) { console.warn("[api] listRecentPayoutDecisions failed:", (err as Error).message); return []; }
+  };
+
+  // Email alert (login-free channel). Withdrawal emails carry one-tap magic links (the confirm page is
+  // password-gated for Approve). Commission emails are informational (moderated in dashboard/Telegram).
+  async function emailPayoutAlert(kind: "withdrawal" | "commission", id: string): Promise<void> {
+    if (!emailSender || alertEmails.length === 0) return;
+    try {
+      const a = await describePayout(kind, id);
+      if (!a) return;
+      let links: { approveUrl: string; rejectUrl: string } | undefined;
+      if (kind === "withdrawal" && actionSecret) {
+        links = {
+          approveUrl: `${apiPublicUrl}/api/v1/w/act?token=${signWithdrawalAction(id, "approve", actionSecret)}`,
+          rejectUrl: `${apiPublicUrl}/api/v1/w/act?token=${signWithdrawalAction(id, "reject", actionSecret)}`,
+        };
+      }
+      const mail = buildPayoutEmail(a, links);
       const r = await emailSender.send({ to: alertEmails, ...mail });
-      if (!r.ok) console.warn("[api] withdrawal alert email failed:", r.error);
-    } catch (err) { console.warn("[api] withdrawal alert email error:", (err as Error).message); }
+      if (!r.ok) console.warn("[api] payout alert email failed:", r.error);
+    } catch (err) { console.warn("[api] payout alert email error:", (err as Error).message); }
   }
 
-  // Telegram channel (Issue 1): instant push with inline Approve/Reject. The callback is handled by
-  // /api/v1/telegram/webhook. Dormant unless TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_IDS are set.
+  // Telegram channel (Issue 1): real-money payout alerts with inline Approve/Reject, password-gated
+  // approval, and optional forum status topics. Callback handled by /api/v1/telegram/webhook.
+  // Dormant unless TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_IDS (or a forum chat id) are set.
   const telegram = makeTelegramClient();
   const telegramChatIds = (process.env.TELEGRAM_CHAT_IDS || "").split(",").map((s) => s.trim()).filter(Boolean);
   const telegramWebhookSecret = process.env.TELEGRAM_WEBHOOK_SECRET;
-  if (telegram && telegramChatIds.length > 0) console.log(`[api] admin TELEGRAM alerts enabled -> ${telegramChatIds.length} chat(s)`);
-  async function telegramWithdrawalAlert(e: { txId: string; userId: string; amountCents: number; phone: string }): Promise<void> {
-    if (!telegram || telegramChatIds.length === 0) return;
+  const telegramForumChatId = process.env.TELEGRAM_FORUM_CHAT_ID?.trim() || undefined;
+  const numEnv = (k: string): number | undefined => {
+    const v = process.env[k]?.trim(); const n = v ? Number(v) : NaN; return Number.isInteger(n) ? n : undefined;
+  };
+  const telegramTopics = { waiting: numEnv("TELEGRAM_TOPIC_WAITING"), approved: numEnv("TELEGRAM_TOPIC_APPROVED"), rejected: numEnv("TELEGRAM_TOPIC_REJECTED") };
+  if (telegram && (telegramChatIds.length > 0 || telegramForumChatId)) {
+    console.log(`[api] admin TELEGRAM payout alerts enabled -> ${telegramChatIds.length} authorized id(s)${telegramForumChatId ? ", forum topics on" : ""}`);
+  }
+
+  // Real-money commission payout repo — also used by the Telegram commission Approve/Reject ops.
+  const referralRepo = makePgReferralRepo((sql, params) => q.query(sql, params ?? []));
+
+  // Verify a supplied password against ANY active platform_superadmin credential (scrypt, constant-time
+  // inside verifyPassword). This is the approval gate for EVERY surface (dashboard/Telegram/email).
+  const verifyApprovalPassword = async (password: string): Promise<boolean> => {
+    if (typeof password !== "string" || password.length === 0) return false;
     try {
-      const who = await resolveHandle(e.userId);
-      await Promise.all(telegramChatIds.map((chatId) =>
-        telegram.sendWithdrawalAlert(chatId, { who, amountCents: e.amountCents, phone: e.phone, txId: e.txId })
+      const r = await q.query(
+        `select uc.password_hash from user_credentials uc
+           join profiles p on p.id = uc.user_id
+          where p.role = 'platform_superadmin' and p.status = 'active'`, []);
+      for (const row of r.rows) {
+        if (await verifyPassword(password, String((row as Record<string, unknown>).password_hash))) return true;
+      }
+      return false;
+    } catch (err) { console.warn("[api] verifyApprovalPassword failed:", (err as Error).message); return false; }
+  };
+
+  const resolveActorName = async (): Promise<string> => {
+    try {
+      const actor = await resolveActionActor();
+      if (!actor) return "superadmin";
+      const r = await q.query("select username from profiles where id = $1::uuid", [actor]);
+      return (r.rows[0] as Record<string, unknown> | undefined)?.username as string ?? "superadmin";
+    } catch { return "superadmin"; }
+  };
+
+  // Telegram Approve/Reject for real-money marketer commission payouts. Approve = approve + mark-paid
+  // (the operator sends the M-Pesa manually; the bot records both). Reject = reject with a reason.
+  const commissionTelegramOps = {
+    async approve(id: string, actor: string): Promise<{ approved: boolean }> {
+      try {
+        try { await referralRepo.approvePayout(id, actor); } catch { /* may already be 'approved' */ }
+        const ref = `TG-${new Date().toISOString().slice(0, 10)}`;
+        const paid = await referralRepo.markPaid(id, actor, ref);
+        return { approved: paid.status === "paid" };
+      } catch { return { approved: false }; }
+    },
+    async reject(id: string, actor: string): Promise<{ rejected: boolean }> {
+      try { const r = await referralRepo.rejectPayout(id, actor, "Rejected via Telegram"); return { rejected: r.status === "rejected" }; }
+      catch { return { rejected: false }; }
+    },
+  };
+
+  // Where alerts are delivered: the forum "Waiting" topic when configured, else each authorized chat.
+  const alertDestinations = (): Array<{ chatId: string; thread?: number | undefined }> =>
+    telegramForumChatId ? [{ chatId: telegramForumChatId, thread: telegramTopics.waiting }]
+                        : telegramChatIds.map((c) => ({ chatId: c }));
+
+  async function telegramPayoutAlert(kind: "withdrawal" | "commission", id: string): Promise<void> {
+    if (!telegram || (telegramChatIds.length === 0 && !telegramForumChatId)) return;
+    try {
+      const a = await describePayout(kind, id);
+      if (!a) return;
+      await Promise.all(alertDestinations().map((d) =>
+        telegram.sendPayoutAlert(d.chatId, a, d.thread)
           .then((r) => { if (!r.ok) console.warn("[api] telegram alert failed:", r.error); })));
     } catch (err) { console.warn("[api] telegram alert error:", (err as Error).message); }
   }
+
+  // Fire all channels for a new real-money marketer COMMISSION payout request (fire-and-forget).
+  const commissionRequestedAlert = (payoutId: string): void => {
+    void telegramPayoutAlert("commission", payoutId);
+    void emailPayoutAlert("commission", payoutId);
+  };
 
   const payments = new PaymentService(payRepo, daraja, {
     // Verify STK callbacks against Safaricom (STKPushQuery) before crediting — defeats forged
@@ -223,9 +386,10 @@ async function buildDeps(): Promise<ApiDeps> {
       // Fire-and-forget: push a real-time Approve/Reject alert to admins. Never awaited and fully
       // isolated so a push outage can't slow down or fail the player's withdrawal request.
       onWithdrawalRequested: (e) => {
-        // Fire all channels, fire-and-forget: email + Telegram (login-free) + web push (if enabled).
-        void emailWithdrawalAlert(e);
-        void telegramWithdrawalAlert(e);
+        // Only REAL player M-Pesa withdrawals reach here (demo/internal transfers are instant, 0109).
+        // Fire all channels, fire-and-forget: email + Telegram (password-gated) + web push (if enabled).
+        void emailPayoutAlert("withdrawal", e.txId);
+        void telegramPayoutAlert("withdrawal", e.txId);
         if (pushService) void pushService.notifyWithdrawalRequested(e).catch((err) => {
           console.warn("[api] admin withdrawal push failed:", (err as Error).message);
         });
@@ -351,9 +515,18 @@ async function buildDeps(): Promise<ApiDeps> {
     telegram: telegram ?? undefined,
     telegramChatIds,
     telegramWebhookSecret,
+    describePayout,
+    listPendingPayouts,
+    listRecentPayoutDecisions,
+    verifyApprovalPassword,
+    resolveActorName,
+    commissionTelegramOps,
+    telegramForumChatId,
+    telegramTopics: { approved: telegramTopics.approved, rejected: telegramTopics.rejected },
+    onCommissionRequested: commissionRequestedAlert,
     corsAllowOrigin: (origin: string) => brandCors.allows(origin),
     marketers: makePgMarketerRepo((sql, params) => q.query(sql, params ?? [])),
-    referral: makePgReferralRepo((sql, params) => q.query(sql, params ?? [])),
+    referral: referralRepo,
     marketerExpenses: {
       async add(actorId, actorRole, siteId, marketerUserId, category, amountCents, note) {
         const r = await q.query(

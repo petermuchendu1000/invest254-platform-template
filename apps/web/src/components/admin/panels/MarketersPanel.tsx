@@ -1,6 +1,7 @@
 'use client';
 
 import { useMemo, useState } from 'react';
+import Link from 'next/link';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { Button } from '@/components/ui/Button';
 import { Money } from '@/components/ui/Money';
@@ -17,6 +18,7 @@ import {
   useMarketerStatement,
   useCreateMarketer,
   useUpdateMarketer,
+  useDeleteMarketer,
   useMarketerCredit,
   useMarketerWithdraw,
   useMarketerFuliza,
@@ -282,11 +284,47 @@ function ManageMarketerModal({ id, onClose }: { id: string | null; onClose: () =
             <FloatActions m={m} />
             <PinAction m={m} />
             <StatusAction m={m} />
+            <DeleteMarketerAction m={m} onClose={onClose} />
             <Statement id={m.id} />
           </>
         )}
       </div>
     </Modal>
+  );
+}
+
+/** Consolidation + delete: hard-delete the demo account (un-demos the person), and cross-link to the
+ *  linked website account so both facets are managed from this one hub. */
+function DeleteMarketerAction({ m, onClose }: { m: AdminMarketerRow; onClose: () => void }) {
+  const del = useDeleteMarketer();
+  const toast = useToast();
+  const affiliateId = (m as { affiliate_user_id?: string | null }).affiliate_user_id ?? null;
+  function run() {
+    del.mutate(m.id, {
+      onSuccess: () => { toast.push({ tone: 'success', title: 'Marketer deleted', description: 'The demo account was removed; the person is a normal player again.' }); onClose(); },
+      onError: (e) => toast.push({ tone: 'error', title: 'Delete failed', description: errMsg(e) }),
+    });
+  }
+  return (
+    <Section title="Website account & removal">
+      <div className="flex flex-col gap-3 rounded-2xl border border-border bg-surface p-3">
+        <div className="flex items-center gap-2 text-xs text-muted">
+          {affiliateId ? (
+            <>Linked website account (affiliate role &amp; commission):{' '}
+              <Link href={`/admin/users/${affiliateId}`} className="text-accent underline">manage roles here</Link>.
+            </>
+          ) : (
+            <>No linked website account — this is a standalone social-proof (demo) account.</>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="flex-1 text-xs text-muted">
+            Deleting removes the demo wallet, ledger and withdrawals, and clears the person&apos;s demo status.
+          </span>
+          <ConfirmButton label="Delete marketer" confirmLabel="Delete permanently" variant="down" busy={del.isPending} onConfirm={run} />
+        </div>
+      </div>
+    </Section>
   );
 }
 

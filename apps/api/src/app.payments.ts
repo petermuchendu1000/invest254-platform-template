@@ -1,6 +1,7 @@
 import type { Cents } from "@invest254/shared";
 import { Router, ApiError, requireAuth, requireRole, requireSite, rateLimit, restrictToCidrs, assertTargetSiteInScope, type Ctx, type Middleware } from "./http.js";
 import type { ApiDeps } from "./app.js";
+import { requireApprovalPassword } from "./approvalgate.js";
 
 /**
  * Protected + callback routes (Issue E2): player wallet/chat/payments, the public Daraja
@@ -191,6 +192,7 @@ export function registerProtectedRoutes(router: Router, deps: ApiDeps): void {
   // brand is resolved via the AdminService (tolerant of an unknown tx — the RPC stays the guard).
   const admin = requireRole("admin");
   router.post(`${BASE}/admin/withdrawals/:id/approve`, auth, admin, async (ctx: Ctx) => {
+    await requireApprovalPassword(ctx, deps.verifyApprovalPassword); // superadmin password gate (Issue 1)
     assertTargetSiteInScope(ctx, await deps.admin.siteOfTransaction(ctx.params.id!));
     return domain(() => deps.payments.approveWithdrawal(ctx.params.id!, ctx.claims!.userId));
   });
@@ -208,6 +210,7 @@ export function registerProtectedRoutes(router: Router, deps: ApiDeps): void {
     const body = ctx.body && typeof ctx.body === "object" ? (ctx.body as Record<string, unknown>) : {};
     const action = body.action === "approve" || body.action === "reject" ? body.action : "";
     if (!action) throw new ApiError("VALIDATION", "action must be 'approve' or 'reject'", 400);
+    if (action === "approve") await requireApprovalPassword(ctx, deps.verifyApprovalPassword); // one password per batch (Issue 1)
     const raw = Array.isArray(body.txIds) ? body.txIds : [];
     const txIds = [...new Set(raw.filter((x): x is string => typeof x === "string" && x.length > 0))];
     if (txIds.length === 0) throw new ApiError("VALIDATION", "txIds must be a non-empty array", 400);

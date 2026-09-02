@@ -122,12 +122,17 @@ export const adminApi = {
       token: t,
       query: { cursor: p.cursor ?? undefined, limit: p.limit, status: p.status },
     }),
-  approveWithdrawal: (t: string, id: string) =>
-    apiFetch<unknown>(`/admin/withdrawals/${id}/approve`, { method: 'POST', token: t }),
+  // Soft-delete a user/admin (status='deleted'; server-guarded). History preserved.
+  deleteUser: (t: string, id: string) =>
+    apiFetch<{ userId: string; status: string }>(`/admin/users/${id}/delete`, { method: 'POST', token: t }),
+  // Approve is gated by the superadmin password (Issue 1); the server verifies it before paying out.
+  approveWithdrawal: (t: string, id: string, password: string) =>
+    apiFetch<unknown>(`/admin/withdrawals/${id}/approve`, { method: 'POST', token: t, body: { password } }),
   rejectWithdrawal: (t: string, id: string) =>
     apiFetch<unknown>(`/admin/withdrawals/${id}/reject`, { method: 'POST', token: t }),
   // Bulk withdrawal moderation (partial success per row; approve dispatches M-Pesa B2C each).
-  bulkWithdrawals: (t: string, body: { action: 'approve' | 'reject'; txIds: string[] }) =>
+  // A single superadmin password authorizes the whole approve batch.
+  bulkWithdrawals: (t: string, body: { action: 'approve' | 'reject'; txIds: string[]; password?: string }) =>
     apiFetch<AdminBulkResult>('/admin/withdrawals/bulk', { method: 'POST', token: t, body }),
   // 0067 — per-brand withdrawal kill switch (owner/admin override).
   withdrawalsEnabled: (t: string) =>
@@ -176,10 +181,10 @@ export const adminApi = {
       token: t,
       query: { status: status && status !== 'all' ? status : undefined, limit: 200 },
     }),
-  approveCommissionPayout: (t: string, id: string) =>
-    apiFetch<unknown>(`/admin/commission-payouts/${id}/approve`, { method: 'POST', token: t }),
-  markCommissionPayoutPaid: (t: string, id: string, ref?: string) =>
-    apiFetch<unknown>(`/admin/commission-payouts/${id}/paid`, { method: 'POST', token: t, body: ref ? { ref } : {} }),
+  approveCommissionPayout: (t: string, id: string, password: string) =>
+    apiFetch<unknown>(`/admin/commission-payouts/${id}/approve`, { method: 'POST', token: t, body: { password } }),
+  markCommissionPayoutPaid: (t: string, id: string, ref?: string, password?: string) =>
+    apiFetch<unknown>(`/admin/commission-payouts/${id}/paid`, { method: 'POST', token: t, body: { ...(ref ? { ref } : {}), ...(password ? { password } : {}) } }),
   rejectCommissionPayout: (t: string, id: string, reason?: string) =>
     apiFetch<unknown>(`/admin/commission-payouts/${id}/reject`, { method: 'POST', token: t, body: reason ? { reason } : {} }),
 
@@ -227,6 +232,9 @@ export const adminApi = {
     apiFetch<AdminMarketerRow>('/admin/marketers', { method: 'POST', token: t, body }),
   updateMarketer: (t: string, id: string, body: { name?: string; phone?: string }) =>
     apiFetch<AdminMarketerRow>(`/admin/marketers/${id}`, { method: 'PATCH', token: t, body }),
+  // HARD delete a demo marketer (cascades wallet/ledger/withdrawals). Un-demos the matching person.
+  deleteMarketer: (t: string, id: string) =>
+    apiFetch<{ deleted: boolean }>(`/admin/marketers/${id}/delete`, { method: 'POST', token: t }),
   creditMarketer: (t: string, id: string, amountCents: number, ref?: string) =>
     apiFetch<{ balanceCents: number }>(`/admin/marketers/${id}/credit`, { method: 'POST', token: t, body: { amountCents, ref } }),
   withdrawMarketer: (t: string, id: string, amountCents: number, ref?: string, method?: string) =>

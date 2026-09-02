@@ -211,6 +211,10 @@ export class AuthService {
       }
     }
     if (!rec) throw new Error("INVALID_CREDENTIALS");
+    // A soft-DELETED account is treated as if it does not exist: same error as bad credentials, so a
+    // deleted user can never sign in and the deletion can't be enumerated. (suspended/banned still
+    // sign in — see below — so deposits/support stay open; only 'deleted' is a hard login block.)
+    if (rec.status === "deleted") throw new Error("INVALID_CREDENTIALS");
     // Account status does NOT gate login. A limited/suspended/banned player can still sign in
     // so they can DEPOSIT and see their balance. Trading and withdrawal are gated separately at
     // the money layer (fn_open_position / fn_create_withdrawal reject a non-active account), so a

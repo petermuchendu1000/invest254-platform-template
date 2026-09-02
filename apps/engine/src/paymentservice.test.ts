@@ -136,7 +136,7 @@ test("PaymentService: minWithdrawalForSite takes precedence, but a bad (0/throw)
   assert.equal((await svcThrow.requestWithdrawal("u", 25_000, "0712345678", "site-a")).newBalance, 950_000);
 });
 
-test("PaymentService: marketer withdrawal still honours the site-aware minimum, then creates a GATED pending request (no instant credit)", async () => {
+test("PaymentService: marketer withdrawal honours the site-aware minimum, then transfers INSTANTLY (0109, demo money, no gate)", async () => {
   const repo = new InMemoryPaymentRepository();
   repo.seed("m", 1_000_000);
   repo.seed("p", 1_000_000);
@@ -151,13 +151,14 @@ test("PaymentService: marketer withdrawal still honours the site-aware minimum, 
   // Marketer BELOW the brand floor -> rejected (the minimum is enforced BEFORE the hold).
   await assert.rejects(() => svc.requestWithdrawal("m", 40_000, "0712345678", "site-a"), /BELOW_MIN/);
   assert.equal(credited.length, 0);
-  // Marketer AT/above the floor -> a PENDING request (gated 0108): funds held, NOTHING credited to
-  // the marketer wallet until an admin approves.
+  // Marketer AT/above the floor -> INSTANT transfer (0109): demo money is credited to the marketer
+  // wallet immediately, no approval, and it never rides the approval channel.
   const mk = await svc.requestWithdrawal("m", 50_000, "0712345678", "site-a");
-  assert.equal(mk.mode, "daraja");
-  assert.equal(credited.length, 0);
+  assert.equal(mk.mode, "marketer");
+  assert.equal(credited.length, 1);
+  assert.deepEqual(credited[0], { id: "mk-1", amt: 50_000 });
 
-  // Normal player on the same brand: same floor applies, also a PENDING hold that must be approved.
+  // Normal player on the same brand: same floor applies; real money -> a PENDING hold that must be approved.
   await assert.rejects(() => svc.requestWithdrawal("p", 40_000, "0712345678", "site-a"), /BELOW_MIN/);
   const pl = await svc.requestWithdrawal("p", 50_000, "0712345678", "site-a");
   assert.equal(pl.mode, "daraja");
@@ -173,9 +174,9 @@ test("PaymentService: withdrawalsEnabledForSite kill switch refuses ALL withdraw
   let enabled = true;
   const svc = new PaymentService(repo, daraja, { withdrawalsEnabledForSite: () => enabled });
 
-  // Enabled -> both the normal player and the marketer paths work (both now PENDING/daraja-mode).
+  // Enabled -> player path is a PENDING daraja hold; the marketer path transfers INSTANTLY (0109).
   assert.equal((await svc.requestWithdrawal("p", 30_000, "0712345678", "site-a")).mode, "daraja");
-  assert.equal((await svc.requestWithdrawal("m", 30_000, "0712345678", "site-a")).mode, "daraja");
+  assert.equal((await svc.requestWithdrawal("m", 30_000, "0712345678", "site-a")).mode, "marketer");
 
   // Disabled -> BOTH are refused BEFORE any money moves (single entry-point enforcement).
   enabled = false;

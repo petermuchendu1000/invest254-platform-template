@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { formatKes, kesToCents } from '@invest254/shared/money';
-import { PageHeader, Section, TableWrap, Th, Td, Toolbar, FilterSelect, Empty } from '@/components/admin/ui';
+import { PageHeader, Section, TableWrap, Th, Td, Toolbar, FilterSelect, Empty, PasswordConfirmButton } from '@/components/admin/ui';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Money } from '@/components/ui/Money';
@@ -116,10 +116,10 @@ function ReferralPayouts() {
   const rows: AdminCommissionPayoutRow[] = q.data?.items ?? [];
   const [rejecting, setRejecting] = useState<AdminCommissionPayoutRow | null>(null);
 
-  const markPaid = (r: AdminCommissionPayoutRow) => {
+  const markPaid = (r: AdminCommissionPayoutRow, password: string) => {
     const input = window.prompt('M-Pesa / bank reference for this payment (optional):');
     const ref = input && input.trim() ? input.trim() : undefined;
-    action.mutate({ id: r.id, action: 'paid', ...(ref ? { ref } : {}) });
+    action.mutate({ id: r.id, action: 'paid', password, ...(ref ? { ref } : {}) });
   };
 
   return (
@@ -153,12 +153,12 @@ function ReferralPayouts() {
                 <span className="flex justify-end gap-1.5">
                   {r.status === 'requested' ? (
                     <>
-                      <Button size="sm" variant="up" disabled={action.isPending} onClick={() => action.mutate({ id: r.id, action: 'approve' })}>Approve</Button>
+                      <PasswordConfirmButton label="Approve" confirmLabel="Authorize" variant="up" busy={action.isPending} onConfirm={(pw) => action.mutate({ id: r.id, action: 'approve', password: pw })} />
                       <Button size="sm" variant="down" disabled={action.isPending} onClick={() => setRejecting(r)}>Reject</Button>
                     </>
                   ) : r.status === 'approved' ? (
                     <>
-                      <Button size="sm" variant="up" disabled={action.isPending} onClick={() => markPaid(r)}>Mark paid</Button>
+                      <PasswordConfirmButton label="Mark paid" confirmLabel="Authorize" variant="up" busy={action.isPending} onConfirm={(pw) => markPaid(r, pw)} />
                       <Button size="sm" variant="down" disabled={action.isPending} onClick={() => setRejecting(r)}>Reject</Button>
                     </>
                   ) : (

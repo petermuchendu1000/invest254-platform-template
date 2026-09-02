@@ -1,5 +1,6 @@
 import { Router, ApiError, requireAuth, requireRole, adminScopeSite, assertTargetSiteInScope, type Ctx } from "./http.js";
 import type { ApiDeps } from "./app.js";
+import { requireApprovalPassword } from "./approvalgate.js";
 
 /**
  * Referral / commission routes (deposit-based differential-unilevel model, migrations 0078/0079).
@@ -80,8 +81,12 @@ export function registerReferralRoutes(router: Router, deps: ApiDeps): void {
     ({ items: await deps.referral.listMyCommissions(ctx.claims!.userId, limitOf(ctx)) }));
 
   // Request a commission payout (marketer balance must be >= KES 500). One pending request at a time.
-  router.post(`${BASE}/me/referral/payouts`, auth, async (ctx: Ctx) =>
-    domain(() => deps.referral.requestPayout(ctx.claims!.userId)));
+  // On success, alert the superadmin (Telegram + email) — this is REAL money needing approval (Issue 1).
+  router.post(`${BASE}/me/referral/payouts`, auth, async (ctx: Ctx) => {
+    const row = await domain(() => deps.referral.requestPayout(ctx.claims!.userId));
+    try { deps.onCommissionRequested?.(row.id); } catch { /* never block the request */ }
+    return row;
+  });
 
   router.get(`${BASE}/me/referral/payouts`, auth, async (ctx: Ctx) =>
     ({ items: await deps.referral.listMyPayouts(ctx.claims!.userId, limitOf(ctx)) }));
@@ -91,11 +96,13 @@ export function registerReferralRoutes(router: Router, deps: ApiDeps): void {
     ({ items: await deps.referral.listPayouts(adminScopeSite(ctx) ?? undefined, ctx.query.get("status") ?? undefined, limitOf(ctx)) }));
 
   router.post(`${BASE}/admin/commission-payouts/:id/approve`, auth, admin, async (ctx: Ctx) => {
+    await requireApprovalPassword(ctx, deps.verifyApprovalPassword); // superadmin password gate (Issue 1)
     assertTargetSiteInScope(ctx, await deps.referral.siteOfPayout(ctx.params.id!));
     return domain(() => deps.referral.approvePayout(ctx.params.id!, ctx.claims!.userId));
   });
 
   router.post(`${BASE}/admin/commission-payouts/:id/paid`, auth, admin, async (ctx: Ctx) => {
+    await requireApprovalPassword(ctx, deps.verifyApprovalPassword); // superadmin password gate (Issue 1)
     assertTargetSiteInScope(ctx, await deps.referral.siteOfPayout(ctx.params.id!));
     const b = (ctx.body ?? {}) as Record<string, unknown>;
     const ref = typeof b.ref === "string" ? b.ref : null;

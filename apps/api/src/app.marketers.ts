@@ -127,6 +127,9 @@ export interface MarketerRepo {
   login(phone: string, pin: string, siteId?: string): Promise<string | null>;
   changePin(id: string, currentPin: string, newPin: string): Promise<void>;
   setStatus(id: string, status: string): Promise<string>;
+  /** HARD delete a demo marketer (cascades wallet/ledger/withdrawals/credentials). Un-demos the
+   *  matching person. `siteId` scopes a brand admin to their own brand. Returns whether a row went. */
+  delete(id: string, siteId?: string): Promise<{ deleted: boolean }>;
 }
 
 // ── Domain-error → HTTP status ───────────────────────────────────────────────
@@ -272,6 +275,16 @@ export function registerMarketerRoutes(router: Router, deps: ApiDeps): void {
     const phone = typeof b.phone === "string" ? b.phone : null;
     if (name === null && phone === null) throw new ApiError("VALIDATION", "name and/or phone is required", 400);
     return domain(() => deps.marketers.update(idOf(ctx), name, phone));
+  });
+
+  // HARD delete a demo marketer (Issue: delete button). Removes the social-proof account + its
+  // simulated wallet/ledger/withdrawals (all CASCADE), which also removes the matching person's DEMO
+  // status — so e.g. a phone-matched player reverts to a normal player. Brand-scoped: a site admin
+  // may only delete their own brand's marketer.
+  router.post(`${BASE}/admin/marketers/:id/delete`, auth, admin, async (ctx: Ctx) => {
+    const r = await domain(() => deps.marketers.delete(idOf(ctx), adminScopeSite(ctx) ?? undefined));
+    if (!r.deleted) throw new ApiError("MARKETER_NOT_FOUND", "marketer not found (or not in your brand)", 404);
+    return r;
   });
 
   // List marketer profiles (incl. derived first_name + initials and balances).

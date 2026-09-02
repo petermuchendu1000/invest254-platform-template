@@ -52,6 +52,10 @@ export class AdminService {
     return this.repo.setUserRole(actorId, actorRole, targetId, role);
   }
 
+  deleteUser(actorId: string, actorRole: string, targetId: string): Promise<SetUserStatusResult> {
+    return this.repo.deleteUser(actorId, actorRole, targetId);
+  }
+
   /** Edit a user's phone/username (item 6). Guards + per-brand uniqueness live in the RPC/mirror. */
   updateUserDetails(actorId: string, actorRole: string, targetId: string, phone: string | null, username: string | null): Promise<UpdateUserDetailsResult> {
     return this.repo.updateUserDetails(actorId, actorRole, targetId, phone, username);

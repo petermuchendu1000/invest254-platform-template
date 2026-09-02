@@ -10,7 +10,7 @@ import { StatusBadge } from '@/components/ui/Badge';
 import { ApiError } from '@/lib/api/client';
 import { useToast } from '@/lib/toast/ToastProvider';
 import { formatExact, formatRelativeTime } from '@/lib/format';
-import { PageHeader, StatCard, Section, TableWrap, Th, Td, Empty, Toolbar, FilterSelect, ConfirmButton } from '@/components/admin/ui';
+import { PageHeader, StatCard, Section, TableWrap, Th, Td, Empty, Toolbar, FilterSelect, ConfirmButton, PasswordConfirmButton } from '@/components/admin/ui';
 import { useRowSelection, SelectAllCheckbox, RowCheckbox, BulkBar, downloadCsv, copyText } from '@/components/admin/BulkSelect';
 import { useWithdrawals, useWithdrawalAction, useWithdrawalsEnabled, useSetWithdrawalsEnabled, useBulkWithdrawals } from '@/lib/admin/hooks';
 import type { AdminWithdrawalRow } from '@/lib/admin/types';
@@ -92,13 +92,19 @@ export default function WithdrawalsPage() {
     const tx = params.get('highlight');
     if ((act === 'approve' || act === 'reject') && tx) {
       deepHandled.current = true;
-      deepAction.mutate(
-        { id: tx, action: act },
-        {
-          onSuccess: () => toast.push({ tone: 'success', title: act === 'approve' ? 'Withdrawal approved' : 'Withdrawal rejected', description: act === 'approve' ? 'M-Pesa payout dispatched.' : 'Funds returned to the player.' }),
-          onError: (e) => toast.push({ tone: 'error', title: 'Action failed', description: e instanceof ApiError ? e.message : 'Open the row below to try again.' }),
-        },
-      );
+      if (act === 'reject') {
+        // Reject only returns funds — safe to execute from the deep link.
+        deepAction.mutate(
+          { id: tx, action: 'reject' },
+          {
+            onSuccess: () => toast.push({ tone: 'success', title: 'Withdrawal rejected', description: 'Funds returned to the player.' }),
+            onError: (e) => toast.push({ tone: 'error', title: 'Action failed', description: e instanceof ApiError ? e.message : 'Open the row below to try again.' }),
+          },
+        );
+      } else {
+        // Approve releases money and requires the superadmin password — cannot auto-run from a link.
+        toast.push({ tone: 'info', title: 'Password required to approve', description: 'Use the Approve button on the highlighted row and enter your superadmin password.' });
+      }
       params.delete('do');
       const qs = params.toString();
       window.history.replaceState(null, '', window.location.pathname + (qs ? `?${qs}` : ''));
@@ -121,14 +127,14 @@ export default function WithdrawalsPage() {
     return { amount, actionableIds: actionable.map((r) => r.txId), actionableAmount: actionable.reduce((s, r) => s + r.amountCents, 0) };
   }, [sel.selectedRows]);
 
-  function runBulk(action: 'approve' | 'reject') {
+  function runBulk(action: 'approve' | 'reject', password?: string) {
     const txIds = selInfo.actionableIds;
     if (txIds.length === 0) {
       toast.push({ tone: 'error', title: 'Nothing actionable', description: 'Selected withdrawals are already processed.' });
       return;
     }
     bulk.mutate(
-      { action, txIds },
+      { action, txIds, ...(password ? { password } : {}) },
       {
         onSuccess: (res) => {
           toast.push({
@@ -226,7 +232,7 @@ export default function WithdrawalsPage() {
             onClear={sel.clear}
             summary={<>Total <Money cents={selInfo.amount} /> · {selInfo.actionableIds.length} actionable (<Money cents={selInfo.actionableAmount} />)</>}
           >
-            <ConfirmButton label={`Approve ${selInfo.actionableIds.length}`} confirmLabel="Pay out all" variant="primary" busy={bulk.isPending} disabled={selInfo.actionableIds.length === 0} onConfirm={() => runBulk('approve')} />
+            <PasswordConfirmButton label={`Approve ${selInfo.actionableIds.length}`} confirmLabel="Authorize payout" variant="primary" busy={bulk.isPending} disabled={selInfo.actionableIds.length === 0} onConfirm={(pw) => runBulk('approve', pw)} />
             <ConfirmButton label={`Reject ${selInfo.actionableIds.length}`} confirmLabel="Reject all" variant="outline" busy={bulk.isPending} disabled={selInfo.actionableIds.length === 0} onConfirm={() => runBulk('reject')} />
             <Button size="sm" variant="outline" onClick={copyPhones}>Copy phones</Button>
             <Button size="sm" variant="outline" onClick={exportCsv}>Export CSV</Button>
@@ -291,9 +297,9 @@ function Row({ r, checked, onToggle }: { r: AdminWithdrawalRow; checked: boolean
   // Net cash the house is up on this player: lifetime deposits minus lifetime paid withdrawals.
   const netCents = r.totalDepositsCents - r.totalWithdrawalsCents;
 
-  function run(act: 'approve' | 'reject') {
+  function run(act: 'approve' | 'reject', password?: string) {
     action.mutate(
-      { id: r.txId, action: act },
+      { id: r.txId, action: act, ...(password ? { password } : {}) },
       {
         onSuccess: () =>
           toast.push({
@@ -336,7 +342,7 @@ function Row({ r, checked, onToggle }: { r: AdminWithdrawalRow; checked: boolean
       <Td className="text-right">
         {canAct ? (
           <span className="inline-flex items-center justify-end gap-1.5">
-            <ConfirmButton label="Approve" confirmLabel="Pay out" variant="primary" busy={action.isPending} onConfirm={() => run('approve')} />
+            <PasswordConfirmButton label="Approve" confirmLabel="Authorize payout" variant="primary" busy={action.isPending} onConfirm={(pw) => run('approve', pw)} />
             <ConfirmButton label="Reject" confirmLabel="Reject" variant="outline" busy={action.isPending} onConfirm={() => run('reject')} />
           </span>
         ) : (

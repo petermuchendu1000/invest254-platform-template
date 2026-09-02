@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
@@ -13,7 +14,7 @@ import { useToast } from '@/lib/toast/ToastProvider';
 import { formatDateTime, formatRelativeTime } from '@/lib/format';
 import { useSession } from '@/lib/auth/session';
 import { PageHeader, StatCard, Section, Empty, ConfirmButton, TableWrap, Th, Td, Toolbar, FilterSelect } from '@/components/admin/ui';
-import { useUser, useUserActivity, useSetUserStatus, useAdjustBalance, useClearBalance, useResetBalance, useSetCommissionRate, useSetUserRole, useSetDefaultMarketer, useUpdateUserDetails, useUserNotifications, useSendNotification, useResolveNotification, useUserOverrides, useSetOverrides, useGameConfig, useMarketerExpenses, useAddMarketerExpense } from '@/lib/admin/hooks';
+import { useUser, useUserActivity, useSetUserStatus, useAdjustBalance, useClearBalance, useResetBalance, useSetCommissionRate, useSetUserRole, useDeleteUser, useSetDefaultMarketer, useUpdateUserDetails, useUserNotifications, useSendNotification, useResolveNotification, useUserOverrides, useSetOverrides, useGameConfig, useMarketerExpenses, useAddMarketerExpense } from '@/lib/admin/hooks';
 import type { AdminUserActivityRow, AdminNotificationRow, NotificationLevel, UserOverridePatch } from '@/lib/admin/types';
 
 const ROLES = ['player', 'marketer', 'admin'] as const;
@@ -97,6 +98,7 @@ export default function UserDetailPage({ params }: { params: { id: string } }) {
               <StatusActions id={id} status={q.data.status} />
               <EditDetails id={id} phone={q.data.phone} username={q.data.username} />
               <RoleManage id={id} current={q.data.role} />
+              {q.data.isMarketer ? <MarketerHubLink /> : null}
               <BalanceAdjust id={id} />
               <ResetBalance id={id} />
               <OverridesPanel id={id} />
@@ -104,6 +106,7 @@ export default function UserDetailPage({ params }: { params: { id: string } }) {
               {q.data.role === 'marketer' ? <DefaultMarketerControl id={id} isDefault={q.data.isBrandDefaultMarketer} username={q.data.username} /> : null}
               {q.data.role === 'marketer' ? <CommissionRate id={id} /> : null}
               {q.data.role === 'marketer' ? <MarketerExpenses id={id} /> : null}
+              <DeleteAccount id={id} role={q.data.role} username={q.data.username} />
             </>
           )}
         </>
@@ -366,6 +369,53 @@ function RoleManage({ id, current }: { id: string; current: string }) {
       <p className="text-xs text-muted">
         Promoting to admin or superadmin grants back-office access. Changes are audited and apply on the user’s next login.
       </p>
+    </Section>
+  );
+}
+
+/** Consolidation cross-link: a demo/social-proof account's simulated wallet is managed (and deleted)
+ *  in the one Marketers hub. This deep-link keeps role management here and wallet/demo there. */
+function MarketerHubLink() {
+  return (
+    <Section title="Demo / social-proof account">
+      <Card className="flex flex-col gap-1">
+        <span className="text-sm text-muted">
+          This account has a demo (social-proof) wallet. Manage or remove it — and every marketer money
+          flow — in the{' '}
+          <Link href="/admin/marketer-finance" className="text-accent underline">Marketer &amp; affiliate finance</Link> hub.
+        </span>
+      </Card>
+    </Section>
+  );
+}
+
+/** Danger zone: soft-delete this account (status='deleted', login-blocked, hidden). Server-guarded:
+ *  no self, superadmin-protected, admin-only-by-superadmin, default marketer must be reassigned. */
+function DeleteAccount({ id, role, username }: { id: string; role: string; username: string }) {
+  const del = useDeleteUser();
+  const toast = useToast();
+  const router = useRouter();
+  const myRole = useSession((s) => s.user?.role);
+  const isOwnerTier = myRole === 'superadmin' || myRole === 'platform_superadmin';
+  const isAdmin = myRole === 'admin';
+  if (!isOwnerTier && !isAdmin) return null;
+  if (role === 'superadmin' || role === 'platform_superadmin') return null; // protected
+  if (isAdmin && role === 'admin') return null; // only owner-tier deletes admins
+  function run() {
+    del.mutate(id, {
+      onSuccess: () => { toast.push({ tone: 'success', title: 'Account deleted', description: `@${username} can no longer log in. History is preserved.` }); router.push('/admin/users'); },
+      onError: (e) => toast.push({ tone: 'error', title: 'Delete failed', description: e instanceof ApiError ? e.message : 'Try again.' }),
+    });
+  }
+  return (
+    <Section title="Danger zone">
+      <Card className="flex flex-col gap-3 border-red-200 dark:border-red-900 sm:flex-row sm:items-center">
+        <span className="flex-1 text-sm text-muted">
+          Delete this account. It is marked deleted, force-logged-out, blocked from signing in, and hidden
+          from lists. Financial and audit history is preserved (this is not a hard erase).
+        </span>
+        <ConfirmButton label="Delete account" confirmLabel="Delete permanently" size="md" variant="down" busy={del.isPending} onConfirm={run} />
+      </Card>
     </Section>
   );
 }
