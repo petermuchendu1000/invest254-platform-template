@@ -136,7 +136,7 @@ test("PaymentService: minWithdrawalForSite takes precedence, but a bad (0/throw)
   assert.equal((await svcThrow.requestWithdrawal("u", 25_000, "0712345678", "site-a")).newBalance, 950_000);
 });
 
-test("PaymentService: marketer withdrawal still honours the site-aware minimum, then pays INSTANTLY with no admin approval (vs player)", async () => {
+test("PaymentService: marketer withdrawal still honours the site-aware minimum, then creates a GATED pending request (no instant credit)", async () => {
   const repo = new InMemoryPaymentRepository();
   repo.seed("m", 1_000_000);
   repo.seed("p", 1_000_000);
@@ -148,16 +148,16 @@ test("PaymentService: marketer withdrawal still honours the site-aware minimum, 
   // Brand floor KES 500 (50_000) for both marketer and normal player on this site.
   const svc = new PaymentService(repo, daraja, { minWithdrawalForSite: (s) => (s === "site-a" ? 50_000 : 25_000) });
 
-  // Marketer BELOW the brand floor -> rejected (the minimum is enforced BEFORE the instant path).
+  // Marketer BELOW the brand floor -> rejected (the minimum is enforced BEFORE the hold).
   await assert.rejects(() => svc.requestWithdrawal("m", 40_000, "0712345678", "site-a"), /BELOW_MIN/);
   assert.equal(credited.length, 0);
-  // Marketer AT/above the floor -> instant game->mpesa transfer, marked paid, NO admin approval step.
+  // Marketer AT/above the floor -> a PENDING request (gated 0108): funds held, NOTHING credited to
+  // the marketer wallet until an admin approves.
   const mk = await svc.requestWithdrawal("m", 50_000, "0712345678", "site-a");
-  assert.equal(mk.mode, "marketer");
-  assert.equal(credited.length, 1);
+  assert.equal(mk.mode, "daraja");
+  assert.equal(credited.length, 0);
 
-  // Normal player on the same brand: same floor applies, but the outcome is a PENDING daraja hold
-  // that must be admin-approved (the marketer/player difference is preserved).
+  // Normal player on the same brand: same floor applies, also a PENDING hold that must be approved.
   await assert.rejects(() => svc.requestWithdrawal("p", 40_000, "0712345678", "site-a"), /BELOW_MIN/);
   const pl = await svc.requestWithdrawal("p", 50_000, "0712345678", "site-a");
   assert.equal(pl.mode, "daraja");
@@ -173,9 +173,9 @@ test("PaymentService: withdrawalsEnabledForSite kill switch refuses ALL withdraw
   let enabled = true;
   const svc = new PaymentService(repo, daraja, { withdrawalsEnabledForSite: () => enabled });
 
-  // Enabled -> both the normal player (daraja) and the marketer (instant) paths work.
+  // Enabled -> both the normal player and the marketer paths work (both now PENDING/daraja-mode).
   assert.equal((await svc.requestWithdrawal("p", 30_000, "0712345678", "site-a")).mode, "daraja");
-  assert.equal((await svc.requestWithdrawal("m", 30_000, "0712345678", "site-a")).mode, "marketer");
+  assert.equal((await svc.requestWithdrawal("m", 30_000, "0712345678", "site-a")).mode, "daraja");
 
   // Disabled -> BOTH are refused BEFORE any money moves (single entry-point enforcement).
   enabled = false;

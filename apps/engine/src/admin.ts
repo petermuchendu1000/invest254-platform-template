@@ -781,7 +781,7 @@ export class PgAdminRepository implements AdminRepository {
     const r = await this.q.query(
       `select t.id, t.user_id, t.amount, t.status, t.phone, t.provider, t.mpesa_receipt,
               t.created_at, t.updated_at, p.username,
-              coalesce(w.real_balance, 0) as balance,
+              coalesce(w.real_balance, 0) + coalesce(w.demo_balance, 0) as balance,
               coalesce(agg.dep_c, 0) as total_deposits, coalesce(agg.dep_n, 0) as deposit_count,
               coalesce(agg.wd_c, 0)  as total_withdrawals, coalesce(agg.wd_n, 0) as withdrawal_count,
               agg.first_dep
@@ -802,8 +802,8 @@ export class PgAdminRepository implements AdminRepository {
                = coalesce(t.site_id,  '00000000-0000-0000-0000-000000000001'::uuid)
          ) agg on true
         where t.kind = 'withdrawal'
-          and t.provider is distinct from 'internal'
-          and t.user_id not in (select user_id from marketer_account_ids)
+          -- Include BOTH rails now that marketer (internal) withdrawals are gated behind approval
+          -- (migration 0108): the moderation queue must show their pending requests too.
           and ($1::text is null or t.status = $1)
           and ($5::uuid is null or t.site_id = $5)
           and ($2::timestamptz is null or (t.created_at, t.id) < ($2::timestamptz, $3::uuid))

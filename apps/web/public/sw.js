@@ -8,7 +8,7 @@
  *   - API and WebSocket traffic is never intercepted — money/game state must hit
  *     the network directly.
  */
-const VERSION = 'pp-v1';
+const VERSION = 'pp-v2';
 const SHELL_CACHE = `${VERSION}-shell`;
 const ASSET_CACHE = `${VERSION}-assets`;
 const OFFLINE_URL = '/offline';
@@ -77,4 +77,57 @@ self.addEventListener('fetch', (event) => {
       }),
     );
   }
+});
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Web Push — real-time admin withdrawal alerts (Issue 1).
+ * The API sends a push whenever a player requests a withdrawal. We render an OS/browser
+ * notification with inline "Approve" / "Reject" action buttons. Clicking the body (or an
+ * action) opens/focuses the authenticated admin withdrawals page at the exact request —
+ * the money action is executed there by the logged-in session, so no bearer token is ever
+ * stored in the service worker. The page reads `?do=approve|reject` and acts on the tx.
+ * ─────────────────────────────────────────────────────────────────────────── */
+self.addEventListener('push', (event) => {
+  let payload = {};
+  try { payload = event.data ? event.data.json() : {}; } catch (_) { payload = {}; }
+  const title = payload.title || 'Invest254';
+  const actions = Array.isArray(payload.actions) ? payload.actions.slice(0, 2) : [];
+  const options = {
+    body: payload.body || '',
+    tag: payload.txId ? `withdrawal-${payload.txId}` : undefined,
+    renotify: true,
+    requireInteraction: true, // stay on screen until the admin acts (a payout decision matters)
+    data: payload,
+    actions,
+    icon: '/icons/icon-192.png',
+    badge: '/icons/icon-192.png',
+  };
+  event.waitUntil(self.registration.showNotification(title, options));
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const data = event.notification.data || {};
+  let target = data.url || '/admin/withdrawals';
+  if (event.action === 'approve' || event.action === 'reject') {
+    target += (target.indexOf('?') >= 0 ? '&' : '?') + 'do=' + event.action;
+  }
+  event.waitUntil((async () => {
+    const wins = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    for (const c of wins) {
+      // Reuse an already-open admin tab: focus it and navigate to the exact request.
+      if (c.url && c.url.indexOf('/admin') >= 0 && 'focus' in c) {
+        await c.focus();
+        if ('navigate' in c) { try { await c.navigate(target); } catch (_) {} }
+        return;
+      }
+    }
+    if (self.clients.openWindow) await self.clients.openWindow(target);
+  })());
+});
+
+// A browser may rotate the push subscription; drop the stale local one so the app re-subscribes
+// (and re-registers with the API) the next time an admin opens the alerts settings.
+self.addEventListener('pushsubscriptionchange', (event) => {
+  event.waitUntil(self.registration.pushManager.getSubscription().then((s) => s && s.unsubscribe()).catch(() => {}));
 });

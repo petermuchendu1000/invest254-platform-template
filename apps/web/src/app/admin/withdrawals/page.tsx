@@ -1,7 +1,8 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
+import { WithdrawalAlertsToggle } from '@/components/admin/WithdrawalAlertsToggle';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { Button } from '@/components/ui/Button';
 import { Money } from '@/components/ui/Money';
@@ -79,6 +80,32 @@ export default function WithdrawalsPage() {
   const bulk = useBulkWithdrawals();
   const toast = useToast();
 
+  // Deep-link action from a push notification (Issue 1). Tapping "Approve"/"Reject" on the alert
+  // opens this page with ?highlight=<txId>&do=<action>; execute it once here using the logged-in
+  // session (the service worker holds no token), then strip ?do= so a refresh can't repeat it.
+  const deepAction = useWithdrawalAction();
+  const deepHandled = useRef(false);
+  useEffect(() => {
+    if (deepHandled.current || typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    const act = params.get('do');
+    const tx = params.get('highlight');
+    if ((act === 'approve' || act === 'reject') && tx) {
+      deepHandled.current = true;
+      deepAction.mutate(
+        { id: tx, action: act },
+        {
+          onSuccess: () => toast.push({ tone: 'success', title: act === 'approve' ? 'Withdrawal approved' : 'Withdrawal rejected', description: act === 'approve' ? 'M-Pesa payout dispatched.' : 'Funds returned to the player.' }),
+          onError: (e) => toast.push({ tone: 'error', title: 'Action failed', description: e instanceof ApiError ? e.message : 'Open the row below to try again.' }),
+        },
+      );
+      params.delete('do');
+      const qs = params.toString();
+      window.history.replaceState(null, '', window.location.pathname + (qs ? `?${qs}` : ''));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Summary over the rows loaded so far (labelled "loaded" so partial pages aren't mistaken for totals).
   const totals = useMemo(() => {
     const amount = rows.reduce((s, r) => s + r.amountCents, 0);
@@ -141,6 +168,7 @@ export default function WithdrawalsPage() {
         subtitle="Review and action player withdrawal requests with full context — identity, balance and lifetime deposit/withdrawal history. Approval dispatches the M-Pesa B2C payout; rejection reverses the hold. Select rows for bulk approve/reject, copy or export."
         actions={
           <Toolbar>
+            <WithdrawalAlertsToggle />
             <FilterSelect label="Status" value={status} onChange={setStatus} options={STATUS_OPTIONS} />
           </Toolbar>
         }

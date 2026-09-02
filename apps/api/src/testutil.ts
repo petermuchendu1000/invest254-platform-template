@@ -4,6 +4,8 @@ import {
   InMemoryEngagementRepository, InMemoryPaymentRepository, InMemoryGameRepository, StubDarajaClient,
   InMemoryIdentityRepository, PaymentService, AuthService, AffiliateService, AdminService, InMemoryAdminRepository, PlatformService, InMemoryPlatformRepository, maskHandle,
   NotificationService, InMemoryNotificationRepository,
+  PushService, InMemoryPushSubscriptionRepository,
+  type PushSubscriptionRow, type PushSendResult, type WithdrawalRequestedEvent,
   type FairnessRecord, type AuthClaims, type Verifier,
 } from "@invest254/engine";
 import { createApp, type ApiDeps, type WalletBalance, type Brand } from "./app.js";
@@ -391,6 +393,15 @@ export interface TestApi {
   fairness: Map<number, FairnessRecord>;
   bonus: Map<string, Cents>;
   withdrawalSuccesses: Array<{ userId: string; amountCents: Cents }>;
+  /** Raw onWithdrawalRequested events captured for the admin push fan-out (Issue 1). */
+  withdrawalRequests: Array<WithdrawalRequestedEvent>;
+  /** Every Web Push the capturing transport was asked to deliver (endpoint + decoded payload). */
+  pushSends: Array<{ endpoint: string; payload: any }>;
+  /** The push subscription store, so tests can seed admin devices directly. */
+  pushRepo: InMemoryPushSubscriptionRepository;
+  push: PushService;
+  /** Await all in-flight fire-and-forget push fan-outs (the events are dispatched un-awaited). */
+  flushPush(): Promise<unknown>;
   notifications: NotificationService;
   marketers: MarketerRepo;
   referral: InMemoryReferralRepo;
@@ -424,12 +435,33 @@ export async function startTestApi(opts: TestApiOptions = {}): Promise<TestApi> 
   let adminRepoRef: InMemoryAdminRepository | undefined;
   const TU_DEFAULT_SITE_ID = "00000000-0000-0000-0000-000000000001";
 
+  // Admin Web Push fan-out (Issue 1): an in-memory subscription store + a capturing transport that
+  // records every send. An endpoint containing "gone" simulates a dead subscription (HTTP 410) so
+  // tests can assert the self-healing prune. The VAPID public key is a fixed test sentinel.
+  const pushRepo = new InMemoryPushSubscriptionRepository();
+  const pushSends: Array<{ endpoint: string; payload: any }> = [];
+  const pushTransport = {
+    publicKey: (): string | null => "TEST_VAPID_PUBLIC_KEY",
+    async send(sub: PushSubscriptionRow, payload: string): Promise<PushSendResult> {
+      pushSends.push({ endpoint: sub.endpoint, payload: JSON.parse(payload) });
+      if (sub.endpoint.includes("gone")) return { ok: false, statusCode: 410, gone: true };
+      return { ok: true, statusCode: 201 };
+    },
+  };
+  const push = new PushService(pushRepo, pushTransport, { resolveHandle, appBaseUrl: "https://test.invest254.local" });
+  const withdrawalRequests: Array<WithdrawalRequestedEvent> = [];
+  const pushPromises: Array<Promise<unknown>> = [];
+
   const payments = new PaymentService(payRepo, daraja, {
     withdrawalsEnabledForSite: async (siteId) =>
       adminRepoRef ? adminRepoRef.getWithdrawalsEnabled(siteId ?? TU_DEFAULT_SITE_ID) : true,
     events: {
       onWithdrawalSuccess: (e) => {
         withdrawalSuccesses.push(e);
+      },
+      onWithdrawalRequested: (e) => {
+        withdrawalRequests.push(e);
+        pushPromises.push(push.notifyWithdrawalRequested(e));
       },
     },
   });
@@ -487,6 +519,7 @@ export async function startTestApi(opts: TestApiOptions = {}): Promise<TestApi> 
     admin,
     platform,
     notifications,
+    push,
     marketers: makeInMemoryMarketerRepo(),
     referral: referralRepo,
     marketerExpenses: (() => {
@@ -539,6 +572,7 @@ export async function startTestApi(opts: TestApiOptions = {}): Promise<TestApi> 
   return {
     baseUrl: `http://127.0.0.1:${port}`,
     deps, identity, engage, payRepo, gameRepo, daraja, fairness, bonus, withdrawalSuccesses,
+    withdrawalRequests, pushSends, pushRepo, push, flushPush: () => Promise.all(pushPromises),
     notifications,
     marketers: deps.marketers,
     referral: referralRepo,

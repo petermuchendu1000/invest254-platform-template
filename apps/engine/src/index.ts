@@ -32,6 +32,7 @@ export * from "./admin.js";
 export * from "./adminservice.js";
 export * from "./platform.js";
 export * from "./notifications.js";
+export * from "./push.js";
 export * from "./overrides.js";
 export * from "./poolcontroller.js";
 export * from "./pgpools.js";

@@ -13,6 +13,10 @@
   "dependencies": {
     "@invest254/shared": "0.1.0",
     "@invest254/engine": "0.1.0",
-    "pg": "^8.12.0"
+    "pg": "^8.12.0",
+    "web-push": "^3.6.7"
+  },
+  "devDependencies": {
+    "@types/web-push": "^3.6.3"
   }
 }

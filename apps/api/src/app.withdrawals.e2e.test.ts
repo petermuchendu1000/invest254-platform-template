@@ -58,18 +58,26 @@ async function feed(api: TestApi, marketerId: string): Promise<any[]> {
 
 // ─── happy path ─────────────────────────────────────────────────────────────
 
-test("e2e: marketer withdraws on site -> instant paid -> M-PESA 'received' message in app feed", async () => {
+test("e2e: marketer withdrawal is GATED -> pending -> admin approves -> M-PESA 'received' message in app feed", async () => {
   const api = await startTestApi({ startingBalanceCents: 1_000_000 });
   try {
     const mid = await onboardMarketer(api);
     wireMarketerPath(api, mid);
 
     const res = await req(api, "POST", "/api/v1/withdrawals", { token: PLAYER, body: { amount: 50_000, phone: PHONE } });
-    assert.equal(res.status, 200); // marketer path pays instantly (200), not pending (202)
+    assert.equal(res.status, 202); // gated (0108): pending admin approval, NOT instant
     const body = await json(res);
-    assert.equal(body.paid, true);
-    assert.equal(body.newBalance, 950_000);
-    assert.equal(body.mpesaBalance, 50_000);
+    assert.equal(body.paid, undefined);
+    assert.equal(body.newBalance, 950_000); // demo balance held immediately
+
+    // admin is notified of the request; nothing credited and no app message yet
+    assert.equal(api.withdrawalRequests.length, 1);
+    assert.equal(api.withdrawalRequests[0]!.txId, body.transactionId);
+    assert.equal((await feed(api, mid)).length, 0);
+    assert.equal(api.withdrawalSuccesses.length, 0);
+
+    // admin approves -> marketer wallet credited + M-PESA 'received' message appears
+    assert.equal((await req(api, "POST", `/api/v1/admin/withdrawals/${body.transactionId}/approve`, { token: ADMIN })).status, 200);
 
     const items = await feed(api, mid);
     assert.equal(items.length, 1);
@@ -88,7 +96,7 @@ test("e2e: marketer withdraws on site -> instant paid -> M-PESA 'received' messa
   } finally { await api.close(); }
 });
 
-test("e2e: multiple withdrawals appear newest-first (latest message on top)", async () => {
+test("e2e: multiple approved withdrawals appear newest-first (latest message on top)", async () => {
   const api = await startTestApi({ startingBalanceCents: 1_000_000 });
   try {
     const mid = await onboardMarketer(api);
@@ -96,7 +104,9 @@ test("e2e: multiple withdrawals appear newest-first (latest message on top)", as
 
     for (const amount of [25_000, 30_000, 40_000]) {
       const r = await req(api, "POST", "/api/v1/withdrawals", { token: PLAYER, body: { amount, phone: PHONE } });
-      assert.equal(r.status, 200);
+      assert.equal(r.status, 202);
+      const { transactionId } = await json(r);
+      assert.equal((await req(api, "POST", `/api/v1/admin/withdrawals/${transactionId}/approve`, { token: ADMIN })).status, 200);
     }
 
     const items = await feed(api, mid);
@@ -105,29 +115,31 @@ test("e2e: multiple withdrawals appear newest-first (latest message on top)", as
     assert.equal(items[1].amountCents, 30_000);
     assert.equal(items[2].amountCents, 25_000);
     assert.ok(items[0].id > items[1].id && items[1].id > items[2].id);
-    // running balance reflected in each confirmation SMS
+    // running balance reflected in each confirmation SMS (credited in request order)
     assert.match(items[0].mpesa.message, /New M-PESA balance is Ksh950\.00/);
     assert.match(items[2].mpesa.message, /New M-PESA balance is Ksh250\.00/);
 
-    assert.equal(items.length, 3);
     assert.equal(api.withdrawalSuccesses.length, 3);
   } finally { await api.close(); }
 });
 
-test("e2e: game wallet and marketer wallet balances stay consistent across withdrawals", async () => {
+test("e2e: game wallet and marketer wallet balances stay consistent across gated withdrawals", async () => {
   const api = await startTestApi({ startingBalanceCents: 100_000 });
   try {
     const mid = await onboardMarketer(api);
     wireMarketerPath(api, mid);
 
-    await req(api, "POST", "/api/v1/withdrawals", { token: PLAYER, body: { amount: 40_000, phone: PHONE } });
-    await req(api, "POST", "/api/v1/withdrawals", { token: PLAYER, body: { amount: 25_000, phone: PHONE } });
+    for (const amount of [40_000, 25_000]) {
+      const r = await req(api, "POST", "/api/v1/withdrawals", { token: PLAYER, body: { amount, phone: PHONE } });
+      const { transactionId } = await json(r);
+      await req(api, "POST", `/api/v1/admin/withdrawals/${transactionId}/approve`, { token: ADMIN });
+    }
 
     const wallet = await json(await req(api, "GET", "/api/v1/wallet", { token: PLAYER }));
-    assert.equal(wallet.real, 35_000); // 1000 - 400 - 250
+    assert.equal(wallet.real, 35_000); // 1000 - 400 - 250 (held on request)
 
     const me = await json(await req(api, "GET", "/api/v1/marketers/me", { token: mtok(mid) }));
-    assert.equal(me.balance_cents, 65_000);
+    assert.equal(me.balance_cents, 65_000); // credited on approval
   } finally { await api.close(); }
 });
 
@@ -249,7 +261,9 @@ test("e2e: feed DTO carries every field the app needs to render and sort message
   try {
     const mid = await onboardMarketer(api);
     wireMarketerPath(api, mid);
-    await req(api, "POST", "/api/v1/withdrawals", { token: PLAYER, body: { amount: 123_456, phone: PHONE } });
+    const r = await req(api, "POST", "/api/v1/withdrawals", { token: PLAYER, body: { amount: 123_456, phone: PHONE } });
+    const { transactionId } = await json(r);
+    await req(api, "POST", `/api/v1/admin/withdrawals/${transactionId}/approve`, { token: ADMIN });
 
     const [tx] = await feed(api, mid);
     for (const key of ["id", "entryType", "amountCents", "balanceAfterCents", "ref", "source", "direction", "createdAtMs", "mpesa"]) {
@@ -270,8 +284,10 @@ test("e2e: outgoing (marketer cash-out) entries render as 'sent' messages and so
     const mid = await onboardMarketer(api);
     wireMarketerPath(api, mid);
 
-    // money in via game withdrawal, then the marketer cashes out via admin withdraw
-    await req(api, "POST", "/api/v1/withdrawals", { token: PLAYER, body: { amount: 80_000, phone: PHONE } });
+    // money in via game withdrawal (gated -> admin approves), then the marketer cashes out via admin withdraw
+    const inReq = await req(api, "POST", "/api/v1/withdrawals", { token: PLAYER, body: { amount: 80_000, phone: PHONE } });
+    const { transactionId } = await json(inReq);
+    await req(api, "POST", `/api/v1/admin/withdrawals/${transactionId}/approve`, { token: ADMIN });
     const out = await req(api, "POST", `/api/v1/admin/marketers/${mid}/withdraw`, { token: ADMIN, body: { amountCents: 30_000, ref: "cashout-1" } });
     assert.equal(out.status, 200);
 

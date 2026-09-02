@@ -2,6 +2,7 @@ import {
   PgGameRepository, PgEngagementRepository, PgPaymentRepository, PgIdentityRepository,
   PaymentService, AuthService, AffiliateService, AdminService, PgAdminRepository, PlatformService, PgPlatformRepository, makeDarajaClientFromConfig, loadDarajaConfigFromDb, makeVerifier,
   NotificationService, PgNotificationRepository,
+  PushService, PgPushSubscriptionRepository,
   GameConfigStore, mapConfigRow, makePgPools,
   type GameRepository, type EngagementRepository, type PaymentRepository,
   type Querier, type FairnessRecord, type ListenClient,
@@ -13,6 +14,10 @@ import { makePgMarketerRepo } from "./marketers.pg.js";
 import { makePgReferralRepo } from "./referral.pg.js";
 import { makePgSupportDeps } from "./support.pg.js";
 import { makeDomainProvisioner } from "./domains.js";
+import { makeWebPushTransport } from "./webpush.js";
+import { makeResendSender, buildWithdrawalEmail } from "./email.js";
+import { makeTelegramClient } from "./telegram.js";
+import { signWithdrawalAction } from "./withdrawalactionlink.js";
 import type { PlatformOnboardDeps, OnboardInput, OnboardResult } from "./app.platform.js";
 
 /**
@@ -133,6 +138,66 @@ async function buildDeps(): Promise<ApiDeps> {
   // min-withdrawal enforcement can read platformGate.economy(). Reused as the app dep below.
   const platformGate = new PlatformGate((sql: string, p?: unknown[]) => q.query(sql, p ?? []));
 
+  // Real-time admin withdrawal alerts (Issue 1). Constructed before PaymentService so the
+  // onWithdrawalRequested hook can fan a pending request out to every opted-in admin device as a
+  // Web Push with Approve/Reject actions. Absent (null) when VAPID keys aren't configured — the
+  // /admin/push/* routes and the fan-out then stay dormant, so push is purely additive.
+  const pushTransport = makeWebPushTransport();
+  const pushService = pushTransport
+    ? new PushService(new PgPushSubscriptionRepository(q), pushTransport, {
+        resolveHandle: (userId) => resolveHandle(userId),
+        appBaseUrl: process.env.PUBLIC_WEB_URL || process.env.APP_BASE_URL || "",
+      })
+    : undefined;
+  if (pushService) console.log("[api] admin web-push enabled (withdrawal alerts with Approve/Reject actions)");
+
+  // Email alerts (Issue 1): the reliable, login-free channel — a withdrawal request emails the
+  // admin(s) with one-tap Approve/Reject magic links. Dormant unless RESEND_API_KEY + EMAIL_FROM +
+  // ADMIN_ALERT_EMAILS are set. Signed with SUPABASE_JWT_SECRET (no new secret needed).
+  const emailSender = makeResendSender();
+  const actionSecret = process.env.SUPABASE_JWT_SECRET;
+  const apiPublicUrl = (process.env.API_PUBLIC_URL || "https://invest254-api.fly.dev").replace(/\/+$/, "");
+  const alertEmails = (process.env.ADMIN_ALERT_EMAILS || "").split(",").map((s) => s.trim()).filter(Boolean);
+  if (emailSender && alertEmails.length > 0) console.log(`[api] admin withdrawal EMAIL alerts enabled -> ${alertEmails.length} recipient(s)`);
+
+  // Records who approved/rejected a withdrawal actioned from an email link (approved_by FK -> profiles).
+  const resolveActionActor = async (): Promise<string | null> => {
+    const override = process.env.WITHDRAWAL_ACTION_ADMIN_ID?.trim();
+    if (override) return override;
+    try {
+      const r = await q.query("select id from profiles where role in ('admin','superadmin') and status = 'active' order by (role = 'superadmin') desc, created_at asc limit 1", []);
+      return r.rows[0] ? String(r.rows[0].id) : null;
+    } catch { return null; }
+  };
+
+  async function emailWithdrawalAlert(e: { txId: string; userId: string; amountCents: number; phone: string }): Promise<void> {
+    if (!emailSender || !actionSecret || alertEmails.length === 0) return;
+    try {
+      const who = await resolveHandle(e.userId);
+      const approveUrl = `${apiPublicUrl}/api/v1/w/act?token=${signWithdrawalAction(e.txId, "approve", actionSecret)}`;
+      const rejectUrl = `${apiPublicUrl}/api/v1/w/act?token=${signWithdrawalAction(e.txId, "reject", actionSecret)}`;
+      const mail = buildWithdrawalEmail({ who, amountCents: e.amountCents, phone: e.phone, txId: e.txId, approveUrl, rejectUrl });
+      const r = await emailSender.send({ to: alertEmails, ...mail });
+      if (!r.ok) console.warn("[api] withdrawal alert email failed:", r.error);
+    } catch (err) { console.warn("[api] withdrawal alert email error:", (err as Error).message); }
+  }
+
+  // Telegram channel (Issue 1): instant push with inline Approve/Reject. The callback is handled by
+  // /api/v1/telegram/webhook. Dormant unless TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_IDS are set.
+  const telegram = makeTelegramClient();
+  const telegramChatIds = (process.env.TELEGRAM_CHAT_IDS || "").split(",").map((s) => s.trim()).filter(Boolean);
+  const telegramWebhookSecret = process.env.TELEGRAM_WEBHOOK_SECRET;
+  if (telegram && telegramChatIds.length > 0) console.log(`[api] admin TELEGRAM alerts enabled -> ${telegramChatIds.length} chat(s)`);
+  async function telegramWithdrawalAlert(e: { txId: string; userId: string; amountCents: number; phone: string }): Promise<void> {
+    if (!telegram || telegramChatIds.length === 0) return;
+    try {
+      const who = await resolveHandle(e.userId);
+      await Promise.all(telegramChatIds.map((chatId) =>
+        telegram.sendWithdrawalAlert(chatId, { who, amountCents: e.amountCents, phone: e.phone, txId: e.txId })
+          .then((r) => { if (!r.ok) console.warn("[api] telegram alert failed:", r.error); })));
+    } catch (err) { console.warn("[api] telegram alert error:", (err as Error).message); }
+  }
+
   const payments = new PaymentService(payRepo, daraja, {
     // Verify STK callbacks against Safaricom (STKPushQuery) before crediting — defeats forged
     // callbacks. Set MPESA_VERIFY_CALLBACKS=false only if the callback source is otherwise trusted.
@@ -154,6 +219,16 @@ async function buildDeps(): Promise<ApiDeps> {
     events: {
       onWithdrawalSuccess: ({ userId, amountCents }) => {
         void resolveHandle(userId)
+      },
+      // Fire-and-forget: push a real-time Approve/Reject alert to admins. Never awaited and fully
+      // isolated so a push outage can't slow down or fail the player's withdrawal request.
+      onWithdrawalRequested: (e) => {
+        // Fire all channels, fire-and-forget: email + Telegram (login-free) + web push (if enabled).
+        void emailWithdrawalAlert(e);
+        void telegramWithdrawalAlert(e);
+        if (pushService) void pushService.notifyWithdrawalRequested(e).catch((err) => {
+          console.warn("[api] admin withdrawal push failed:", (err as Error).message);
+        });
       },
     },
   });
@@ -270,6 +345,12 @@ async function buildDeps(): Promise<ApiDeps> {
     admin,
     platform,
     notifications,
+    push: pushService,
+    actionSecret: process.env.SUPABASE_JWT_SECRET,
+    withdrawalActionActor: resolveActionActor,
+    telegram: telegram ?? undefined,
+    telegramChatIds,
+    telegramWebhookSecret,
     corsAllowOrigin: (origin: string) => brandCors.allows(origin),
     marketers: makePgMarketerRepo((sql, params) => q.query(sql, params ?? [])),
     referral: makePgReferralRepo((sql, params) => q.query(sql, params ?? [])),

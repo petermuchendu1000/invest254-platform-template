@@ -30,7 +30,7 @@ test("InMemory payments: withdrawal hold -> approve -> success keeps debit", asy
   const w = await r.createWithdrawal("u", 20_000, "254712345678", 20_000);
   assert.equal(w.newBalance, 80_000); // held
   const ap = await r.approveWithdrawal(w.txId, "admin");
-  assert.deepEqual(ap, { approved: true, amountCents: 20_000, phone: "254712345678" });
+  assert.deepEqual(ap, { approved: true, amountCents: 20_000, phone: "254712345678", provider: "mpesa", userId: "u" });
   const c = await r.completeWithdrawal(w.txId, 0, "conv", "rcpt", {});
   assert.deepEqual(c, { applied: true, status: "success", newBalance: 80_000 });
   const c2 = await r.completeWithdrawal(w.txId, 0, "conv", "rcpt", {});
@@ -77,7 +77,7 @@ test("Pg payments: maps each method to the right RPC + params", async () => {
       if (text.includes("fn_complete_deposit")) return { rows: [{ applied: true, status: "success", new_balance: "105000" }] };
       if (text.includes("fn_create_withdrawal")) return { rows: [{ tx_id: "tx-w", new_balance: "80000" }] };
       if (text.includes("fn_approve_withdrawal")) return { rows: [{ ok: true }] };
-      if (text.includes("from transactions where id")) return { rows: [{ id: "tx-w", user_id: "u", kind: "withdrawal", amount: "20000", status: "processing", phone: "254712345678" }] };
+      if (text.includes("from transactions where id")) return { rows: [{ id: "tx-w", user_id: "u", kind: "withdrawal", amount: "20000", status: "processing", phone: "254712345678", provider: "mpesa" }] };
       if (text.includes("fn_reject_withdrawal")) return { rows: [{ reversed: true, new_balance: "100000" }] };
       if (text.includes("fn_complete_withdrawal")) return { rows: [{ applied: true, status: "success", new_balance: "80000" }] };
       return { rows: [] };
@@ -91,7 +91,7 @@ test("Pg payments: maps each method to the right RPC + params", async () => {
   const w = await r.createWithdrawal("u", 20000, "254712345678", 20000);
   assert.deepEqual(w, { txId: "tx-w", newBalance: 80000 });
   const ap = await r.approveWithdrawal("tx-w", "admin");
-  assert.deepEqual(ap, { approved: true, amountCents: 20000, phone: "254712345678" });
+  assert.deepEqual(ap, { approved: true, amountCents: 20000, phone: "254712345678", provider: "mpesa", userId: "u" });
   const rj = await r.rejectWithdrawal("tx-w", "admin");
   assert.deepEqual(rj, { reversed: true, newBalance: 100000 });
 });

@@ -17,7 +17,7 @@ export interface GameWithdrawResult { isMarketer: boolean; txId?: string; newBal
 export type WithdrawalOutcome =
   | { mode: "marketer"; txId: string; newBalance: Cents; mpesaBalanceCents: Cents }
   | { mode: "daraja"; txId: string; newBalance: Cents };
-export interface ApproveResult { approved: boolean; amountCents: Cents | null; phone: string | null; }
+export interface ApproveResult { approved: boolean; amountCents: Cents | null; phone: string | null; provider?: string | null; userId?: string | null; }
 export interface TxRow { id: string; userId: string; kind: "deposit" | "withdrawal"; amountCents: Cents; status: string; phone: string; }
 
 /** A transaction as shown in a player's payment history. */
@@ -55,11 +55,13 @@ export interface PaymentRepository {
   listUnsettledDeposits(olderThanMs: number, limit: number): Promise<UnsettledDeposit[]>;
 }
 
-interface MemTx { id: string; userId: string; kind: "deposit" | "withdrawal"; amount: Cents; status: string; phone: string; checkoutId?: string; seq: number; createdAtMs: number; receipt: string | null; siteId?: string | null; }
+interface MemTx { id: string; userId: string; kind: "deposit" | "withdrawal"; amount: Cents; status: string; phone: string; checkoutId?: string; seq: number; createdAtMs: number; receipt: string | null; siteId?: string | null; provider?: string; marketerId?: string; }
 interface MemLedger { userId: string; type: string; amount: Cents; ref: string; }
 
 export class InMemoryPaymentRepository implements PaymentRepository {
   private balances = new Map<string, Cents>();
+  /** In-memory marketer-wallet balances, credited only on approval (mirrors marketer_wallets). */
+  private marketerBalances = new Map<string, Cents>();
   private txns = new Map<string, MemTx>();
   private byCheckout = new Map<string, string>();
   private txSeq = 0;
@@ -141,19 +143,30 @@ export class InMemoryPaymentRepository implements PaymentRepository {
     if (!Number.isInteger(amountCents) || amountCents <= 0) throw new Error("INVALID_AMOUNT");
     const bal = this.balances.get(userId) ?? 0;
     if (bal < amountCents) throw new Error("INSUFFICIENT_FUNDS");
+    // Gated (0108): hold the funds now but create a PENDING request — the marketer wallet is credited
+    // only on admin approval. No onMarketerCredit here anymore.
     const next = bal - amountCents;
     this.balances.set(userId, next);
     const txId = `tx-${++this.txSeq}`;
-    this.txns.set(txId, { id: txId, userId, kind: "withdrawal", amount: amountCents, status: "success", phone: phone!, seq: this.txSeq, createdAtMs: Date.now(), receipt: null });
+    this.txns.set(txId, { id: txId, userId, kind: "withdrawal", amount: amountCents, status: "pending", provider: "internal", marketerId, phone: phone!, seq: this.txSeq, createdAtMs: Date.now(), receipt: null });
     this.ledger.push({ userId, type: "withdrawal", amount: -amountCents, ref: `transactions:${txId}` });
-    this.onMarketerCredit?.(marketerId, amountCents, `game:${txId}`);
-    return { isMarketer: true, txId, newBalance: next, mpesaBalanceCents: amountCents };
+    return { isMarketer: true, txId, newBalance: next, mpesaBalanceCents: this.marketerBalances.get(marketerId) ?? 0 };
   }
   async approveWithdrawal(txId: string, _adminId: string): Promise<ApproveResult> {
     const tx = this.txns.get(txId);
-    if (!tx || tx.kind !== "withdrawal" || tx.status !== "pending") return { approved: false, amountCents: null, phone: null };
+    if (!tx || tx.kind !== "withdrawal" || tx.status !== "pending") return { approved: false, amountCents: null, phone: null, provider: null, userId: null };
+    if (tx.provider === "internal") {
+      // Marketer rail: credit the marketer wallet NOW (idempotent per tx) and settle success. No B2C.
+      if (tx.marketerId) {
+        const b = (this.marketerBalances.get(tx.marketerId) ?? 0) + tx.amount;
+        this.marketerBalances.set(tx.marketerId, b);
+        this.onMarketerCredit?.(tx.marketerId, tx.amount, `game:${tx.id}`);
+      }
+      tx.status = "success";
+      return { approved: true, amountCents: tx.amount, phone: tx.phone, provider: "internal", userId: tx.userId };
+    }
     tx.status = "processing";
-    return { approved: true, amountCents: tx.amount, phone: tx.phone };
+    return { approved: true, amountCents: tx.amount, phone: tx.phone, provider: tx.provider ?? "mpesa", userId: tx.userId };
   }
   async rejectWithdrawal(txId: string, _adminId: string): Promise<{ reversed: boolean; newBalance: Cents }> {
     const tx = this.txns.get(txId);
@@ -284,9 +297,10 @@ export class PgPaymentRepository implements PaymentRepository {
     return { isMarketer: true, txId: String(x.tx_id), newBalance: toCents(x.new_balance), mpesaBalanceCents: toCents(x.mpesa_balance) };
   }  async approveWithdrawal(txId: string, adminId: string): Promise<ApproveResult> {
     const ok = await this.q.query("select fn_approve_withdrawal($1,$2) as ok", [txId, adminId]);
-    if (!ok.rows[0]?.ok) return { approved: false, amountCents: null, phone: null };
-    const t = await this.q.query("select amount, phone from transactions where id = $1", [txId]);
-    return { approved: true, amountCents: toCents(t.rows[0].amount), phone: String(t.rows[0].phone) };
+    if (!ok.rows[0]?.ok) return { approved: false, amountCents: null, phone: null, provider: null, userId: null };
+    const t = await this.q.query("select user_id, amount, phone, provider from transactions where id = $1", [txId]);
+    return { approved: true, amountCents: toCents(t.rows[0].amount), phone: String(t.rows[0].phone),
+             provider: t.rows[0].provider == null ? null : String(t.rows[0].provider), userId: String(t.rows[0].user_id) };
   }
   async rejectWithdrawal(txId: string, adminId: string): Promise<{ reversed: boolean; newBalance: Cents }> {
     const r = await this.q.query("select reversed, new_balance from fn_reject_withdrawal($1,$2)", [txId, adminId]);
