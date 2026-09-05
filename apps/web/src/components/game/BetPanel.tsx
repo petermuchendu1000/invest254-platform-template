@@ -2,12 +2,13 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { centsToKes, formatKes, kesToCents } from '@invest254/shared/money';
+import { centsToKes, kesToCents } from '@invest254/shared/money';
 import type { Direction } from '@invest254/shared';
 import { cn } from '@/lib/cn';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
-import { Money } from '@/components/ui/Money';
+import { DisplayMoney as Money } from '@/lib/money';
+import { useDisplayMoney, USD_LIMITS } from '@/lib/money';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { api } from '@/lib/api/endpoints';
 import { useSession } from '@/lib/auth/session';
@@ -18,10 +19,12 @@ import { useGameSocket } from '@/lib/game/GameSocketProvider';
 import { useBrand } from '@/lib/brand/BrandProvider';
 import { LivePnl } from '@/components/game/LivePnl';
 
-const CHIP_CENTS = [25000, 50000, 75000, 100000];
+const CHIP_CENTS = [25000, 50000, 100000];
 const DURATION_OPTIONS = [10, 30, 60, 120];
 // Stepper granularity for the +/- buttons on the stake field (KES).
 const STEP_KES = 50;
+const round2 = (n: number) => Math.round(n * 100) / 100;
+const ceil2 = (n: number) => Math.ceil(n * 100) / 100;
 
 export function BetPanel() {
   const hydrated = useHydrated();
@@ -31,6 +34,13 @@ export function BetPanel() {
   const clearPending = useDepositUi((s) => s.clearPending);
 
   const brand = useBrand();
+  const { fmt, both, symbol, isForeign, toDisplay, toKesCents, currency, limit } = useDisplayMoney();
+  // Quick stakes in the ENTRY unit: fixed $ presets for foreign brands ($5/$10/$50/$100), the KES
+  // presets otherwise. Each chip's value is what lands in the stake field; KES cents are derived
+  // from it for validation/placing the trade.
+  const chips = isForeign
+    ? [5, 25, 100].map((v) => ({ key: v, value: v, label: `${symbol}${v}` }))
+    : CHIP_CENTS.slice(0, 3).map((c) => ({ key: c, value: centsToKes(c), label: String(centsToKes(c)) }));
   const { data: config } = useQuery({
     queryKey: ['gameConfig', brand.slug],
     queryFn: () => api.gameConfig(brand.slug),
@@ -39,20 +49,25 @@ export function BetPanel() {
   const { data: wallet } = useWallet();
   const { status, activePosition, openPosition, sell } = useGameSocket();
 
-  const minStakeCents = config?.minStakeCents ?? 25000;
+  const minStakeCents = limit(USD_LIMITS.minStake, config?.minStakeCents ?? 25000);
   const maxStakeCents = config?.maxStakeCents;
   const defaultDurationS = config?.defaultDurationS ?? 10;
 
   const [stake, setStake] = useState<string>('');
   const [durationS, setDurationS] = useState<number>(defaultDurationS);
+  // The free-text stake field is hidden behind a "Custom" chip to give the chart more room.
+  const [customOpen, setCustomOpen] = useState(false);
   // Direction the player picked before topping up. Purely informational: it drives the
   // "funds added" hint after a deposit settles. It never gates or re-fires the trade.
   const [resumeDir, setResumeDir] = useState<Direction | null>(null);
 
   // Seed the stake with a sensible default (KES 250) once config arrives, never below the minimum.
   useEffect(() => {
-    if (stake === '') setStake(String(centsToKes(Math.max(minStakeCents, 25000))));
-  }, [minStakeCents, stake]);
+    if (stake === '') {
+      const cents = Math.max(minStakeCents, 25000);
+      setStake(isForeign ? String(USD_LIMITS.minStake) : String(centsToKes(cents)));
+    }
+  }, [minStakeCents, stake, isForeign]);
   useEffect(() => {
     if (config) setDurationS((d) => (d === 10 && defaultDurationS !== 10 ? defaultDurationS : d));
   }, [config, defaultDurationS]);
@@ -65,8 +80,8 @@ export function BetPanel() {
   const stakeCents = useMemo(() => {
     const n = Number.parseFloat(stake);
     if (!Number.isFinite(n) || n <= 0) return NaN;
-    return kesToCents(n);
-  }, [stake]);
+    return isForeign ? toKesCents(n) : kesToCents(n);
+  }, [stake, isForeign, toKesCents]);
 
   // Bonus funds are stakeable (bonus-first; migration 0094), so affordability counts real + bonus.
   // This is what lets a KES 200 welcome bonus + a small top-up reach the min stake.
@@ -91,23 +106,27 @@ export function BetPanel() {
 
   const errorHint = (() => {
     if (!Number.isFinite(stakeCents)) return null;
-    if (!validStake) return `Minimum stake is ${formatKes(minStakeCents)}.`;
-    if (overMax && maxStakeCents !== undefined) return `Maximum stake is ${formatKes(maxStakeCents)}.`;
+    if (!validStake) return `Minimum stake is ${both(minStakeCents)}.`;
+    if (overMax && maxStakeCents !== undefined) return `Maximum stake is ${both(maxStakeCents)}.`;
     return null;
   })();
 
-  function chipActive(c: number): boolean {
+  function chipActive(value: number): boolean {
     const n = Number.parseFloat(stake);
-    return Number.isFinite(n) && kesToCents(n) === c;
+    return Number.isFinite(n) && n === value;
   }
 
-  function bumpStake(deltaKes: number) {
-    const minKes = centsToKes(minStakeCents);
+  function bumpStake(delta: number) {
+    // KES brands step by whole KES (STEP_KES, snapped); foreign brands step by whole display units.
+    const minU = isForeign ? ceil2(toDisplay(minStakeCents)) : centsToKes(minStakeCents);
     const cur = Number.parseFloat(stake);
-    const base = Number.isFinite(cur) ? cur : minKes;
-    let next = Math.round((base + deltaKes) / STEP_KES) * STEP_KES;
-    if (next < minKes) next = minKes;
-    if (maxStakeCents !== undefined && kesToCents(next) > maxStakeCents) next = centsToKes(maxStakeCents);
+    const base = Number.isFinite(cur) ? cur : minU;
+    let next = isForeign ? round2(base + delta) : Math.round((base + delta) / STEP_KES) * STEP_KES;
+    if (next < minU) next = minU;
+    if (maxStakeCents !== undefined) {
+      const maxU = isForeign ? Math.floor(toDisplay(maxStakeCents) * 100) / 100 : centsToKes(maxStakeCents);
+      if (next > maxU) next = maxU;
+    }
     setStake(String(next));
   }
 
@@ -171,23 +190,55 @@ export function BetPanel() {
   // ── Idle — stake + duration + BUY/SELL (always visible) ──────────────────
   return (
     <Card className="flex flex-col gap-2.5 rounded-xl p-3">
-      {/* Stake input with KES prefix + quick steppers */}
+      {/* Quick stakes + Custom. The free-text field only appears when Custom is tapped (space for the chart). */}
+      <div className="grid grid-cols-4 gap-2">
+        {chips.map((chip) => (
+          <button
+            key={chip.key}
+            type="button"
+            onClick={() => { setStake(String(chip.value)); setCustomOpen(false); }}
+            className={cn(
+              'h-9 rounded-lg border text-sm font-semibold tabular-nums transition',
+              !customOpen && chipActive(chip.value)
+                ? 'border-accent bg-accent/10 text-accent'
+                : 'border-border bg-surface-2 text-fg hover:border-accent/60',
+            )}
+          >
+            {chip.label}
+          </button>
+        ))}
+        <button
+          type="button"
+          onClick={() => setCustomOpen((v) => !v)}
+          aria-expanded={customOpen}
+          className={cn(
+            'h-9 rounded-lg border text-sm font-semibold transition',
+            customOpen || !chips.some((c) => chipActive(c.value))
+              ? 'border-accent bg-accent/10 text-accent'
+              : 'border-border bg-surface-2 text-fg hover:border-accent/60',
+          )}
+        >
+          Custom
+        </button>
+      </div>
+
+      {customOpen ? (
       <div className="flex items-center gap-2 rounded-xl border border-border bg-surface-2 px-3 transition focus-within:border-accent focus-within:ring-1 focus-within:ring-accent">
-        <span className="rounded-md bg-surface px-2 py-1 text-xs font-semibold text-muted">KES</span>
+        <span className="rounded-md bg-surface px-2 py-1 text-xs font-semibold text-muted">{symbol}</span>
         <input
           inputMode="decimal"
           autoFocus
           value={stake}
           onChange={(e) => setStake(e.target.value.replace(/[^0-9.]/g, ''))}
           placeholder="0"
-          aria-label="Stake amount in KES"
+          aria-label={`Stake amount in ${currency}`}
           className="h-11 w-full bg-transparent text-xl font-bold tabular-nums text-fg outline-none placeholder:text-muted"
         />
         <div className="flex shrink-0 items-center gap-1">
           <button
             type="button"
             aria-label="Decrease stake"
-            onClick={() => bumpStake(-STEP_KES)}
+            onClick={() => bumpStake(isForeign ? -1 : -STEP_KES)}
             className="flex h-8 w-8 items-center justify-center rounded-lg border border-border bg-surface text-lg font-bold leading-none text-muted transition hover:text-fg"
           >
             −
@@ -195,32 +246,14 @@ export function BetPanel() {
           <button
             type="button"
             aria-label="Increase stake"
-            onClick={() => bumpStake(STEP_KES)}
+            onClick={() => bumpStake(isForeign ? 1 : STEP_KES)}
             className="flex h-8 w-8 items-center justify-center rounded-lg border border-border bg-surface text-lg font-bold leading-none text-muted transition hover:text-fg"
           >
             +
           </button>
         </div>
       </div>
-
-      {/* Quick chips */}
-      <div className="grid grid-cols-4 gap-2">
-        {CHIP_CENTS.map((c) => (
-          <button
-            key={c}
-            type="button"
-            onClick={() => setStake(String(centsToKes(c)))}
-            className={cn(
-              'h-10 rounded-lg border text-sm font-semibold tabular-nums transition',
-              chipActive(c)
-                ? 'border-accent bg-accent/10 text-accent'
-                : 'border-border bg-surface-2 text-fg hover:border-accent/60',
-            )}
-          >
-            {centsToKes(c)}
-          </button>
-        ))}
-      </div>
+      ) : null}
 
       {errorHint ? <p className="text-xs text-down">{errorHint}</p> : null}
 
@@ -246,12 +279,12 @@ export function BetPanel() {
       ) : null}
 
       {/* BUY / SELL — primary CTAs: largest, most saturated, gain/loss framed. */}
-      <div className="grid grid-cols-2 gap-2.5">
+      <div className="grid grid-cols-2 gap-2">
         <Button
           variant="up"
           size="md"
           fullWidth
-          className="!h-14 flex-col !gap-0.5 !text-base"
+          className="!h-11 flex-col !gap-0 !text-sm"
           disabled={connecting}
           onClick={() => handleDirection('buy')}
         >
@@ -267,7 +300,7 @@ export function BetPanel() {
           variant="down"
           size="md"
           fullWidth
-          className="!h-14 flex-col !gap-0.5 !text-base"
+          className="!h-11 flex-col !gap-0 !text-sm"
           disabled={connecting}
           onClick={() => handleDirection('sell')}
         >
@@ -283,7 +316,7 @@ export function BetPanel() {
 
       {resumeDir ? (
         <p className="text-center text-[11px] font-medium text-up">
-          Funds added — tap {resumeDir === 'buy' ? 'BUY' : 'SELL'} to place your {formatKes(stakeCents)} trade.
+          Funds added — tap {resumeDir === 'buy' ? 'BUY' : 'SELL'} to place your {fmt(stakeCents)} trade.
         </p>
       ) : !token ? (
         <p className="text-center text-[11px] text-muted">Deposit to buy or sell.</p>

@@ -8,7 +8,7 @@
  *   - API and WebSocket traffic is never intercepted — money/game state must hit
  *     the network directly.
  */
-const VERSION = 'pp-v2';
+const VERSION = 'pp-v3';
 const SHELL_CACHE = `${VERSION}-shell`;
 const ASSET_CACHE = `${VERSION}-assets`;
 const OFFLINE_URL = '/offline';

@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { formatKes } from '@invest254/shared/money';
+import { useDisplayMoney } from '@/lib/money';
 import { cn } from '@/lib/cn';
 import { api } from '@/lib/api/endpoints';
 import { useBrand } from '@/lib/brand/BrandProvider';
@@ -33,6 +33,7 @@ export function WelcomeBonusOverlay() {
   const clear = useWelcomeBonusFx((s) => s.clear);
   const openDeposit = useDepositUi((s) => s.openDeposit);
   const brand = useBrand();
+  const { fmt } = useDisplayMoney();
 
   const { data: config } = useQuery({
     queryKey: ['gameConfig', brand.slug],
@@ -181,10 +182,10 @@ export function WelcomeBonusOverlay() {
   const nudge = useMemo(() => {
     if (minStakeCents && minStakeCents > 0) {
       // The bonus is a sweetener on top of a real deposit — encourage funding at least the min stake.
-      return `Deposit ${formatKes(minStakeCents)} or more to place your first trade — the bigger your stake, the bigger you can win.`;
+      return `Deposit ${fmt(minStakeCents)} or more to place your first trade — the bigger your stake, the bigger you can win.`;
     }
     return `Deposit to place your first trade — the more you add, the bigger you can win.`;
-  }, [minStakeCents]);
+  }, [minStakeCents, fmt]);
 
   if (!current) return null;
 
@@ -192,7 +193,7 @@ export function WelcomeBonusOverlay() {
     <div
       role="dialog"
       aria-live="assertive"
-      aria-label={`Welcome bonus ${formatKes(amountCents)}`}
+      aria-label={`Welcome bonus ${fmt(amountCents)}`}
       onClick={() => setVisible(false)}
       className={cn(
         'fixed inset-0 z-[70] flex items-center justify-center px-6 transition-opacity duration-200',
@@ -220,7 +221,7 @@ export function WelcomeBonusOverlay() {
         </div>
 
         {/* Big count-up amount */}
-        <div className="mt-2 text-4xl font-black tabular-nums text-warn">+{formatKes(Math.round(shown))}</div>
+        <div className="mt-2 text-4xl font-black tabular-nums text-warn">+{fmt(Math.round(shown))}</div>
 
         {/* Psychology-driven nudge */}
         <div className="mt-3 text-sm text-fg">{nudge}</div>
@@ -239,7 +240,7 @@ export function WelcomeBonusOverlay() {
           }}
           className="mt-5 h-10 w-full rounded-xl bg-up text-sm font-semibold text-white transition hover:opacity-90"
         >
-          {minStakeCents ? `Deposit ${formatKes(minStakeCents)}+ & play` : 'Deposit & play'}
+          {minStakeCents ? `Deposit ${fmt(minStakeCents)}+ & play` : 'Deposit & play'}
         </button>
         <button
           type="button"
@@ -258,7 +259,7 @@ export function WelcomeBonusOverlay() {
         ref={flyRef}
         className="pointer-events-none fixed z-20 rounded-full bg-warn/15 px-3 py-1.5 text-sm font-bold tabular-nums text-warn opacity-0 shadow-glow"
       >
-        +{formatKes(amountCents)}
+        +{fmt(amountCents)}
       </div>
     </div>
   );

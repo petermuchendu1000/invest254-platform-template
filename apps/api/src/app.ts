@@ -54,6 +54,14 @@ export interface Brand {
   supportEmail?: string | null;
   /** Full per-brand design-token palette (docs/22): overrides the fixed --pp-* tokens end-to-end. */
   themeTokens?: Record<string, string> | null;
+  /** Per-brand price chart style (migration 0111): 'line' (default) or 'candlestick'. Presentation only. */
+  chartStyle?: "line" | "candlestick";
+  /**
+   * Live display-currency units per 1 KES (KES→currency), e.g. USD≈0.0077. 1 for KES brands.
+   * The money of record is ALWAYS KES cents; this only drives how amounts are RENDERED. Resolved
+   * at brand-fetch time from the FX provider; 0/undefined => the web safely falls back to KES.
+   */
+  fxRateFromKes?: number;
 }
 
 /** One admin-logged marketer expense (transparency ledger, migration 0068). */

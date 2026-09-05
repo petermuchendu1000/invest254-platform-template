@@ -15,6 +15,7 @@
     "./totp": "./src/totp.ts",
     "./payments": "./src/payments.ts",
     "./curve": "./src/curve.ts",
+    "./chart": "./src/chart.ts",
     "./engagement": "./src/engagement.ts",
     "./activity": "./src/activity.ts",
     "./chatfilter": "./src/chatfilter.ts"

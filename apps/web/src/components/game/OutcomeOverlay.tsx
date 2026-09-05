@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { formatKes } from '@invest254/shared/money';
+import { useDisplayMoney } from '@/lib/money';
 import { cn } from '@/lib/cn';
 import { useCountUp } from '@/lib/useCountUp';
 import { useOutcomeFx, BALANCE_BUMP_EVENT, type OutcomeHeadline } from '@/lib/game/outcomeFx';
@@ -78,6 +78,7 @@ function prefersReducedMotion(): boolean {
  * dismiss-on-tap. Never auto-replays a trade.
  */
 export function OutcomeOverlay() {
+  const { fmt } = useDisplayMoney();
   const current = useOutcomeFx((s) => s.current);
   const clear = useOutcomeFx((s) => s.clear);
   const [visible, setVisible] = useState(false);
@@ -126,7 +127,7 @@ export function OutcomeOverlay() {
     const ttl = won ? (current.headline === 'big_win' ? 4200 : 3400) : 2400;
     const t = setTimeout(() => setVisible(false), ttl);
     return () => { clearTimeout(t0); clearTimeout(t); };
-  }, [current, won]);
+  }, [current, won, fmt]);
 
   // Remove from the store shortly after the exit transition.
   useEffect(() => {
@@ -247,9 +248,9 @@ export function OutcomeOverlay() {
 
   const netLine = useMemo(() => {
     if (!current) return null;
-    if (won) return `Net +${formatKes(current.pnlCents)} · stake ${formatKes(current.stakeCents)}`;
-    return `−${formatKes(Math.abs(current.pnlCents))} · stake ${formatKes(current.stakeCents)}`;
-  }, [current, won]);
+    if (won) return `Net +${fmt(current.pnlCents)} · stake ${fmt(current.stakeCents)}`;
+    return `−${fmt(Math.abs(current.pnlCents))} · stake ${fmt(current.stakeCents)}`;
+  }, [current, won, fmt]);
 
   if (!current) return null;
 
@@ -257,7 +258,7 @@ export function OutcomeOverlay() {
     <div
       role="dialog"
       aria-live="assertive"
-      aria-label={`${theme.title} ${formatKes(targetAmount)}`}
+      aria-label={`${theme.title} ${fmt(targetAmount)}`}
       onClick={() => setVisible(false)}
       className={cn(
         'fixed inset-0 z-[70] flex items-center justify-center px-6 transition-opacity duration-200',
@@ -301,7 +302,7 @@ export function OutcomeOverlay() {
         {/* Big count-up amount */}
         <div className={cn('mt-1 text-4xl font-black tabular-nums', theme.amount)}>
           {won ? '+' : '−'}
-          {formatKes(Math.round(shown))}
+          {fmt(Math.round(shown))}
         </div>
 
         {/* Honest net line — always truthful about the money. */}
@@ -332,7 +333,7 @@ export function OutcomeOverlay() {
             theme.chipText,
           )}
         >
-          +{formatKes(current.payoutCents)}
+          +{fmt(current.payoutCents)}
         </div>
       ) : null}
     </div>

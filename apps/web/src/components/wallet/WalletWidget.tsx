@@ -1,7 +1,7 @@
 'use client';
 
 import { Card } from '@/components/ui/Card';
-import { Money } from '@/components/ui/Money';
+import { DisplayMoney as Money } from '@/lib/money';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { useWallet } from '@/lib/wallet/hooks';
 

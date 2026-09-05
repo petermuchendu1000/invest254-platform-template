@@ -2,7 +2,7 @@
 
 import { cn } from '@/lib/cn';
 import { Modal } from '@/components/ui/Modal';
-import { Money } from '@/components/ui/Money';
+import { DisplayMoney as Money } from '@/lib/money';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { Button } from '@/components/ui/Button';
 import { formatDateTime } from '@/lib/format';

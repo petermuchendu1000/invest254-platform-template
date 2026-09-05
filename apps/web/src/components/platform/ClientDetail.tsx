@@ -61,7 +61,8 @@ function IdentitySection({ site }: { site: SiteWithConfig }) {
   const init = useMemo(() => ({
     name: site.name ?? '', status: site.status ?? 'active', primary_domain: site.primaryDomain ?? '',
     wordmark_text: site.wordmarkText ?? '', support_email: site.supportEmail ?? '',
-    currency: site.currency ?? 'KES', locale: site.locale ?? 'en-KE', licence_line: site.licenceLine ?? '',
+    currency: site.currency ?? 'KES', locale: site.locale ?? 'en-KE', chart_style: site.chartStyle ?? 'line',
+    licence_line: site.licenceLine ?? '',
   }), [site]);
   const [form, setForm] = useState(init);
   useEffect(() => setForm(init), [init]);
@@ -90,9 +91,17 @@ function IdentitySection({ site }: { site: SiteWithConfig }) {
         <Input label="Wordmark" name={`wm-${site.siteId}`} value={form.wordmark_text} onChange={set('wordmark_text')} hint="shown in the header; defaults to name" />
         <Input label="Support email" name={`se-${site.siteId}`} type="email" value={form.support_email} onChange={set('support_email')} />
         <div className="grid grid-cols-2 gap-3">
-          <Input label="Currency" name={`cur-${site.siteId}`} value={form.currency} onChange={set('currency')} />
+          <Input label="Currency" name={`cur-${site.siteId}`} value={form.currency} onChange={set('currency')} hint="display currency, e.g. KES or USD" />
           <Input label="Locale" name={`loc-${site.siteId}`} value={form.locale} onChange={set('locale')} />
         </div>
+        <label className="flex flex-col gap-1.5 text-sm">
+          <span className="font-medium text-fg">Price chart</span>
+          <select className="h-11 rounded-brand border border-border bg-surface-2 px-3 text-fg" value={form.chart_style} onChange={set('chart_style')}>
+            <option value="line">Line / area curve</option>
+            <option value="candlestick">Candlesticks (TradingView)</option>
+          </select>
+          <span className="text-xs text-muted">How this brand renders the live price. Currency + chart are display-only; the money of record stays KES.</span>
+        </label>
         <Input label="Licence line" name={`lic-${site.siteId}`} value={form.licence_line} onChange={set('licence_line')} hint="footer compliance text" />
       </div>
       <SaveBar dirty={dirty} saving={update.isPending} onSave={save} onReset={() => setForm(init)} />

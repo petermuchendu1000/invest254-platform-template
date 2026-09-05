@@ -27,6 +27,14 @@ export interface Brand {
   theme: "dark" | "light" | "auto";
   currency: string;
   locale: string;
+  /** Per-brand price chart style (migration 0111): 'line' (default) or 'candlestick'. */
+  chartStyle?: "line" | "candlestick";
+  /**
+   * Display-currency units per 1 KES (KES→currency), resolved live by the API. 1 for KES brands.
+   * The money of record is ALWAYS KES cents; this only drives how amounts are RENDERED. When it is
+   * missing/0 (e.g. FX unavailable for a non-KES brand) the UI safely falls back to KES formatting.
+   */
+  fxRateFromKes?: number;
   licenceLine?: string | null;
   supportEmail?: string | null;
   /** Full per-brand design-token palette; maps to every --pp-* token (docs/22). */
@@ -53,6 +61,8 @@ export const DEFAULT_BRAND: Brand = {
   theme: "dark",
   currency: "KES",
   locale: "en-KE",
+  chartStyle: "line",
+  fxRateFromKes: 1,
   licenceLine: "Operated under licence.",
   supportEmail: null,
   themeTokens: {

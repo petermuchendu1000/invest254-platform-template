@@ -1,8 +1,8 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { formatKes } from '@invest254/shared/money';
 import { cn } from '@/lib/cn';
+import { useDisplayMoney } from '@/lib/money';
 import { useSession } from '@/lib/auth/session';
 import { useHydrated } from '@/lib/useHydrated';
 import { useWallet } from '@/lib/wallet/hooks';
@@ -21,6 +21,7 @@ export function BalancePill() {
   const hydrated = useHydrated();
   const token = useSession((s) => s.token);
   const { data } = useWallet();
+  const { fmt } = useDisplayMoney();
   const openWithdraw = useDepositUi((s) => s.openWithdraw);
 
   // One spendable number, not two buckets: the player sees real + bonus combined (the same
@@ -69,7 +70,7 @@ export function BalancePill() {
       )}
     >
       <span className="h-2 w-2 rounded-full bg-accent" aria-hidden />
-      {formatKes(Math.round(shown))}
+      {fmt(Math.round(shown))}
     </button>
   );
 }

@@ -6,6 +6,7 @@ import { cn } from '@/lib/cn';
 import { useGameSocket } from '@/lib/game/GameSocketProvider';
 import { useSession } from '@/lib/auth/session';
 import { useOnlineDisplay } from '@/lib/game/onlineDisplay';
+import { useBrand } from '@/lib/brand/BrandProvider';
 
 /** Signed display value the chart plots: rate = BASE + AMP * value. */
 const toValue = (rate: number) => (rate - CURVE_BASE_RATE) / CURVE_AMPLITUDE;
@@ -23,6 +24,7 @@ export function PriceHeader() {
   // Staff see the real concurrency; everyone else sees a believable, gently
   // fluctuating crowd figure (social proof) — never the raw dev/low value.
   const displayOnline = useOnlineDisplay(online, role);
+  const quote = useBrand().currency || 'KES';
   const [, force] = useState(0);
   useEffect(() => {
     const id = setInterval(() => force((n) => (n + 1) % 1_000_000), 250);
@@ -51,47 +53,35 @@ export function PriceHeader() {
   const statusDot = status === 'open' ? 'bg-up' : status === 'connecting' ? 'bg-warn' : 'bg-down';
 
   return (
-    <div className="shrink-0 rounded-xl border border-border bg-surface px-3 py-2.5">
-      {/* Row 1: pair + live badge | compact 24H stats (never collides with the hero). */}
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <span className={cn('h-2 w-2 shrink-0 rounded-full', statusDot)} title={status} />
-          <span className="text-sm font-semibold text-fg">BTC/KES</span>
-          <span
-            className={cn(
-              'rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide',
-              status === 'open' ? 'bg-up/15 text-up' : status === 'connecting' ? 'bg-warn/15 text-warn' : 'bg-down/15 text-down',
-            )}
-          >
-            {status === 'open' ? 'Live' : status === 'connecting' ? 'Sync' : 'Off'}
+    <div className="shrink-0 rounded-xl border border-border bg-surface px-3 py-1.5">
+      {/* Single compact row: pair + live | price + % | 24H stats + online. Keeps the chart tall. */}
+      <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
+        <div className="flex shrink-0 items-center gap-2 whitespace-nowrap">
+          <span className={cn('h-2 w-2 shrink-0 rounded-full', statusDot)} title={status === 'open' ? 'Live' : status === 'connecting' ? 'Syncing' : 'Offline'} aria-label={status} />
+          <span className="text-xs font-semibold text-fg">BTC/{quote}</span>
+          <span className={cn('ml-1 font-mono text-lg font-bold leading-none tabular-nums', up ? 'text-up' : 'text-down')}>
+            {value !== null ? fmt(value) : '\u2014'}
           </span>
+          {value !== null ? (
+            <span
+              className={cn(
+                'rounded px-1.5 py-0.5 text-[10px] font-semibold tabular-nums',
+                up ? 'bg-up/15 text-up' : 'bg-down/15 text-down',
+              )}
+            >
+              {signed(value * 100)}%
+            </span>
+          ) : null}
         </div>
-        <div className="flex items-center gap-3 text-right sm:gap-4">
-          <Stat className="hidden xs:flex" label="24H H" value={hi !== null ? fmt(hi) : '—'} />
-          <Stat className="hidden xs:flex" label="24H L" value={lo !== null ? fmt(lo) : '—'} />
+        <div className="flex min-w-0 items-center gap-3 text-right">
+          <Stat className="hidden sm:flex" label="24H H" value={hi !== null ? fmt(hi) : '\u2014'} />
+          <Stat className="hidden sm:flex" label="24H L" value={lo !== null ? fmt(lo) : '\u2014'} />
           <Stat
             label="Online"
             valueClassName="text-up"
-            value={displayOnline > 0 ? displayOnline.toLocaleString('en-KE') : '—'}
+            value={displayOnline > 0 ? displayOnline.toLocaleString('en-KE') : '\u2014'}
           />
         </div>
-      </div>
-
-      {/* Row 2: hero price + % change — the emotional anchor. */}
-      <div className="mt-1.5 flex items-baseline gap-2">
-        <span className={cn('font-mono text-3xl font-bold leading-none tabular-nums', up ? 'text-up' : 'text-down')}>
-          {value !== null ? fmt(value) : '—'}
-        </span>
-        {value !== null ? (
-          <span
-            className={cn(
-              'rounded-md px-2 py-0.5 text-xs font-semibold tabular-nums',
-              up ? 'bg-up/15 text-up' : 'bg-down/15 text-down',
-            )}
-          >
-            {signed(value * 100)}%
-          </span>
-        ) : null}
       </div>
     </div>
   );

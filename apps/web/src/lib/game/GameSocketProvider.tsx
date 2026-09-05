@@ -62,7 +62,10 @@ const SYNTH_SPAN_MS = 60_000;
 // it stays mostly green (~80%) like the live server feed.
 const SYNTH_MU = 0.32;
 const SYNTH_THETA = 0.035;
-const SYNTH_SIGMA = 0.08;
+const SYNTH_SIGMA = 0.11;
+// Occasional volatility burst so seeded candles vary (bodies + wicks) like a real market tape.
+const SYNTH_JUMP_P = 0.06;
+const SYNTH_JUMP_K = 3;
 
 /** Approx. standard normal from three uniforms (mean 0, std 1). */
 function gaussian(): number {
@@ -71,7 +74,8 @@ function gaussian(): number {
 
 /** Next signed curve value ∈ [-0.9, 0.9] given the previous one. */
 function nextSynth(prev: number): number {
-  const v = prev + SYNTH_THETA * (SYNTH_MU - prev) + SYNTH_SIGMA * gaussian();
+  const burst = Math.random() < SYNTH_JUMP_P ? SYNTH_SIGMA * SYNTH_JUMP_K * gaussian() : 0;
+  const v = prev + SYNTH_THETA * (SYNTH_MU - prev) + SYNTH_SIGMA * gaussian() + burst;
   return Math.max(-0.9, Math.min(0.9, v));
 }
 

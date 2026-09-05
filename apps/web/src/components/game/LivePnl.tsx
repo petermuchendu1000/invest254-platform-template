@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { cn } from '@/lib/cn';
-import { Money } from '@/components/ui/Money';
+import { DisplayMoney as Money } from '@/lib/money';
 import type { ActivePosition } from '@/lib/game/betting';
 
 /**

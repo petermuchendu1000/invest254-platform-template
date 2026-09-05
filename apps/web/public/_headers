@@ -1,0 +1,16 @@
+# Cloudflare Pages cache policy (apps/web/public/_headers -> served at the site root).
+# Content-hashed build assets are immutable and cached forever; everything else (HTML documents,
+# the service worker, the manifest) must revalidate so a new deploy is visible on the NEXT normal
+# load — no hard refresh needed.
+
+/_next/static/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/sw.js
+  Cache-Control: public, max-age=0, must-revalidate
+
+/manifest.webmanifest
+  Cache-Control: public, max-age=0, must-revalidate
+
+/*
+  Cache-Control: public, max-age=0, must-revalidate

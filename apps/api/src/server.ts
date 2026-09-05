@@ -19,6 +19,7 @@ import { makeWebPushTransport } from "./webpush.js";
 import { makeResendSender, buildPayoutEmail } from "./email.js";
 import { makeTelegramClient, type PayoutAlert, type PayoutDecisionRecord } from "./telegram.js";
 import { signWithdrawalAction } from "./withdrawalactionlink.js";
+import { kesToCurrencyRate, primeFx } from "./fx.js";
 import type { PlatformOnboardDeps, OnboardInput, OnboardResult } from "./app.platform.js";
 
 /**
@@ -583,7 +584,7 @@ async function buildDeps(): Promise<ApiDeps> {
       if (!h) return null;
       const r = await q.query(
         `select id, slug, name, wordmark_text, logo_url, favicon_url, color_primary, color_bg,
-                color_accent, theme, currency, locale, licence_line, support_email, theme_tokens
+                color_accent, theme, currency, locale, chart_style, licence_line, support_email, theme_tokens
            from sites
           where status = 'active'
             and (lower(slug) = $1
@@ -594,6 +595,11 @@ async function buildDeps(): Promise<ApiDeps> {
       );
       if (!r.rows.length) return null;
       const x = r.rows[0] as Record<string, unknown>;
+      const currency = String(x.currency);
+      // Presentation-only display currency (migration 0111): resolve the live KES→currency rate so
+      // a non-KES brand renders amounts in its currency. Never blocks/hard-fails brand resolution —
+      // the FX provider is fail-safe and returns 0 (=> web renders KES) for anything it can't price.
+      const fxRateFromKes = await kesToCurrencyRate(currency);
       return {
         siteId: String(x.id), slug: String(x.slug), name: String(x.name),
         wordmarkText: (x.wordmark_text as string | null) ?? null,
@@ -601,7 +607,9 @@ async function buildDeps(): Promise<ApiDeps> {
         faviconUrl: (x.favicon_url as string | null) ?? null,
         colorPrimary: String(x.color_primary), colorBg: String(x.color_bg), colorAccent: String(x.color_accent),
         theme: String(x.theme) as "dark" | "light" | "auto",
-        currency: String(x.currency), locale: String(x.locale),
+        currency, locale: String(x.locale),
+        chartStyle: (x.chart_style === "candlestick" ? "candlestick" : "line"),
+        fxRateFromKes,
         licenceLine: (x.licence_line as string | null) ?? null,
         supportEmail: (x.support_email as string | null) ?? null,
         themeTokens: (x.theme_tokens as Record<string, string> | null) ?? null,
@@ -657,6 +665,7 @@ async function buildDeps(): Promise<ApiDeps> {
 
 const deps = await buildDeps();
 const server = createApp(deps);
+primeFx(); // warm the display-currency FX cache at boot (fire-and-forget; fail-safe)
 server.listen(PORT, () => {
   console.log(`[api] listening on http://localhost:${PORT}  auth=${deps.verifier ? "jwt" : "dev"}`);
 });
