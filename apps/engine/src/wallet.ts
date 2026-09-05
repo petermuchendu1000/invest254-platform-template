@@ -26,6 +26,8 @@ export interface OpenArgs {
 }
 export interface SettleArgs { positionId: string; exitRate: number; result: "win" | "loss"; multiplier: number; payoutCents: Cents; }
 export interface OpenResult { positionId: string; newBalance: Cents; }
+/** Open args for a Phase-2 contract (digit/multiplier): OpenArgs + the contract kind & params. */
+export interface OpenContractArgs extends OpenArgs { kind: "digit" | "multiplier"; contract: unknown; }
 export interface SettleResult { settled: boolean; newBalance: Cents; }
 /** A user's full wallet, as pushed over the WS `balance` frame. */
 export interface WalletSnapshot { real: Cents; bonus: Cents; currency: string; }
@@ -71,6 +73,8 @@ export interface GameRepository {
   /** Full wallet snapshot (real + bonus + currency) for the real-time `balance` push. */
   getWalletSnapshot(userId: string): Promise<WalletSnapshot>;
   openPosition(a: OpenArgs): Promise<OpenResult>;
+  /** Open a Phase-2 contract (digit/multiplier). Same money movement as openPosition + records kind/contract. */
+  openContract(a: OpenContractArgs): Promise<OpenResult>;
   settlePosition(a: SettleArgs): Promise<SettleResult>;
   /** Idempotently commit a game day (stores hash; seed stays hidden). Returns its id. `siteId` scopes it per brand. */
   ensureGameDay(tradeDate: string, serverSeedHash: string, siteId?: string): Promise<number | null>;
@@ -125,6 +129,7 @@ export class InMemoryGameRepository implements GameRepository {
   /** Marketer (demo) accounts — the repo is authoritative for money routing, exactly like the DB RPC. */
   private marketers = new Set<string>();
   private positions = new Map<string, MemPos>();
+  private contractMeta = new Map<string, { kind: string; contract: unknown }>();
   private days = new Map<string, MemDay>();
   private seedVersions = new Map<string, number>();
   private nextDayId = 1;
@@ -187,6 +192,13 @@ export class InMemoryGameRepository implements GameRepository {
     });
     this.pushLedger(a.userId, "stake", -a.stakeCents, kind, "positions", id, null, a.siteId ?? null);
     return { positionId: id, newBalance: next };
+  }
+
+  async openContract(a: OpenContractArgs): Promise<OpenResult> {
+    // Money movement is identical to openPosition; we only additionally record the contract kind/params.
+    const r = await this.openPosition(a);
+    this.contractMeta.set(r.positionId, { kind: a.kind, contract: a.contract });
+    return r;
   }
 
   async settlePosition(a: SettleArgs): Promise<SettleResult> {
@@ -339,6 +351,13 @@ export class PgGameRepository implements GameRepository {
     // matches migration 0047: fn_open_position(user,stake,direction,entry_rate,duration_s,game_day,nonce,opened_at,config_version,site_id)
     const r = await this.q.query("select position_id, new_balance from fn_open_position($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
       [a.userId, a.stakeCents, a.direction, a.entryRate, a.durationS, a.gameDayId, a.nonce, new Date(a.openedAtMs).toISOString(), a.configVersion, a.siteId ?? null]);
+    return { positionId: r.rows[0].position_id, newBalance: toCents(r.rows[0].new_balance) };
+  }
+  async openContract(a: OpenContractArgs): Promise<OpenResult> {
+    // migration 0113: fn_open_contract(user,stake,kind,contract,direction,entry_rate,duration_s,game_day,nonce,opened_at,config_version,site_id)
+    const r = await this.q.query(
+      "select position_id, new_balance from fn_open_contract($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)",
+      [a.userId, a.stakeCents, a.kind, JSON.stringify(a.contract ?? {}), a.direction, a.entryRate, a.durationS, a.gameDayId, a.nonce, new Date(a.openedAtMs).toISOString(), a.configVersion, a.siteId ?? null]);
     return { positionId: r.rows[0].position_id, newBalance: toCents(r.rows[0].new_balance) };
   }
   async settlePosition(a: SettleArgs): Promise<SettleResult> {

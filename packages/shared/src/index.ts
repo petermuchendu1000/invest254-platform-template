@@ -12,6 +12,7 @@ export * from "./config.js";
 export * from "./types.js";
 export * from "./curve.js";
 export * from "./chart.js";
+export * from "./contracts.js";
 export * from "./settle.js";
 export * from "./pool.js";
 export * from "./pooldistribution.js";

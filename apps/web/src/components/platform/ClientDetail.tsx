@@ -61,7 +61,7 @@ function IdentitySection({ site }: { site: SiteWithConfig }) {
   const init = useMemo(() => ({
     name: site.name ?? '', status: site.status ?? 'active', primary_domain: site.primaryDomain ?? '',
     wordmark_text: site.wordmarkText ?? '', support_email: site.supportEmail ?? '',
-    currency: site.currency ?? 'KES', locale: site.locale ?? 'en-KE', chart_style: site.chartStyle ?? 'line',
+    currency: site.currency ?? 'KES', locale: site.locale ?? 'en-KE', chart_style: site.chartStyle ?? 'line', trade_ui: site.tradeUi ?? 'classic',
     licence_line: site.licenceLine ?? '',
   }), [site]);
   const [form, setForm] = useState(init);
@@ -101,6 +101,14 @@ function IdentitySection({ site }: { site: SiteWithConfig }) {
             <option value="candlestick">Candlesticks (TradingView)</option>
           </select>
           <span className="text-xs text-muted">How this brand renders the live price. Currency + chart are display-only; the money of record stays KES.</span>
+        </label>
+        <label className="flex flex-col gap-1.5 text-sm">
+          <span className="font-medium text-fg">Trade interface</span>
+          <select className="h-11 rounded-brand border border-border bg-surface-2 px-3 text-fg" value={form.trade_ui} onChange={set('trade_ui')}>
+            <option value="classic">Classic (rise/fall curve)</option>
+            <option value="digits">Digits broker (Deriv-style)</option>
+          </select>
+          <span className="text-xs text-muted">Which trade screen this brand shows. Layout only; the money of record stays KES.</span>
         </label>
         <Input label="Licence line" name={`lic-${site.siteId}`} value={form.licence_line} onChange={set('licence_line')} hint="footer compliance text" />
       </div>

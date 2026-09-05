@@ -16,7 +16,7 @@ export interface SiteRow {
   siteId: string; slug: string; name: string; status: string;
   primaryDomain: string | null; logoUrl: string | null; faviconUrl: string | null; wordmarkText: string | null;
   colorPrimary: string; colorBg: string; colorAccent: string; theme: string;
-  currency: string; locale: string; chartStyle: string; licenceLine: string | null; supportEmail: string | null;
+  currency: string; locale: string; chartStyle: string; tradeUi: string; licenceLine: string | null; supportEmail: string | null;
   // Per-brand M-Pesa config (non-secret) + which secret refs are configured + legal copy (docs/24).
   mpesaEnv: string | null; mpesaShortcode: string | null; mpesaCallbackBase: string | null; mpesaB2cInitiator: string | null;
   hasMpesaConsumerKey: boolean; hasMpesaConsumerSecret: boolean; hasMpesaPasskey: boolean; hasMpesaB2cCredential: boolean;
@@ -134,7 +134,7 @@ function mapSiteRow(x: Record<string, unknown>): SiteRow {
     primaryDomain: (x.primary_domain as string) ?? null, logoUrl: (x.logo_url as string) ?? null,
     faviconUrl: (x.favicon_url as string) ?? null, wordmarkText: (x.wordmark_text as string) ?? null,
     colorPrimary: String(x.color_primary), colorBg: String(x.color_bg), colorAccent: String(x.color_accent), theme: String(x.theme),
-    currency: String(x.currency), locale: String(x.locale), chartStyle: (x.chart_style as string) ?? "line",
+    currency: String(x.currency), locale: String(x.locale), chartStyle: (x.chart_style as string) ?? "line", tradeUi: (x.trade_ui as string) ?? "classic",
     licenceLine: (x.licence_line as string) ?? null, supportEmail: (x.support_email as string) ?? null,
     mpesaEnv: (x.mpesa_env as string) ?? null, mpesaShortcode: (x.mpesa_shortcode as string) ?? null,
     mpesaCallbackBase: (x.mpesa_callback_base as string) ?? null, mpesaB2cInitiator: (x.mpesa_b2c_initiator as string) ?? null,
@@ -410,7 +410,7 @@ export class InMemoryPlatformRepository implements PlatformRepository {
       siteId: DEFAULT_SITE_ID, slug: "invest254", name: "Invest254", status: "active",
       primaryDomain: "invest254.com", logoUrl: null, faviconUrl: null, wordmarkText: "invest254.com",
       colorPrimary: "#22c55e", colorBg: "#0a0a0a", colorAccent: "#06b6d4", theme: "dark",
-      currency: "KES", locale: "en-KE", chartStyle: "line", licenceLine: "Operated under licence.", supportEmail: null,
+      currency: "KES", locale: "en-KE", chartStyle: "line", tradeUi: "classic", licenceLine: "Operated under licence.", supportEmail: null,
       mpesaEnv: null, mpesaShortcode: null, mpesaCallbackBase: null, mpesaB2cInitiator: null,
       hasMpesaConsumerKey: false, hasMpesaConsumerSecret: false, hasMpesaPasskey: false, hasMpesaB2cCredential: false,
       legalCopy: null,
@@ -432,7 +432,7 @@ export class InMemoryPlatformRepository implements PlatformRepository {
     this.sites.set(id, {
       siteId: id, slug, name, status: "active", primaryDomain: input.primaryDomain ?? null,
       logoUrl: null, faviconUrl: null, wordmarkText: null, colorPrimary: "#22c55e", colorBg: "#0a0a0a",
-      colorAccent: "#06b6d4", theme: "dark", currency: input.currency ?? "KES", locale: "en-KE", chartStyle: "line",
+      colorAccent: "#06b6d4", theme: "dark", currency: input.currency ?? "KES", locale: "en-KE", chartStyle: "line", tradeUi: "classic",
       licenceLine: null, supportEmail: null,
       mpesaEnv: null, mpesaShortcode: null, mpesaCallbackBase: null, mpesaB2cInitiator: null,
       hasMpesaConsumerKey: false, hasMpesaConsumerSecret: false, hasMpesaPasskey: false, hasMpesaB2cCredential: false,

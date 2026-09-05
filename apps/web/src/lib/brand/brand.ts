@@ -30,6 +30,12 @@ export interface Brand {
   /** Per-brand price chart style (migration 0111): 'line' (default) or 'candlestick'. */
   chartStyle?: "line" | "candlestick";
   /**
+   * Per-brand trade UI layout: 'classic' (default rise/fall curve terminal) or 'digits' (the
+   * Deriv-style binary/digits broker interface). Presentation/product-shell only; the money of
+   * record stays KES cents. Mirrors the chartStyle toggle pattern.
+   */
+  tradeUi?: "classic" | "digits";
+  /**
    * Display-currency units per 1 KES (KES→currency), resolved live by the API. 1 for KES brands.
    * The money of record is ALWAYS KES cents; this only drives how amounts are RENDERED. When it is
    * missing/0 (e.g. FX unavailable for a non-KES brand) the UI safely falls back to KES formatting.
@@ -62,6 +68,7 @@ export const DEFAULT_BRAND: Brand = {
   currency: "KES",
   locale: "en-KE",
   chartStyle: "line",
+  tradeUi: "classic",
   fxRateFromKes: 1,
   licenceLine: "Operated under licence.",
   supportEmail: null,

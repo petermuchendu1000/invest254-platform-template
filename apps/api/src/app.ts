@@ -56,6 +56,8 @@ export interface Brand {
   themeTokens?: Record<string, string> | null;
   /** Per-brand price chart style (migration 0111): 'line' (default) or 'candlestick'. Presentation only. */
   chartStyle?: "line" | "candlestick";
+  /** Per-brand trade UI layout (migration 0112): 'classic' (default) or 'digits'. Presentation only. */
+  tradeUi?: "classic" | "digits";
   /**
    * Live display-currency units per 1 KES (KES→currency), e.g. USD≈0.0077. 1 for KES brands.
    * The money of record is ALWAYS KES cents; this only drives how amounts are RENDERED. Resolved

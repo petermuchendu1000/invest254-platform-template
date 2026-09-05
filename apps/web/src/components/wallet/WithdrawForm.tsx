@@ -174,36 +174,31 @@ export function WithdrawForm() {
         </div>
       </div>
 
-      {/* Available balance + Binance-style quick-select (drives the amount from the real balance). */}
-      <div className="-mt-1 flex flex-col gap-2">
-        <span className="text-xs text-muted">
-          Available <span className="font-semibold tabular-nums text-fg">{fmt(realCents)}</span>
-        </span>
-        <div className="grid grid-cols-4 gap-2">
-          {QUICK_PCTS.map(([label, fraction]) => {
-            const targetCents = fraction >= 1 ? realCents : Math.floor(realCents * fraction);
-            const active = amount !== '' && amount === quickAmountEntry(targetCents, { isForeign, fxRateFromKes });
-            return (
-              <button
-                key={label}
-                type="button"
-                onClick={() => setPct(fraction)}
-                disabled={!canQuickSelect}
-                aria-pressed={active}
-                className={[
-                  'rounded-lg border px-2 py-2 text-sm font-semibold transition',
-                  active ? 'border-accent bg-accent text-accent-fg' : 'border-border bg-surface-2 text-fg hover:border-accent/60',
-                  'disabled:pointer-events-none disabled:opacity-40',
-                ].join(' ')}
-              >
-                {label}
-              </button>
-            );
-          })}
-        </div>
+      {/* Binance-style quick-select — drives the amount from the available balance in the header. */}
+      <div className="-mt-1 grid grid-cols-4 gap-2">
+        {QUICK_PCTS.map(([label, fraction]) => {
+          const targetCents = fraction >= 1 ? realCents : Math.floor(realCents * fraction);
+          const active = amount !== '' && amount === quickAmountEntry(targetCents, { isForeign, fxRateFromKes });
+          return (
+            <button
+              key={label}
+              type="button"
+              onClick={() => setPct(fraction)}
+              disabled={!canQuickSelect}
+              aria-pressed={active}
+              className={[
+                'rounded-lg border px-2 py-2 text-sm font-semibold transition',
+                active ? 'border-accent bg-accent text-accent-fg' : 'border-border bg-surface-2 text-fg hover:border-accent/60',
+                'disabled:pointer-events-none disabled:opacity-40',
+              ].join(' ')}
+            >
+              {label}
+            </button>
+          );
+        })}
       </div>
 
-      <p className="text-center text-xs text-muted">Min {both(minWithdrawalCents)}{isForeign && amountCents > 0 ? ` · you receive ${formatKes(amountCents)} to M-Pesa` : ''}</p>
+      <p className="text-center text-xs text-muted">Min {both(minWithdrawalCents)}</p>
       {errors['amount'] ? <p className="text-center text-xs text-down">{errors['amount']}</p> : null}
 
       {/* Destination */}
@@ -245,17 +240,13 @@ export function WithdrawForm() {
         )}
       </div>
 
-      {/* Payout summary — appears once the amount is valid. */}
-      {amountValid ? (
-        <div className="rounded-xl border border-border bg-surface-2 p-3.5">
-          <div className="flex items-center justify-between py-1">
-            <span className="text-xs text-muted">You’ll receive</span>
-            <span className="text-base font-bold tabular-nums text-up">{formatKes(amountCents)}</span>
-          </div>
-          <div className="flex items-center justify-between py-1">
-            <span className="text-xs text-muted">To M-Pesa</span>
-            <span className="text-sm font-medium tabular-nums text-fg">{destMasked}</span>
-          </div>
+      {/* Payout confirmation — only for foreign brands, where this KES figure is the real M-Pesa
+          payout (a KES brand's hero already shows this exact amount, so it would just repeat). The
+          destination number is shown once, in the M-Pesa card above. */}
+      {amountValid && isForeign ? (
+        <div className="flex items-center justify-between rounded-xl border border-border bg-surface-2 px-3.5 py-3">
+          <span className="text-xs text-muted">You’ll receive</span>
+          <span className="text-base font-bold tabular-nums text-up">{formatKes(amountCents)}</span>
         </div>
       ) : null}
 

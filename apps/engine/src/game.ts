@@ -1,6 +1,7 @@
 import {
   CurveGenerator, SettlementEngine, type GameConfig, type VersionedGameConfig,
   type Direction, type Outcome, type Tick, presentOutcome, type OutcomePresentation,
+  lastDigit, settleDigit, type DigitKind,
 } from "@invest254/shared";
 import type { GameRepository } from "./wallet.js";
 import { overrideAffectsPricing, userSettlement, type UserOverride } from "./overrides.js";
@@ -53,8 +54,16 @@ export type ActiveContextProvider = () => ActiveContext;
 
 let nonceCounter = 0;
 
+/** Clamp a prediction/barrier digit to 0..9. */
+function clampTargetDigit(d: number): number {
+  const n = Math.trunc(d);
+  return n < 0 ? 0 : n > 9 ? 9 : n;
+}
+
 export class GameServer {
   private positions = new Map<string, Position>();
+  /** Phase 2: in-flight digit contracts awaiting their 1-tick settlement (server-side only). */
+  private digitContracts = new Map<string, { userId: string; stakeCents: number; kind: DigitKind; target: number; siteId: string | null }>();
   private listeners = new Set<Listener>();
   private lastRate?: number;
   private tickTimer: NodeJS.Timeout | undefined;
@@ -250,6 +259,52 @@ export class GameServer {
     const p: Position = { id: positionId, userId: input.userId, stakeCents: input.stakeCents, direction: input.direction, durationS, openedAtMs, expiresAtMs: openedAtMs + durationS * 1000, entryT, outcome, status: "open", sellable: outcome.result === "win", gameDayId: ctx.gameDayId, configVersion: ctx.configVersion, nonce, poolControlled: false };
     this.positions.set(positionId, p);
     return { position: p, balance: newBalance };
+  }
+
+  /**
+   * Open a Deriv-style DIGIT contract (Phase 2). Fair fixed-payout: the outcome is the last digit of
+   * the authoritative seed-derived quote at settlement (provably fair), and RTP is the brand house
+   * edge via the payout factor — the pool controller / overrides do NOT apply (digits are pool-exempt).
+   * Stake + position + ledger are persisted atomically by the repo (fn_open_contract); settlement is
+   * reused from the rise/fall path (fn_settle_position).
+   */
+  async openDigitContract(input: { userId: string; stakeCents: number; kind: DigitKind; target?: number }): Promise<{ positionId: string; balance: number; entryRate: number }> {
+    if (!Number.isInteger(input.stakeCents)) throw new RangeError("stake must be integer cents");
+    if (input.stakeCents < this.cfg.minStakeCents) throw new Error(`STAKE_BELOW_MIN: min ${this.cfg.minStakeCents}`);
+    if (input.stakeCents > this.cfg.maxStakeCents) throw new Error(`STAKE_ABOVE_MAX: max ${this.cfg.maxStakeCents}`);
+    const target = clampTargetDigit(input.target ?? 0);
+    const ctx = this.getActiveContext();
+    const openedAtMs = this.now();
+    const entryRate = ctx.curve.rate((openedAtMs - ctx.dayStartMs) / 1000);
+    const nonce = (nonceCounter = (nonceCounter + 1) % Number.MAX_SAFE_INTEGER);
+    const { positionId, newBalance } = await this.repo.openContract({
+      userId: input.userId, stakeCents: input.stakeCents, direction: "buy", entryRate,
+      durationS: 1, gameDayId: ctx.gameDayId, nonce, openedAtMs,
+      configVersion: ctx.configVersion, siteId: ctx.siteId ?? null,
+      kind: "digit", contract: { kind: input.kind, target },
+    });
+    this.digitContracts.set(positionId, { userId: input.userId, stakeCents: input.stakeCents, kind: input.kind, target, siteId: ctx.siteId ?? null });
+    return { positionId, balance: newBalance, entryRate };
+  }
+
+  /**
+   * Settle an open DIGIT contract against the authoritative quote NOW (Deriv 1-tick semantics). The
+   * last digit of that seed-derived quote decides win/loss; payout uses the brand house-edge factor
+   * (RTP = 1 − houseEdge). Idempotent via the repo (a second call is a no-op once settled).
+   */
+  async settleDigitContract(positionId: string): Promise<{ positionId: string; digit: number; won: boolean; payoutCents: number; pnlCents: number; balance: number }> {
+    const c = this.digitContracts.get(positionId);
+    if (!c) throw new Error("CONTRACT_NOT_FOUND");
+    const ctx = this.getActiveContext();
+    const settleRate = ctx.curve.rate((this.now() - ctx.dayStartMs) / 1000);
+    const digit = lastDigit(settleRate);
+    const factor = Math.min(0.999, Math.max(0.5, 1 - this.cfg.houseEdge));
+    const st = settleDigit(c.stakeCents, c.kind, c.target, digit, factor);
+    const { newBalance } = await this.repo.settlePosition({
+      positionId, exitRate: settleRate, result: st.won ? "win" : "loss", multiplier: 0, payoutCents: st.payoutCents,
+    });
+    this.digitContracts.delete(positionId);
+    return { positionId, digit, won: st.won, payoutCents: st.payoutCents, pnlCents: st.pnlCents, balance: newBalance };
   }
 
   /**
