@@ -12,6 +12,7 @@
  * which is itself derived deterministically from the daily server seed. So digit outcomes inherit
  * the existing provable-fairness commitment (server_seed_hash) with nothing new to trust.
  */
+import { SeededRng } from './prng.js';
 
 // ── Digits ──────────────────────────────────────────────────────────────────────────────────────
 export type DigitKind = 'even' | 'odd' | 'over' | 'under' | 'matches' | 'differs';
@@ -98,6 +99,33 @@ export function settleDigit(
   const won = evaluateDigit(kind, target, digit);
   const payoutCents = won ? digitReturnCents(stakeCents, kind, kind === 'over' || kind === 'under' ? target : 0, factor) : 0;
   return { won, payoutCents, pnlCents: won ? payoutCents - stakeCents : -stakeCents, digit };
+}
+
+/** All digits (0..9) consistent with a given outcome for a contract — the win set or the loss set. */
+export function digitsForOutcome(kind: DigitKind, target: number, won: boolean): number[] {
+  const out: number[] = [];
+  for (let d = 0; d <= 9; d++) if (evaluateDigit(kind, target, d) === won) out.push(d);
+  return out;
+}
+
+/**
+ * Pool-mode display digit (docs/25 applied to digits): when the POOL decides a contract's outcome,
+ * the shown last digit must be CONSISTENT with that decision. Drawn uniformly (seeded, HMAC) from the
+ * outcome's digit set, deterministic in (decisionSeed, nonce) ⇒ auditable + crash-recoverable, and
+ * with no per-digit bias inside the set. Returns null only for an impossible set (e.g. a decided WIN
+ * on 'under 0', which the engine never grants because its win probability is 0).
+ */
+export function decisionDigit(decisionSeed: string, nonce: number, kind: DigitKind, target: number, won: boolean): number | null {
+  const set = digitsForOutcome(kind, target, won);
+  if (set.length === 0) return null;
+  const rng = new SeededRng(decisionSeed, `pooldigit:${nonce}`);
+  return set[Math.floor(rng.next() * set.length)] ?? set[0]!;
+}
+
+/** A 2dp quote with its last pip replaced by `digit` (pool-decided display consistency). */
+export function withLastPip(quote: number, digit: number): number {
+  const scaled = Math.round(quote * 100);
+  return (scaled - (((scaled % 10) + 10) % 10) + clampDigit(digit)) / 100;
 }
 
 // ── Multipliers ─────────────────────────────────────────────────────────────────────────────────

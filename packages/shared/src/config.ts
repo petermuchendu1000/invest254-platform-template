@@ -21,6 +21,14 @@ export interface GameConfig {
   volatility: number;       // curve amplitude scaler
   /** Target fraction of positions that win (per direction). Tunes feel; RTP stays fixed. */
   targetWinRate: number;    // 0.125 default
+  /**
+   * Deriv-style DIGIT contracts use their OWN payout factor — NOT the rise/fall `houseEdge`.
+   * Total win return = round(stake × factor / winProbability); factor<1 ⇒ house edge = 1−factor.
+   * Optional so pre-existing configs keep working; the engine falls back to
+   * DEFAULT_DIGIT_PAYOUT_FACTOR (0.95 ⇒ 5% edge). Deriv's even/odd on-screen figure (95.2% payout)
+   * corresponds to factor 0.976 — operators can set that here to mirror it exactly.
+   */
+  digitPayoutFactor?: number; // 0.95 default (5% edge)
 }
 
 /**
@@ -57,7 +65,19 @@ export const DEFAULT_CONFIG: GameConfig = {
   driftBias: 0.30,
   volatility: 1.0,
   targetWinRate: 0.125,
+  digitPayoutFactor: 0.95,
 };
+
+/**
+ * Resolve the effective DIGIT payout factor for a config, clamped to a sane, playable band
+ * (0.5..0.999) and defaulting to 0.95 when unset/invalid. Kept here so the engine, the shared
+ * settlement, and the client-advertised payout figure all agree on one rule.
+ */
+export function digitPayoutFactor(cfg: Pick<GameConfig, "digitPayoutFactor">): number {
+  const f = cfg.digitPayoutFactor;
+  if (!Number.isFinite(f as number)) return 0.95;
+  return Math.min(0.999, Math.max(0.5, f as number));
+}
 
 /** DEFAULT_CONFIG at the reserved "no database" version. */
 export const DEFAULT_VERSIONED_CONFIG: VersionedGameConfig = { ...DEFAULT_CONFIG, version: 0 };

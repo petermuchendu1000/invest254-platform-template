@@ -1,6 +1,6 @@
 import { WebSocketServer, type WebSocket } from "ws";
 import type { IncomingMessage } from "node:http";
-import { type Direction } from "@invest254/shared";
+import { type Direction, instrumentById, isKnownInstrument, type DigitKind } from "@invest254/shared";
 import type { SiteRegistry } from "./siteregistry.js";
 import type { GameRepository } from "./wallet.js";
 import type { Verifier } from "./auth.js";
@@ -60,6 +60,89 @@ export async function startMultiEngine(opts: MultiEngineOptions): Promise<MultiE
   const toSiteUser = (siteId: string, userId: string, type: string, data: unknown) =>
     perSiteUser.get(siteId)?.get(userId)?.forEach((ws) => send(ws, type, data));
   const onlineCount = (siteId: string) => Math.max(perSiteSockets.get(siteId)?.size ?? 0, opts.onlineFloor ?? 0);
+
+  // ── Phase 2: per-(site, instrument) authoritative DIGIT feed streamer ─────────────────────────
+  // Each distinct instrument a brand is using runs ONE deterministic ticker at the instrument's
+  // cadence. It fans the authoritative tick (quote + provably-fair last digit) out to the sockets
+  // watching it, and settles every open digit contract whose settleIndex has arrived (so settlement
+  // is driven even if the opener has since navigated away). A streamer auto-stops when it has no
+  // watchers AND no open digit contracts, so idle instruments cost nothing.
+  interface InstStreamer { timer: ReturnType<typeof setInterval>; subs: Set<WebSocket>; busy: boolean; }
+  const instStreamers = new Map<string, Map<string, InstStreamer>>();
+  const subInstrument = new WeakMap<WebSocket, string>(); // the one instrument a socket is watching
+  const streamersFor = (siteId: string) => instStreamers.get(siteId) ?? instStreamers.set(siteId, new Map()).get(siteId)!;
+
+  async function ensureStreamer(siteId: string, instrumentId: string): Promise<InstStreamer> {
+    const m = streamersFor(siteId);
+    const existing = m.get(instrumentId);
+    if (existing) return existing;
+    const rt = await ensureSite(siteId);
+    const inst = instrumentById(instrumentId);
+    const entry: InstStreamer = { subs: new Set(), busy: false, timer: undefined as unknown as ReturnType<typeof setInterval> };
+    const tick = async () => {
+      if (entry.busy) return;
+      entry.busy = true;
+      try {
+        let data;
+        try { data = rt.game.instrumentTick(instrumentId); } catch { return; } // NO_SEED (dev without seed)
+        // Settle due contracts FIRST so a pool-decided digit can override the owner's tick frame at
+        // this index (docs/25 applied to digits: the curve/stream is cosmetic; the decision rules).
+        const settled = await rt.game.settleDueDigits(instrumentId, data.index);
+        const overrideByUser = new Map<string, number>();
+        for (const s of settled) overrideByUser.set(s.userId, s.digit);
+        const t = data.dayStartMs + data.index * data.tickMs;
+        entry.subs.forEach((ws) => {
+          const u = userOf.get(ws);
+          const d = u !== undefined ? overrideByUser.get(u) : undefined;
+          if (d !== undefined && d !== data.digit) {
+            const scaled = Math.round(data.quote * 100);
+            const quote = (scaled - (((scaled % 10) + 10) % 10) + d) / 100;
+            send(ws, "inst_tick", { instrumentId, index: data.index, quote, digit: d, t });
+          } else {
+            send(ws, "inst_tick", { instrumentId, index: data.index, quote: data.quote, digit: data.digit, t });
+          }
+        });
+        for (const s of settled) {
+          toSiteUser(siteId, s.userId, "digit_settled", { positionId: s.positionId, instrumentId, index: data.index, digit: s.digit, won: s.won, payoutCents: s.payoutCents, pnlCents: s.pnlCents, balance: s.balance });
+          void opts.repo.getWalletSnapshot(s.userId)
+            .then((snap) => toSiteUser(siteId, s.userId, "balance", { real: snap.real, bonus: snap.bonus, currency: snap.currency }))
+            .catch(() => { /* client also invalidates ['wallet'] on settle */ });
+        }
+        if (entry.subs.size === 0 && !rt.game.openDigitInstruments().has(instrumentId)) {
+          clearInterval(entry.timer);
+          m.delete(instrumentId);
+        }
+      } catch (err) { report(err as Error, `${siteId}:inst ${instrumentId}`); }
+      finally { entry.busy = false; }
+    };
+    entry.timer = setInterval(() => { void tick(); }, inst.tickMs);
+    (entry.timer as { unref?: () => void }).unref?.();
+    m.set(instrumentId, entry);
+    return entry;
+  }
+
+  /** Backfill the last `n` authoritative ticks so a freshly subscribed chart is full immediately. */
+  function sendInstHistory(ws: WebSocket, rt: Awaited<ReturnType<typeof ensureSite>>, instrumentId: string, n = 120) {
+    const cur = rt.game.instrumentTick(instrumentId);
+    const end = cur.index;
+    const start = Math.max(0, end - n + 1);
+    const ticks: Array<{ index: number; quote: number; digit: number; t: number }> = [];
+    for (let i = start; i <= end; i++) {
+      const d = rt.game.instrumentTick(instrumentId, i);
+      ticks.push({ index: i, quote: d.quote, digit: d.digit, t: d.dayStartMs + i * d.tickMs });
+    }
+    send(ws, "inst_history", { instrumentId, ticks, tickMs: cur.tickMs });
+  }
+
+  const unsubInstrument = (ws: WebSocket) => {
+    const s = siteOf.get(ws);
+    const cur = subInstrument.get(ws);
+    if (s && cur) { instStreamers.get(s)?.get(cur)?.subs.delete(ws); subInstrument.delete(ws); }
+  };
+  const stopAllStreamers = () => {
+    for (const m of instStreamers.values()) for (const e of m.values()) clearInterval(e.timer);
+    instStreamers.clear();
+  };
 
   // ── Platform live channel (docs/24): cross-brand feed for the platform_superadmin console ──
   // Platform sockets connect with `?platform=1`, never join a brand's socket set (so they don't
@@ -213,6 +296,35 @@ export async function startMultiEngine(opts: MultiEngineOptions): Promise<MultiE
               const userId = userOf.get(ws); if (!userId) return send(ws, "error", { code: "AUTH_REQUIRED" });
               await rt.game.sell(String(msg.data.positionId), userId); return;
             }
+            // ── Phase 2: Deriv-style DIGIT contracts + per-instrument feed subscription ──────────
+            case "subscribe_instrument": {
+              const instrumentId = String(msg.data?.instrumentId ?? "");
+              if (!isKnownInstrument(instrumentId)) return send(ws, "error", { code: "INVALID_INSTRUMENT" });
+              unsubInstrument(ws);
+              const entry = await ensureStreamer(siteId, instrumentId);
+              entry.subs.add(ws);
+              subInstrument.set(ws, instrumentId);
+              try { sendInstHistory(ws, rt, instrumentId); } catch { /* NO_SEED (dev without a seed) */ }
+              return;
+            }
+            case "open_digit": {
+              const userId = userOf.get(ws); if (!userId) return send(ws, "error", { code: "AUTH_REQUIRED" });
+              if (opts.playAllowed && !(await opts.playAllowed()))
+                return send(ws, "error", { code: "SYSTEM_DISABLED", message: "Play is temporarily disabled by the platform." });
+              const instrumentId = String(msg.data?.instrumentId ?? "");
+              if (!isKnownInstrument(instrumentId)) return send(ws, "error", { code: "INVALID_INSTRUMENT" });
+              const stakeCents = Number(msg.data.stakeCents);
+              const r = await rt.game.openDigitContract({
+                userId, stakeCents, kind: String(msg.data.kind) as DigitKind,
+                target: msg.data.target != null ? Number(msg.data.target) : undefined,
+                instrumentId, ticks: msg.data.ticks != null ? Number(msg.data.ticks) : undefined,
+                role: roleOf.get(ws) ?? "player",
+              });
+              await ensureStreamer(siteId, instrumentId); // guarantee settlement fires even with no watcher
+              send(ws, "digit_opened", { positionId: r.positionId, instrumentId, openIndex: r.openIndex, settleIndex: r.settleIndex, entryRate: r.entryRate, stakeCents, kind: msg.data.kind, target: msg.data.target ?? null });
+              const after = await opts.repo.getWalletSnapshot(userId);
+              return send(ws, "balance", { real: after.real, bonus: after.bonus, currency: after.currency });
+            }
             case "ping": return send(ws, "pong", {});
             default: return send(ws, "error", { code: "UNKNOWN_TYPE", message: msg.type });
           }
@@ -220,6 +332,7 @@ export async function startMultiEngine(opts: MultiEngineOptions): Promise<MultiE
       });
 
       ws.on("close", () => {
+        unsubInstrument(ws);
         perSiteSockets.get(siteId)?.delete(ws);
         const u = userOf.get(ws);
         if (u) perSiteUser.get(siteId)?.get(u)?.delete(ws);
@@ -233,6 +346,6 @@ export async function startMultiEngine(opts: MultiEngineOptions): Promise<MultiE
   return {
     wss,
     emitPlatformDeposit,
-    close: () => new Promise<void>((resolve) => { opts.registry.stopAll(); wss.close(() => resolve()); }),
+    close: () => new Promise<void>((resolve) => { stopAllStreamers(); opts.registry.stopAll(); wss.close(() => resolve()); }),
   };
 }

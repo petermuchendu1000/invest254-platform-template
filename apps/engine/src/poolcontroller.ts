@@ -1,5 +1,5 @@
 import {
-  decidePoolOutcome, poolLiveMultiplier, DEFAULT_POOL_KNOBS,
+  decidePoolOutcome, decidePoolOutcomeFixed, poolLiveMultiplier, DEFAULT_POOL_KNOBS,
   type PoolDecision, type PoolKnobs, type PlayerSession,
 } from "@invest254/shared";
 import type { Querier } from "./wallet.js";
@@ -164,6 +164,65 @@ export class PoolController {
   commit(positionId: string): Promise<number> { return this.repo.commit(positionId); }
   release(positionId: string): Promise<number> { return this.repo.release(positionId); }
   getDecision(positionId: string): Promise<StoredDecision | null> { return this.repo.getDecision(positionId); }
+
+  /**
+   * Decide + atomically reserve a pool-eligible FIXED-ODDS contract (Deriv-style digits).
+   * EXACTLY the decideReserve orchestration — same pool state, same EAT-day session + turnover
+   * tracking, same reserve→commit/release atomicity, same persisted decision — with the fixed-odds
+   * brain (shared decidePoolOutcomeFixed): the win pays exactly `payoutCents` or the trade loses;
+   * budget clamps can never produce a shrunk win. The edge invariant uses the CONTRACT's fixed
+   * multiplier m = payout/stake: base win-prob = targetRtp / m, so E[RTP per trade] ≤ targetRtp
+   * (= 1 − house_edge) and the hard ceiling paid + reserved ≤ ⌊targetRtp × turnover⌋ holds across
+   * BOTH engines because digits share the same pool row, turnover and ledger as rise/fall.
+   */
+  async decideReserveFixed(a: {
+    siteId: string; userId: string; stakeCents: number; payoutCents: number; positionId: string;
+    nonce: number; openedAtMs: number; serverSeed: string;
+    balanceAfterStakeCents: number; minWithdrawalCents: number;
+    /** Target RTP for pool mode = 1 - house_edge (the central operator dial). */
+    targetRtp: number;
+  }): Promise<PoolOutcome> {
+    const day = eatDay(a.openedAtMs);
+    const st = await this.repo.poolState(a.siteId, day);
+    const session = await this.getSession(a.siteId, a.userId, day);
+
+    // Fixed odds: the contract fixes the multiplier, so the edge invariant derives the win
+    // FREQUENCY from it — base p = targetRtp / m (mirror of rise/fall's p = targetWinRate where
+    // m = targetRtp / targetWinRate). Guard degenerate contracts (m <= 1) by forcing p to 0 via
+    // meanMultiplier fallback; decidePoolOutcomeFixed also refuses payout <= stake.
+    const m = a.stakeCents > 0 ? a.payoutCents / a.stakeCents : 0;
+    const meanMultiplier = Number.isFinite(m) && m > 1 ? m : this.knobs.meanMultiplier;
+    const pCap = a.targetRtp / meanMultiplier;
+
+    const turnoverCents = (await this.getTurnover(a.siteId, day)) + a.stakeCents;
+    const knobs: PoolKnobs = {
+      ...this.knobs, maxMultiplier: meanMultiplier, // fixed odds: no amount draw, the contract fixes m
+      targetSessionRtp: a.targetRtp, meanMultiplier, pCap,
+    };
+    const decision = decidePoolOutcomeFixed({
+      stakeCents: a.stakeCents, payoutCents: a.payoutCents,
+      pool: { ...st, turnoverCents }, dayFraction: eatDayFraction(a.openedAtMs),
+      knobs, serverSeed: a.serverSeed, nonce: a.nonce, session,
+      balanceAfterStakeCents: a.balanceAfterStakeCents, minWithdrawalCents: a.minWithdrawalCents,
+    });
+    let result = decision.result, multiplier = decision.multiplier, payoutCents = decision.payoutCents;
+    if (result === "win") {
+      const reserved = await this.repo.reserve(a.siteId, day, a.positionId, payoutCents);
+      if (reserved < payoutCents) {
+        // Fixed odds pay in full or not at all: a partial reserve (racing the last of the pool)
+        // becomes a LOSS and any partial hold is released. No overspend, no shrunk win.
+        if (reserved > 0) await this.repo.release(a.positionId);
+        result = "loss"; multiplier = 0; payoutCents = 0;
+      }
+    }
+    session.trades += 1; session.stakedCents += a.stakeCents;
+    this.turnover.set(`${day}:${a.siteId}`, (this.turnover.get(`${day}:${a.siteId}`) ?? 0) + a.stakeCents);
+    await this.repo.saveDecision({
+      positionId: a.positionId, siteId: a.siteId, poolDay: day,
+      result, multiplier, payoutCents, seed: a.serverSeed, nonce: a.nonce,
+    });
+    return { result, multiplier, payoutCents };
+  }
 
   /** Live multiplier at progress g for a decided pool position (seeded reversing path). */
   live(d: PoolOutcome, serverSeed: string, nonce: number, g: number): number {

@@ -190,6 +190,65 @@ export function decidePoolOutcome(args: {
 }
 
 /**
+ * Decide a pool-eligible FIXED-ODDS trade (Deriv-style digit contracts). Same brain, same gates,
+ * same invariants as decidePoolOutcome — with the one adaptation fixed odds require: the winning
+ * payout is EXACTLY `payoutCents` (stake × factor / winProb) and can never be shrunk to fit, so any
+ * budget clamp (pool cash, no-scoop share, hard RTP-budget ceiling, near-miss hold) becomes a LOSS.
+ * That is strictly SAFER than the variable-amount path: the house never pays a partial win.
+ *
+ * Edge invariant (identical to §RTP redesign): callers must pass knobs with
+ *   meanMultiplier = payoutCents / stakeCents   (the contract's fixed multiplier m)
+ * so sessionWinProbability's base = targetSessionRtp / m and (with turnover) p ≤ base ⇒
+ *   E[RTP per trade] = p·m ≤ targetSessionRtp < 1 — structurally positive edge at every volume,
+ * plus the hard ceiling paid + reserved ≤ ⌊targetSessionRtp × turnover⌋ and the pool cash fuse.
+ * Deterministic in (serverSeed, nonce) ⇒ auditable + crash-recoverable.
+ */
+export function decidePoolOutcomeFixed(args: {
+  stakeCents: number;
+  /** The contract's FIXED total return on a win (e.g. digitReturnCents). */
+  payoutCents: number;
+  pool: PoolState; dayFraction: number; knobs?: PoolKnobs;
+  serverSeed: string; nonce: number; session?: PlayerSession;
+  balanceAfterStakeCents?: number;
+  minWithdrawalCents?: number;
+}): PoolDecision {
+  const k = args.knobs ?? DEFAULT_POOL_KNOBS;
+  const s = args.session;
+  const avail = available(args.pool);
+  const p = s ? sessionWinProbability(s, args.pool, args.dayFraction, k)
+              : winProbability(args.pool, args.dayFraction, k);
+  const rng = new SeededRng(args.serverSeed, `pool:${args.nonce}`);
+  const roll = rng.next();                              // 1st draw: propensity (same stream position)
+  rng.next();                                           // 2nd draw: kept for stream parity with decidePoolOutcome
+  if (avail <= 0) return { result: "loss", multiplier: 0, payoutCents: 0, winProbUsed: p, reason: "budget_exhausted" };
+  if (roll >= p) return { result: "loss", multiplier: 0, payoutCents: 0, winProbUsed: p, reason: "propensity_loss" };
+
+  const payout = args.payoutCents;
+  if (payout <= args.stakeCents) {
+    // Degenerate contract (factor/prob leaves no profit) — never a "win" that loses money.
+    return { result: "loss", multiplier: 0, payoutCents: 0, winProbUsed: p, reason: "budget_clamped_to_loss" };
+  }
+  // Fixed odds: every cap is pass/fail. (1) pool cash fuse:
+  if (payout > avail) return { result: "loss", multiplier: 0, payoutCents: 0, winProbUsed: p, reason: "budget_clamped_to_loss" };
+  // (2) per-player no-scoop share of the day's pool:
+  const playerCap = s ? Math.max(0, Math.floor(k.playerShare * args.pool.amountCents) - s.returnedCents) : avail;
+  if (payout > playerCap) return { result: "loss", multiplier: 0, payoutCents: 0, winProbUsed: p, reason: "budget_clamped_to_loss" };
+  // (3) HARD RTP-BUDGET CEILING: paid + reserved may never exceed ⌊target × turnover⌋ (docs/25 §RTP).
+  const rtpBudget = args.pool.turnoverCents != null && args.pool.turnoverCents > 0
+    ? Math.max(0, Math.floor(k.targetSessionRtp * args.pool.turnoverCents) - args.pool.paidCents - args.pool.reservedCents)
+    : Infinity;
+  if (payout > rtpBudget) return { result: "loss", multiplier: 0, payoutCents: 0, winProbUsed: p, reason: "budget_clamped_to_loss" };
+  // (4) Min-withdrawal near-miss lever: a fixed payout cannot be held just below the line, so a
+  //     non-let-through crossing becomes a near-miss LOSS (the player lands short of the line).
+  const W = args.minWithdrawalCents ?? 0;
+  const bal = args.balanceAfterStakeCents;
+  if (W > 0 && bal != null && bal + payout >= W && rng.next() >= k.letThroughProb) {   // 3rd draw: let-through
+    return { result: "loss", multiplier: 0, payoutCents: 0, winProbUsed: p, reason: "near_miss" };
+  }
+  return { result: "win", multiplier: payout / args.stakeCents, payoutCents: payout, winProbUsed: p, reason: "granted" };
+}
+
+/**
  * Live multiplier at trade progress g in [0,1] for a decided outcome, with a deliberate overshoot in
  * the OPPOSITE direction of the result: a decided LOSS shows green (>1) first then collapses to 0; a
  * decided WIN dips red (<1) first then rallies to the final multiplier. C1-smooth (smoothstep within

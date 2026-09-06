@@ -6,14 +6,14 @@ import { DigitHeatmap } from '@/components/game/digits/DigitHeatmap';
 import { MultipliersPanel } from '@/components/game/digits/MultipliersPanel';
 import { DerivChart } from '@/components/game/digits/DerivChart';
 import { VolatilitySelector } from '@/components/game/digits/VolatilitySelector';
-import { useInstrument } from '@/lib/game/useInstrument';
+import { useGameSocket, type DigitSettledData } from '@/lib/game/GameSocketProvider';
 import { instrumentById, DEFAULT_INSTRUMENT_ID, type Instrument } from '@/lib/game/instruments';
 import { useDisplayMoney } from '@/lib/money';
 import { useWallet } from '@/lib/wallet/hooks';
 import { useSession } from '@/lib/auth/session';
 import { useDepositUi } from '@/lib/wallet/depositUi';
 
-// ── Contract model ────────────────────────────────────────────────────────────────────────────
+// ── Contract model ───────────────────────────────────────────────────────────────────────────────
 const MARKETS = [
   { id: 'matchesdiffers', label: 'Matches/Differs' },
   { id: 'evenodd', label: 'Even/Odd' },
@@ -23,9 +23,11 @@ type Market = (typeof MARKETS)[number]['id'];
 type TradeType = 'digits' | 'multipliers';
 type Outcome = 'even' | 'odd' | 'over' | 'under' | 'matches' | 'differs';
 
-// House factor: total return = stake * (PAYOUT_FACTOR / winProbability). 0.976 reproduces the
-// tagoption/Deriv Even-Odd figure exactly (0.976 / 0.5 = 1.952 → 95.2% profit).
-const PAYOUT_FACTOR = 0.976;
+// Display-only payout factor, mirroring the engine's DIGIT default (shared `digitPayoutFactor`,
+// 0.95 ⇒ 5% edge). The ENGINE is authoritative for the actual payout; this only renders the CTA
+// "return" and "% payout". Kept a local literal so the client bundle never pulls node:crypto via
+// the shared barrel. return = stake × factor / winProb.
+const PAYOUT_FACTOR = 0.95;
 const WINDOW = 120; // ticks used for the digit-frequency heatmap
 
 const lastDigitOf = (rate: number) => (((Math.round(rate * 100) % 10) + 10) % 10);
@@ -47,24 +49,6 @@ function winProbability(outcome: Outcome, barrier: number): number {
   return 0;
 }
 
-function isWin(outcome: Outcome, digit: number, barrier: number, pick: number): boolean {
-  switch (outcome) {
-    case 'even':
-      return digit % 2 === 0;
-    case 'odd':
-      return digit % 2 === 1;
-    case 'over':
-      return digit > barrier;
-    case 'under':
-      return digit < barrier;
-    case 'matches':
-      return digit === pick;
-    case 'differs':
-      return digit !== pick;
-  }
-  return false;
-}
-
 const outcomesFor = (m: Market): [{ key: Outcome; label: string }, { key: Outcome; label: string }] =>
   m === 'evenodd'
     ? [{ key: 'even', label: 'Even' }, { key: 'odd', label: 'Odd' }]
@@ -72,14 +56,14 @@ const outcomesFor = (m: Market): [{ key: Outcome; label: string }, { key: Outcom
       ? [{ key: 'over', label: 'Over' }, { key: 'under', label: 'Under' }]
       : [{ key: 'matches', label: 'Matches' }, { key: 'differs', label: 'Differs' }];
 
-type Pending = { stakeCents: number; profitCents: number; outcome: Outcome; barrier: number; pick: number; placedT: number };
+type Pending = { stakeCents: number; outcome: Outcome };
 type Result = { id: number; won: boolean; delta: number; label: string };
 
-/** Deriv-style binary/digits trade surface (per-brand `tradeUi==='digits'`). */
+/** Deriv-style binary/digits trade surface — trades REAL contracts against the authoritative engine. */
 export function DigitsTradeScreen() {
   const [instId, setInstId] = useState<string>(DEFAULT_INSTRUMENT_ID);
   const instrument: Instrument = instrumentById(instId);
-  const { getTicks, getLastTick, resetKey } = useInstrument(instrument);
+  const { getInstrumentTicks, getLastInstrumentTick, instrumentResetKey, subscribeInstrument, openDigit, onDigitSettled } = useGameSocket();
   const { fmt, symbol, isForeign, toKesCents } = useDisplayMoney();
   const token = useSession((s) => s.token);
   const openDeposit = useDepositUi((s) => s.openDeposit);
@@ -105,7 +89,7 @@ export function DigitsTradeScreen() {
   const [stopLoss, setStopLoss] = useState(isForeign ? '10' : '1000');
   const [multiplier, setMultiplier] = useState('2');
 
-  // Session state (PREVIEW — no real-money movement until the engine gains digit contracts).
+  // Session state (authoritative — driven by server digit_settled events).
   const [pnl, setPnl] = useState(0);
   const [results, setResults] = useState<Result[]>([]);
   const [flash, setFlash] = useState<{ won: boolean; delta: number } | null>(null);
@@ -132,40 +116,48 @@ export function DigitsTradeScreen() {
     [barrier],
   );
 
-  const settle = useCallback((p: Pending, digit: number) => {
-    const won = isWin(p.outcome, digit, p.barrier, p.pick);
-    const delta = won ? p.profitCents : -p.stakeCents;
-    lossStreakRef.current = won ? 0 : lossStreakRef.current + 1;
-    setPnl((x) => x + delta);
-    setFlash({ won, delta });
-    idRef.current += 1;
-    const label = `${p.outcome.toUpperCase()} · ${digit}`;
-    setResults((r) => [{ id: idRef.current, won, delta, label }, ...r].slice(0, 8));
-    window.setTimeout(() => setFlash(null), 900);
-  }, []);
+  // Subscribe the socket to the selected instrument's authoritative feed (re-subscribes on change).
+  useEffect(() => { subscribeInstrument(instId); }, [instId, subscribeInstrument]);
+
+  // Resolve settlements authoritatively from the engine (single in-flight contract at a time).
+  useEffect(() => {
+    const off = onDigitSettled((s: DigitSettledData) => {
+      const p = pendingRef.current;
+      pendingRef.current = null;
+      const won = s.won;
+      const delta = s.pnlCents; // authoritative P/L in cents
+      lossStreakRef.current = won ? 0 : lossStreakRef.current + 1;
+      setPnl((x) => x + delta);
+      setFlash({ won, delta });
+      idRef.current += 1;
+      const label = `${(p?.outcome ?? '').toString().toUpperCase()} · ${s.digit}`;
+      setResults((r) => [{ id: idRef.current, won, delta, label }, ...r].slice(0, 8));
+      window.setTimeout(() => setFlash(null), 900);
+    });
+    return off;
+  }, [onDigitSettled]);
 
   const place = useCallback(
-    (outcome: Outcome, cents: number) => {
+    (outcome: Outcome, cents: number): boolean => {
       if (!Number.isFinite(cents) || cents <= 0) return false;
+      if (pendingRef.current) return false; // one contract in flight at a time
       if (!token || cents > spendable) {
         openDeposit({ amountCents: cents });
         return false;
       }
       if (winProbability(outcome, barrier) <= 0) return false;
-      const ticks = getTicks();
-      const last = ticks[ticks.length - 1];
-      if (!last) return false;
-      const ret = totalReturnCents(cents, outcome);
-      pendingRef.current = { stakeCents: cents, profitCents: ret - cents, outcome, barrier, pick, placedT: last.t };
+      const target = outcome === 'over' || outcome === 'under' ? barrier : outcome === 'matches' || outcome === 'differs' ? pick : 0;
+      pendingRef.current = { stakeCents: cents, outcome };
+      openDigit({ instrumentId: instId, kind: outcome, target, stakeCents: cents });
       return true;
     },
-    [token, spendable, openDeposit, barrier, pick, getTicks, totalReturnCents],
+    [token, spendable, openDeposit, barrier, pick, instId, openDigit],
   );
 
-  // Live snapshot + settlement + AUTO-bot loop, all driven off the tick stream.
+  // Live snapshot (price / current digit / change% / heatmap) + AUTO-bot loop, off the tick stream.
   useEffect(() => {
     const id = window.setInterval(() => {
-      const ticks = getTicks();
+      const ticks = getInstrumentTicks();
       const n = ticks.length;
       if (n === 0) return;
       const last = ticks[n - 1]!;
@@ -178,13 +170,6 @@ export function DigitsTradeScreen() {
       for (let i = n - win; i < n; i++) { const dd = lastDigitOf(ticks[i]!.rate); counts[dd] = (counts[dd] ?? 0) + 1; }
       const freqs = counts.map((c) => (c / win) * 100);
       setSnap({ price: last.rate, digit, changePct, freqs });
-
-      // Settle a pending contract on the first NEW tick after placement (1-tick contracts).
-      const p = pendingRef.current;
-      if (p && last.t > p.placedT) {
-        settle(p, digit);
-        pendingRef.current = null;
-      }
 
       // AUTO bot: keep placing on the chosen outcome (martingale on loss) until target/stop.
       if (runningRef.current && !pendingRef.current) {
@@ -201,7 +186,7 @@ export function DigitsTradeScreen() {
       }
     }, 250);
     return () => window.clearInterval(id);
-  }, [getTicks, settle, place, stakeCents, spendable, multiplier, targetProfit, stopLoss, toKesCents]);
+  }, [getInstrumentTicks, place, stakeCents, spendable, multiplier, targetProfit, stopLoss, toKesCents]);
 
   const [primary, secondary] = outcomesFor(market);
   const isMultipliers = tradeType === 'multipliers';
@@ -257,7 +242,7 @@ export function DigitsTradeScreen() {
 
       {/* Chart panel — Deriv-style axis chart with the volatility breadcrumb floating top-left */}
       <div className="relative min-h-[168px] flex-1 overflow-hidden rounded-xl border border-border bg-surface-2">
-        <DerivChart getTicks={getTicks} getLastTick={getLastTick} resetKey={resetKey} />
+        <DerivChart getTicks={getInstrumentTicks} getLastTick={getLastInstrumentTick} resetKey={instrumentResetKey} />
         <div className="absolute left-2 top-2 z-20">
           <VolatilitySelector
             instrument={instrument}
@@ -324,7 +309,7 @@ export function DigitsTradeScreen() {
       {/* Scrollable console */}
       <div className="flex min-h-0 flex-col gap-3">
         {isMultipliers ? (
-          <MultipliersPanel getLastTick={getLastTick} resetKey={resetKey} />
+          <MultipliersPanel getLastTick={getLastInstrumentTick} resetKey={instrumentResetKey} />
         ) : (
         <>
         {/* AUTO / MANUAL */}
@@ -422,7 +407,7 @@ export function DigitsTradeScreen() {
           })}
         </div>
 
-        {/* Session ledger (preview) */}
+        {/* Session ledger */}
         <div className="flex items-center justify-between rounded-xl border border-border bg-surface-2 px-3 py-2">
           <div className="flex items-center gap-2 text-xs text-muted">
             <span>Session P/L</span>
@@ -437,7 +422,6 @@ export function DigitsTradeScreen() {
             {results.length === 0 ? <span className="text-[11px] text-muted">no trades yet</span> : null}
           </div>
         </div>
-        <p className="text-center text-[10px] text-muted">Preview mode · outcomes settle against the live tick stream (no real-money movement yet).</p>
         </>
         )}
       </div>

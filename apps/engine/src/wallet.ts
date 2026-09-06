@@ -40,6 +40,10 @@ export interface OpenPositionRow {
   configVersion: number | null;
   /** Multi-tenant: the brand this position belongs to (null in single-tenant mode). */
   siteId?: string | null;
+  /** Phase 2: contract kind ('rise_fall' | 'digit' | 'multiplier'); absent ⇒ legacy rise/fall. */
+  kind?: string | null;
+  /** Phase 2: per-kind contract params (jsonb). For digits: { kind, target, instrumentId, settleIndex }. */
+  contract?: unknown;
 }
 
 /** Public fairness record for a day (commitment always; seed only after reveal). */
@@ -248,7 +252,8 @@ export class InMemoryGameRepository implements GameRepository {
     const out: OpenPositionRow[] = [];
     for (const p of this.positions.values()) {
       if (p.status !== "open") continue;
-      out.push({ id: p.id, userId: p.userId, stakeCents: p.stake, direction: p.direction, durationS: p.durationS, openedAtMs: p.openedAtMs, entryRate: p.entryRate, gameDayId: p.gameDayId, nonce: p.nonce, configVersion: p.configVersion, siteId: p.siteId });
+      const meta = this.contractMeta.get(p.id);
+      out.push({ id: p.id, userId: p.userId, stakeCents: p.stake, direction: p.direction, durationS: p.durationS, openedAtMs: p.openedAtMs, entryRate: p.entryRate, gameDayId: p.gameDayId, nonce: p.nonce, configVersion: p.configVersion, siteId: p.siteId, kind: meta?.kind ?? "rise_fall", contract: meta?.contract ?? null });
     }
     return out;
   }
@@ -383,13 +388,15 @@ export class PgGameRepository implements GameRepository {
   }
   async listOpenPositions(): Promise<OpenPositionRow[]> {
     const r = await this.q.query(
-      "select id, user_id, stake, direction, duration_s, opened_at, entry_rate, game_day_id, nonce, config_version, site_id from positions where status = 'open' order by opened_at", []);
+      "select id, user_id, stake, direction, duration_s, opened_at, entry_rate, game_day_id, nonce, config_version, site_id, kind, contract from positions where status = 'open' order by opened_at", []);
     return r.rows.map((x) => ({
       id: String(x.id), userId: String(x.user_id), stakeCents: toCents(x.stake), direction: x.direction as Direction,
       durationS: Number(x.duration_s), openedAtMs: toMs(x.opened_at), entryRate: Number(x.entry_rate),
       gameDayId: x.game_day_id === null || x.game_day_id === undefined ? null : Number(x.game_day_id), nonce: Number(x.nonce),
       configVersion: x.config_version === null || x.config_version === undefined ? null : Number(x.config_version),
       siteId: x.site_id === null || x.site_id === undefined ? null : String(x.site_id),
+      kind: (x.kind ?? "rise_fall") as string,
+      contract: x.contract ?? null,
     }));
   }
   async getFairness(tradeDate: string): Promise<FairnessRecord | null> {

@@ -35,8 +35,14 @@ import type {
   PositionUpdateData,
   WsErrorData,
 } from '@/lib/game/betting';
+import type { InstrumentTick } from '@/lib/game/useInstrument';
 
 const MAX_TICKS = 3000;
+
+/** C→S: open a Deriv-style DIGIT contract on an instrument (server-authoritative). */
+export interface OpenDigitInput { instrumentId: string; kind: string; target?: number; stakeCents: number; ticks?: number }
+/** S→C: a settled digit contract (authoritative outcome + new balance). */
+export interface DigitSettledData { positionId: string; instrumentId: string; index: number; digit: number; won: boolean; payoutCents: number; pnlCents: number; balance: number }
 
 interface GameSocketValue {
   status: ConnStatus;
@@ -50,6 +56,19 @@ interface GameSocketValue {
   openPosition: (input: OpenPositionInput) => void;
   /** Manually cash out the open position (only valid while `sellable`). */
   sell: () => void;
+
+  // ── Phase 2: Deriv-style digits/instrument stream (isolated from the rise/fall path above) ──────
+  /** Authoritative per-instrument tick buffer (quote as `rate`), for the digits chart. */
+  getInstrumentTicks: () => InstrumentTick[];
+  getLastInstrumentTick: () => InstrumentTick | null;
+  /** Bumps whenever the subscribed instrument (re)seeds, so the chart re-renders its data. */
+  instrumentResetKey: string;
+  /** Subscribe the socket to an instrument's authoritative feed (history + live ticks). */
+  subscribeInstrument: (instrumentId: string) => void;
+  /** Place a DIGIT contract; settlement arrives via `onDigitSettled`. */
+  openDigit: (input: OpenDigitInput) => void;
+  /** Subscribe to authoritative digit settlements. Returns an unsubscribe fn. */
+  onDigitSettled: (cb: (s: DigitSettledData) => void) => () => void;
 }
 
 const Ctx = createContext<GameSocketValue | null>(null);
@@ -132,6 +151,12 @@ export function GameSocketProvider({ children }: { children: React.ReactNode }) 
   const [activePosition, setActivePosition] = useState<ActivePosition | null>(null);
   const activeRef = useRef<ActivePosition | null>(null);
 
+  // Phase 2 — instrument/digit stream state (separate buffer so it never touches the rise/fall path).
+  const instTicksRef = useRef<InstrumentTick[]>([]);
+  const [instrumentResetKey, setInstrumentResetKey] = useState('');
+  const subscribedInstrumentRef = useRef<string | null>(null);
+  const digitListenersRef = useRef<Set<(s: DigitSettledData) => void>>(new Set());
+
   /** Keep ref + state in lockstep so socket handlers can read the current value. */
   const setActive = useCallback(
     (next: ActivePosition | null | ((cur: ActivePosition | null) => ActivePosition | null)) => {
@@ -145,6 +170,12 @@ export function GameSocketProvider({ children }: { children: React.ReactNode }) 
   const getTicks = useCallback(() => ticksRef.current, []);
   const getLastTick = useCallback(
     () => (ticksRef.current.length > 0 ? ticksRef.current[ticksRef.current.length - 1]! : null),
+    [],
+  );
+
+  const getInstrumentTicks = useCallback(() => instTicksRef.current, []);
+  const getLastInstrumentTick = useCallback(
+    () => (instTicksRef.current.length > 0 ? instTicksRef.current[instTicksRef.current.length - 1]! : null),
     [],
   );
 
@@ -213,6 +244,35 @@ export function GameSocketProvider({ children }: { children: React.ReactNode }) 
     setActive({ ...a, phase: 'settling' });
   }, [send, setActive, toast]);
 
+  const subscribeInstrument = useCallback(
+    (instrumentId: string) => {
+      if (subscribedInstrumentRef.current === instrumentId && instTicksRef.current.length > 0) return;
+      subscribedInstrumentRef.current = instrumentId;
+      instTicksRef.current = [];
+      setInstrumentResetKey(`${instrumentId}:${Date.now()}`);
+      send('subscribe_instrument', { instrumentId }); // no-op if the socket is not open yet; re-sent on hello
+    },
+    [send],
+  );
+
+  const openDigit = useCallback(
+    (input: OpenDigitInput) => {
+      if (!tokenRef.current) {
+        toast.push({ tone: 'error', title: 'Log in to trade' });
+        return;
+      }
+      if (!send('open_digit', input)) {
+        toast.push({ tone: 'error', title: 'Not connected', description: 'Reconnecting — try again shortly.' });
+      }
+    },
+    [send, toast],
+  );
+
+  const onDigitSettled = useCallback((cb: (s: DigitSettledData) => void) => {
+    digitListenersRef.current.add(cb);
+    return () => { digitListenersRef.current.delete(cb); };
+  }, []);
+
   // Pre-fill the tick buffer with a smooth synthetic history so the curve is
   // already full on load (never "fills in" from the right). Keeps emitting until
   // the first real tick arrives, then stands down so live data takes over.
@@ -269,6 +329,8 @@ export function GameSocketProvider({ children }: { children: React.ReactNode }) 
         case 'hello': {
           const d = data as HelloData;
           if (d?.serverSeedHash) setFairness({ serverSeedHash: d.serverSeedHash, tradeDate: d.tradeDate });
+          // Re-arm the instrument subscription after a (re)connect so the digits chart keeps streaming.
+          if (subscribedInstrumentRef.current) send('subscribe_instrument', { instrumentId: subscribedInstrumentRef.current });
           break;
         }
         case 'tick': {
@@ -377,6 +439,39 @@ export function GameSocketProvider({ children }: { children: React.ReactNode }) 
             stakeCents,
             mode: d.mode,
           });
+          break;
+        }
+        // ── Phase 2: instrument stream + digit settlements ────────────────────────────────────
+        case 'inst_history': {
+          const d = data as { instrumentId: string; ticks: Array<{ t: number; quote: number; digit: number }> };
+          if (d.instrumentId !== subscribedInstrumentRef.current) break;
+          let prev = d.ticks[0]?.quote ?? 0;
+          instTicksRef.current = d.ticks.map((x) => {
+            const t: InstrumentTick = { t: x.t, rate: x.quote, delta: x.quote - prev };
+            prev = x.quote;
+            return t;
+          });
+          setInstrumentResetKey(`${d.instrumentId}:${d.ticks[d.ticks.length - 1]?.t ?? Date.now()}`);
+          break;
+        }
+        case 'inst_tick': {
+          const d = data as { instrumentId: string; t: number; quote: number; digit: number };
+          if (d.instrumentId !== subscribedInstrumentRef.current) break;
+          const buf = instTicksRef.current;
+          const prev = buf.length > 0 ? buf[buf.length - 1]!.rate : d.quote;
+          buf.push({ t: d.t, rate: d.quote, delta: d.quote - prev });
+          if (buf.length > MAX_TICKS) buf.splice(0, buf.length - MAX_TICKS);
+          break;
+        }
+        case 'digit_opened':
+          break; // ack only; the screen shows the pending contract locally until settlement
+        case 'digit_settled': {
+          const d = data as DigitSettledData;
+          if (typeof d.balance === 'number') setWalletReal(d.balance);
+          void qc.invalidateQueries({ queryKey: ['wallet'] });
+          void qc.invalidateQueries({ queryKey: ['positions'] });
+          void qc.invalidateQueries({ queryKey: ['ledger'] });
+          digitListenersRef.current.forEach((cb) => { try { cb(d); } catch { /* listener error is non-fatal */ } });
           break;
         }
         case 'error': {
@@ -490,6 +585,12 @@ export function GameSocketProvider({ children }: { children: React.ReactNode }) 
         activePosition,
         openPosition,
         sell,
+        getInstrumentTicks,
+        getLastInstrumentTick,
+        instrumentResetKey,
+        subscribeInstrument,
+        openDigit,
+        onDigitSettled,
       }}
     >
       {children}
