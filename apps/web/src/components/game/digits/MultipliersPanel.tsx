@@ -1,8 +1,9 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { cn } from '@/lib/cn';
 import type { InstrumentTick } from '@/lib/game/useInstrument';
+import { useGameSocket, type MultEvent, type MultOpenedData } from '@/lib/game/GameSocketProvider';
 import { useDisplayMoney } from '@/lib/money';
 import { useWallet } from '@/lib/wallet/hooks';
 import { useSession } from '@/lib/auth/session';
@@ -10,8 +11,10 @@ import { useDepositUi } from '@/lib/wallet/depositUi';
 
 // Deriv Multipliers: MULTUP/MULTDOWN. P/L = ±(price move %) × multiplier × stake, loss capped at
 // the stake (stop-out at 100% loss). Optional Take Profit / Stop Loss auto-close; optional Deal
-// Cancellation refunds the stake within a window for a fee (and auto-refunds if stop-out would hit
-// during that window — Deriv disables Stop Loss while Deal Cancellation is active).
+// Cancellation refunds the stake on a stop-out within its window (Deriv disables Stop Loss while
+// Deal Cancellation is active). All lifecycle is SERVER-AUTHORITATIVE: the engine evaluates every
+// instrument tick and pushes mult_update / mult_closed; in pool-mode brands the engine strips SL/DC,
+// fixes TP, and refuses manual close (the decided path runs to its endpoint).
 const MULTIPLIERS = [100, 200, 300, 400, 500, 1000];
 const DC_WINDOWS = [
   { label: 'Off', min: 0 },
@@ -22,26 +25,15 @@ const DC_WINDOWS = [
 type Dir = 'up' | 'down';
 type CloseReason = 'manual' | 'tp' | 'sl' | 'stopout' | 'cancel';
 
-interface Position {
-  dir: Dir;
-  entry: number;
-  stakeCents: number;
-  multiplier: number;
-  tpCents: number | null;
-  slCents: number | null;
-  dcUntil: number | null;
-  dcFeeCents: number;
-  openedT: number;
-}
-
 const num = (s: string) => { const n = Number.parseFloat(s); return Number.isFinite(n) ? n : 0; };
 const dcFeeCents = (stakeCents: number, min: number) => (min <= 0 ? 0 : Math.round(stakeCents * 0.02 * Math.sqrt(min)));
 
-export function MultipliersPanel({ getLastTick, resetKey }: { getLastTick: () => InstrumentTick | null; resetKey: string }) {
+export function MultipliersPanel({ getLastTick, resetKey, instrumentId }: { getLastTick: () => InstrumentTick | null; resetKey: string; instrumentId: string }) {
   const { fmt, symbol, isForeign, toKesCents } = useDisplayMoney();
   const token = useSession((s) => s.token);
   const openDeposit = useDepositUi((s) => s.openDeposit);
   const { data: wallet } = useWallet();
+  const { openMultiplier, closeMultiplier, onMultiplier } = useGameSocket();
   const spendable = (wallet?.real ?? 0) + (wallet?.bonus ?? 0);
 
   const [stake, setStake] = useState<string>(String(isForeign ? 10 : 200));
@@ -52,69 +44,60 @@ export function MultipliersPanel({ getLastTick, resetKey }: { getLastTick: () =>
   const [sl, setSl] = useState(isForeign ? '5' : '500');
   const [dcMin, setDcMin] = useState(0);
 
-  const [position, setPosition] = useState<Position | null>(null);
+  const [position, setPosition] = useState<MultOpenedData | null>(null);
+  const [pendingDir, setPendingDir] = useState<Dir | null>(null);
   const [livePnl, setLivePnl] = useState(0);
   const [price, setPrice] = useState<number | null>(null);
   const [sessionPnl, setSessionPnl] = useState(0);
   const [flash, setFlash] = useState<{ pnl: number; reason: CloseReason } | null>(null);
 
-  const posRef = useRef<Position | null>(null);
+  const posRef = useRef<MultOpenedData | null>(null);
   posRef.current = position;
 
   const stakeCents = num(stake) > 0 ? toKesCents(num(stake)) : 0;
   const dcActive = dcMin > 0;
   const feePreview = dcFeeCents(stakeCents, dcMin);
 
-  const pnlOf = (p: Position, cur: number): number => {
-    const movePct = (cur - p.entry) / p.entry;
-    const signed = p.dir === 'up' ? movePct : -movePct;
-    return Math.round(signed * p.multiplier * p.stakeCents);
-  };
-  const stopoutPrice = (p: Position) => (p.dir === 'up' ? p.entry * (1 - 1 / p.multiplier) : p.entry * (1 + 1 / p.multiplier));
+  // Server-authoritative lifecycle: opened ack, per-tick P/L, and the final close.
+  useEffect(() => {
+    const off = onMultiplier((e: MultEvent) => {
+      if (e.type === 'opened') {
+        setPendingDir(null);
+        setPosition(e.data);
+        setLivePnl(0);
+        return;
+      }
+      const p = posRef.current;
+      if (!p || e.data.positionId !== p.positionId) return;
+      if (e.type === 'update') {
+        setLivePnl(e.data.pnlCents);
+        return;
+      }
+      // closed (manual / tp / sl / stopout / cancel) — authoritative P/L
+      setPosition(null);
+      setLivePnl(0);
+      setSessionPnl((x) => x + e.data.pnlCents);
+      setFlash({ pnl: e.data.pnlCents, reason: e.data.reason });
+      window.setTimeout(() => setFlash(null), 1400);
+    });
+    return off;
+  }, [onMultiplier]);
 
-  const close = useCallback((p: Position, cur: number, reason: CloseReason) => {
-    let realized: number;
-    if (reason === 'cancel') realized = -p.dcFeeCents; // stake refunded, only the DC fee is lost
-    else if (reason === 'stopout') realized = -p.stakeCents;
-    else if (reason === 'tp' && p.tpCents != null) realized = p.tpCents;
-    else if (reason === 'sl' && p.slCents != null) realized = -p.slCents;
-    else realized = Math.max(-p.stakeCents, pnlOf(p, cur));
-    posRef.current = null;
-    setPosition(null);
-    setLivePnl(0);
-    setSessionPnl((x) => x + realized);
-    setFlash({ pnl: realized, reason });
-    window.setTimeout(() => setFlash(null), 1400);
-  }, []);
+  // An open that never acked (engine refusal) → unblock the buttons.
+  useEffect(() => {
+    if (!pendingDir) return;
+    const t = window.setTimeout(() => setPendingDir(null), 4000);
+    return () => window.clearTimeout(t);
+  }, [pendingDir]);
 
-  // Live P/L + auto-close conditions, driven off the instrument tick stream.
+  // Current price readout for the stats row (display only; the engine evaluates server-side).
   useEffect(() => {
     const id = window.setInterval(() => {
       const last = getLastTick();
-      if (!last) return;
-      const cur = last.rate;
-      setPrice(cur);
-      const p = posRef.current;
-      if (!p) return;
-      const pnl = pnlOf(p, cur);
-      const now = Date.now();
-      const dcLive = p.dcUntil != null && now < p.dcUntil;
-      // Stop-out (100% loss). With an active DC window this auto-cancels (stake refunded).
-      if (pnl <= -p.stakeCents) { close(p, cur, dcLive ? 'cancel' : 'stopout'); return; }
-      if (p.tpCents != null && pnl >= p.tpCents) { close(p, cur, 'tp'); return; }
-      if (!dcLive && p.slCents != null && pnl <= -p.slCents) { close(p, cur, 'sl'); return; }
-      setLivePnl(Math.max(-p.stakeCents, pnl));
-    }, 200);
+      if (last) setPrice(last.rate);
+    }, 250);
     return () => window.clearInterval(id);
-  }, [getLastTick, close]);
-
-  // Switching the instrument realises any open position at the current price (its stream changed).
-  useEffect(() => {
-    const p = posRef.current;
-    const last = getLastTick();
-    if (p && last) close(p, last.rate, 'manual');
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resetKey]);
+  }, [getLastTick]);
 
   const stepStake = (d: 1 | -1) => {
     const s = Math.max(0, num(stake) + d * (isForeign ? 1 : 50));
@@ -122,34 +105,30 @@ export function MultipliersPanel({ getLastTick, resetKey }: { getLastTick: () =>
   };
 
   const open = (dir: Dir) => {
-    if (position) return;
+    if (position || pendingDir) return;
     if (!Number.isFinite(stakeCents) || stakeCents <= 0) return;
     if (!token || stakeCents > spendable) { openDeposit({ amountCents: stakeCents }); return; }
-    const last = getLastTick();
-    if (!last) return;
-    const p: Position = {
+    setPendingDir(dir);
+    openMultiplier({
+      instrumentId,
       dir,
-      entry: last.rate,
-      stakeCents,
       multiplier,
+      stakeCents,
       tpCents: tpOn && num(tp) > 0 ? toKesCents(num(tp)) : null,
       slCents: !dcActive && slOn && num(sl) > 0 ? toKesCents(num(sl)) : null,
-      dcUntil: dcActive ? Date.now() + dcMin * 60_000 : null,
-      dcFeeCents: dcActive ? feePreview : 0,
-      openedT: Date.now(),
-    };
-    posRef.current = p;
-    setPosition(p);
-    setLivePnl(0);
+      ...(dcActive ? { dcMinutes: dcMin } : {}),
+    });
   };
 
+  const stopoutPrice = (p: MultOpenedData) => (p.dir === 'up' ? p.entry * (1 - 1 / p.multiplier) : p.entry * (1 + 1 / p.multiplier));
   const pnlPct = position ? (livePnl / position.stakeCents) * 100 : 0;
-  const dcRemaining = position?.dcUntil ? Math.max(0, position.dcUntil - Date.now()) : 0;
+  const dcRemaining = position?.dcUntilMs ? Math.max(0, position.dcUntilMs - Date.now()) : 0;
+  void resetKey; // an open position keeps streaming server-side even if the viewed instrument changes
 
   return (
     <div className="flex flex-col gap-3">
       {position ? (
-        // ── Open position ─────────────────────────────────────────────────────────────────────
+        // ── Open position (server-acked) ──────────────────────────────────────────────────────────
         <div className="flex flex-col gap-3 rounded-2xl border border-border bg-surface-2 p-3.5">
           <div className="flex items-center justify-between">
             <span className={cn('rounded-md px-2 py-0.5 text-xs font-bold text-white', position.dir === 'up' ? 'bg-up' : 'bg-down')}>
@@ -177,22 +156,21 @@ export function MultipliersPanel({ getLastTick, resetKey }: { getLastTick: () =>
             </div>
           ) : null}
           <div className="grid grid-cols-2 gap-2">
-            {position.dcUntil && dcRemaining > 0 ? (
-              <button type="button" onClick={() => { const l = getLastTick(); if (l) close(position, l.rate, 'cancel'); }}
-                className="rounded-xl border border-border bg-surface px-3 py-2.5 text-sm font-bold text-fg hover:border-accent/60">
-                Cancel · {Math.ceil(dcRemaining / 60000)}m left
-              </button>
+            {position.dcUntilMs && dcRemaining > 0 ? (
+              <div className="rounded-xl border border-border bg-surface px-3 py-2.5 text-center text-[11px] text-muted">
+                Deal cancellation · auto-refund on stop-out · {Math.ceil(dcRemaining / 60000)}m left
+              </div>
             ) : (
               <div className="rounded-xl border border-dashed border-border px-3 py-2.5 text-center text-[11px] text-muted">No deal cancellation</div>
             )}
-            <button type="button" onClick={() => { const l = getLastTick(); if (l) close(position, l.rate, 'manual'); }}
+            <button type="button" onClick={() => closeMultiplier(position.positionId)}
               className="rounded-xl bg-accent px-3 py-2.5 text-sm font-extrabold text-accent-fg hover:opacity-90">
               Close {livePnl >= 0 ? '+' : ''}{fmt(livePnl)}
             </button>
           </div>
         </div>
       ) : (
-        // ── Setup ─────────────────────────────────────────────────────────────────────────────
+        // ── Setup ────────────────────────────────────────────────────────────────────────────────
         <>
           {/* Stake */}
           <div className="flex items-center gap-2">
@@ -248,21 +226,21 @@ export function MultipliersPanel({ getLastTick, resetKey }: { getLastTick: () =>
 
           {/* Up / Down */}
           <div className="grid grid-cols-2 gap-2">
-            <button type="button" onClick={() => open('up')}
-              className="flex flex-col items-start gap-0.5 rounded-xl bg-up px-3.5 py-2.5 text-left text-white transition hover:opacity-90">
-              <span className="text-sm font-extrabold">Up</span>
+            <button type="button" disabled={pendingDir !== null} onClick={() => open('up')}
+              className="flex flex-col items-start gap-0.5 rounded-xl bg-up px-3.5 py-2.5 text-left text-white transition hover:opacity-90 disabled:opacity-50">
+              <span className="text-sm font-extrabold">{pendingDir === 'up' ? 'Opening…' : 'Up'}</span>
               <span className="text-[10px] font-semibold text-white/85">Profit if price rises · x{multiplier}</span>
             </button>
-            <button type="button" onClick={() => open('down')}
-              className="flex flex-col items-start gap-0.5 rounded-xl bg-down px-3.5 py-2.5 text-left text-white transition hover:opacity-90">
-              <span className="text-sm font-extrabold">Down</span>
+            <button type="button" disabled={pendingDir !== null} onClick={() => open('down')}
+              className="flex flex-col items-start gap-0.5 rounded-xl bg-down px-3.5 py-2.5 text-left text-white transition hover:opacity-90 disabled:opacity-50">
+              <span className="text-sm font-extrabold">{pendingDir === 'down' ? 'Opening…' : 'Down'}</span>
               <span className="text-[10px] font-semibold text-white/85">Profit if price falls · x{multiplier}</span>
             </button>
           </div>
         </>
       )}
 
-      {/* Session ledger (preview) */}
+      {/* Session ledger */}
       <div className="flex items-center justify-between rounded-xl border border-border bg-surface-2 px-3 py-2">
         <div className="flex items-center gap-2 text-xs text-muted">
           <span>Session P/L</span>
@@ -276,7 +254,6 @@ export function MultipliersPanel({ getLastTick, resetKey }: { getLastTick: () =>
           </span>
         ) : null}
       </div>
-      <p className="text-center text-[10px] text-muted">Preview mode · P/L tracks the live tick stream (no real-money movement yet).</p>
     </div>
   );
 }

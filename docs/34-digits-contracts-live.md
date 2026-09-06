@@ -92,7 +92,40 @@ panel is the bot; the engine is the authoritative broker it trades against.
 - Full suite **787/787**, `tsc -b` + web `tsc` clean.
 
 ## Follow-ups (not in this branch)
-- Multipliers: drive TP/SL/stop-out/deal-cancellation from the instrument tick loop + recovery.
 - Optional migration to make `digitPayoutFactor` a per-brand `site_game_config` column and advertise
   it to the client (today the client renders the shared default; the engine is authoritative).
 - Configurable contract length (ticks 1–10) surfaced in the UI.
+
+---
+
+# Addendum — MULTIPLIERS, live (same governance)
+
+> Status: implemented on branch `feat/issue1-multipliers-live`. Multipliers now ride the
+> per-instrument feed and are governed by the SAME pool brain and central budget as digits/rise-fall.
+
+**Statistical path (pool OFF, or marketers/demo):** honest, path-dependent P/L on the authoritative
+instrument quote — `±(move%) × multiplier × stake`, floored at −stake (stop-out). Optional TP/SL,
+optional Deal Cancellation (stake refunded on a stop-out inside its window; SL disabled while DC is
+active, per Deriv), manual close any time. The per-(site,instrument) streamer evaluates every open
+multiplier on every tick (`tickMultipliers`) and pushes `mult_update` / `mult_closed`.
+
+**Pool path (brand `pool_mode` ON + non-marketer):** a **timed bracket contract** decided at open.
+Take Profit is the contract's fixed upside (default +100% of stake); the pool decides via
+`decideReserveFixed` (candidate payout = stake + TP; base win-prob = targetRtp/m) and atomically
+reserves it. Live P/L renders the seeded reversing path (`poolLiveMultiplier`) over a seeded 20–60s
+window (`poolMultiplierDurationMs`), then auto-settles: WIN closes at exactly +TP (commit), LOSS
+stops out at −stake. **SL, Deal Cancellation and manual close are unavailable in pool mode**
+(docs/25 decision B — a player must never cash the green feint of a decided loss). Digits,
+multipliers and rise/fall reserve from **ONE `withdrawal_pool` row per brand**, share turnover and
+the RTP ceiling, and every central lever (per-client pools, dynamic all-client distribution,
+`pool_mode`, `house_edge`) governs all three with zero extra configuration.
+
+**Crash recovery:** pool-decided multipliers recover from the persisted decision — settle at the
+(seeded, recomputable) endpoint if the window elapsed during the outage (+commit a win), else re-arm
+the decided path; statistical multipliers re-arm from `positions.contract` and re-evaluate on the
+next tick. The transport re-arms instrument streamers at boot for every recovered open contract, so
+recovered positions keep evaluating even before any client connects.
+
+**Transport:** `open_multiplier` / `close_multiplier` (C→S); `mult_opened` / `mult_update` /
+`mult_closed` + `balance` (S→C). Web `MultipliersPanel` now trades real contracts (server-acked
+open, authoritative live P/L and closes); the preview simulation is gone.

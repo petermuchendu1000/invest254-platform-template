@@ -309,7 +309,7 @@ export function DigitsTradeScreen() {
       {/* Scrollable console */}
       <div className="flex min-h-0 flex-col gap-3">
         {isMultipliers ? (
-          <MultipliersPanel getLastTick={getLastInstrumentTick} resetKey={instrumentResetKey} />
+          <MultipliersPanel getLastTick={getLastInstrumentTick} resetKey={instrumentResetKey} instrumentId={instId} />
         ) : (
         <>
         {/* AUTO / MANUAL */}

@@ -5,6 +5,31 @@ entry: what, evidence, root cause, impact, and resolution.
 
 ---
 
+## #20 — Multipliers were pool-blind, tick-blind, transport-less and crash-unsafe — FIXED (branch `feat/issue1-multipliers-live`)
+- **Evidence:** the Phase-2 multiplier engine methods existed but (a) TP/SL/stop-out/DC were never
+  evaluated by any loop (the settle methods were dead code nothing called), (b) no WS/REST transport
+  reached them, (c) P/L priced off the classic BTC/KES curve instead of the instrument the player was
+  viewing, (d) open contracts lived only in memory (a restart stranded the debited stake), and
+  (e) the pool fund did not govern them — an uncapped, player-timed cash-out book (manual close at
+  any green tick) is even more loss-exposed than fair digits.
+- **Resolution (same central algorithm as digits/rise-fall):**
+  * Instrument feed pricing + per-tick evaluation via `tickMultipliers` (driven by the per-(site,
+    instrument) streamer): TP / SL / stop-out / deal-cancellation auto-close; `mult_update` /
+    `mult_closed` pushed to owners; `open_multiplier` / `close_multiplier` messages.
+  * **Pool mode = timed bracket contract** decided at open with `decideReserveFixed` (candidate
+    payout = stake + TP, default TP = +100% of stake): reserve → seeded 20–60s reversing path →
+    auto-settle at exactly +TP (commit) or stop-out at −stake. SL/DC/manual close unavailable in
+    pool mode (decision B). ONE shared budget + turnover + RTP ceiling across all three surfaces.
+  * Crash recovery: pool contracts settle/re-arm from the persisted decision; statistical ones
+    re-arm from `positions.contract`; boot re-arms instrument streamers so recovered contracts keep
+    evaluating with zero clients connected.
+  * Web `MultipliersPanel` trades real server-acked contracts (simulation removed).
+- **Impact:** multiplier losses are hard-capped by the same central pool; realized RTP ≤
+  1 − house_edge at every volume. Tests: full suite **813/813** (new: 6 statistical feed scenarios,
+  6 pool scenarios incl. shared-budget + double-crash recovery, 2 WS e2e); typecheck clean.
+
+---
+
 ## #19 — Digits shipped POOL-BLIND: a fair 5%-edge book with no budget cap (the exact "huge losses" failure mode) — FIXED (branch `feat/issue1-digits-live`)
 - **Report (operator):** before merging digits, apply the pool-fund algorithm — "all clients have a
   central control point of configurations… I had tested with the other algorithm, but made huge losses."

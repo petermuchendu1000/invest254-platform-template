@@ -1,6 +1,6 @@
 import { WebSocketServer, type WebSocket } from "ws";
 import type { IncomingMessage } from "node:http";
-import { type Direction, instrumentById, isKnownInstrument, type DigitKind } from "@invest254/shared";
+import { type Direction, instrumentById, isKnownInstrument, type DigitKind, type MultDir } from "@invest254/shared";
 import type { SiteRegistry } from "./siteregistry.js";
 import type { GameRepository } from "./wallet.js";
 import type { Verifier } from "./auth.js";
@@ -108,7 +108,18 @@ export async function startMultiEngine(opts: MultiEngineOptions): Promise<MultiE
             .then((snap) => toSiteUser(siteId, s.userId, "balance", { real: snap.real, bonus: snap.bonus, currency: snap.currency }))
             .catch(() => { /* client also invalidates ['wallet'] on settle */ });
         }
-        if (entry.subs.size === 0 && !rt.game.openDigitInstruments().has(instrumentId)) {
+        // ── Multipliers: live P/L updates + auto-close (TP/SL/stop-out/DC or pool endpoint) ─────
+        const mult = await rt.game.tickMultipliers(instrumentId, data.index);
+        for (const u of mult.updates) {
+          toSiteUser(siteId, u.userId, "mult_update", { positionId: u.positionId, instrumentId, index: data.index, pnlCents: u.pnlCents });
+        }
+        for (const cl of mult.closed) {
+          toSiteUser(siteId, cl.userId, "mult_closed", { positionId: cl.positionId, instrumentId, reason: cl.reason, pnlCents: cl.pnlCents, payoutCents: cl.payoutCents, balance: cl.balance });
+          void opts.repo.getWalletSnapshot(cl.userId)
+            .then((snap) => toSiteUser(siteId, cl.userId, "balance", { real: snap.real, bonus: snap.bonus, currency: snap.currency }))
+            .catch(() => { /* non-fatal */ });
+        }
+        if (entry.subs.size === 0 && !rt.game.openDigitInstruments().has(instrumentId) && !rt.game.openMultiplierInstruments().has(instrumentId)) {
           clearInterval(entry.timer);
           m.delete(instrumentId);
         }
@@ -325,6 +336,32 @@ export async function startMultiEngine(opts: MultiEngineOptions): Promise<MultiE
               const after = await opts.repo.getWalletSnapshot(userId);
               return send(ws, "balance", { real: after.real, bonus: after.bonus, currency: after.currency });
             }
+            case "open_multiplier": {
+              const userId = userOf.get(ws); if (!userId) return send(ws, "error", { code: "AUTH_REQUIRED" });
+              if (opts.playAllowed && !(await opts.playAllowed()))
+                return send(ws, "error", { code: "SYSTEM_DISABLED", message: "Play is temporarily disabled by the platform." });
+              const instrumentId = String(msg.data?.instrumentId ?? "");
+              if (!isKnownInstrument(instrumentId)) return send(ws, "error", { code: "INVALID_INSTRUMENT" });
+              const r = await rt.game.openMultiplierContract({
+                userId, stakeCents: Number(msg.data.stakeCents), dir: String(msg.data.dir) as MultDir,
+                multiplier: Number(msg.data.multiplier),
+                tpCents: msg.data.tpCents != null ? Number(msg.data.tpCents) : null,
+                slCents: msg.data.slCents != null ? Number(msg.data.slCents) : null,
+                dcMinutes: msg.data.dcMinutes != null ? Number(msg.data.dcMinutes) : undefined,
+                instrumentId, role: roleOf.get(ws) ?? "player",
+              });
+              await ensureStreamer(siteId, instrumentId); // evaluation/updates run even with no watcher
+              send(ws, "mult_opened", { positionId: r.positionId, instrumentId, entry: r.entry, stakeCents: Number(msg.data.stakeCents), dir: msg.data.dir, multiplier: Number(msg.data.multiplier), tpCents: r.tpCents, slCents: r.slCents, dcUntilMs: r.dcUntilMs, dcFeeCents: r.dcFeeCents });
+              const after = await opts.repo.getWalletSnapshot(userId);
+              return send(ws, "balance", { real: after.real, bonus: after.bonus, currency: after.currency });
+            }
+            case "close_multiplier": {
+              const userId = userOf.get(ws); if (!userId) return send(ws, "error", { code: "AUTH_REQUIRED" });
+              const r = await rt.game.closeMultiplierContract(String(msg.data.positionId), userId);
+              send(ws, "mult_closed", { positionId: r.positionId, reason: r.reason, pnlCents: r.pnlCents, payoutCents: r.payoutCents, balance: r.balance });
+              const after = await opts.repo.getWalletSnapshot(userId);
+              return send(ws, "balance", { real: after.real, bonus: after.bonus, currency: after.currency });
+            }
             case "ping": return send(ws, "pong", {});
             default: return send(ws, "error", { code: "UNKNOWN_TYPE", message: msg.type });
           }
@@ -343,6 +380,17 @@ export async function startMultiEngine(opts: MultiEngineOptions): Promise<MultiE
   });
 
   await new Promise<void>((resolve) => wss.once("listening", () => resolve()));
+
+  // Re-arm instrument streamers for contracts recovered at boot: a crash-recovered open multiplier
+  // (or digit) must keep evaluating/settling even before any client connects to its brand.
+  for (const rt of opts.registry.all()) {
+    const insts = new Set<string>([...rt.game.openDigitInstruments(), ...rt.game.openMultiplierInstruments()]);
+    for (const inst of insts) {
+      try { await ensureStreamer(rt.siteId, inst); }
+      catch (err) { report(err as Error, `boot-streamer ${rt.siteId}:${inst}`); }
+    }
+  }
+
   return {
     wss,
     emitPlatformDeposit,

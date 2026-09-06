@@ -3,7 +3,7 @@ import {
   type Direction, type Outcome, type Tick, presentOutcome, type OutcomePresentation,
   settleDigit, type DigitKind,
   InstrumentFeed, instrumentById, isKnownInstrument, DEFAULT_INSTRUMENT_ID, digitPayoutFactor,
-  digitReturnCents, decisionDigit, withLastPip,
+  digitReturnCents, decisionDigit, withLastPip, poolMultiplierDurationMs,
   multiplierPnlCents, evaluateMultiplier, dealCancellationFeeCents,
   type MultiplierState, type MultDir, type MultCloseReason,
 } from "@invest254/shared";
@@ -70,8 +70,8 @@ export class GameServer {
   private digitContracts = new Map<string, { userId: string; stakeCents: number; kind: DigitKind; target: number; instrumentId: string; openIndex: number; settleIndex: number; openedAtMs: number; siteId: string | null; decided: { result: "win" | "loss"; payoutCents: number; digit: number } | null }>();
   /** Per-(daySeed, instrument) authoritative feed cache; feeds are pure/deterministic and cheap. */
   private feeds = new Map<string, InstrumentFeed>();
-  /** Phase 2: open (running) multiplier contracts, evaluated live against the authoritative quote. */
-  private multiplierContracts = new Map<string, MultiplierState & { userId: string; siteId: string | null }>();
+  /** Phase 2: open (running) multiplier contracts — statistical (feed-evaluated) or pool-decided. */
+  private multiplierContracts = new Map<string, { userId: string; siteId: string | null; stakeCents: number; instrumentId: string; openedAtMs: number; nonce: number; state: MultiplierState; decided: { result: "win" | "loss"; payoutCents: number; durationMs: number } | null }>();
   private listeners = new Set<Listener>();
   private lastRate?: number;
   private tickTimer: NodeJS.Timeout | undefined;
@@ -429,76 +429,194 @@ export class GameServer {
   }
 
   /**
-   * Open a Deriv-style MULTIPLIER contract (Phase 2). A running position on the authoritative quote:
-   * P/L = ±(price move %) × multiplier × stake, capped at −stake (stop-out). Optional Take Profit /
-   * Stop Loss auto-close; optional Deal Cancellation refunds the stake within a window for a fee (and
-   * Stop Loss is disabled while it is active, per Deriv). Stake/position/ledger persist atomically
-   * (fn_open_contract); it settles via the reused fn_settle_position.
+   * Open a Deriv-style MULTIPLIER contract (Phase 2), now on the PER-INSTRUMENT feed and governed
+   * exactly like digits/rise-fall (docs/25):
+   *  - POOL PATH (brand pool_mode ON + non-marketer): a timed bracket contract. Take Profit is the
+   *    contract's fixed upside (default +100% of stake); the pool decides win/loss AT OPEN via
+   *    decideReserveFixed (candidate payout = stake + TP) and reserves it. The live P/L renders the
+   *    seeded reversing path to the decided endpoint over a seeded 20–60s window, then auto-settles:
+   *    WIN closes at exactly +TP (commit), LOSS stops out at −stake. Stop Loss / Deal Cancellation /
+   *    manual close are unavailable in pool mode (decision B — a player must never cash the green
+   *    feint of a decided loss). Same central budget as digits + rise/fall.
+   *  - STATISTICAL PATH (pool off, or marketers/demo): honest path-dependent P/L on the authoritative
+   *    instrument quote: ±(move%) × multiplier × stake, floored at −stake; optional TP/SL, optional
+   *    Deal Cancellation (SL disabled while DC is active, per Deriv); manual close any time.
+   * Stake/position/ledger persist atomically (fn_open_contract); settlement reuses fn_settle_position.
+   * One open multiplier per (user, instrument).
    */
   async openMultiplierContract(input: {
     userId: string; stakeCents: number; dir: MultDir; multiplier: number;
-    tpCents?: number | null; slCents?: number | null; dcMinutes?: number;
-  }): Promise<{ positionId: string; balance: number; entry: number }> {
+    tpCents?: number | null | undefined; slCents?: number | null | undefined; dcMinutes?: number | undefined;
+    instrumentId?: string | undefined; role?: string | undefined;
+  }): Promise<{ positionId: string; balance: number; entry: number; instrumentId: string; poolControlled: boolean; tpCents: number | null; slCents: number | null; dcUntilMs: number | null; dcFeeCents: number }> {
     if (!Number.isInteger(input.stakeCents)) throw new RangeError("stake must be integer cents");
     if (input.stakeCents < this.cfg.minStakeCents) throw new Error(`STAKE_BELOW_MIN: min ${this.cfg.minStakeCents}`);
     if (input.stakeCents > this.cfg.maxStakeCents) throw new Error(`STAKE_ABOVE_MAX: max ${this.cfg.maxStakeCents}`);
     if (!(input.multiplier > 0)) throw new Error("INVALID_MULTIPLIER");
     if (input.dir !== "up" && input.dir !== "down") throw new Error("INVALID_DIRECTION");
+    const instrumentId = input.instrumentId ?? DEFAULT_INSTRUMENT_ID;
+    if (!isKnownInstrument(instrumentId)) throw new Error("INVALID_INSTRUMENT");
+    for (const c of this.multiplierContracts.values()) {
+      if (c.userId === input.userId && c.instrumentId === instrumentId) throw new Error("CONTRACT_EXISTS: one open multiplier per instrument");
+    }
     const ctx = this.getActiveContext();
+    if (!ctx.seed) throw new Error("NO_SEED");
+    const feed = this.feedFor(ctx.seed, instrumentId);
     const openedAtMs = this.now();
-    const entry = ctx.curve.rate((openedAtMs - ctx.dayStartMs) / 1000);
+    const openIndex = feed.indexAt(openedAtMs, ctx.dayStartMs);
+    const entry = feed.tickAt(openIndex).quote;
     const nonce = (nonceCounter = (nonceCounter + 1) % Number.MAX_SAFE_INTEGER);
-    const dcMinutes = Math.max(0, Math.trunc(input.dcMinutes ?? 0));
+
+    const isMarketer = this.loadIsMarketer ? await this.loadIsMarketer(input.userId) : (input.role === "marketer");
+    const poolPath = (this.pool?.enabled() ?? false) && !isMarketer;
+
+    // Pool mode: TP is the contract's fixed upside (default +100%); SL/DC are unavailable.
+    const dcMinutes = poolPath ? 0 : Math.max(0, Math.trunc(input.dcMinutes ?? 0));
     const dcUntilMs = dcMinutes > 0 ? openedAtMs + dcMinutes * 60_000 : null;
     const dcFeeCents = dealCancellationFeeCents(input.stakeCents, dcMinutes);
     // Deriv: Stop Loss is unavailable while Deal Cancellation is active.
-    const slCents = dcUntilMs != null ? null : (input.slCents ?? null);
-    const state: MultiplierState & { userId: string; siteId: string | null } = {
+    const slCents = poolPath ? null : (dcUntilMs != null ? null : (input.slCents ?? null));
+    const tpCents = poolPath
+      ? Math.max(1, Math.trunc(input.tpCents ?? input.stakeCents))
+      : (input.tpCents ?? null);
+
+    const state: MultiplierState = {
       dir: input.dir, entry, multiplier: input.multiplier, stakeCents: input.stakeCents,
-      tpCents: input.tpCents ?? null, slCents, dcUntilMs, dcFeeCents,
-      userId: input.userId, siteId: ctx.siteId ?? null,
+      tpCents, slCents, dcUntilMs, dcFeeCents,
     };
     const { positionId, newBalance } = await this.repo.openContract({
       userId: input.userId, stakeCents: input.stakeCents, direction: input.dir === "up" ? "buy" : "sell",
       entryRate: entry, durationS: 1, gameDayId: ctx.gameDayId, nonce, openedAtMs,
       configVersion: ctx.configVersion, siteId: ctx.siteId ?? null,
       kind: "multiplier",
-      contract: { dir: input.dir, multiplier: input.multiplier, tpCents: state.tpCents, slCents, dcUntilMs, dcFeeCents },
+      contract: { dir: input.dir, multiplier: input.multiplier, tpCents, slCents, dcUntilMs, dcFeeCents, instrumentId, openIndex },
     });
-    this.multiplierContracts.set(positionId, state);
-    return { positionId, balance: newBalance, entry };
+
+    let decided: { result: "win" | "loss"; payoutCents: number; durationMs: number } | null = null;
+    if (poolPath && this.pool) {
+      const candidate = input.stakeCents + (tpCents as number); // fixed upside: stake back + TP
+      const po = await this.pool.controller.decideReserveFixed({
+        siteId: ctx.siteId ?? "", userId: input.userId, stakeCents: input.stakeCents,
+        payoutCents: candidate, positionId, nonce, openedAtMs, serverSeed: ctx.seed,
+        balanceAfterStakeCents: newBalance, minWithdrawalCents: this.cfg.minWithdrawalCents,
+        targetRtp: Math.min(0.95, Math.max(0.05, 1 - this.cfg.houseEdge)),
+      });
+      decided = { result: po.result, payoutCents: po.result === "win" ? po.payoutCents : 0, durationMs: poolMultiplierDurationMs(ctx.seed, nonce) };
+    }
+
+    this.multiplierContracts.set(positionId, {
+      userId: input.userId, siteId: ctx.siteId ?? null, stakeCents: input.stakeCents,
+      instrumentId, openedAtMs, nonce, state, decided,
+    });
+    return { positionId, balance: newBalance, entry, instrumentId, poolControlled: decided !== null, tpCents, slCents, dcUntilMs, dcFeeCents };
   }
 
   /** Live P/L for an open multiplier (server-authoritative), or null if it isn't open here. */
   liveMultiplierPnl(positionId: string): number | null {
-    const s = this.multiplierContracts.get(positionId);
-    if (!s) return null;
-    const cur = this.getActiveContext().curve.rate((this.now() - this.getActiveContext().dayStartMs) / 1000);
-    return multiplierPnlCents(s, cur);
+    const c = this.multiplierContracts.get(positionId);
+    if (!c) return null;
+    const ctx = this.getActiveContext();
+    if (!ctx.seed) return null;
+    if (c.decided) {
+      const g = Math.min(1, Math.max(0, (this.now() - c.openedAtMs) / c.decided.durationMs));
+      const path = this.pool!.controller.live(
+        { result: c.decided.result, multiplier: c.decided.result === "win" ? c.decided.payoutCents / c.stakeCents : 0, payoutCents: c.decided.payoutCents },
+        ctx.seed, c.nonce, g);
+      return Math.round(c.stakeCents * (path - 1));
+    }
+    const feed = this.feedFor(ctx.seed, c.instrumentId);
+    return multiplierPnlCents(c.state, feed.tickAt(feed.indexAt(this.now(), ctx.dayStartMs)).quote);
+  }
+
+  /** Instrument ids that currently have at least one open multiplier (for stream fan-out/boot). */
+  openMultiplierInstruments(): Set<string> {
+    const s = new Set<string>();
+    for (const c of this.multiplierContracts.values()) s.add(c.instrumentId);
+    return s;
   }
 
   /**
-   * Evaluate an open multiplier against the authoritative quote NOW; auto-close on stop-out / TP / SL
-   * / deal-cancellation (the engine's tick loop calls this). Returns whether it closed and the P/L.
+   * Advance every open multiplier on `instrumentId` for the authoritative tick at `index`: emit live
+   * P/L updates and auto-close whatever is due — pool contracts at their decided endpoint (WIN pays
+   * exactly stake+TP and commits the reservation; LOSS stops out at −stake), statistical contracts on
+   * TP / SL / stop-out / deal-cancellation. The transport calls this on each instrument tick.
    */
-  async evaluateMultiplierContract(positionId: string): Promise<{ positionId: string; closed: boolean; reason: MultCloseReason | null; pnlCents: number; payoutCents: number; balance: number | null }> {
-    const s = this.multiplierContracts.get(positionId);
-    if (!s) throw new Error("CONTRACT_NOT_FOUND");
+  async tickMultipliers(instrumentId: string, index: number): Promise<{
+    updates: Array<{ positionId: string; userId: string; pnlCents: number }>;
+    closed: Array<{ positionId: string; userId: string; reason: MultCloseReason; pnlCents: number; payoutCents: number; balance: number }>;
+  }> {
+    const updates: Array<{ positionId: string; userId: string; pnlCents: number }> = [];
+    const closed: Array<{ positionId: string; userId: string; reason: MultCloseReason; pnlCents: number; payoutCents: number; balance: number }> = [];
     const ctx = this.getActiveContext();
-    const cur = ctx.curve.rate((this.now() - ctx.dayStartMs) / 1000);
-    const e = evaluateMultiplier(s, cur, this.now());
-    if (!e.close) return { positionId, closed: false, reason: null, pnlCents: e.pnlCents, payoutCents: 0, balance: null };
-    return this.settleMultiplier(positionId, s, cur, e.realizedCents, e.reason ?? "manual");
+    if (!ctx.seed) return { updates, closed };
+    const feed = this.feedFor(ctx.seed, instrumentId);
+    const nowMs = this.now();
+    for (const [id, c] of [...this.multiplierContracts]) {
+      if (c.instrumentId !== instrumentId) continue;
+      try {
+        if (c.decided) {
+          const g = (nowMs - c.openedAtMs) / c.decided.durationMs;
+          if (g >= 1) {
+            const won = c.decided.result === "win";
+            const r = await this.settleMultiplierDecided(id, c, feed.tickAt(index).quote);
+            closed.push({ positionId: id, userId: c.userId, reason: won ? "tp" : "stopout", pnlCents: r.pnlCents, payoutCents: r.payoutCents, balance: r.balance });
+          } else {
+            const path = this.pool!.controller.live(
+              { result: c.decided.result, multiplier: c.decided.result === "win" ? c.decided.payoutCents / c.stakeCents : 0, payoutCents: c.decided.payoutCents },
+              ctx.seed, c.nonce, Math.max(0, g));
+            updates.push({ positionId: id, userId: c.userId, pnlCents: Math.round(c.stakeCents * (path - 1)) });
+          }
+          continue;
+        }
+        const cur = feed.tickAt(index).quote;
+        const e = evaluateMultiplier(c.state, cur, nowMs);
+        if (e.close) {
+          const r = await this.settleMultiplier(id, c.state, cur, e.realizedCents, e.reason ?? "manual");
+          closed.push({ positionId: id, userId: c.userId, reason: r.reason, pnlCents: r.pnlCents, payoutCents: r.payoutCents, balance: r.balance });
+        } else {
+          updates.push({ positionId: id, userId: c.userId, pnlCents: e.pnlCents });
+        }
+      } catch (err) { this.emitError(err as Error, `tick-multiplier ${id}`); }
+    }
+    return { updates, closed };
   }
 
-  /** Manually close (cash out) an open multiplier at the current authoritative quote. */
-  async closeMultiplierContract(positionId: string): Promise<{ positionId: string; closed: boolean; reason: MultCloseReason | null; pnlCents: number; payoutCents: number; balance: number | null }> {
-    const s = this.multiplierContracts.get(positionId);
-    if (!s) throw new Error("CONTRACT_NOT_FOUND");
+  /**
+   * Manually close (cash out) an open STATISTICAL multiplier at the current authoritative quote.
+   * Pool-decided multipliers cannot be closed manually (docs/25 decision B): they run to their
+   * decided endpoint, so a player can never cash the green feint of a decided loss.
+   */
+  async closeMultiplierContract(positionId: string, userId?: string): Promise<{ positionId: string; closed: boolean; reason: MultCloseReason | null; pnlCents: number; payoutCents: number; balance: number | null }> {
+    const c = this.multiplierContracts.get(positionId);
+    if (!c || (userId !== undefined && c.userId !== userId)) throw new Error("CONTRACT_NOT_FOUND");
+    if (c.decided) throw new Error("CLOSE_DISABLED: manual close is disabled in pool mode");
     const ctx = this.getActiveContext();
-    const cur = ctx.curve.rate((this.now() - ctx.dayStartMs) / 1000);
-    const realized = multiplierPnlCents(s, cur); // already floored at −stake
-    return this.settleMultiplier(positionId, s, cur, realized, "manual");
+    if (!ctx.seed) throw new Error("NO_SEED");
+    const feed = this.feedFor(ctx.seed, c.instrumentId);
+    const cur = feed.tickAt(feed.indexAt(this.now(), ctx.dayStartMs)).quote;
+    const realized = multiplierPnlCents(c.state, cur); // already floored at −stake
+    return this.settleMultiplier(positionId, c.state, cur, realized, "manual");
+  }
+
+  /** Settle a POOL-decided multiplier at its endpoint: exactly the decision, commit on win. */
+  private async settleMultiplierDecided(
+    positionId: string, c: { userId: string; stakeCents: number; openedAtMs: number; decided: { result: "win" | "loss"; payoutCents: number } | null }, exitRate: number,
+  ): Promise<{ pnlCents: number; payoutCents: number; balance: number }> {
+    const won = c.decided!.result === "win";
+    const payoutCents = won ? c.decided!.payoutCents : 0;
+    const { newBalance } = await this.repo.settlePosition({
+      positionId, exitRate, result: won ? "win" : "loss",
+      multiplier: won ? payoutCents / c.stakeCents : 0, payoutCents,
+    });
+    this.multiplierContracts.delete(positionId);
+    if (this.pool) {
+      this.pool.controller.settleSession(c.userId, poolEatDay(c.openedAtMs), won ? "win" : "loss", payoutCents);
+      if (won) {
+        try { await this.pool.controller.commit(positionId); }
+        catch (err) { this.emitError(err as Error, `pool commit ${positionId}`); }
+      }
+    }
+    return { pnlCents: payoutCents - c.stakeCents, payoutCents, balance: newBalance };
   }
 
   private async settleMultiplier(
@@ -510,6 +628,20 @@ export class GameServer {
     const { newBalance } = await this.repo.settlePosition({ positionId, exitRate: cur, result, multiplier: s.multiplier, payoutCents });
     this.multiplierContracts.delete(positionId);
     return { positionId, closed: true, reason, pnlCents: realized, payoutCents, balance: newBalance };
+  }
+
+  /**
+   * Re-arm an in-flight multiplier recovered from the database after a restart (idempotent). The
+   * caller (RecoveryService) rebuilt its state from `positions.contract` (+ the persisted pool
+   * decision when one exists); it then resumes normal tick-driven evaluation / its decided path.
+   */
+  rearmMultiplier(positionId: string, c: {
+    userId: string; siteId: string | null; stakeCents: number; instrumentId: string; openedAtMs: number;
+    nonce: number; state: MultiplierState; decided: { result: "win" | "loss"; payoutCents: number; durationMs: number } | null;
+  }): boolean {
+    if (this.multiplierContracts.has(positionId)) return false;
+    this.multiplierContracts.set(positionId, c);
+    return true;
   }
 
   /**

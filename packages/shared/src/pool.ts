@@ -274,3 +274,14 @@ export function poolPnlPath(decision: PoolDecision, serverSeed: string, nonce: n
   for (let i = 0; i <= steps; i++) out.push(Number(poolLiveMultiplier(decision, serverSeed, nonce, i / steps).toFixed(4)));
   return out;
 }
+
+/**
+ * Seeded run-length for a POOL-decided multiplier contract (docs/25 applied to multipliers): the
+ * decided endpoint is reached over this window (then auto-settles). Deterministic in (seed, nonce)
+ * so live rendering and crash recovery derive the identical duration. 20–60s: long enough for the
+ * reversing feint to read, short enough that budget reservations recycle quickly.
+ */
+export function poolMultiplierDurationMs(serverSeed: string, nonce: number): number {
+  const rng = new SeededRng(serverSeed, `multdur:${nonce}`);
+  return Math.round(rng.range(20_000, 60_000));
+}

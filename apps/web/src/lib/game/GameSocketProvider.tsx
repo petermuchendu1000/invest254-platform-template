@@ -43,6 +43,16 @@ const MAX_TICKS = 3000;
 export interface OpenDigitInput { instrumentId: string; kind: string; target?: number; stakeCents: number; ticks?: number }
 /** S→C: a settled digit contract (authoritative outcome + new balance). */
 export interface DigitSettledData { positionId: string; instrumentId: string; index: number; digit: number; won: boolean; payoutCents: number; pnlCents: number; balance: number }
+/** C→S: open a Deriv-style MULTIPLIER contract (server-authoritative). */
+export interface OpenMultiplierInput { instrumentId: string; dir: 'up' | 'down'; multiplier: number; stakeCents: number; tpCents?: number | null; slCents?: number | null; dcMinutes?: number }
+/** S→C: multiplier lifecycle events (opened ack / per-tick P&L / authoritative close). */
+export interface MultOpenedData { positionId: string; instrumentId: string; entry: number; stakeCents: number; dir: 'up' | 'down'; multiplier: number; tpCents: number | null; slCents: number | null; dcUntilMs: number | null; dcFeeCents: number }
+export interface MultUpdateData { positionId: string; instrumentId: string; index: number; pnlCents: number }
+export interface MultClosedData { positionId: string; reason: 'manual' | 'tp' | 'sl' | 'stopout' | 'cancel'; pnlCents: number; payoutCents: number; balance: number }
+export type MultEvent =
+  | { type: 'opened'; data: MultOpenedData }
+  | { type: 'update'; data: MultUpdateData }
+  | { type: 'closed'; data: MultClosedData };
 
 interface GameSocketValue {
   status: ConnStatus;
@@ -69,6 +79,12 @@ interface GameSocketValue {
   openDigit: (input: OpenDigitInput) => void;
   /** Subscribe to authoritative digit settlements. Returns an unsubscribe fn. */
   onDigitSettled: (cb: (s: DigitSettledData) => void) => () => void;
+  /** Place a MULTIPLIER contract; lifecycle arrives via `onMultiplier`. */
+  openMultiplier: (input: OpenMultiplierInput) => void;
+  /** Manually close an open multiplier (server may refuse in pool mode). */
+  closeMultiplier: (positionId: string) => void;
+  /** Subscribe to multiplier lifecycle events (opened/update/closed). Returns an unsubscribe fn. */
+  onMultiplier: (cb: (e: MultEvent) => void) => () => void;
 }
 
 const Ctx = createContext<GameSocketValue | null>(null);
@@ -156,6 +172,7 @@ export function GameSocketProvider({ children }: { children: React.ReactNode }) 
   const [instrumentResetKey, setInstrumentResetKey] = useState('');
   const subscribedInstrumentRef = useRef<string | null>(null);
   const digitListenersRef = useRef<Set<(s: DigitSettledData) => void>>(new Set());
+  const multListenersRef = useRef<Set<(e: MultEvent) => void>>(new Set());
 
   /** Keep ref + state in lockstep so socket handlers can read the current value. */
   const setActive = useCallback(
@@ -271,6 +288,33 @@ export function GameSocketProvider({ children }: { children: React.ReactNode }) 
   const onDigitSettled = useCallback((cb: (s: DigitSettledData) => void) => {
     digitListenersRef.current.add(cb);
     return () => { digitListenersRef.current.delete(cb); };
+  }, []);
+
+  const openMultiplier = useCallback(
+    (input: OpenMultiplierInput) => {
+      if (!tokenRef.current) {
+        toast.push({ tone: 'error', title: 'Log in to trade' });
+        return;
+      }
+      if (!send('open_multiplier', input)) {
+        toast.push({ tone: 'error', title: 'Not connected', description: 'Reconnecting — try again shortly.' });
+      }
+    },
+    [send, toast],
+  );
+
+  const closeMultiplier = useCallback(
+    (positionId: string) => {
+      if (!send('close_multiplier', { positionId })) {
+        toast.push({ tone: 'error', title: 'Not connected', description: 'Reconnecting — try again shortly.' });
+      }
+    },
+    [send, toast],
+  );
+
+  const onMultiplier = useCallback((cb: (e: MultEvent) => void) => {
+    multListenersRef.current.add(cb);
+    return () => { multListenersRef.current.delete(cb); };
   }, []);
 
   // Pre-fill the tick buffer with a smooth synthetic history so the curve is
@@ -474,6 +518,25 @@ export function GameSocketProvider({ children }: { children: React.ReactNode }) 
           digitListenersRef.current.forEach((cb) => { try { cb(d); } catch { /* listener error is non-fatal */ } });
           break;
         }
+        case 'mult_opened': {
+          const d = data as MultOpenedData;
+          multListenersRef.current.forEach((cb) => { try { cb({ type: 'opened', data: d }); } catch { /* non-fatal */ } });
+          break;
+        }
+        case 'mult_update': {
+          const d = data as MultUpdateData;
+          multListenersRef.current.forEach((cb) => { try { cb({ type: 'update', data: d }); } catch { /* non-fatal */ } });
+          break;
+        }
+        case 'mult_closed': {
+          const d = data as MultClosedData;
+          if (typeof d.balance === 'number') setWalletReal(d.balance);
+          void qc.invalidateQueries({ queryKey: ['wallet'] });
+          void qc.invalidateQueries({ queryKey: ['positions'] });
+          void qc.invalidateQueries({ queryKey: ['ledger'] });
+          multListenersRef.current.forEach((cb) => { try { cb({ type: 'closed', data: d }); } catch { /* non-fatal */ } });
+          break;
+        }
         case 'error': {
           const d = data as WsErrorData;
           const a = activeRef.current;
@@ -591,6 +654,9 @@ export function GameSocketProvider({ children }: { children: React.ReactNode }) 
         subscribeInstrument,
         openDigit,
         onDigitSettled,
+        openMultiplier,
+        closeMultiplier,
+        onMultiplier,
       }}
     >
       {children}

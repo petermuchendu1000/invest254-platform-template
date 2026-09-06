@@ -1,7 +1,7 @@
 import {
-  dateKeyUTC, settleDigit, type DigitKind,
+  dateKeyUTC, settleDigit, type DigitKind, type MultDir,
   InstrumentFeed, instrumentById, DEFAULT_INSTRUMENT_ID, digitPayoutFactor,
-  decisionDigit, withLastPip,
+  decisionDigit, withLastPip, poolMultiplierDurationMs,
 } from "@invest254/shared";
 import type { GameRepository } from "./wallet.js";
 import type { SeedManager } from "./daycontext.js";
@@ -91,7 +91,53 @@ export class RecoveryService {
           if (res.settled) report.settled++; else report.noop++;
           continue;
         }
-        // (Multiplier-contract recovery lands with the multiplier wiring; none can exist yet.)
+        // ── Phase 2 MULTIPLIER contract ───────────────────────────────────────────────────────────
+        // Pool-decided: recover from the persisted decision — settle at its (seeded, recomputable)
+        // endpoint if the window elapsed during the outage (+commit a win), else re-arm the decided
+        // path. Statistical: re-arm from `positions.contract`; the next instrument tick re-evaluates
+        // (and immediately closes anything already past TP/SL/stop-out). Idempotent.
+        if ((row.kind ?? "rise_fall") === "multiplier") {
+          if (!ctx.seed) { report.failed++; continue; }
+          const c = (row.contract ?? {}) as { dir?: MultDir; multiplier?: number; tpCents?: number | null; slCents?: number | null; dcUntilMs?: number | null; dcFeeCents?: number; instrumentId?: string; openIndex?: number };
+          const instrumentId = c.instrumentId ?? DEFAULT_INSTRUMENT_ID;
+          const state = {
+            dir: c.dir ?? ("up" as MultDir), entry: row.entryRate, multiplier: c.multiplier ?? 1,
+            stakeCents: row.stakeCents, tpCents: c.tpCents ?? null, slCents: c.slCents ?? null,
+            dcUntilMs: c.dcUntilMs ?? null, dcFeeCents: c.dcFeeCents ?? 0,
+          };
+          const decision = this.pool ? await this.pool.getDecision(row.id) : null;
+          if (decision) {
+            const durationMs = poolMultiplierDurationMs(decision.seed, decision.nonce);
+            if (nowMs >= row.openedAtMs + durationMs) {
+              const won = decision.result === "win";
+              const payout = won ? decision.payoutCents : 0;
+              const feed = new InstrumentFeed(ctx.seed, instrumentById(instrumentId));
+              const exit = feed.tickAt(feed.indexAt(nowMs, ctx.dayStartMs)).quote;
+              const res = await this.repo.settlePosition({
+                positionId: row.id, exitRate: exit, result: decision.result,
+                multiplier: won ? payout / row.stakeCents : 0, payoutCents: payout,
+              });
+              if (res.settled) {
+                report.settled++;
+                if (won && this.pool) { try { await this.pool.commit(row.id); } catch { /* reservation keeps the budget protected */ } }
+              } else report.noop++;
+            } else {
+              const ok = this.game.rearmMultiplier(row.id, {
+                userId: row.userId, siteId: row.siteId ?? null, stakeCents: row.stakeCents, instrumentId,
+                openedAtMs: row.openedAtMs, nonce: decision.nonce, state,
+                decided: { result: decision.result, payoutCents: decision.result === "win" ? decision.payoutCents : 0, durationMs },
+              });
+              if (ok) report.rearmed++; else report.noop++;
+            }
+            continue;
+          }
+          const ok = this.game.rearmMultiplier(row.id, {
+            userId: row.userId, siteId: row.siteId ?? null, stakeCents: row.stakeCents, instrumentId,
+            openedAtMs: row.openedAtMs, nonce: row.nonce, state, decided: null,
+          });
+          if (ok) report.rearmed++; else report.noop++;
+          continue;
+        }
 
         // ── Pool position (docs/25): recover from the STORED decision, never recomputed from the
         //    curve. On a recovered win, commit the reservation (reserved -> paid); the budget was
