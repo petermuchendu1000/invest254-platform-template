@@ -2,6 +2,8 @@ import {
   CurveGenerator, SettlementEngine, type GameConfig, type VersionedGameConfig,
   type Direction, type Outcome, type Tick, presentOutcome, type OutcomePresentation,
   lastDigit, settleDigit, type DigitKind,
+  multiplierPnlCents, evaluateMultiplier, dealCancellationFeeCents,
+  type MultiplierState, type MultDir, type MultCloseReason,
 } from "@invest254/shared";
 import type { GameRepository } from "./wallet.js";
 import { overrideAffectsPricing, userSettlement, type UserOverride } from "./overrides.js";
@@ -64,6 +66,8 @@ export class GameServer {
   private positions = new Map<string, Position>();
   /** Phase 2: in-flight digit contracts awaiting their 1-tick settlement (server-side only). */
   private digitContracts = new Map<string, { userId: string; stakeCents: number; kind: DigitKind; target: number; siteId: string | null }>();
+  /** Phase 2: open (running) multiplier contracts, evaluated live against the authoritative quote. */
+  private multiplierContracts = new Map<string, MultiplierState & { userId: string; siteId: string | null }>();
   private listeners = new Set<Listener>();
   private lastRate?: number;
   private tickTimer: NodeJS.Timeout | undefined;
@@ -305,6 +309,90 @@ export class GameServer {
     });
     this.digitContracts.delete(positionId);
     return { positionId, digit, won: st.won, payoutCents: st.payoutCents, pnlCents: st.pnlCents, balance: newBalance };
+  }
+
+  /**
+   * Open a Deriv-style MULTIPLIER contract (Phase 2). A running position on the authoritative quote:
+   * P/L = ±(price move %) × multiplier × stake, capped at −stake (stop-out). Optional Take Profit /
+   * Stop Loss auto-close; optional Deal Cancellation refunds the stake within a window for a fee (and
+   * Stop Loss is disabled while it is active, per Deriv). Stake/position/ledger persist atomically
+   * (fn_open_contract); it settles via the reused fn_settle_position.
+   */
+  async openMultiplierContract(input: {
+    userId: string; stakeCents: number; dir: MultDir; multiplier: number;
+    tpCents?: number | null; slCents?: number | null; dcMinutes?: number;
+  }): Promise<{ positionId: string; balance: number; entry: number }> {
+    if (!Number.isInteger(input.stakeCents)) throw new RangeError("stake must be integer cents");
+    if (input.stakeCents < this.cfg.minStakeCents) throw new Error(`STAKE_BELOW_MIN: min ${this.cfg.minStakeCents}`);
+    if (input.stakeCents > this.cfg.maxStakeCents) throw new Error(`STAKE_ABOVE_MAX: max ${this.cfg.maxStakeCents}`);
+    if (!(input.multiplier > 0)) throw new Error("INVALID_MULTIPLIER");
+    if (input.dir !== "up" && input.dir !== "down") throw new Error("INVALID_DIRECTION");
+    const ctx = this.getActiveContext();
+    const openedAtMs = this.now();
+    const entry = ctx.curve.rate((openedAtMs - ctx.dayStartMs) / 1000);
+    const nonce = (nonceCounter = (nonceCounter + 1) % Number.MAX_SAFE_INTEGER);
+    const dcMinutes = Math.max(0, Math.trunc(input.dcMinutes ?? 0));
+    const dcUntilMs = dcMinutes > 0 ? openedAtMs + dcMinutes * 60_000 : null;
+    const dcFeeCents = dealCancellationFeeCents(input.stakeCents, dcMinutes);
+    // Deriv: Stop Loss is unavailable while Deal Cancellation is active.
+    const slCents = dcUntilMs != null ? null : (input.slCents ?? null);
+    const state: MultiplierState & { userId: string; siteId: string | null } = {
+      dir: input.dir, entry, multiplier: input.multiplier, stakeCents: input.stakeCents,
+      tpCents: input.tpCents ?? null, slCents, dcUntilMs, dcFeeCents,
+      userId: input.userId, siteId: ctx.siteId ?? null,
+    };
+    const { positionId, newBalance } = await this.repo.openContract({
+      userId: input.userId, stakeCents: input.stakeCents, direction: input.dir === "up" ? "buy" : "sell",
+      entryRate: entry, durationS: 1, gameDayId: ctx.gameDayId, nonce, openedAtMs,
+      configVersion: ctx.configVersion, siteId: ctx.siteId ?? null,
+      kind: "multiplier",
+      contract: { dir: input.dir, multiplier: input.multiplier, tpCents: state.tpCents, slCents, dcUntilMs, dcFeeCents },
+    });
+    this.multiplierContracts.set(positionId, state);
+    return { positionId, balance: newBalance, entry };
+  }
+
+  /** Live P/L for an open multiplier (server-authoritative), or null if it isn't open here. */
+  liveMultiplierPnl(positionId: string): number | null {
+    const s = this.multiplierContracts.get(positionId);
+    if (!s) return null;
+    const cur = this.getActiveContext().curve.rate((this.now() - this.getActiveContext().dayStartMs) / 1000);
+    return multiplierPnlCents(s, cur);
+  }
+
+  /**
+   * Evaluate an open multiplier against the authoritative quote NOW; auto-close on stop-out / TP / SL
+   * / deal-cancellation (the engine's tick loop calls this). Returns whether it closed and the P/L.
+   */
+  async evaluateMultiplierContract(positionId: string): Promise<{ positionId: string; closed: boolean; reason: MultCloseReason | null; pnlCents: number; payoutCents: number; balance: number | null }> {
+    const s = this.multiplierContracts.get(positionId);
+    if (!s) throw new Error("CONTRACT_NOT_FOUND");
+    const ctx = this.getActiveContext();
+    const cur = ctx.curve.rate((this.now() - ctx.dayStartMs) / 1000);
+    const e = evaluateMultiplier(s, cur, this.now());
+    if (!e.close) return { positionId, closed: false, reason: null, pnlCents: e.pnlCents, payoutCents: 0, balance: null };
+    return this.settleMultiplier(positionId, s, cur, e.realizedCents, e.reason ?? "manual");
+  }
+
+  /** Manually close (cash out) an open multiplier at the current authoritative quote. */
+  async closeMultiplierContract(positionId: string): Promise<{ positionId: string; closed: boolean; reason: MultCloseReason | null; pnlCents: number; payoutCents: number; balance: number | null }> {
+    const s = this.multiplierContracts.get(positionId);
+    if (!s) throw new Error("CONTRACT_NOT_FOUND");
+    const ctx = this.getActiveContext();
+    const cur = ctx.curve.rate((this.now() - ctx.dayStartMs) / 1000);
+    const realized = multiplierPnlCents(s, cur); // already floored at −stake
+    return this.settleMultiplier(positionId, s, cur, realized, "manual");
+  }
+
+  private async settleMultiplier(
+    positionId: string, s: MultiplierState, cur: number, realizedCents: number, reason: MultCloseReason,
+  ): Promise<{ positionId: string; closed: boolean; reason: MultCloseReason; pnlCents: number; payoutCents: number; balance: number }> {
+    const realized = Math.max(-s.stakeCents, realizedCents);
+    const payoutCents = Math.max(0, s.stakeCents + realized); // stake returned + P/L (0 on stop-out)
+    const result: "win" | "loss" = realized > 0 ? "win" : "loss";
+    const { newBalance } = await this.repo.settlePosition({ positionId, exitRate: cur, result, multiplier: s.multiplier, payoutCents });
+    this.multiplierContracts.delete(positionId);
+    return { positionId, closed: true, reason, pnlCents: realized, payoutCents, balance: newBalance };
   }
 
   /**
