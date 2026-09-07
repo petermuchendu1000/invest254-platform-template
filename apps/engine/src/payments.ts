@@ -33,6 +33,13 @@ export interface AdminTxSnapshot { txId: string; userId: string; kind: "deposit"
 /** A deposit still awaiting a terminal outcome — the reconciliation sweep's unit of work. */
 export interface UnsettledDeposit { txId: string; checkoutRequestId: string; }
 
+/** A C2B confirmation Safaricom pushed for a payment to our Pay Bill (migration 0115). */
+export interface C2bPayment { transId: string; amountCents: Cents; msisdn: string | null; billRef: string | null; shortcode: string | null; raw?: unknown; }
+/** Outcome of a player claiming a Pay Bill M-PESA code. `amountCents`/`newBalance`/`txId` are set only when credited (or already_claimed). */
+export interface ClaimResult { status: "credited" | "already_claimed" | "not_found"; amountCents: Cents | null; newBalance: Cents | null; txId: string | null; }
+/** Non-secret Pay Bill display + routing config shown in the deposit sheet (migration 0115). */
+export interface PaybillConfig { enabled: boolean; shortcode: string; accountNumber: string; businessName: string; instructions: string; }
+
 export interface PaymentRepository {
   getBalance(userId: string, siteId?: string): Promise<Cents>;
   createDeposit(userId: string, amountCents: Cents, phone: string, siteId?: string): Promise<string>;
@@ -53,6 +60,12 @@ export interface PaymentRepository {
   listTransactions(userId: string, q: TxListQuery, siteId?: string): Promise<Page<TransactionRecord>>;
   /** Deposits still non-terminal after `olderThanMs` (oldest first) — input to the reconcile sweep. */
   listUnsettledDeposits(olderThanMs: number, limit: number): Promise<UnsettledDeposit[]>;
+  /** Idempotently store a C2B confirmation Safaricom pushed for our Pay Bill. Returns true if newly stored. */
+  ingestC2b(p: C2bPayment): Promise<boolean>;
+  /** A player claims a Pay Bill M-PESA code → credit the Safaricom-recorded amount once. `siteId` scopes the wallet. */
+  claimC2bDeposit(userId: string, code: string, siteId?: string): Promise<ClaimResult>;
+  /** The current (non-secret) Pay Bill display config. */
+  getPaybillConfig(): Promise<PaybillConfig>;
 }
 
 interface MemTx { id: string; userId: string; kind: "deposit" | "withdrawal"; amount: Cents; status: string; phone: string; checkoutId?: string; seq: number; createdAtMs: number; receipt: string | null; siteId?: string | null; provider?: string; marketerId?: string; }
@@ -66,6 +79,9 @@ export class InMemoryPaymentRepository implements PaymentRepository {
   private byCheckout = new Map<string, string>();
   private txSeq = 0;
   readonly ledger: MemLedger[] = [];
+  /** In-memory mirror of c2b_payments (keyed by UPPERCASE M-PESA code). */
+  private readonly c2b = new Map<string, { amount: Cents; msisdn: string | null; billRef: string | null; shortcode: string | null; claimedTxId?: string; claimedBy?: string }>();
+  private paybill: PaybillConfig = { enabled: true, shortcode: "625625", accountNumber: "7719580265", businessName: "BETWOIN LTD", instructions: "" };
 
   constructor(private readonly now: () => number = () => Date.now()) {}
 
@@ -108,6 +124,32 @@ export class InMemoryPaymentRepository implements PaymentRepository {
       .slice(0, limit)
       .map((t) => ({ txId: t.id, checkoutRequestId: t.checkoutId! }));
   }
+
+  async ingestC2b(p: C2bPayment): Promise<boolean> {
+    const code = (p.transId ?? "").trim().toUpperCase();
+    if (code === "" || !Number.isInteger(p.amountCents) || p.amountCents <= 0) throw new Error("INVALID_C2B");
+    if (this.c2b.has(code)) return false; // idempotent
+    this.c2b.set(code, { amount: p.amountCents, msisdn: p.msisdn ?? null, billRef: p.billRef ?? null, shortcode: p.shortcode ?? null });
+    return true;
+  }
+  async claimC2bDeposit(userId: string, code: string, _siteId?: string): Promise<ClaimResult> {
+    const key = (code ?? "").trim().toUpperCase();
+    if (key === "") throw new Error("INVALID_CODE");
+    const pay = this.c2b.get(key);
+    if (!pay) return { status: "not_found", amountCents: null, newBalance: null, txId: null };
+    if (pay.claimedTxId) {
+      if (pay.claimedBy === userId) return { status: "already_claimed", amountCents: pay.amount, newBalance: await this.getBalance(userId), txId: pay.claimedTxId };
+      throw new Error("CODE_ALREADY_USED");
+    }
+    if (!this.balances.has(userId)) throw new Error("WALLET_NOT_FOUND");
+    const txId = randomUUID();
+    this.txns.set(txId, { id: txId, userId, kind: "deposit", amount: pay.amount, status: "success", provider: "mpesa_paybill", phone: pay.msisdn ?? "", seq: ++this.txSeq, createdAtMs: this.now(), receipt: key });
+    const bal = (this.balances.get(userId) ?? 0) + pay.amount; this.balances.set(userId, bal);
+    this.ledger.push({ userId, type: "deposit", amount: pay.amount, ref: `transactions:${txId}` });
+    pay.claimedTxId = txId; pay.claimedBy = userId;
+    return { status: "credited", amountCents: pay.amount, newBalance: bal, txId };
+  }
+  async getPaybillConfig(): Promise<PaybillConfig> { return this.paybill; }
 
   async createWithdrawal(userId: string, amountCents: Cents, phone: string, minCents: Cents, siteId?: string): Promise<CreateWithdrawalResult> {
     if (amountCents <= 0) throw new Error("INVALID_AMOUNT");
@@ -287,6 +329,33 @@ export class PgPaymentRepository implements PaymentRepository {
       [olderThanMs, limit],
     );
     return r.rows.map((x: any) => ({ txId: String(x.id), checkoutRequestId: String(x.checkout_request_id) }));
+  }
+  async ingestC2b(p: C2bPayment): Promise<boolean> {
+    const r = await this.q.query("select fn_ingest_c2b($1,$2,$3,$4,$5,$6) as inserted",
+      [p.transId, p.amountCents, p.msisdn, p.billRef, p.shortcode, JSON.stringify(p.raw ?? {})]);
+    return Boolean(r.rows[0]?.inserted);
+  }
+  async claimC2bDeposit(userId: string, code: string, siteId?: string): Promise<ClaimResult> {
+    const r = await this.q.query("select status, amount, new_balance, tx_id from fn_claim_c2b_deposit($1,$2,$3)",
+      [userId, code, siteId ?? DEFAULT_SITE_ID]);
+    const x = r.rows[0];
+    return {
+      status: String(x.status) as ClaimResult["status"],
+      amountCents: x.amount == null ? null : toCents(x.amount),
+      newBalance: x.new_balance == null ? null : toCents(x.new_balance),
+      txId: x.tx_id == null ? null : String(x.tx_id),
+    };
+  }
+  async getPaybillConfig(): Promise<PaybillConfig> {
+    const r = await this.q.query("select enabled, shortcode, account_number, business_name, instructions from paybill_config where id = 1", []);
+    const x = r.rows[0] ?? {};
+    return {
+      enabled: Boolean(x.enabled),
+      shortcode: String(x.shortcode ?? ""),
+      accountNumber: String(x.account_number ?? ""),
+      businessName: String(x.business_name ?? ""),
+      instructions: String(x.instructions ?? ""),
+    };
   }
   async createWithdrawal(userId: string, amountCents: Cents, phone: string, minCents: Cents, siteId?: string): Promise<CreateWithdrawalResult> {
     // migration 0047: fn_create_withdrawal(user, amount, phone, min, site_id) — holds within the brand's wallet.

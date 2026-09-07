@@ -279,3 +279,21 @@ export interface CommissionPayoutDto {
   paidRef: string | null;
   note: string | null;
 }
+
+
+/** Non-secret Pay Bill display config for the deposit sheet (migration 0115). */
+export interface PaybillInfoDto {
+  enabled: boolean;
+  shortcode: string;
+  accountNumber: string;
+  businessName: string;
+  instructions: string;
+}
+
+/** Result of claiming a Pay Bill M-PESA confirmation code. */
+export interface PaybillClaimDto {
+  status: 'credited' | 'already_claimed' | 'not_found';
+  amountCents: number | null;
+  newBalance: number | null;
+  txId: string | null;
+}

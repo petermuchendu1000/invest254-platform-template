@@ -1,5 +1,5 @@
 import { normalizeMsisdn, MIN_DEPOSIT_CENTS, MIN_WITHDRAWAL_CENTS, type Cents } from "@invest254/shared";
-import type { PaymentRepository, CompleteResult, CreateWithdrawalResult, WithdrawalOutcome } from "./payments.js";
+import type { PaymentRepository, CompleteResult, CreateWithdrawalResult, WithdrawalOutcome, C2bPayment, ClaimResult, PaybillConfig } from "./payments.js";
 import type { DarajaClient } from "./daraja.js";
 
 /**
@@ -337,4 +337,28 @@ export class PaymentService {
   }
 
   getBalance(userId: string, siteId?: string): Promise<Cents> { return this.repo.getBalance(userId, siteId); }
+
+  // ── Pay Bill (C2B) deposit ──
+  /**
+   * Ingest a C2B confirmation Safaricom pushed for our Pay Bill (called by the public confirmation
+   * route). Idempotent — Safaricom retries until it gets a 200, so a repeat is a safe no-op. Returns
+   * true when the payment was newly stored.
+   */
+  ingestC2b(p: C2bPayment): Promise<boolean> {
+    if (!p.transId || !p.transId.trim()) return Promise.reject(new Error("INVALID_C2B"));
+    if (!Number.isInteger(p.amountCents) || p.amountCents <= 0) return Promise.reject(new Error("INVALID_C2B"));
+    return this.repo.ingestC2b({ ...p, transId: p.transId.trim() });
+  }
+  /**
+   * A player submits the M-PESA confirmation code from a Pay Bill payment. We credit the EXACT amount
+   * Safaricom recorded for that code (never a client-supplied amount), exactly once. Returns
+   * `not_found` when the code hasn't been confirmed to us yet (the client should ask them to retry
+   * shortly — Safaricom's confirmation can lag a few seconds).
+   */
+  claimPaybillDeposit(userId: string, code: string, siteId?: string): Promise<ClaimResult> {
+    if (!code || !code.trim()) return Promise.reject(new Error("INVALID_CODE"));
+    return this.repo.claimC2bDeposit(userId, code.trim(), siteId);
+  }
+  /** The current (non-secret) Pay Bill display config for the deposit sheet. */
+  paybillConfig(): Promise<PaybillConfig> { return this.repo.getPaybillConfig(); }
 }

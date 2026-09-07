@@ -28,6 +28,9 @@ const DOMAIN_STATUS: Readonly<Record<string, number>> = {
   ACCOUNT_NOT_ACTIVE: 403,
   WALLET_NOT_FOUND: 404,
   TX_NOT_FOUND: 404,
+  INVALID_CODE: 400,
+  INVALID_C2B: 400,
+  CODE_ALREADY_USED: 409,
 };
 
 /** Run a domain call, translating known service errors to controlled ApiErrors. */
@@ -115,6 +118,26 @@ export function parseB2cResult(body: unknown): B2cResult {
 
 // ─────────────────────────── route registration ───────────────────────────
 
+/** Parse a Safaricom C2B confirmation payload (payment made to our Pay Bill). Amount is whole KES. */
+export interface C2bConfirmation { transId: string; amountCents: number; msisdn: string | null; billRef: string | null; shortcode: string | null; }
+export function parseC2bConfirmation(body: unknown): C2bConfirmation {
+  const b = body as Record<string, unknown> | null;
+  const transId = b?.["TransID"] ?? b?.["TransactionID"];
+  const amount = b?.["TransAmount"];
+  if (transId == null || String(transId).trim() === "" || amount == null) {
+    throw new ApiError("BAD_CALLBACK", "missing TransID/TransAmount", 400);
+  }
+  const amt = Number(amount);
+  if (!Number.isFinite(amt) || amt <= 0) throw new ApiError("BAD_CALLBACK", "invalid TransAmount", 400);
+  return {
+    transId: String(transId),
+    amountCents: Math.round(amt * 100),
+    msisdn: b?.["MSISDN"] != null ? String(b["MSISDN"]) : null,
+    billRef: b?.["BillRefNumber"] != null ? String(b["BillRefNumber"]) : null,
+    shortcode: b?.["BusinessShortCode"] != null ? String(b["BusinessShortCode"]) : null,
+  };
+}
+
 /** Register player-authenticated, public-callback, and admin routes (E2). */
 export function registerProtectedRoutes(router: Router, deps: ApiDeps): void {
   const auth = requireAuth(deps.verifier);
@@ -177,6 +200,36 @@ export function registerProtectedRoutes(router: Router, deps: ApiDeps): void {
   };
   router.post(`${BASE}/deposits/mpesa/callback`, darajaOnly, stkCallback);
   router.post(`${BASE}/s/:slug/deposits/mpesa/callback`, darajaOnly, resolveSlug, stkCallback);
+
+  // ── Pay Bill (C2B) — auto-verified manual deposits (migration 0115) ──
+  // Public C2B endpoints Safaricom calls for every payment to our Pay Bill. Network-allowlisted to
+  // Safaricom's IPs (same defence as the STK callback). Validation accepts all; Confirmation ingests
+  // the payment so a player can later claim it by code. Both ack unconditionally (Safaricom retries
+  // any non-2xx, and ingest is idempotent, so a retry is a safe no-op).
+  router.post(`${BASE}/deposits/c2b/validation`, darajaOnly, async () => DARAJA_ACK);
+  const c2bConfirmation = async (ctx: Ctx) => {
+    const c = parseC2bConfirmation(ctx.body);
+    await domain(() => deps.payments.ingestC2b({
+      transId: c.transId, amountCents: c.amountCents, msisdn: c.msisdn, billRef: c.billRef, shortcode: c.shortcode, raw: ctx.body,
+    }));
+    return DARAJA_ACK;
+  };
+  router.post(`${BASE}/deposits/c2b/confirmation`, darajaOnly, c2bConfirmation);
+
+  // Player claims a Pay Bill payment by its M-PESA confirmation code. Credits the Safaricom-recorded
+  // amount once; 'not_found' means the confirmation hasn't reached us yet (client should retry shortly).
+  router.post(`${BASE}/deposits/paybill/claim`, auth, site, depositLimit, async (ctx: Ctx) => {
+    if (deps.platformGate && !(await deps.platformGate.allows("deposits")))
+      throw new ApiError("SYSTEM_DISABLED", "Deposits are temporarily disabled by the platform.", 403);
+    const body = asObject(ctx.body);
+    const code = body.code;
+    if (typeof code !== "string" || code.trim() === "") throw new ApiError("VALIDATION", "code is required", 400);
+    return domain(() => deps.payments.claimPaybillDeposit(ctx.claims!.userId, code, ctx.siteId));
+  });
+
+  // Public: the Pay Bill display config (non-secret) for the deposit sheet's copy-paste card.
+  router.get(`${BASE}/deposits/paybill/info`, async () => deps.payments.paybillConfig());
+
 
   const b2cResult = async (ctx: Ctx) => {
     const r = parseB2cResult(ctx.body);

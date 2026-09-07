@@ -77,3 +77,24 @@ export function useWithdraw() {
     },
   });
 }
+
+/** Public Pay Bill display config (paybill number, account number, business name). */
+export function usePaybillInfo() {
+  return useQuery({ queryKey: ['paybill-info'], queryFn: () => api.paybillInfo() });
+}
+
+/** Claim a Pay Bill payment by its M-PESA confirmation code; on success the wallet is credited. */
+export function useClaimPaybill() {
+  const token = useSession((s) => s.token);
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { code: string }) => api.claimPaybill(token as string, vars),
+    onSuccess: (res) => {
+      if (res.status === 'credited') {
+        void qc.invalidateQueries({ queryKey: ['wallet'] });
+        void qc.invalidateQueries({ queryKey: ['transactions'] });
+        pollSettlement(qc);
+      }
+    },
+  });
+}

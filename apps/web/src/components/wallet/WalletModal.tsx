@@ -8,7 +8,7 @@ import { cn } from '@/lib/cn';
 import { useDepositUi, type WalletMode } from '@/lib/wallet/depositUi';
 import { useWallet } from '@/lib/wallet/hooks';
 import { useSession } from '@/lib/auth/session';
-import { DepositForm } from '@/components/wallet/DepositForm';
+import { DepositPanel } from '@/components/wallet/DepositPanel';
 import { WithdrawForm } from '@/components/wallet/WithdrawForm';
 
 const TABS: { mode: WalletMode; label: string }[] = [
@@ -82,7 +82,7 @@ export function WalletModal() {
       </div>
 
       {/* Active form — key forces a clean remount (fresh state) when switching tabs */}
-      {mode === 'deposit' ? <DepositForm key="deposit" /> : <WithdrawForm key="withdraw" />}
+      {mode === 'deposit' ? <DepositPanel key="deposit" /> : <WithdrawForm key="withdraw" />}
     </Modal>
   );
 }

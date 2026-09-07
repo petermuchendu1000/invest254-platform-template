@@ -24,6 +24,8 @@ import type {
   TransactionKind,
   WalletDto,
   WithdrawalResult,
+  PaybillInfoDto,
+  PaybillClaimDto,
 } from '@/lib/api/types';
 import type { PositionStatus } from '@invest254/shared';
 
@@ -118,6 +120,10 @@ export const api = {
   // Payments (amounts are integer cents)
   createDeposit: (token: string, body: { amount: number; phone: string }) =>
     apiFetch<DepositResult>('/deposits', { method: 'POST', token, body }),
+  // Pay Bill (manual C2B) deposit: public display config + authed claim-by-code.
+  paybillInfo: () => apiFetch<PaybillInfoDto>('/deposits/paybill/info'),
+  claimPaybill: (token: string, body: { code: string }) =>
+    apiFetch<PaybillClaimDto>('/deposits/paybill/claim', { method: 'POST', token, body }),
   createWithdrawal: (token: string, body: { amount: number; phone: string }) =>
     apiFetch<WithdrawalResult>('/withdrawals', { method: 'POST', token, body }),
 
