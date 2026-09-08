@@ -1,6 +1,6 @@
 import {
   PgGameRepository, PgEngagementRepository, PgPaymentRepository, PgIdentityRepository,
-  PaymentService, AuthService, AffiliateService, AdminService, PgAdminRepository, PlatformService, PgPlatformRepository, makeDarajaClientFromConfig, loadDarajaConfigFromDb, makeVerifier,
+  PaymentService, AuthService, AffiliateService, AdminService, PgAdminRepository, PlatformService, PgPlatformRepository, DarajaConfigStore, makeVerifier,
   NotificationService, PgNotificationRepository,
   PushService, PgPushSubscriptionRepository,
   GameConfigStore, mapConfigRow, makePgPools,
@@ -77,8 +77,19 @@ async function buildDeps(): Promise<ApiDeps> {
   const resolveHandle = async (userId: string): Promise<string> =>
     (await engage.getUsername(userId)) ?? `guest_${userId.slice(0, 6)}`;
 
-  // M-Pesa config is admin-managed in the DB (table 0024); fall back to env per field.
-  const daraja = makeDarajaClientFromConfig(await loadDarajaConfigFromDb(q));
+  // M-Pesa config is admin-managed in the DB (table 0024); fall back to env per field. Live-reload it
+  // the same way game_config hot-reloads (LISTEN mpesa_config_changed + poll fallback, migration 0114)
+  // so a superadmin's credential edit takes effect on the very next deposit WITHOUT a redeploy. The
+  // store implements DarajaClient and hot-swaps its inner client atomically on change; PaymentService
+  // keeps this single stable reference. When production credentials are incomplete the store's client
+  // fails loudly (MPESA_NOT_CONFIGURED) instead of silently stubbing.
+  const daraja = new DarajaConfigStore(q, {
+    pollMs: Number(process.env.MPESA_CONFIG_POLL_MS ?? 30_000),
+    connect: async () => (await listenPool.connect()) as unknown as ListenClient,
+    onError: (err: Error, ctx: string) => console.error(`[api] mpesa config ${ctx}:`, err.message),
+  });
+  await daraja.init();
+  console.log("[api] mpesa_config loaded from database; live-reload armed");
 
   // Site-aware minimum withdrawal (multi-tenant). GET /game/config serves each brand its own
   // `site_game_config.min_withdrawal` (via gameConfigForSite below), so the browser validates

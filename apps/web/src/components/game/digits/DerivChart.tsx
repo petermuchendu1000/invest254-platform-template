@@ -20,11 +20,17 @@ export function DerivChart({
   getLastTick,
   resetKey,
   precision = 2,
+  paused = false,
+  barSpacing,
 }: {
   getTicks: () => InstrumentTick[];
   getLastTick: () => InstrumentTick | null;
   resetKey: string;
   precision?: number;
+  /** Historical View: freeze auto-follow and fit the buffered range so the user can scroll back. */
+  paused?: boolean;
+  /** Timeframe/zoom (1T etc.): pixels per bar on the time scale. Undefined keeps the default. */
+  barSpacing?: number;
 }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<import('lightweight-charts').IChartApi | null>(null);
@@ -76,7 +82,7 @@ export function DerivChart({
         layout: { background: { type: ColorType.Solid, color: bg }, textColor: text, fontSize: 10, attributionLogo: false },
         grid: { vertLines: { color: border, style: LineStyle.Dotted }, horzLines: { color: border, style: LineStyle.Dotted } },
         rightPriceScale: { borderColor: border, scaleMargins: { top: 0.12, bottom: 0.12 } },
-        timeScale: { borderColor: border, timeVisible: true, secondsVisible: true, rightOffset: 4, barSpacing: 7 },
+        timeScale: { borderColor: border, timeVisible: true, secondsVisible: true, rightOffset: 4, barSpacing: barSpacing ?? 7 },
         crosshair: { mode: CrosshairMode.Normal },
         handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false },
         handleScale: { mouseWheel: true, pinch: true, axisPressedMouseMove: { time: true, price: false } },
@@ -134,6 +140,27 @@ export function DerivChart({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Timeframe / zoom (1T presets): re-apply bar spacing live when it changes.
+  useEffect(() => {
+    const c = chartRef.current;
+    if (!c || barSpacing == null) return;
+    c.timeScale().applyOptions({ barSpacing });
+  }, [barSpacing]);
+
+  // Historical View: when paused, stop following live and fit the buffered range so the user can
+  // scroll back through it; when resumed, follow the live edge again. No new data source needed.
+  useEffect(() => {
+    const c = chartRef.current;
+    if (!c) return;
+    if (paused) {
+      followRef.current = false;
+      c.timeScale().fitContent();
+    } else {
+      followRef.current = true;
+      c.timeScale().scrollToRealTime();
+    }
+  }, [paused]);
 
   const resetZoom = () => {
     followRef.current = true;

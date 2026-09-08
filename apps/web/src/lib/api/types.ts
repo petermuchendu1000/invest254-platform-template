@@ -59,8 +59,12 @@ export interface GameConfigDto {
   currency: string;
   minStakeCents: Cents;
   maxStakeCents: Cents;
-  /** Smallest withdrawal a player can request (admin-editable in game config). */
+  /** Smallest withdrawal a player can request — effective value (global economy over brand config). */
   minWithdrawalCents: Cents;
+  /** Smallest deposit accepted — effective value (global economy over the static default). */
+  minDepositCents: Cents;
+  /** Largest single deposit accepted, or null for no cap (global economy). */
+  maxDepositCents: Cents | null;
   maxMultiplier: number;
   defaultDurationS: number;
   tickRateMs: number;

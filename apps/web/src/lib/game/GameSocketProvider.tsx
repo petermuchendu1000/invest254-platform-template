@@ -16,6 +16,7 @@ import { useBrand } from '@/lib/brand/BrandProvider';
 import { wsUrlForSite } from '@/lib/brand/brand';
 import { useSession } from '@/lib/auth/session';
 import { useToast } from '@/lib/toast/ToastProvider';
+import { useDisplayMoney } from '@/lib/money';
 import { useOutcomeFx } from '@/lib/game/outcomeFx';
 import type { WalletDto } from '@/lib/api/types';
 import type {
@@ -137,6 +138,24 @@ function errorTitle(code: string): string {
   }
 }
 
+/**
+ * Reformat an engine error for display so amounts are shown in the brand's display currency, never
+ * as raw KES cents. e.g. "STAKE_BELOW_MIN: min 25000" -> "Minimum stake is $1.92 (KES 250)".
+ */
+function friendlyError(
+  message: string | undefined,
+  reasons: string[] | undefined,
+  fmt: (c: number) => string,
+): string | undefined {
+  const raw = reasons && reasons.length > 0 ? reasons.join(' · ') : message;
+  if (!raw) return raw;
+  let m: RegExpExecArray | null;
+  if ((m = /STAKE_BELOW_MIN:\s*min\s*(\d+)/i.exec(raw))) return `Minimum stake is ${fmt(Number(m[1]))}.`;
+  if ((m = /STAKE_ABOVE_MAX:\s*max\s*(\d+)/i.exec(raw))) return `Maximum stake is ${fmt(Number(m[1]))}.`;
+  // Generic safety: reformat any bare "min <cents>" / "max <cents>" so raw cents never leak through.
+  return raw.replace(/\b(min|max)\s+(\d{3,})\b/gi, (_s, w: string, c: string) => `${w} ${fmt(Number(c))}`);
+}
+
 export function GameSocketProvider({ children }: { children: React.ReactNode }) {
   const token = useSession((s) => s.token);
   const tokenRef = useRef<string | null>(token);
@@ -151,6 +170,9 @@ export function GameSocketProvider({ children }: { children: React.ReactNode }) 
 
   const qc = useQueryClient();
   const toast = useToast();
+  const { fmt } = useDisplayMoney();
+  const fmtRef = useRef(fmt);
+  fmtRef.current = fmt;
 
   const ticksRef = useRef<Tick[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
@@ -551,7 +573,7 @@ export function GameSocketProvider({ children }: { children: React.ReactNode }) 
           toast.push({
             tone: 'error',
             title: errorTitle(d.code),
-            description: d.reasons && d.reasons.length > 0 ? d.reasons.join(' · ') : d.message,
+            description: friendlyError(d.message, d.reasons, fmtRef.current),
           });
           break;
         }

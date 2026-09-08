@@ -36,11 +36,14 @@ export function VolatilitySelector({
   price,
   changePct,
   onSelect,
+  wide = false,
 }: {
   instrument: Instrument;
   price: number | null;
   changePct: number;
   onSelect: (inst: Instrument) => void;
+  /** Wide toolbar trigger (icon · bold full label · live price+change · edit affordance). */
+  wide?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -58,7 +61,39 @@ export function VolatilitySelector({
   const leaf = instrument.short.replace(/^Vol\s*/, ''); // e.g. "10 (1s)"
 
   return (
-    <div ref={rootRef} className="relative">
+    <div ref={rootRef} className="relative min-w-0">
+      {wide ? (
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          aria-haspopup="listbox"
+          aria-expanded={open}
+          title={instrument.label}
+          className={cn(
+            'flex h-9 min-w-0 max-w-full items-center gap-2 rounded-lg border bg-surface-2 pl-1.5 pr-2 text-left transition',
+            open ? 'border-accent' : 'border-border hover:border-accent/60',
+          )}
+        >
+          <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-accent/15 text-accent">
+            <BarsGlyph className="h-3 w-3" />
+          </span>
+          <span className="flex min-w-0 flex-col leading-tight">
+            <span className="truncate text-[12.5px] font-bold text-fg">
+              <IndexLabel inst={instrument} />
+            </span>
+            <span className="truncate text-[10px] font-medium tabular-nums text-muted">
+              {price != null ? price.toFixed(2) : '—'}
+              <span className={cn('ml-1 font-semibold', chgPos ? 'text-up' : 'text-down')}>
+                {chgPos ? '+' : ''}{changePct.toFixed(2)}%
+              </span>
+            </span>
+          </span>
+          {/* dropdown chevron (rotates when open) */}
+          <svg viewBox="0 0 24 24" className={cn('h-3.5 w-3.5 shrink-0 text-muted transition-transform', open ? 'rotate-180' : '')} fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
+            <path d="M6 9l6 6 6-6" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </button>
+      ) : (
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -83,11 +118,12 @@ export function VolatilitySelector({
           <path d="M6 15l6-6 6 6" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
       </button>
+      )}
 
       {open ? (
         <div
           role="listbox"
-          className="absolute left-0 top-[calc(100%+6px)] z-30 max-h-80 w-72 overflow-y-auto rounded-xl border border-border bg-surface-2 p-1 shadow-2xl"
+          className="absolute left-0 top-[calc(100%+6px)] z-30 w-72 max-w-[85vw] rounded-xl border border-border bg-surface-2 p-1 shadow-2xl"
         >
           {INSTRUMENTS.map((inst) => {
             const active = inst.id === instrument.id;
@@ -106,10 +142,9 @@ export function VolatilitySelector({
                 <span className={cn('flex h-6 w-6 shrink-0 items-center justify-center rounded-md', active ? 'bg-accent/20 text-accent' : 'bg-white/5 text-muted')}>
                   <BarsGlyph className="h-3.5 w-3.5" />
                 </span>
-                <span className={cn('min-w-0 flex-1 truncate text-sm', active ? 'text-fg' : 'text-muted')}>
+                <span className={cn('min-w-0 truncate text-sm', active ? 'text-fg' : 'text-muted')}>
                   <IndexLabel inst={inst} />
                 </span>
-                {active ? <span className="h-2 w-2 shrink-0 rounded-full bg-accent" /> : null}
               </button>
             );
           })}

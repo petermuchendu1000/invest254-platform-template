@@ -9,6 +9,7 @@ import { Input } from '@/components/ui/Input';
 import { Button } from '@/components/ui/Button';
 import { api } from '@/lib/api/endpoints';
 import { useDeposit, useWallet } from '@/lib/wallet/hooks';
+import { useBrand } from '@/lib/brand/BrandProvider';
 import { useDepositUi } from '@/lib/wallet/depositUi';
 import { useAuthUi } from '@/lib/auth/ui';
 import { useSession } from '@/lib/auth/session';
@@ -33,6 +34,14 @@ export function DepositForm() {
   const accountPhone = useSession((s) => s.user?.phone ?? null);
   const { data: wallet } = useWallet();
   const deposit = useDeposit();
+  // Live economy from the SAME endpoint the engine/PaymentService enforce, so the deposit floor/cap
+  // the browser validates against is the effective global/brand economy — never a hardcoded constant.
+  const brand = useBrand();
+  const { data: config } = useQuery({
+    queryKey: ['gameConfig', brand.slug],
+    queryFn: () => api.gameConfig(brand.slug),
+    staleTime: 5 * 60_000,
+  });
   const { fmt, both, symbol, isForeign, toKesCents, toDisplay, limit, currency } = useDisplayMoney();
   // Foreign brands enter in the display currency (e.g. USD); KES brands enter whole KES. Decimals
   // are allowed only for foreign entry. All validation + the API call use authoritative KES cents.
@@ -50,8 +59,11 @@ export function DepositForm() {
     : (Number.isInteger(Number(amount)) ? kesToCents(Number(amount)) : 0);
   // Quick amounts in the entry unit: $5/$10/$50/$100 for foreign brands, KES presets otherwise.
   const quick = isForeign ? [5, 10, 50, 100] : [200, 500, 1000, 5000];
-  // Foreign brands: USD-native minimum ($5) converted to KES, never below the platform's KES floor.
-  const minDepositCents = limit(USD_LIMITS.minDeposit, MIN_DEPOSIT_CENTS);
+  // Foreign brands: USD-native minimum ($5) converted to KES, never below the effective KES floor
+  // (global economy over the static default). Falls back to the constant only until config loads.
+  const minDepositCents = limit(USD_LIMITS.minDeposit, config?.minDepositCents ?? MIN_DEPOSIT_CENTS);
+  // Effective max single deposit (global economy). null = no cap.
+  const maxDepositCents = config?.maxDepositCents ?? null;
   const [editingPhone, setEditingPhone] = useState(false);
   const [phone, setPhone] = useState('');
   const [errors, setErrors] = useState<Record<string, string | undefined>>({});
@@ -95,6 +107,7 @@ export function DepositForm() {
     setServerError(null);
     const next: Record<string, string | undefined> = {};
     if (!Number.isInteger(amountKesCents) || amountKesCents < minDepositCents) next['amount'] = `Enter at least ${both(minDepositCents)}.`;
+    else if (maxDepositCents !== null && amountKesCents > maxDepositCents) next['amount'] = `Enter at most ${both(maxDepositCents)}.`;
     // Logged-out users only pick an amount here; the phone comes from their account after sign up.
     if (token) {
       try {
@@ -218,7 +231,7 @@ export function DepositForm() {
       </div>
 
       <p className="text-center text-xs text-muted">
-        Min {both(minDepositCents)}{isForeign && amountKesCents > 0 ? ` · ≈ ${formatKes(amountKesCents)} via M-Pesa` : ''}
+        Min {both(minDepositCents)}{maxDepositCents !== null ? ` · Max ${both(maxDepositCents)}` : ''}{isForeign && amountKesCents > 0 ? ` · ≈ ${formatKes(amountKesCents)} via M-Pesa` : ''}
       </p>
       {errors['amount'] ? <p className="text-center text-xs text-down">{errors['amount']}</p> : null}
 

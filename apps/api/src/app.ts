@@ -1,4 +1,9 @@
-import { rtp, PlatformGate, type GameConfig, type Cents, type VersionedGameConfig } from "@invest254/shared";
+import {
+  rtp, PlatformGate,
+  applyCohortEconomy, effectiveMinDeposit, effectiveMaxDeposit, effectiveMinWithdrawal,
+  EMPTY_PLATFORM_ECONOMY, MIN_DEPOSIT_CENTS,
+  type GameConfig, type Cents, type VersionedGameConfig, type PlatformEconomy,
+} from "@invest254/shared";
 import type {
   FairnessRecord, PaymentService, AuthService, AffiliateService, AdminService, NotificationService, PushService, Verifier, PlatformService,
   Page, PageQuery, LedgerEntry, PositionRecord, PositionDetail, PositionListQuery, TransactionRecord, TxListQuery,
@@ -210,17 +215,31 @@ const BASE = "/api/v1";
 
 // ─────────────────────────── DTOs ───────────────────────────
 
-function gameConfigDto(cfg: GameConfig | VersionedGameConfig) {
+/**
+ * Serialize the config the browser validates against. It must be the SAME effective economy the
+ * engine/PaymentService enforce, or the client and server disagree (e.g. the deposit form blocks an
+ * amount the server would accept). So we fold the platform GLOBAL economy in with the exact "global
+ * wins" precedence used server-side:
+ *   - the enforced PLAYER cohort (stake bounds / multiplier / duration) is applied over the base config;
+ *   - min deposit / max deposit / min withdrawal resolve to their enforced global value, else the base
+ *     (static min-deposit constant, or the brand's `site_game_config` min-withdrawal).
+ * `economy` defaults to empty so a missing platform gate is a safe no-op (base config unchanged).
+ */
+function gameConfigDto(cfg: GameConfig | VersionedGameConfig, economy: PlatformEconomy = EMPTY_PLATFORM_ECONOMY) {
+  const eff = applyCohortEconomy(cfg, economy.player); // stake/multiplier/duration with global player enforce
+  const p = economy.payments;
   return {
     currency: "KES",
-    minStakeCents: cfg.minStakeCents,
-    maxStakeCents: cfg.maxStakeCents,
-    minWithdrawalCents: cfg.minWithdrawalCents,
-    maxMultiplier: cfg.maxMultiplier,
-    defaultDurationS: cfg.defaultDurationS,
+    minStakeCents: eff.minStakeCents,
+    maxStakeCents: eff.maxStakeCents,
+    minWithdrawalCents: effectiveMinWithdrawal(cfg.minWithdrawalCents, p),
+    minDepositCents: effectiveMinDeposit(MIN_DEPOSIT_CENTS, p),
+    maxDepositCents: effectiveMaxDeposit(null, p),
+    maxMultiplier: eff.maxMultiplier,
+    defaultDurationS: eff.defaultDurationS,
     tickRateMs: cfg.tickRateMs,
-    rtp: rtp(cfg),
-    timeframesS: [cfg.defaultDurationS],
+    rtp: rtp(eff),
+    timeframesS: [eff.defaultDurationS],
     // Lets a client tell "the operator changed the limits" from "my cache is stale".
     configVersion: (cfg as VersionedGameConfig).version ?? 0,
   };
@@ -258,16 +277,19 @@ export function registerPublicRoutes(router: Router, deps: ApiDeps): void {
   // brand domain the browser is on). Falls back to the legacy singleton when unresolved so the
   // endpoint never hard-fails. The web sends `?site=<brand.slug>` explicitly (see api.gameConfig).
   router.get(`${BASE}/game/config`, async (ctx) => {
+    // Same platform GLOBAL economy the engine/PaymentService enforce — folded into the DTO so the
+    // browser validates against the exact effective limits (no client/server divergence). Fail-open.
+    const economy = deps.platformGate ? await deps.platformGate.economy() : EMPTY_PLATFORM_ECONOMY;
     if (deps.gameConfigForSite) {
       const origin = ctx.req.headers["origin"];
       const ref = ctx.query.get("site") || ctx.query.get("host")
         || (typeof origin === "string" ? origin : "");
       if (ref) {
         const c = await deps.gameConfigForSite(ref);
-        if (c) return gameConfigDto(c);
+        if (c) return gameConfigDto(c, economy);
       }
     }
-    return gameConfigDto(deps.config());
+    return gameConfigDto(deps.config(), economy);
   });
 
   router.get(`${BASE}/game/fairness/:gameDayId`, async (ctx) => {

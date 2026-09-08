@@ -4,6 +4,8 @@ import * as React from 'react';
 import { usePathname } from 'next/navigation';
 import { TopBar } from '@/components/layout/TopBar';
 import { BottomNav } from '@/components/layout/BottomNav';
+import { DigitsTopBar } from '@/components/layout/DigitsTopBar';
+import { DigitsBottomNav } from '@/components/layout/DigitsBottomNav';
 import { Footer } from '@/components/layout/Footer';
 import { AuthModal } from '@/components/auth/AuthModal';
 import { WalletModal } from '@/components/wallet/WalletModal';
@@ -12,10 +14,12 @@ import { NotificationBanners } from '@/components/notifications/NotificationBann
 import { RegisterSW } from '@/components/RegisterSW';
 import { SupportWidget } from '@/components/support/SupportWidget';
 import { MarketerHUD } from '@/components/marketer/MarketerHUD';
+import { useBrand } from '@/lib/brand/BrandProvider';
 import { env } from '@/lib/env';
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const brand = useBrand();
 
   // The admin console + platform console provide their own chrome (sidebar). Suppress the player
   // top bar / bottom nav / footer there, but keep session bootstrap + SW.
@@ -34,6 +38,29 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // header and the trade console. We lock the frame to the viewport height and
   // drop the marketing footer + spacer here (legal lives in Profile/Legal).
   const isTrade = pathname === '/';
+
+  // Digits-brand trade surface (trade_ui = 'digits'): the mock's app-like shell — a digits top bar
+  // (hamburger nav drawer + wordmark + balance + Deposit) and a Live Chat / AI / Positions bottom
+  // nav. Scoped to digits brands only; every other brand keeps the standard TopBar/BottomNav below.
+  if (isTrade && brand.tradeUi === 'digits') {
+    return (
+      <div className="flex h-dvh flex-col overflow-hidden">
+        <DigitsTopBar />
+        <NotificationBanners />
+        <main className="relative mx-auto flex w-full min-h-0 max-w-app flex-1 flex-col px-2 pb-[calc(4.75rem+env(safe-area-inset-bottom))] pt-2 sm:px-3">
+          {children}
+        </main>
+        <DigitsBottomNav />
+        <SessionBootstrap />
+        <AuthModal />
+        <WalletModal />
+        <RegisterSW />
+        {env.supportChatEnabled && <SupportWidget />}
+        <MarketerHUD />
+      </div>
+    );
+  }
+
   if (isTrade) {
     return (
       <div className="flex h-dvh flex-col overflow-hidden">

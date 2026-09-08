@@ -151,16 +151,55 @@ function resolveDarajaConfig(over: Partial<DarajaConfig>, env: NodeJS.ProcessEnv
 }
 
 /**
+ * Fail-on-use client for the DANGEROUS state where the resolved environment is `production` but the
+ * Daraja credentials are incomplete (e.g. an admin rotated the shortcode/consumer keys but never set
+ * the matching Lipa na M-Pesa passkey). Returning the deterministic StubDarajaClient here would be
+ * catastrophic: its `stkPushQuery` reports success, so the reconciliation sweep (`reconcileDeposits`)
+ * would CREDIT deposits that were never paid, and `initiateDeposit` would return a fake checkout id
+ * with no prompt ever sent. Instead every call fails loudly with `MPESA_NOT_CONFIGURED`, so a deposit
+ * surfaces an error to the player and reconcile records an error — never a phantom credit — until an
+ * admin supplies the missing secret. Preferred over the stub ONLY in production; sandbox/dev keep the
+ * stub so tests and local runs stay deterministic and offline.
+ */
+export class UnconfiguredDarajaClient implements DarajaClient {
+  constructor(private readonly missing: readonly string[] = []) {}
+  private fail(): never {
+    throw new Error(`MPESA_NOT_CONFIGURED${this.missing.length ? `:${this.missing.join(",")}` : ""}`);
+  }
+  async stkPush(_a: StkPushArgs): Promise<StkPushResult> { return this.fail(); }
+  async stkPushQuery(_checkoutRequestId: string): Promise<StkQueryResult> { return this.fail(); }
+  async b2cPayment(_a: B2cArgs): Promise<B2cResult> { return this.fail(); }
+}
+
+/** The four credentials the real STK-Push / B2C path cannot run without. Empty array = fully configured. */
+export function missingDarajaCredentials(cfg: DarajaConfig): string[] {
+  const missing: string[] = [];
+  if (!cfg.consumerKey) missing.push("consumerKey");
+  if (!cfg.consumerSecret) missing.push("consumerSecret");
+  if (!cfg.shortcode) missing.push("shortcode");
+  if (!cfg.passkey) missing.push("passkey");
+  return missing;
+}
+
+/**
  * Build the real client when the four required credentials resolve (DB config preferred, env as
- * fallback); otherwise the deterministic stub. `over` carries admin-managed DB values; pass `{}`
- * (the default) for pure env behaviour — used by makeDarajaClient below.
+ * fallback). When incomplete: in `production` return a client that FAILS LOUDLY on use (never a
+ * silent stub that could phantom-credit unpaid deposits); in sandbox/dev return the deterministic
+ * stub. `over` carries admin-managed DB values; pass `{}` (the default) for pure env behaviour.
  */
 export function makeDarajaClientFromConfig(over: Partial<DarajaConfig> = {}, env: NodeJS.ProcessEnv = process.env): DarajaClient {
   const cfg = resolveDarajaConfig(over, env);
-  if (cfg.consumerKey && cfg.consumerSecret && cfg.shortcode && cfg.passkey) {
-    return new HttpDarajaClient(cfg);
+  const missing = missingDarajaCredentials(cfg);
+  if (missing.length === 0) return new HttpDarajaClient(cfg);
+  if (cfg.env === "production") {
+    console.error(
+      `[payments] Daraja env=production but credentials incomplete (missing: ${missing.join(", ")}) — ` +
+      `refusing to fall back to the stub. Deposits/withdrawals will fail with MPESA_NOT_CONFIGURED ` +
+      `until the missing secret(s) are set, so no unpaid deposit can be credited.`,
+    );
+    return new UnconfiguredDarajaClient(missing);
   }
-  console.warn("[payments] Daraja credentials not configured — using StubDarajaClient (no real M-Pesa calls).");
+  console.warn(`[payments] Daraja credentials not configured (missing: ${missing.join(", ")}) — using StubDarajaClient (no real M-Pesa calls).`);
   return new StubDarajaClient();
 }
 
