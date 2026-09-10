@@ -9,6 +9,7 @@ import {
   type FairnessRecord, type AuthClaims, type Verifier,
 } from "@invest254/engine";
 import { createApp, type ApiDeps, type WalletBalance, type Brand } from "./app.js";
+import { createLogger } from "@invest254/shared/logger";
 import type { MarketerRepo, MarketerRow, MarketerProfile, MarketerLedgerRow, WithdrawResult } from "./app.marketers.js";
 import type { ReferralRepo, CommissionPayoutRow, AdminCommissionPayoutRow } from "./app.referral.js";
 import type { SupportDeps, SupportStore, SupportConversation, SupportMessageRow } from "./app.support.js";
@@ -521,6 +522,8 @@ export async function startTestApi(opts: TestApiOptions = {}): Promise<TestApi> 
   const referralRepo = makeInMemoryReferralRepo();
   const deps: ApiDeps = {
     verifier: stubVerifier(),
+    // Silent logger in tests: exercises the request-logging path without spamming test output.
+    logger: createLogger({ level: "error", sink: () => {} }),
     auth,
     affiliate,
     admin,
@@ -565,6 +568,7 @@ export async function startTestApi(opts: TestApiOptions = {}): Promise<TestApi> 
       ({ real: await payRepo.getBalance(userId, siteId), bonus: bonus.get(userId) ?? 0, currency: "KES" }),
     ledger: (userId, q, siteId) => gameRepo.listLedger(userId, q, siteId),
     positions: (userId, q, siteId) => gameRepo.listPositions(userId, q, siteId),
+    digitHistory: (userId, q, siteId) => gameRepo.listDigitHistory(userId, q, siteId),
     positionDetail: (userId, id, siteId) => gameRepo.getPositionDetail(userId, id, siteId),
     transactions: (userId, q, siteId) => payRepo.listTransactions(userId, q, siteId),
     support: support.deps,

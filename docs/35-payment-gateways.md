@@ -59,4 +59,19 @@ optional `MEGAPAY_CALLBACK_ALLOWED_CIDRS`. Sandbox test key runs fully offline o
   disabled-gateway 403, callback 400, superadmin gating + global/per-site toggles).
 - Live DB: money path proven against Supabase inside a rolled-back transaction.
 - Live sandbox: `HttpMegaPayClient` verified end-to-end against Mega Pay (initiate → complete → status).
-- Full suite: **768/768** unit tests pass; `tsc -b` + web typecheck clean.
+- Full suite: **848/848** unit tests pass; `tsc -b` + web typecheck clean.
+
+## Player-facing UX (gateway is hidden)
+Players never see the gateway brand. The deposit sheet renders whatever gateway(s) the superadmin
+switched on (the `mpesa` toggle governs the Daraja STK + Pay Bill rails; `megapay` governs Mega Pay),
+and the primary action is a simple **"Continue to Pay"** — no "Mega Pay"/"Daraja" wording. With a
+single gateway enabled the method tab-bar is hidden entirely.
+
+## STK prompt text (what we can vs. can't control)
+The M-Pesa prompt reads: *"pay Kshs X to `<BUSINESS>` Account no. `<REFERENCE>`"*.
+- **`<REFERENCE>` (Account no.)** — we control it: the Mega Pay `reference` (and Daraja
+  `AccountReference`) is the depositing brand's **site name** (`sites.name`, e.g. `TamuTraders`),
+  resolved per request via `accountRefForSite(siteId)` → `resolveAccountRef` (alphanumeric, ≤12).
+- **`<BUSINESS>`** — NOT settable via the API (initiate accepts only api_key/email/amount/msisdn/
+  reference). It is the till/paybill name registered on the provider's side. To display "BETWOIN LTD"
+  instead of the provider's onboarding name, it must be changed in the **Mega Pay merchant account**.

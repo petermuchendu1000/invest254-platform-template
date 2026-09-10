@@ -5,6 +5,21 @@ entry: what, evidence, root cause, impact, and resolution.
 
 ---
 
+## #22 — Deposit page + API ignored the `mpesa` gateway switch (Daraja always shown) — FIXED (branch `fix/deposit-gateway-switch-gating`)
+- **Evidence:** in the first cut of the gateway switches (0116), `DepositPanel` rendered the "STK Push"
+  and "Pay Bill" (Daraja) tabs **unconditionally**, and the API `/deposits` + `/deposits/paybill/claim`
+  routes had no provider check. So switching the `mpesa` provider **off** (superadmin, e.g. because
+  Pay Bill was faulty) still left Daraja visible and usable — the switch only governed Mega Pay.
+- **Impact:** a superadmin who disabled M-Pesa still exposed the broken Daraja/Pay Bill rail to real
+  players. Caught immediately after go-live (the operator had turned M-Pesa off + Mega Pay on).
+- **Resolution:** the `mpesa` provider now governs BOTH Daraja rails. `DepositPanel` renders STK Push +
+  Pay Bill only when `mpesa` is effective-enabled and Mega Pay only when `megapay` is (loading + empty
+  states handled; single-method hides the tab bar). Server-side, `/deposits` and `/deposits/paybill/claim`
+  refuse with `PROVIDER_DISABLED` when `mpesa` is off — mirroring the `/deposits/megapay` gate. New test
+  in `app.megapay.test.ts` locks it. Fail-open (M-Pesa) still applies if the provider lookup errors.
+
+---
+
 ## #21 — Deposit `ABOVE_MAX` mapped to HTTP 500 instead of 400 — FIXED (branch `feat/megapay-gateway`)
 - **Evidence:** `PaymentService.initiateDeposit` throws `ABOVE_MAX` when a deposit exceeds the
   platform-global max single deposit (migration 0099), but `DOMAIN_STATUS` in `apps/api/src/app.payments.ts`

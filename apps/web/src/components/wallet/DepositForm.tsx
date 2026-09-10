@@ -25,11 +25,10 @@ const grouped = (s: string) => (s ? Number(s).toLocaleString('en-KE') : '');
 /**
  * Deposit body for the unified wallet sheet (no Modal/header — WalletModal provides those).
  * `provider` selects the gateway rail (migration 0116): 'mpesa' (Daraja, default) or 'megapay'.
- * Both share the identical STK-push UX (phone + amount → prompt → settle-by-poll); only the API
- * mutation and the provider label differ, so the player experience stays consistent across gateways.
+ * The gateway is intentionally NOT surfaced to players — the flow is a simple amount + phone +
+ * "Continue to Pay"; only the API mutation differs by provider.
  */
 export function DepositForm({ provider = 'mpesa' }: { provider?: 'mpesa' | 'megapay' } = {}) {
-  const providerLabel = provider === 'megapay' ? 'Mega Pay' : 'M-Pesa';
   const close = useDepositUi((s) => s.close);
   const prefillAmountCents = useDepositUi((s) => s.prefillAmountCents);
   const pending = useDepositUi((s) => s.pending);
@@ -55,23 +54,34 @@ export function DepositForm({ provider = 'mpesa' }: { provider?: 'mpesa' | 'mega
   // are allowed only for foreign entry. All validation + the API call use authoritative KES cents.
   const sanitizeAmount = (v: string) => (isForeign ? v.replace(/[^0-9.]/g, '').replace(/(\..*)\./g, '$1') : digitsOnly(v));
 
+  // Effective deposit limits (live global/brand economy over the static default). Computed FIRST so
+  // the quick-amount chips can derive from the MIN. Foreign brands: USD-native min floored to the KES floor.
+  const minDepositCents = limit(USD_LIMITS.minDeposit, config?.minDepositCents ?? MIN_DEPOSIT_CENTS);
+  const maxDepositCents = config?.maxDepositCents ?? null;
+  // Quick-amount chips SYNC to the minimum deposit: the first chip IS the min, the rest scale it by
+  // 1/2/5/10 (min 100 -> 100,200,500,1000; min 500 -> 500,1000,2500,5000). Derived in the entry unit,
+  // so it works for KES (whole) and foreign brands (display currency) irrespective of currency.
+  const minEntry = isForeign ? toDisplay(minDepositCents) : centsToKes(minDepositCents);
+  const chipBase = Math.max(1, isForeign ? Math.round(minEntry * 100) / 100 : Math.ceil(minEntry));
+  const quick = [1, 2, 5, 10].map((m) => (isForeign ? Math.round(chipBase * m * 100) / 100 : Math.round(chipBase * m)));
+
+  const [touched, setTouched] = useState(false);
   const [amount, setAmount] = useState(() => {
     if (prefillAmountCents && prefillAmountCents > 0) {
       return isForeign ? String(Math.ceil(toDisplay(prefillAmountCents) * 100) / 100) : String(Math.ceil(centsToKes(prefillAmountCents)));
     }
-    return isForeign ? '10' : '200';
+    return String(chipBase);
   });
+  // When the effective min loads/changes and the player hasn't chosen yet, snap the entry (and the
+  // highlighted chip) to the new minimum so the default is always a valid, min-aligned amount.
+  useEffect(() => {
+    if (touched || (prefillAmountCents && prefillAmountCents > 0)) return;
+    setAmount(String(chipBase));
+  }, [chipBase, touched, prefillAmountCents]);
   const parsedAmount = Number.parseFloat(amount);
   const amountKesCents = isForeign
     ? (Number.isFinite(parsedAmount) && parsedAmount > 0 ? toKesCents(parsedAmount) : 0)
     : (Number.isInteger(Number(amount)) ? kesToCents(Number(amount)) : 0);
-  // Quick amounts in the entry unit: $5/$10/$50/$100 for foreign brands, KES presets otherwise.
-  const quick = isForeign ? [5, 10, 50, 100] : [200, 500, 1000, 5000];
-  // Foreign brands: USD-native minimum ($5) converted to KES, never below the effective KES floor
-  // (global economy over the static default). Falls back to the constant only until config loads.
-  const minDepositCents = limit(USD_LIMITS.minDeposit, config?.minDepositCents ?? MIN_DEPOSIT_CENTS);
-  // Effective max single deposit (global economy). null = no cap.
-  const maxDepositCents = config?.maxDepositCents ?? null;
   const [editingPhone, setEditingPhone] = useState(false);
   const [phone, setPhone] = useState('');
   const [errors, setErrors] = useState<Record<string, string | undefined>>({});
@@ -210,7 +220,7 @@ export function DepositForm({ provider = 'mpesa' }: { provider?: 'mpesa' | 'mega
             aria-label={`Amount to deposit in ${currency}`}
             placeholder="0"
             value={isForeign ? amount : grouped(amount)}
-            onChange={(e) => { setAmount(sanitizeAmount(e.target.value)); setErrors((p) => ({ ...p, amount: undefined })); }}
+            onChange={(e) => { setTouched(true); setAmount(sanitizeAmount(e.target.value)); setErrors((p) => ({ ...p, amount: undefined })); }}
             style={{ width: `${Math.max(1, ((isForeign ? amount : grouped(amount)) || '0').length)}ch` }}
             className="max-w-full bg-transparent text-4xl font-black tabular-nums text-fg outline-none placeholder:text-muted"
           />
@@ -225,7 +235,7 @@ export function DepositForm({ provider = 'mpesa' }: { provider?: 'mpesa' | 'mega
             <button
               key={q}
               type="button"
-              onClick={() => { setAmount(String(q)); setErrors((p) => ({ ...p, amount: undefined })); }}
+              onClick={() => { setTouched(true); setAmount(String(q)); setErrors((p) => ({ ...p, amount: undefined })); }}
               aria-pressed={active}
               className={[
                 'rounded-lg border px-2 py-2 text-sm font-semibold tabular-nums transition',
@@ -290,15 +300,15 @@ export function DepositForm({ provider = 'mpesa' }: { provider?: 'mpesa' | 'mega
 
       <p className="text-xs leading-relaxed text-muted">
         {token
-          ? 'You’ll get an STK push prompt on your phone — enter your M-Pesa PIN to confirm. Your PIN is never entered in this app.'
-          : 'Create your free account next, then approve the M-Pesa prompt to fund this deposit.'}
+          ? 'You’ll get a payment prompt on your phone — enter your M-Pesa PIN to confirm. Your PIN is never entered in this app.'
+          : 'Create your free account next, then approve the payment prompt to fund this deposit.'}
       </p>
       <Button type="submit" size="lg" fullWidth disabled={deposit.isPending}>
         {!token
           ? 'Sign up to deposit'
           : deposit.isPending
-            ? 'Sending STK push…'
-            : `Continue to ${providerLabel}`}
+            ? 'Sending payment prompt…'
+            : 'Continue to Pay'}
       </Button>
     </form>
   );

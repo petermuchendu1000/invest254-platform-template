@@ -18,6 +18,7 @@
     "./chart": "./src/chart.ts",
     "./engagement": "./src/engagement.ts",
     "./activity": "./src/activity.ts",
-    "./chatfilter": "./src/chatfilter.ts"
+    "./chatfilter": "./src/chatfilter.ts",
+    "./logger": "./src/logger.ts"
   }
 }

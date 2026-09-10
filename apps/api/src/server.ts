@@ -10,7 +10,7 @@ import {
   type Querier, type FairnessRecord, type ListenClient,
 } from "@invest254/engine";
 import { createApp, type ApiDeps, type WalletBalance, type BonusStatus, type Brand } from "./app.js";
-import { normalizeHost, PlatformGate, enforcedValue, type VersionedGameConfig, type Cents } from "@invest254/shared";
+import { normalizeHost, PlatformGate, enforcedValue, createLogger, type VersionedGameConfig, type Cents } from "@invest254/shared";
 import { BrandOriginAllowlist } from "./cors.js";
 import { makePgMarketerRepo } from "./marketers.pg.js";
 import { makePgReferralRepo } from "./referral.pg.js";
@@ -32,6 +32,10 @@ import type { PlatformOnboardDeps, OnboardInput, OnboardResult } from "./app.pla
  * lookups) rather than widening the engine repository contract for two read paths.
  */
 const PORT = Number(process.env.PORT ?? 8081);
+
+/** Base API logger (env-driven: LOG_LEVEL, LOG_PRETTY). Every request logs through a per-request
+ *  child (see http.ts); background jobs and boot use module-scoped children of this. */
+const log = createLogger({ bindings: { app: "api" } });
 
 /** Map a marketer_expenses row (from the 0068 RPCs) to the MarketerExpenseRow DTO. */
 function mapExpenseRow(x: Record<string, unknown>) {
@@ -98,7 +102,7 @@ async function buildDeps(): Promise<ApiDeps> {
   // creds it fails loudly on use (never phantom-credits). The provider is only OFFERED to players when
   // the superadmin switches it on (payment_providers), so this client stays dormant until then.
   const megapay = makeMegaPayClient();
-  console.log(`[api] mega pay client: env=${process.env.MEGAPAY_ENV ?? "sandbox"}, configured=${Boolean(process.env.MEGAPAY_API_KEY && process.env.MEGAPAY_EMAIL)}`);
+  log.info("mega pay client ready", { env: process.env.MEGAPAY_ENV ?? "sandbox", configured: Boolean(process.env.MEGAPAY_API_KEY && process.env.MEGAPAY_EMAIL) });
 
   // Site-aware minimum withdrawal (multi-tenant). GET /game/config serves each brand its own
   // `site_game_config.min_withdrawal` (via gameConfigForSite below), so the browser validates
@@ -549,6 +553,7 @@ async function buildDeps(): Promise<ApiDeps> {
     telegramTopics: { approved: telegramTopics.approved, rejected: telegramTopics.rejected },
     onCommissionRequested: commissionRequestedAlert,
     corsAllowOrigin: (origin: string) => brandCors.allows(origin),
+    logger: log,
     marketers: makePgMarketerRepo((sql, params) => q.query(sql, params ?? [])),
     referral: referralRepo,
     marketerExpenses: {
@@ -678,6 +683,7 @@ async function buildDeps(): Promise<ApiDeps> {
     },
     ledger: (userId, qy, siteId) => repo.listLedger(userId, qy, siteId),
     positions: (userId, qy, siteId) => repo.listPositions(userId, qy, siteId),
+    digitHistory: (userId, qy, siteId) => repo.listDigitHistory(userId, qy, siteId),
     positionDetail: (userId, id, siteId) => repo.getPositionDetail(userId, id, siteId),
     transactions: (userId, qy, siteId) => payRepo.listTransactions(userId, qy, siteId),
     // Support chat (docs/11, migration 0057): enabled only when the free embedder + LLM creds
@@ -691,7 +697,7 @@ const deps = await buildDeps();
 const server = createApp(deps);
 primeFx(); // warm the display-currency FX cache at boot (fire-and-forget; fail-safe)
 server.listen(PORT, () => {
-  console.log(`[api] listening on http://localhost:${PORT}  auth=${deps.verifier ? "jwt" : "dev"}`);
+  log.info("api listening", { port: PORT, auth: deps.verifier ? "jwt" : "dev", logLevel: log.level });
 });
 
 // Deposit reconciliation sweep: settles deposits whose STK callback never arrived (or whose
@@ -699,14 +705,15 @@ server.listen(PORT, () => {
 // deposit is left stranded and no unpaid one is credited. Set to 0 to disable.
 const RECONCILE_MS = Number(process.env.DEPOSIT_RECONCILE_INTERVAL_MS ?? 300_000);
 if (Number.isFinite(RECONCILE_MS) && RECONCILE_MS > 0) {
+  const recLog = log.child({ module: "payments.reconcile" });
   const timer = setInterval(() => {
     void deps.payments
       .reconcileDeposits()
-      .then((r) => { if (r.settled || r.errors) console.log("[payments] reconcile", r); })
-      .catch((err: unknown) => console.error("[payments] reconcile sweep failed:", (err as Error).message));
+      .then((r) => { if (r.settled || r.errors) recLog.info("daraja reconcile sweep", { provider: "mpesa", ...r }); })
+      .catch((err: unknown) => recLog.error("daraja reconcile sweep failed", err as Error));
   }, RECONCILE_MS);
   timer.unref();
-  console.log(`[api] deposit reconciliation every ${Math.round(RECONCILE_MS / 1000)}s`);
+  log.info("deposit reconciliation armed", { everySeconds: Math.round(RECONCILE_MS / 1000) });
 
   // Mega Pay rail (0116): the SAME sweep for provider='megapay', using Mega Pay's authoritative
   // status query, so a Mega Pay deposit whose webhook never arrived still settles. Isolated from the
@@ -714,8 +721,8 @@ if (Number.isFinite(RECONCILE_MS) && RECONCILE_MS > 0) {
   const megaTimer = setInterval(() => {
     void deps.payments
       .reconcileMegaPayDeposits()
-      .then((r) => { if (r.settled || r.errors) console.log("[payments] megapay reconcile", r); })
-      .catch((err: unknown) => console.error("[payments] megapay reconcile sweep failed:", (err as Error).message));
+      .then((r) => { if (r.settled || r.errors) recLog.info("megapay reconcile sweep", { provider: "megapay", ...r }); })
+      .catch((err: unknown) => recLog.error("megapay reconcile sweep failed", err as Error));
   }, RECONCILE_MS);
   megaTimer.unref();
 }

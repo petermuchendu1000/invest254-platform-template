@@ -123,3 +123,16 @@ test("PaymentService: Mega Pay methods refuse when no client is configured", asy
   const svc = new PaymentService(repo, new StubDarajaClient()); // no megapay
   await assert.rejects(() => svc.initiateMegaPayDeposit("u", 50_000, "0712345678"), /MEGAPAY_NOT_CONFIGURED/);
 });
+
+test("PaymentService: Mega Pay reference (Account no.) is the site name in UPPERCASE", async () => {
+  const repo = new InMemoryPaymentRepository(); repo.seed("u", 100_000);
+  let seenRef = "";
+  const capturing: MegaPayClient = {
+    async initiateStk(a) { seenRef = a.reference; return { transactionRequestId: "T", checkoutRequestId: "C", merchantRequestId: "M" }; },
+    async queryStatus() { return { resultCode: 0, processing: false, receipt: "R" }; },
+  };
+  // Per-brand account ref resolves to a mixed-case site name; the prompt reference must be uppercased.
+  const svc = new PaymentService(repo, new StubDarajaClient(), { megapay: capturing, accountRefForSite: () => "Tamu Traders" });
+  await svc.initiateMegaPayDeposit("u", 50_000, "0712345678", "site-1");
+  assert.equal(seenRef, "TAMUTRADERS"); // sanitised (alphanumeric, <=12) + uppercased
+});

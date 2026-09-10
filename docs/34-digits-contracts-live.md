@@ -91,6 +91,21 @@ panel is the bot; the engine is the authoritative broker it trades against.
 - Deterministic crash recovery (no double credit).
 - Full suite **787/787**, `tsc -b` + web `tsc` clean.
 
+## Trade history + chart markers (transparency increment)
+Players get a persisted, reviewable record of every digit trade and see exactly which ticks opened
+and decided a contract:
+- **Server-backed receipts** — `GET /api/v1/digits/history` (site-scoped, cursor-paginated, newest
+  first) reads the player's `kind='digit'` positions: type + barrier/pick, stake, entry spot +
+  `openIndex`, settle spot + `settleIndex`, **settled digit**, payout, P/L, timestamps. No schema
+  change needed — the settled digit is the last pip of the persisted `exit_rate` (pool path sets it
+  via `withLastPip`; statistical path's quote ends in the fair digit), correct for BOTH paths and
+  durable across sessions/devices.
+- **Web** — `DigitHistoryPanel` (`useDigitHistory`, invalidated on each `digit_settled`) renders the
+  receipts under the trade screen; `DerivChart` gains entry/settle **markers** (lightweight-charts v5
+  `createSeriesMarkers`): an "IN" arrow at the entry tick and a green/red circle with the settled
+  digit at the settle tick.
+- Tests: `wallet.digithistory.test.ts` + `app.digithistory.test.ts`.
+
 ## Follow-ups (not in this branch)
 - Optional migration to make `digitPayoutFactor` a per-brand `site_game_config` column and advertise
   it to the client (today the client renders the shared default; the engine is authoritative).

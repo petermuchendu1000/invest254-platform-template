@@ -9,6 +9,27 @@ function readVar(cs: CSSStyleDeclaration, name: string, fallback: string): strin
 }
 const secOf = (ms: number) => Math.floor(ms / 1000);
 
+/** Map our semantic entry/settle markers to lightweight-charts series markers, resolving brand
+ *  colours from CSS vars. Sorted ascending by time (the library requires it). */
+function buildLcMarkers(markers: Array<{ time: number; kind: 'entry' | 'win' | 'loss'; text?: string }>): any[] {
+  const cs = getComputedStyle(document.documentElement);
+  const accent = readVar(cs, '--pp-accent', '#3B82F6');
+  const up = readVar(cs, '--pp-up', '#22C55E');
+  const down = readVar(cs, '--pp-down', '#EF4444');
+  return [...markers]
+    .sort((a, b) => a.time - b.time)
+    .map((m) => {
+      const color = m.kind === 'entry' ? accent : m.kind === 'win' ? up : down;
+      return {
+        time: m.time as unknown as import('lightweight-charts').UTCTimestamp,
+        position: m.kind === 'entry' ? 'belowBar' : 'aboveBar',
+        color,
+        shape: m.kind === 'entry' ? 'arrowUp' : 'circle',
+        text: m.text ?? '',
+      };
+    });
+}
+
 /**
  * Deriv-style price chart: an area/line series with a real RIGHT price axis, a bottom TIME axis
  * (HH:MM:SS), a live last-price tag + dashed price line, autoscale, crosshair, and wheel/pinch zoom
@@ -22,6 +43,7 @@ export function DerivChart({
   precision = 2,
   paused = false,
   barSpacing,
+  markers = [],
 }: {
   getTicks: () => InstrumentTick[];
   getLastTick: () => InstrumentTick | null;
@@ -31,10 +53,15 @@ export function DerivChart({
   paused?: boolean;
   /** Timeframe/zoom (1T etc.): pixels per bar on the time scale. Undefined keeps the default. */
   barSpacing?: number;
+  /** Entry/settle markers for the current contract — mapped to brand colours + shapes on the series. */
+  markers?: Array<{ time: number; kind: 'entry' | 'win' | 'loss'; text?: string }>;
 }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<import('lightweight-charts').IChartApi | null>(null);
   const seriesRef = useRef<import('lightweight-charts').ISeriesApi<'Area'> | null>(null);
+  const markersApiRef = useRef<{ setMarkers: (m: unknown[]) => void } | null>(null);
+  const markersPropRef = useRef(markers);
+  markersPropRef.current = markers;
   const followRef = useRef(true);
   const lastTRef = useRef(0);
   const resetKeyRef = useRef(resetKey);
@@ -69,7 +96,7 @@ export function DerivChart({
 
     (async () => {
       const lc = await import('lightweight-charts');
-      const { createChart, AreaSeries, ColorType, CrosshairMode, LineStyle } = lc;
+      const { createChart, AreaSeries, ColorType, CrosshairMode, LineStyle, createSeriesMarkers } = lc;
       if (disposed) return;
       const cs = getComputedStyle(document.documentElement);
       const accent = readVar(cs, '--pp-accent', '#3B82F6');
@@ -100,6 +127,11 @@ export function DerivChart({
         priceFormat: { type: 'price', precision, minMove: 1 / 10 ** precision },
       });
       seriesRef.current = series;
+
+      // Entry/settle marker layer (v5 plugin). Apply any markers already set for the current contract.
+      const markersApi = createSeriesMarkers(series, []);
+      markersApiRef.current = markersApi as unknown as { setMarkers: (m: unknown[]) => void };
+      markersApi.setMarkers(buildLcMarkers(markersPropRef.current) as never);
 
       // Initial data from the current buffer.
       const seen = new Set<number>();
@@ -137,6 +169,7 @@ export function DerivChart({
       chartRef.current?.remove();
       chartRef.current = null;
       seriesRef.current = null;
+      markersApiRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -147,6 +180,11 @@ export function DerivChart({
     if (!c || barSpacing == null) return;
     c.timeScale().applyOptions({ barSpacing });
   }, [barSpacing]);
+
+  // Entry/settle markers: re-apply whenever the current contract's markers change.
+  useEffect(() => {
+    if (markersApiRef.current) markersApiRef.current.setMarkers(buildLcMarkers(markers) as never);
+  }, [markers]);
 
   // Historical View: when paused, stop following live and fit the buffered range so the user can
   // scroll back through it; when resumed, follow the live edge again. No new data source needed.

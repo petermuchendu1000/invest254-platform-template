@@ -1,4 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
+import { randomUUID } from "node:crypto";
+import { createLogger, type Logger } from "@invest254/shared/logger";
 import type { Verifier, AuthClaims } from "@invest254/engine";
 
 /**
@@ -34,6 +36,10 @@ export interface Ctx {
   claims?: AuthClaims;
   /** Set by `requireSite`: the brand the request is scoped to (JWT `site` claim, else default). */
   siteId?: string;
+  /** Correlation id for this request (echoed as the `x-request-id` response header). */
+  requestId?: string;
+  /** Request-scoped logger pre-bound with { requestId, method, path } — use it in handlers/services. */
+  log?: Logger;
 }
 
 export interface HandlerResult { status?: number; body: unknown; }
@@ -201,14 +207,18 @@ function compile(path: string): { regex: RegExp; keys: string[] } {
 export interface RouterOptions {
   /** Extra CORS allowance beyond CORS_ALLOWED_ORIGINS — e.g. an active-brand-domain predicate. */
   corsAllowOrigin?: (origin: string) => boolean;
+  /** Base logger; each request logs through a child bound with { requestId, method, path }. */
+  logger?: Logger;
 }
 
 export class Router {
   private readonly routes: Route[] = [];
   private readonly corsAllowOrigin?: (origin: string) => boolean;
+  private readonly log: Logger;
 
   constructor(opts: RouterOptions = {}) {
     if (opts.corsAllowOrigin) this.corsAllowOrigin = opts.corsAllowOrigin;
+    this.log = (opts.logger ?? createLogger()).child({ module: "http" });
   }
 
   private add(method: string, path: string, chain: Array<Middleware | Handler>): this {
@@ -229,17 +239,26 @@ export class Router {
   }
 
   private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const started = Date.now();
     const method = (req.method ?? "GET").toUpperCase();
     const url = new URL(req.url ?? "/", "http://localhost");
     const path = url.pathname;
     applyCors(req, res, this.corsAllowOrigin);
     applySecurityHeaders(res);
+    // Correlation id: honour an inbound x-request-id (edge/proxy), else mint one. Echoed to the client.
+    const inbound = req.headers["x-request-id"];
+    const requestId = (Array.isArray(inbound) ? inbound[0] : inbound)?.slice(0, 128) || randomUUID();
+    if (!res.headersSent) res.setHeader("x-request-id", requestId);
     // Answer the CORS preflight before any routing/auth so browser write calls succeed.
     if (method === "OPTIONS") {
       res.writeHead(204);
       res.end();
       return;
     }
+
+    let ctx: Ctx | undefined;
+    let status = 200;
+    let errObj: unknown;
     try {
       let matchedPath = false;
       for (const route of this.routes) {
@@ -250,8 +269,9 @@ export class Router {
 
         const params: Record<string, string> = {};
         route.keys.forEach((k, i) => { params[k] = decodeURIComponent(m[i + 1]!); });
-        const ctx: Ctx = {
-          req, res, method, path, params, query: url.searchParams,
+        ctx = {
+          req, res, method, path, params, query: url.searchParams, requestId,
+          log: this.log.child({ requestId, method, path }),
           body: method === "GET" || method === "HEAD" ? null : await readJson(req),
         };
 
@@ -261,14 +281,38 @@ export class Router {
           // Only the final handler produces a response value; middleware return void.
           if (step === route.chain[route.chain.length - 1]) result = out;
         }
-        return writeResult(res, result);
+        status = writeResult(res, result);
+        return;
       }
       // Path exists but method does not → 405; otherwise 404.
       if (matchedPath) throw new ApiError("METHOD_NOT_ALLOWED", `${method} not allowed on ${path}`, 405);
       throw new ApiError("NOT_FOUND", `no route for ${method} ${path}`, 404);
     } catch (err) {
-      writeError(res, err);
+      errObj = err;
+      status = writeError(res, err);
+    } finally {
+      this.logRequest({ requestId, method, path, status, started, ctx, err: errObj, req });
     }
+  }
+
+  /** One structured line per request: 2xx/3xx=info, 4xx=warn (+ error code), 5xx=error (+ stack).
+   *  Health probes log at debug so they don't drown the signal. Never throws. */
+  private logRequest(o: { requestId: string; method: string; path: string; status: number; started: number; ctx: Ctx | undefined; err: unknown; req: IncomingMessage }): void {
+    try {
+      const fields: Record<string, unknown> = {
+        requestId: o.requestId, method: o.method, path: o.path, status: o.status,
+        durationMs: Date.now() - o.started, ip: clientIp(o.req),
+      };
+      if (o.ctx?.claims?.userId) fields.userId = o.ctx.claims.userId;
+      if (o.ctx?.claims?.role) fields.role = o.ctx.claims.role;
+      if (o.ctx?.siteId) fields.siteId = o.ctx.siteId;
+      if (o.err instanceof ApiError) fields.code = o.err.code;
+      const isHealth = o.path.endsWith("/health");
+      if (o.status >= 500) this.log.error("request failed", { ...fields, err: o.err });
+      else if (o.status >= 400) this.log.warn("request rejected", fields);
+      else if (isHealth) this.log.debug("request", fields);
+      else this.log.info("request", fields);
+    } catch { /* logging must never affect the response */ }
   }
 }
 
@@ -288,18 +332,22 @@ async function readJson(req: IncomingMessage): Promise<unknown> {
   catch { throw new ApiError("BAD_JSON", "request body is not valid JSON", 400); }
 }
 
-function writeResult(res: ServerResponse, result: unknown): void {
+function writeResult(res: ServerResponse, result: unknown): number {
   if (result && typeof result === "object" && "body" in (result as HandlerResult)) {
     const r = result as HandlerResult;
-    return sendJson(res, r.status ?? 200, r.body);
+    const status = r.status ?? 200;
+    sendJson(res, status, r.body);
+    return status;
   }
   sendJson(res, 200, result ?? {});
+  return 200;
 }
 
-function writeError(res: ServerResponse, err: unknown): void {
-  if (err instanceof ApiError) return sendJson(res, err.status, { error: { code: err.code, message: err.message } });
+function writeError(res: ServerResponse, err: unknown): number {
+  if (err instanceof ApiError) { sendJson(res, err.status, { error: { code: err.code, message: err.message } }); return err.status; }
   const message = err instanceof Error ? err.message : String(err);
   sendJson(res, 500, { error: { code: "INTERNAL", message } });
+  return 500;
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {

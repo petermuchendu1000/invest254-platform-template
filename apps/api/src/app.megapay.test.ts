@@ -69,6 +69,20 @@ test("callback: missing transaction_request_id → 400", async () => {
   } finally { await api.close(); }
 });
 
+test("deposit: /deposits (Daraja STK) is refused when M-Pesa is switched off for the brand", async () => {
+  const api = await startTestApi();
+  try {
+    api.payRepo.setProviders([{ code: 'megapay', displayName: 'Mega Pay' }]); // superadmin turned M-Pesa off
+    const stk = await req(api, "POST", "/api/v1/deposits", { token: PLAYER, body: { amount: 50_000, phone: "0712345678" } });
+    assert.equal(stk.status, 403);
+    assert.equal((await json(stk)).error.code, "PROVIDER_DISABLED");
+    const claim = await req(api, "POST", "/api/v1/deposits/paybill/claim", { token: PLAYER, body: { code: "ABC123" } });
+    assert.equal(claim.status, 403);
+    // Mega Pay still works in this state
+    assert.equal((await req(api, "POST", "/api/v1/deposits/megapay", { token: PLAYER, body: { amount: 50_000, phone: "0712345678" } })).status, 202);
+  } finally { await api.close(); }
+});
+
 // ── superadmin console: provider switches ───────────────────────────────────────────────────────
 test("platform: payment-provider routes are platform_superadmin-only", async () => {
   const api = await startTestApi();

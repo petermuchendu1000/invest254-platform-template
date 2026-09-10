@@ -1,4 +1,4 @@
-import type { LedgerEntry, PositionRecord, PositionDetail, TransactionRecord, FairnessRecord } from "@invest254/engine";
+import type { LedgerEntry, PositionRecord, PositionDetail, DigitHistoryRow, TransactionRecord, FairnessRecord } from "@invest254/engine";
 import { Router, ApiError, requireAuth, requireSite, type Ctx } from "./http.js";
 import type { ApiDeps } from "./app.js";
 
@@ -45,6 +45,15 @@ const fairnessDto = (f: FairnessRecord) => ({
 
 const positionDetailDto = (d: PositionDetail) => ({ ...positionDto(d), fairness: d.fairness ? fairnessDto(d.fairness) : null });
 
+/** Digit contract receipt row: type + barrier, stake, entry spot@tick, settle spot@digit@tick, payout, P/L. */
+const digitHistoryDto = (d: DigitHistoryRow) => ({
+  id: d.id, kind: d.kind, target: d.target, instrumentId: d.instrumentId,
+  openIndex: d.openIndex, settleIndex: d.settleIndex,
+  stakeCents: d.stakeCents, entryRate: d.entryRate, exitRate: d.exitRate, settleDigit: d.settleDigit,
+  payoutCents: d.payoutCents, pnlCents: d.pnlCents, result: d.result, status: d.status,
+  openedAt: d.openedAtMs, settledAt: d.settledAtMs,
+});
+
 const transactionDto = (t: TransactionRecord) => ({
   id: t.id, kind: t.kind, amountCents: t.amountCents, status: t.status,
   provider: t.provider, phone: t.phone, mpesaReceipt: t.mpesaReceipt, ts: t.createdAtMs,
@@ -65,6 +74,12 @@ export function registerHistoryRoutes(router: Router, deps: ApiDeps): void {
     const status = ctx.query.get("status") ?? undefined;
     const page = await deps.positions(ctx.claims!.userId, { limit: parseLimit(ctx), cursor: cursorOf(ctx), status }, ctx.siteId);
     return { items: page.items.map(positionDto), nextCursor: page.nextCursor };
+  });
+
+  // Digit contract history (docs/34) — persisted, reviewable receipts for the digits screen.
+  router.get(`${BASE}/digits/history`, auth, site, async (ctx: Ctx) => {
+    const page = await deps.digitHistory(ctx.claims!.userId, { limit: parseLimit(ctx), cursor: cursorOf(ctx) }, ctx.siteId);
+    return { items: page.items.map(digitHistoryDto), nextCursor: page.nextCursor };
   });
 
   router.get(`${BASE}/positions/:id`, auth, site, async (ctx: Ctx) => {

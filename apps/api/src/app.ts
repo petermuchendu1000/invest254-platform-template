@@ -4,9 +4,10 @@ import {
   EMPTY_PLATFORM_ECONOMY, MIN_DEPOSIT_CENTS,
   type GameConfig, type Cents, type VersionedGameConfig, type PlatformEconomy,
 } from "@invest254/shared";
+import type { Logger } from "@invest254/shared/logger";
 import type {
   FairnessRecord, PaymentService, AuthService, AffiliateService, AdminService, NotificationService, PushService, Verifier, PlatformService,
-  Page, PageQuery, LedgerEntry, PositionRecord, PositionDetail, PositionListQuery, TransactionRecord, TxListQuery,
+  Page, PageQuery, LedgerEntry, PositionRecord, PositionDetail, PositionListQuery, DigitHistoryRow, TransactionRecord, TxListQuery,
 } from "@invest254/engine";
 import { Router, ApiError, serverFrom, type Ctx } from "./http.js";
 import { registerProtectedRoutes } from "./app.payments.js";
@@ -181,6 +182,8 @@ export interface ApiDeps {
    * onboarded client's origin is allowed without a redeploy.
    */
   corsAllowOrigin?: (origin: string) => boolean;
+  /** Base logger (server.ts wires the env-configured one). Requests log through a per-request child. */
+  logger?: Logger;
 
   // ── E2: player + payments + admin ──
   /** Deposit/withdrawal orchestration over the atomic 0014 RPCs + Daraja. */
@@ -196,6 +199,8 @@ export interface ApiDeps {
   // ── F2: player history reads (each scoped to the caller's own userId AND site) ──
   ledger(userId: string, q: PageQuery, siteId?: string): Promise<Page<LedgerEntry>>;
   positions(userId: string, q: PositionListQuery, siteId?: string): Promise<Page<PositionRecord>>;
+  /** A player's DIGIT contract history (receipt/review). Scoped to the caller's userId AND site. */
+  digitHistory(userId: string, q: PageQuery, siteId?: string): Promise<Page<DigitHistoryRow>>;
   positionDetail(userId: string, positionId: string, siteId?: string): Promise<PositionDetail | null>;
   transactions(userId: string, q: TxListQuery, siteId?: string): Promise<Page<TransactionRecord>>;
 
@@ -306,7 +311,10 @@ export function registerPublicRoutes(router: Router, deps: ApiDeps): void {
 
 /** Build the configured API router. */
 export function createRouter(deps: ApiDeps): Router {
-  const router = new Router(deps.corsAllowOrigin ? { corsAllowOrigin: deps.corsAllowOrigin } : {});
+  const router = new Router({
+    ...(deps.corsAllowOrigin ? { corsAllowOrigin: deps.corsAllowOrigin } : {}),
+    ...(deps.logger ? { logger: deps.logger } : {}),
+  });
   registerPublicRoutes(router, deps);
   registerSiteRoutes(router, deps);
   registerAuthRoutes(router, deps);

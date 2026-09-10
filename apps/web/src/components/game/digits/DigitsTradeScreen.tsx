@@ -7,6 +7,8 @@ import { DigitHeatmap } from '@/components/game/digits/DigitHeatmap';
 import { DerivChart } from '@/components/game/digits/DerivChart';
 import { VolatilitySelector } from '@/components/game/digits/VolatilitySelector';
 import { EntryScanner, type ScanSuggestion } from '@/components/game/digits/EntryScanner';
+import { DigitHistoryPanel } from '@/components/game/digits/DigitHistoryPanel';
+import { useInvalidateDigitHistory } from '@/lib/game/useDigitHistory';
 import { useGameSocket, type DigitSettledData } from '@/lib/game/GameSocketProvider';
 import { instrumentById, DEFAULT_INSTRUMENT_ID, type Instrument } from '@/lib/game/instruments';
 import { useDisplayMoney, USD_LIMITS } from '@/lib/money';
@@ -138,6 +140,10 @@ export function DigitsTradeScreen() {
   const [pnl, setPnl] = useState(0);
   const [flash, setFlash] = useState<{ won: boolean; delta: number } | null>(null);
   const [running, setRunning] = useState(false);
+  // Persisted trade-history feed invalidation + chart entry/settle markers for the current contract.
+  const invalidateHistory = useInvalidateDigitHistory();
+  const [entryMarker, setEntryMarker] = useState<{ tSec: number } | null>(null);
+  const [settleMarker, setSettleMarker] = useState<{ digit: number; won: boolean; tSec: number } | null>(null);
   // Transiently highlights the CTA the Entry Scanner suggested after "Load Deep Scanner Bot".
   const [loadedOutcome, setLoadedOutcome] = useState<Outcome | null>(null);
 
@@ -181,10 +187,12 @@ export function DigitsTradeScreen() {
       lossStreakRef.current = won ? 0 : lossStreakRef.current + 1;
       setPnl((x) => x + delta);
       setFlash({ won, delta });
+      setSettleMarker({ digit: s.digit, won, tSec: Math.floor((getLastInstrumentTick()?.t ?? Date.now()) / 1000) });
+      invalidateHistory(); // persist-backed receipt now exists → refresh the history panel
       window.setTimeout(() => setFlash(null), 900);
     });
     return off;
-  }, [onDigitSettled]);
+  }, [onDigitSettled, invalidateHistory, getLastInstrumentTick]);
 
   const place = useCallback(
     (outcome: Outcome, cents: number): boolean => {
@@ -199,11 +207,22 @@ export function DigitsTradeScreen() {
       if (winProbability(outcome, barrier) <= 0) return false;
       const target = outcome === 'over' || outcome === 'under' ? barrier : outcome === 'matches' || outcome === 'differs' ? pick : 0;
       pendingRef.current = { stakeCents: cents, outcome };
+      setEntryMarker({ tSec: Math.floor((getLastInstrumentTick()?.t ?? Date.now()) / 1000) });
+      setSettleMarker(null);
       openDigit({ instrumentId: instId, kind: outcome, target, stakeCents: cents });
       return true;
     },
-    [token, spendable, openDeposit, barrier, pick, instId, openDigit, minStakeCents, maxStakeCents],
+    [token, spendable, openDeposit, barrier, pick, instId, openDigit, minStakeCents, maxStakeCents, getLastInstrumentTick],
   );
+
+  // Entry (IN) + settle (result digit) markers for the CURRENT/last contract, drawn on the chart at
+  // the exact ticks that opened and decided it. Kind is semantic; DerivChart maps it to brand colours.
+  const chartMarkers = useMemo(() => {
+    const m: Array<{ time: number; kind: 'entry' | 'win' | 'loss'; text?: string }> = [];
+    if (entryMarker) m.push({ time: entryMarker.tSec, kind: 'entry', text: 'IN' });
+    if (settleMarker) m.push({ time: settleMarker.tSec, kind: settleMarker.won ? 'win' : 'loss', text: String(settleMarker.digit) });
+    return m;
+  }, [entryMarker, settleMarker]);
 
   // Live snapshot (price / current digit / change% / heatmap) + AUTO-bot loop, off the tick stream.
   useEffect(() => {
@@ -379,6 +398,7 @@ export function DigitsTradeScreen() {
             getLastTick={getLastInstrumentTick}
             resetKey={instrumentResetKey}
             barSpacing={tf.barSpacing}
+            markers={chartMarkers}
           />
           {flash ? (
             <div
@@ -537,6 +557,9 @@ export function DigitsTradeScreen() {
       </div>
 
       <EntryScanner currentInstrumentId={instId} busy={running} onApply={applyScan} />
+
+      {/* Persisted, reviewable receipts: type, stake, entry/settle spot + tick, settled digit, payout, P/L. */}
+      <DigitHistoryPanel />
     </div>
   );
 }

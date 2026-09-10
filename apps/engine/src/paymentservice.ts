@@ -162,7 +162,9 @@ export class PaymentService {
     if (maxDep !== null && amountCents > maxDep) throw new Error("ABOVE_MAX");
     const msisdn = normalizeMsisdn(phoneRaw);
     const txId = await this.repo.createDepositProvider(userId, amountCents, msisdn, "megapay", siteId);
-    const reference = await this.resolveAccountRef(siteId);
+    // The reference becomes the "Account no." shown to the payer — send the brand/site name in
+    // UPPERCASE for a clean, consistent prompt (e.g. "Account no. TAMUTRADERS").
+    const reference = (await this.resolveAccountRef(siteId)).toUpperCase();
     const res = await this.megapay.initiateStk({ amountCents, msisdn, reference });
     await this.repo.attachStk(txId, res.merchantRequestId, res.transactionRequestId);
     return { txId, transactionRequestId: res.transactionRequestId, checkoutRequestId: res.checkoutRequestId };

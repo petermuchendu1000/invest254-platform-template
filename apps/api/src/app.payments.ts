@@ -182,6 +182,10 @@ export function registerProtectedRoutes(router: Router, deps: ApiDeps): void {
   router.post(`${BASE}/deposits`, auth, site, depositLimit, async (ctx: Ctx) => {
     if (deps.platformGate && !(await deps.platformGate.allows("deposits")))
       throw new ApiError("SYSTEM_DISABLED", "Deposits are temporarily disabled by the platform.", 403);
+    // Gateway switch (migration 0116): the Daraja STK rail belongs to the 'mpesa' provider — refuse
+    // when the superadmin switched M-Pesa off for this brand (server-authoritative, matches the UI).
+    if (!(await deps.payments.listDepositProviders(ctx.siteId)).some((p) => p.code === "mpesa"))
+      throw new ApiError("PROVIDER_DISABLED", "M-Pesa deposits are not available.", 403);
     const body = asObject(ctx.body);
     const amount = requireIntAmount(body);
     const phone = requirePhone(body);
@@ -281,6 +285,9 @@ export function registerProtectedRoutes(router: Router, deps: ApiDeps): void {
   router.post(`${BASE}/deposits/paybill/claim`, auth, site, depositLimit, async (ctx: Ctx) => {
     if (deps.platformGate && !(await deps.platformGate.allows("deposits")))
       throw new ApiError("SYSTEM_DISABLED", "Deposits are temporarily disabled by the platform.", 403);
+    // Pay Bill (C2B) is part of the Daraja 'mpesa' provider — gated by the same switch (migration 0116).
+    if (!(await deps.payments.listDepositProviders(ctx.siteId)).some((p) => p.code === "mpesa"))
+      throw new ApiError("PROVIDER_DISABLED", "M-Pesa Pay Bill is not available.", 403);
     const body = asObject(ctx.body);
     const code = body.code;
     if (typeof code !== "string" || code.trim() === "") throw new ApiError("VALIDATION", "code is required", 400);

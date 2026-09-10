@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { type Cents, assertCents } from "@invest254/shared";
+import { type Cents, assertCents, lastDigit } from "@invest254/shared";
 import type { Direction } from "@invest254/shared";
 import {
   type Page, type PageQuery, clampLimit, decodeCursor, decodeKeyset, pageFrom,
@@ -72,6 +72,20 @@ export interface PositionDetail extends PositionRecord { fairness: FairnessRecor
 /** Filters for a player's position history. */
 export interface PositionListQuery extends PageQuery { status?: string | undefined; }
 
+/**
+ * One row of a player's DIGIT contract history (docs/34) — everything needed for a reviewable
+ * receipt: type + barrier, stake, entry spot & tick, settle spot & settled digit & tick, payout, P/L.
+ * The settled digit is the last pip of `exitRate` (pool path sets it via withLastPip; the statistical
+ * path's quote ends in the fair digit), so no extra column is needed.
+ */
+export interface DigitHistoryRow {
+  id: string; kind: string; target: number | null; instrumentId: string | null;
+  openIndex: number | null; settleIndex: number | null;
+  stakeCents: Cents; entryRate: number; exitRate: number | null; settleDigit: number | null;
+  payoutCents: Cents | null; pnlCents: Cents | null; result: string | null; status: string;
+  openedAtMs: number; settledAtMs: number | null;
+}
+
 export interface GameRepository {
   getBalance(userId: string): Promise<Cents>;
   /** Full wallet snapshot (real + bonus + currency) for the real-time `balance` push. */
@@ -94,6 +108,8 @@ export interface GameRepository {
   listLedger(userId: string, q: PageQuery, siteId?: string): Promise<Page<LedgerEntry>>;
   /** A player's position history (optional status filter), newest-first, cursor-paginated. `siteId` scopes it per brand. */
   listPositions(userId: string, q: PositionListQuery, siteId?: string): Promise<Page<PositionRecord>>;
+  /** A player's DIGIT contract history (newest-first, cursor-paginated). `siteId` scopes it per brand. */
+  listDigitHistory(userId: string, q: PageQuery, siteId?: string): Promise<Page<DigitHistoryRow>>;
   /** A single owned position with its day's fairness data, or null if not found/owned. `siteId` scopes it per brand. */
   getPositionDetail(userId: string, positionId: string, siteId?: string): Promise<PositionDetail | null>;
 }
@@ -289,6 +305,29 @@ export class InMemoryGameRepository implements GameRepository {
     return { items: page.items.map(toPositionRecord), nextCursor: page.nextCursor };
   }
 
+  async listDigitHistory(userId: string, q: PageQuery, siteId?: string): Promise<Page<DigitHistoryRow>> {
+    const limit = clampLimit(q.limit);
+    const after = numCursor(q.cursor);
+    const rows = [...this.positions.values()]
+      .filter((p) => p.userId === userId
+        && (siteId === undefined || (p.siteId ?? SITE_A_LEGACY) === siteId)
+        && this.contractMeta.get(p.id)?.kind === "digit"
+        && (after === null || p.seq < after))
+      .sort((a, b) => b.seq - a.seq)
+      .slice(0, limit + 1);
+    const page = pageFrom(rows, limit, (p) => String(p.seq));
+    return {
+      items: page.items.map((p) => {
+        const c = (this.contractMeta.get(p.id)?.contract ?? {}) as Record<string, unknown>;
+        return digitRow({
+          id: p.id, contract: c, stake: p.stake, entryRate: p.entryRate, exitRate: p.exitRate,
+          payout: p.payout, pnl: p.pnl, result: p.result, status: p.status, openedAtMs: p.openedAtMs, settledAtMs: p.settledAtMs,
+        });
+      }),
+      nextCursor: page.nextCursor,
+    };
+  }
+
   async getPositionDetail(userId: string, positionId: string, siteId?: string): Promise<PositionDetail | null> {
     const p = this.positions.get(positionId);
     if (!p || p.userId !== userId) return null;
@@ -447,6 +486,28 @@ export class PgGameRepository implements GameRepository {
     return pageFrom(rows, limit, (p) => encodeKeysetToken(p.openedAtMs, p.id));
   }
 
+  async listDigitHistory(userId: string, q: PageQuery, siteId?: string): Promise<Page<DigitHistoryRow>> {
+    const limit = clampLimit(q.limit);
+    const cur = decodeKeyset(q.cursor);
+    const r = await this.q.query(
+      `select id, stake, entry_rate, exit_rate, payout, pnl, result, status, opened_at, settled_at, contract
+         from positions
+        where user_id = $1 and kind = 'digit'
+          and ($4::uuid is null or site_id = $4)
+          and ($2::timestamptz is null or (opened_at, id) < ($2::timestamptz, $3::uuid))
+        order by opened_at desc, id desc
+        limit $5`,
+      [userId, cur ? new Date(cur.tsMs).toISOString() : null, cur ? cur.id : null, siteId ?? null, limit + 1]);
+    const rows = r.rows.map((x: any) => digitRow({
+      id: String(x.id), contract: (x.contract ?? {}) as Record<string, unknown>,
+      stake: toCents(x.stake), entryRate: Number(x.entry_rate), exitRate: x.exit_rate == null ? null : Number(x.exit_rate),
+      payout: x.payout == null ? null : toCents(x.payout), pnl: x.pnl == null ? null : toCents(x.pnl),
+      result: x.result ?? null, status: String(x.status), openedAtMs: toMs(x.opened_at),
+      settledAtMs: x.settled_at ? toMs(x.settled_at) : null,
+    }));
+    return pageFrom(rows, limit, (d) => encodeKeysetToken(d.openedAtMs, d.id));
+  }
+
   async getPositionDetail(userId: string, positionId: string, siteId?: string): Promise<PositionDetail | null> {
     const r = await this.q.query(
       `select p.id, p.user_id, p.game_day_id, p.direction, p.stake, p.entry_rate, p.exit_rate, p.multiplier, p.payout, p.pnl, p.result, p.duration_s, p.status, p.opened_at, p.settled_at,
@@ -485,3 +546,22 @@ function mapPositionRow(x: any): PositionRecord {
 
 /** Keyset token for Postgres cursors: `<createdAtMs>:<id>`. */
 function encodeKeysetToken(tsMs: number, id: string | number): string { return `${tsMs}:${id}`; }
+
+/** Build a DigitHistoryRow from a position's stored fields + its `contract` params. The settled digit
+ *  is the last pip of the (persisted) exit spot, so it is correct for BOTH the pool and statistical
+ *  paths without any extra column. */
+function digitRow(o: { id: string; contract: Record<string, unknown>; stake: Cents; entryRate: number; exitRate: number | null; payout: Cents | null; pnl: Cents | null; result: string | null; status: string; openedAtMs: number; settledAtMs: number | null }): DigitHistoryRow {
+  const num = (v: unknown): number | null => (typeof v === "number" ? v : typeof v === "string" && v.trim() !== "" ? Number(v) : null);
+  return {
+    id: o.id,
+    kind: String(o.contract.kind ?? ""),
+    target: num(o.contract.target),
+    instrumentId: o.contract.instrumentId != null ? String(o.contract.instrumentId) : null,
+    openIndex: num(o.contract.openIndex),
+    settleIndex: num(o.contract.settleIndex),
+    stakeCents: o.stake, entryRate: o.entryRate, exitRate: o.exitRate,
+    settleDigit: o.exitRate == null ? null : lastDigit(o.exitRate),
+    payoutCents: o.payout, pnlCents: o.pnl, result: o.result, status: o.status,
+    openedAtMs: o.openedAtMs, settledAtMs: o.settledAtMs,
+  };
+}

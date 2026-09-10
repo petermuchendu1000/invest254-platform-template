@@ -101,6 +101,26 @@ export interface FairnessDto {
   revealedAt: number | null;
 }
 
+/** GET /digits/history — one persisted digit-contract receipt (docs/34). */
+export interface DigitHistoryDto {
+  id: string;
+  kind: string;            // even|odd|over|under|matches|differs
+  target: number | null;   // barrier (over/under) or picked digit (matches/differs)
+  instrumentId: string | null;
+  openIndex: number | null;
+  settleIndex: number | null;
+  stakeCents: Cents;
+  entryRate: number;
+  exitRate: number | null;
+  settleDigit: number | null;
+  payoutCents: Cents | null;
+  pnlCents: Cents | null;
+  result: string | null;   // 'win' | 'loss' | null (open)
+  status: string;          // 'open' | 'settled'
+  openedAt: number;        // epoch ms
+  settledAt: number | null;
+}
+
 /** GET /positions/:id — single position plus its fairness record. */
 export interface PositionDetailDto extends PositionDto {
   fairness: FairnessDto | null;

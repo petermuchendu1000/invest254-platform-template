@@ -8,6 +8,7 @@ import type {
   DepositResult,
   DepositProviderDto,
   MegaPayDepositResult,
+  DigitHistoryDto,
   GameConfigDto,
   LedgerEntryDto,
   MeDto,
@@ -118,6 +119,12 @@ export const api = {
     }),
   position: (token: string, id: string) =>
     apiFetch<PositionDetailDto>(`/positions/${id}`, { token }),
+  // Digit contract history (persisted receipts) — docs/34
+  digitHistory: (token: string, p: { cursor?: string | null; limit?: number } = {}) =>
+    apiFetch<Paginated<DigitHistoryDto>>('/digits/history', {
+      token,
+      query: { cursor: p.cursor ?? undefined, limit: p.limit },
+    }),
 
   // Payments (amounts are integer cents)
   createDeposit: (token: string, body: { amount: number; phone: string }) =>
