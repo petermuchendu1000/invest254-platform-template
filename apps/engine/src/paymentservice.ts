@@ -1,6 +1,7 @@
 import { normalizeMsisdn, MIN_DEPOSIT_CENTS, MIN_WITHDRAWAL_CENTS, type Cents } from "@invest254/shared";
-import type { PaymentRepository, CompleteResult, CreateWithdrawalResult, WithdrawalOutcome, C2bPayment, ClaimResult, PaybillConfig } from "./payments.js";
+import type { PaymentRepository, CompleteResult, CreateWithdrawalResult, WithdrawalOutcome, C2bPayment, ClaimResult, PaybillConfig, DepositProvider } from "./payments.js";
 import type { DarajaClient } from "./daraja.js";
+import type { MegaPayClient } from "./megapay.js";
 
 /**
  * PaymentService orchestrates the deposit/withdrawal flows on top of the atomic RPCs
@@ -81,6 +82,12 @@ export interface PaymentServiceOptions {
    * is configured, so it never changes behaviour for brands on the shared paybill.
    */
   darajaForSite?: (siteId: string | undefined) => DarajaClient | undefined | Promise<DarajaClient | undefined>;
+  /**
+   * Mega Pay provider client (migration 0116 — the second deposit rail). When present, the Mega Pay
+   * deposit/callback/reconcile methods are live; when absent they refuse with MEGAPAY_NOT_CONFIGURED so
+   * a deployment that never configured Mega Pay can't accidentally route deposits to a missing client.
+   */
+  megapay?: MegaPayClient;
   events?: PaymentEvents;
   verifyStkCallbacks?: boolean;
 }
@@ -97,6 +104,7 @@ export class PaymentService {
   private readonly accountRefForSite?: (siteId: string | undefined) => string | Promise<string>;
   private readonly defaultAccountRef: string;
   private readonly darajaForSite?: (siteId: string | undefined) => DarajaClient | undefined | Promise<DarajaClient | undefined>;
+  private readonly megapay?: MegaPayClient;
   private readonly events: PaymentEvents;
   private readonly verifyStk: boolean;
   constructor(private readonly repo: PaymentRepository, private readonly daraja: DarajaClient, opts: PaymentServiceOptions = {}) {
@@ -111,6 +119,7 @@ export class PaymentService {
     if (opts.accountRefForSite) this.accountRefForSite = opts.accountRefForSite;
     this.defaultAccountRef = opts.defaultAccountRef ?? "Invest254";
     if (opts.darajaForSite) this.darajaForSite = opts.darajaForSite;
+    if (opts.megapay) this.megapay = opts.megapay;
     this.events = opts.events ?? {};
     // Secure by default: a client can POST to the public STK callback URL, so a raw
     // resultCode=0 is NOT trusted — we re-check with Safaricom before crediting. Opt out only
@@ -134,6 +143,87 @@ export class PaymentService {
     const stk = await client.stkPush({ amountCents, msisdn, accountRef, desc: "Deposit" });
     await this.repo.attachStk(txId, stk.merchantRequestId, stk.checkoutRequestId);
     return { txId, checkoutRequestId: stk.checkoutRequestId };
+  }
+
+  // ── Deposit (Mega Pay STK Push) — the second rail, migration 0116 ──
+  /**
+   * Initiate a Mega Pay STK-push deposit. Same validation/limits as the Daraja path (min/max deposit,
+   * integer cents, MSISDN normalization) so no rail can bypass the platform floors. Records a pending
+   * deposit tagged provider='megapay', calls Mega Pay's initiatestk, then stores the returned
+   * `transaction_request_id` in checkout_request_id via the SHARED attachStk — so settlement flows
+   * through the SAME idempotent credit RPC as Daraja. Returns the ids the client needs to poll/track.
+   */
+  async initiateMegaPayDeposit(userId: string, amountCents: number, phoneRaw: string, siteId?: string): Promise<{ txId: string; transactionRequestId: string; checkoutRequestId: string }> {
+    if (!this.megapay) throw new Error("MEGAPAY_NOT_CONFIGURED");
+    if (!Number.isInteger(amountCents) || amountCents <= 0) throw new Error("INVALID_AMOUNT");
+    const minDep = await this.currentMinDeposit();
+    if (amountCents < minDep) throw new Error("BELOW_MIN");
+    const maxDep = await this.currentMaxDeposit();
+    if (maxDep !== null && amountCents > maxDep) throw new Error("ABOVE_MAX");
+    const msisdn = normalizeMsisdn(phoneRaw);
+    const txId = await this.repo.createDepositProvider(userId, amountCents, msisdn, "megapay", siteId);
+    const reference = await this.resolveAccountRef(siteId);
+    const res = await this.megapay.initiateStk({ amountCents, msisdn, reference });
+    await this.repo.attachStk(txId, res.merchantRequestId, res.transactionRequestId);
+    return { txId, transactionRequestId: res.transactionRequestId, checkoutRequestId: res.checkoutRequestId };
+  }
+
+  /**
+   * Mega Pay callback handler (idempotent). Mirrors handleStkCallback's security model: the callback
+   * body is NEVER trusted to credit — we ALWAYS re-query Mega Pay server-to-server for the authoritative
+   * status. While the payment is still processing (or the query is transiently unavailable) we throw so
+   * the deposit stays pending for the reconcile sweep; a definitively-failed status marks it failed. Only
+   * a verified 'Completed' credits, via the shared fn_complete_deposit keyed by transaction_request_id.
+   */
+  async handleMegaPayCallback(transactionRequestId: string, raw: unknown): Promise<CompleteResult> {
+    if (!this.megapay) throw new Error("MEGAPAY_NOT_CONFIGURED");
+    const q = await this.megapay.queryStatus(transactionRequestId);
+    if (q.processing || q.resultCode == null) {
+      console.warn(`[payments] Mega Pay verify inconclusive for ${transactionRequestId} (processing); leaving pending for retry`);
+      throw new Error("MEGAPAY_VERIFY_PENDING");
+    }
+    const desc = q.resultCode === 0 ? "verified:megapay" : `verified:megapay:${q.resultCode}`;
+    return this.repo.completeDeposit(transactionRequestId, q.resultCode, desc, q.receipt, raw);
+  }
+
+  /**
+   * Reconciliation sweep for the Mega Pay rail — mirrors reconcileDeposits but scoped to provider
+   * 'megapay' and using Mega Pay's authoritative status query. Settles deposits whose webhook never
+   * arrived (or was inconclusive). Safe to run repeatedly; the credit RPC guards terminal states.
+   */
+  async reconcileMegaPayDeposits(opts: { olderThanMs?: number; limit?: number } = {}): Promise<{ scanned: number; settled: number; stillPending: number; errors: number }> {
+    if (!this.megapay) return { scanned: 0, settled: 0, stillPending: 0, errors: 0 };
+    const olderThanMs = opts.olderThanMs ?? 120_000;
+    const limit = opts.limit ?? 25;
+    const rows = await this.repo.listUnsettledDeposits(olderThanMs, limit, "megapay");
+    let settled = 0, stillPending = 0, errors = 0;
+    for (const d of rows) {
+      try {
+        const q = await this.megapay.queryStatus(d.checkoutRequestId);
+        if (q.processing || q.resultCode == null) { stillPending += 1; continue; }
+        const res = await this.repo.completeDeposit(d.checkoutRequestId, q.resultCode, `reconciled:megapay:${q.resultCode}`, q.receipt, { reconciled: true, provider: "megapay", at: new Date().toISOString() });
+        if (res.applied) settled += 1;
+      } catch (err) {
+        errors += 1;
+        console.warn(`[payments] Mega Pay reconcile failed for ${d.checkoutRequestId}: ${(err as Error).message}`);
+      }
+    }
+    return { scanned: rows.length, settled, stillPending, errors };
+  }
+
+  /**
+   * The deposit gateways to show a player, resolved for their brand (global switch + per-site override,
+   * migration 0116). Fail-open: if the lookup throws we return the always-present M-Pesa rail so a
+   * config/DB glitch can never hide the working deposit path from players.
+   */
+  async listDepositProviders(siteId?: string): Promise<DepositProvider[]> {
+    try {
+      const list = await this.repo.listEffectiveProviders(siteId);
+      return list.length ? list : [{ code: "mpesa", displayName: "M-Pesa" }];
+    } catch (err) {
+      console.warn(`[payments] listDepositProviders failed (${(err as Error).message}); falling back to M-Pesa only`);
+      return [{ code: "mpesa", displayName: "M-Pesa" }];
+    }
   }
 
   /** Resolve the brand's STK AccountReference, sanitised for Daraja (alphanumeric, <=12). */
@@ -190,7 +280,9 @@ export class PaymentService {
   async reconcileDeposits(opts: { olderThanMs?: number; limit?: number } = {}): Promise<{ scanned: number; settled: number; stillPending: number; errors: number }> {
     const olderThanMs = opts.olderThanMs ?? 120_000; // give the live callback a chance first
     const limit = opts.limit ?? 25;
-    const rows = await this.repo.listUnsettledDeposits(olderThanMs, limit);
+    // Scope to the Daraja rail ONLY (migration 0116): this sweep verifies via Safaricom STKPushQuery,
+    // so it must never pick up a 'megapay' deposit (whose id would be meaningless to Safaricom).
+    const rows = await this.repo.listUnsettledDeposits(olderThanMs, limit, "mpesa");
     let settled = 0, stillPending = 0, errors = 0;
     for (const d of rows) {
       try {

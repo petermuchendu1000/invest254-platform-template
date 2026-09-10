@@ -6,6 +6,8 @@ import type {
   AuthResult,
   CommissionRecord,
   DepositResult,
+  DepositProviderDto,
+  MegaPayDepositResult,
   GameConfigDto,
   LedgerEntryDto,
   MeDto,
@@ -120,6 +122,11 @@ export const api = {
   // Payments (amounts are integer cents)
   createDeposit: (token: string, body: { amount: number; phone: string }) =>
     apiFetch<DepositResult>('/deposits', { method: 'POST', token, body }),
+  // Deposit gateways to render for the player's brand (migration 0116) + the Mega Pay STK deposit.
+  depositProviders: (token: string) =>
+    apiFetch<{ providers: DepositProviderDto[] }>('/deposits/providers', { token }),
+  createMegapayDeposit: (token: string, body: { amount: number; phone: string }) =>
+    apiFetch<MegaPayDepositResult>('/deposits/megapay', { method: 'POST', token, body }),
   // Pay Bill (manual C2B) deposit: public display config + authed claim-by-code.
   paybillInfo: () => apiFetch<PaybillInfoDto>('/deposits/paybill/info'),
   claimPaybill: (token: string, body: { code: string }) =>

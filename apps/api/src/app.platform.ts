@@ -283,6 +283,35 @@ export function registerPlatformRoutes(router: Router, deps: ApiDeps): void {
     return { config: await domain(() => deps.platform.setGlobalConfig(ctx.claims!.userId, ctx.claims!.role ?? "player", patch)) };
   });
 
+  // ── Payment-gateway provider switches (migration 0116) ──
+  // The superadmin's control over WHICH deposit gateways players see: a platform-global on/off per
+  // provider, plus an optional per-brand override. platform_superadmin-gated + audited in the RPCs.
+  router.get(`${BASE}/platform/payment-providers`, auth, platform, async (ctx: Ctx) =>
+    domain(() => deps.platform.listPaymentProviders(ctx.claims!.role ?? "player")));
+
+  router.post(`${BASE}/platform/payment-providers/:code/global`, auth, platform, async (ctx: Ctx) => {
+    const body = asObject(ctx.body);
+    if (typeof body.enabled !== "boolean") throw new ApiError("VALIDATION", "enabled must be boolean", 400);
+    await domain(() => deps.platform.setProviderGlobal(ctx.claims!.userId, ctx.claims!.role ?? "player", ctx.params.code!, body.enabled as boolean));
+    return domain(() => deps.platform.listPaymentProviders(ctx.claims!.role ?? "player"));
+  });
+
+  router.post(`${BASE}/platform/payment-providers/:code/site`, auth, platform, async (ctx: Ctx) => {
+    const body = asObject(ctx.body);
+    const siteId = typeof body.siteId === "string" ? body.siteId.trim() : "";
+    if (!siteId) throw new ApiError("VALIDATION", "siteId is required", 400);
+    // enabled:boolean sets the override; enabled:null clears it (revert to the global default).
+    const enabled = body.enabled;
+    if (enabled === null) {
+      await domain(() => deps.platform.clearProviderSite(ctx.claims!.userId, ctx.claims!.role ?? "player", siteId, ctx.params.code!));
+    } else if (typeof enabled === "boolean") {
+      await domain(() => deps.platform.setProviderSite(ctx.claims!.userId, ctx.claims!.role ?? "player", siteId, ctx.params.code!, enabled));
+    } else {
+      throw new ApiError("VALIDATION", "enabled must be boolean or null", 400);
+    }
+    return domain(() => deps.platform.listPaymentProviders(ctx.claims!.role ?? "player"));
+  });
+
   // Distribute a global withdrawal-pool total across every active brand's daily cap.
   //   { totalCents, mode: 'equal' } | { mode: 'per_site', overrides: { <siteId>: cents } }
   router.post(`${BASE}/platform/pool/distribute`, auth, platform, async (ctx: Ctx) => {

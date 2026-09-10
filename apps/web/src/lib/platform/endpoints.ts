@@ -87,6 +87,11 @@ export interface GlobalConfigDto {
 export interface DistributeResultDto { totalCents: number; mode: string; perSite: Record<string, number> }
 export interface PoolDistributionDto { id: number; totalCents: number; mode: string; siteCount: number; perSite: Record<string, number>; createdAt: string }
 
+/** Superadmin payment-gateway registry view (migration 0116). */
+export interface PaymentProviderDto { code: string; displayName: string; enabledGlobal: boolean; sortOrder: number }
+export interface PaymentProviderOverrideDto { siteId: string; providerCode: string; enabled: boolean }
+export interface PaymentProvidersDto { providers: PaymentProviderDto[]; overrides: PaymentProviderOverrideDto[] }
+
 // Dynamic (demand-based) pool distribution (docs/25 §15)
 export interface PoolDemandRowDto {
   siteId: string; slug: string; targetRtp: number;
@@ -136,6 +141,12 @@ export const platformApi = {
     apiFetch(`/platform/sites/${id}/users/${uid}/balance`, { method: 'POST', token: t, body }),
   // ── Global config console (migration 0092) ──
   globalConfig: (t: string) => apiFetch<{ config: GlobalConfigDto }>('/platform/global-config', { token: t }),
+  // ── Payment-gateway provider switches (migration 0116) ──
+  paymentProviders: (t: string) => apiFetch<PaymentProvidersDto>('/platform/payment-providers', { token: t }),
+  setProviderGlobal: (t: string, code: string, enabled: boolean) =>
+    apiFetch<PaymentProvidersDto>(`/platform/payment-providers/${encodeURIComponent(code)}/global`, { method: 'POST', token: t, body: { enabled } }),
+  setProviderSite: (t: string, code: string, siteId: string, enabled: boolean | null) =>
+    apiFetch<PaymentProvidersDto>(`/platform/payment-providers/${encodeURIComponent(code)}/site`, { method: 'POST', token: t, body: { siteId, enabled } }),
   setGlobalConfig: (t: string, patch: Record<string, unknown>) =>
     apiFetch<{ config: GlobalConfigDto }>('/platform/global-config', { method: 'PATCH', token: t, body: patch }),
   distributePool: (t: string, body: { totalCents?: number; mode: string; overrides?: Record<string, number> }) =>

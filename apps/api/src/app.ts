@@ -111,7 +111,8 @@ export interface ApiDeps {
   platform: Pick<PlatformService, "listSites" | "overview" | "performance" | "createSite" | "updateSite" | "setSiteConfig"
     | "marketerRollup" | "createMarketerGlobal" | "linkMarketer" | "setSiteTheme" | "setSiteOwner" | "setDefaultMarketer"
     | "getGlobalConfig" | "setGlobalConfig" | "distributePool" | "listPoolDistributions"
-    | "poolDemand" | "distributePoolDynamic">;
+    | "poolDemand" | "distributePoolDynamic"
+    | "listPaymentProviders" | "setProviderGlobal" | "setProviderSite" | "clearProviderSite">;
   /** Per-user sticky notifications: admin/system raise; player reads active + dismisses (J7). */
   notifications: Pick<NotificationService, "create" | "listActive" | "adminList" | "dismiss" | "resolve" | "resolveByCategory" | "listTemplates" | "audienceCount" | "broadcast" | "resolveCategory">;
   /** Admin Web Push subscriptions (Issue 1): opt-in real-time withdrawal-request alerts. Absent when
@@ -185,7 +186,8 @@ export interface ApiDeps {
   /** Deposit/withdrawal orchestration over the atomic 0014 RPCs + Daraja. */
   payments: Pick<PaymentService,
     "initiateDeposit" | "requestWithdrawal" | "handleStkCallback" | "handleB2cResult" | "approveWithdrawal" | "rejectWithdrawal" | "reconcileDeposits"
-    | "ingestC2b" | "claimPaybillDeposit" | "paybillConfig">;
+    | "ingestC2b" | "claimPaybillDeposit" | "paybillConfig"
+    | "initiateMegaPayDeposit" | "handleMegaPayCallback" | "reconcileMegaPayDeposits" | "listDepositProviders">;
   /** Resolve a player's display handle (falls back to a guest handle). */
   resolveHandle(userId: string): Promise<string>;
   /** Wallet balances (real + bonus) for the authenticated player, scoped to their brand. */

@@ -12,6 +12,7 @@ import {
 } from '@/lib/platform/hooks';
 import type { GlobalConfigDto } from '@/lib/platform/endpoints';
 import { CohortEconomySection, PaymentsEconomySection } from '@/components/platform/GlobalEconomy';
+import { PaymentGatewaysSection } from '@/components/platform/PaymentGateways';
 
 const money = (cents: number, cur = 'KES') => `${cur} ${(cents / 100).toLocaleString()}`;
 
@@ -169,6 +170,8 @@ export default function GlobalConfigPage() {
 
       {/* ── Payments (min/max deposit + min withdrawal) ── */}
       <PaymentsEconomySection server={cfg.payments} activeCount={activeSites.length} setCfg={setCfg} />
+
+      <PaymentGatewaysSection />
 
       {/* ── Global withdrawal-pool distributor ── */}
       <Section title="Global withdrawal pool — distribute to all clients">

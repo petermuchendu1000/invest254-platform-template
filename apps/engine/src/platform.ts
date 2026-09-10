@@ -96,6 +96,13 @@ export interface MarketerRollupRow {
   clients: number; ggrCents: number; commissionCents: number;
 }
 
+/** A registered deposit gateway + its platform-global switch (migration 0116). */
+export interface PaymentProviderRow { code: string; displayName: string; enabledGlobal: boolean; sortOrder: number; }
+/** A per-brand override forcing a provider on/off for one client (migration 0116). */
+export interface PaymentProviderOverride { siteId: string; providerCode: string; enabled: boolean; }
+/** The superadmin console view: the registry + every per-site override. */
+export interface PaymentProvidersView { providers: PaymentProviderRow[]; overrides: PaymentProviderOverride[]; }
+
 export interface PlatformRepository {
   listSites(): Promise<SiteWithConfig[]>;
   createSite(actorId: string, actorRole: string, input: CreateSiteInput): Promise<string>;
@@ -124,6 +131,15 @@ export interface PlatformRepository {
   poolDemand(opts: PoolDemandOpts): Promise<PoolDemandPreview>;
   /** Compute the demand-based allocation and APPLY it via the audited per-site distributor. */
   distributePoolDynamic(actorId: string, actorRole: string, opts: PoolDemandOpts): Promise<DistributeDynamicResult>;
+  // ── Payment-gateway provider switches (migration 0116) ──
+  /** The registry + per-site overrides for the superadmin console (platform_superadmin-gated). */
+  listPaymentProviders(actorRole: string): Promise<PaymentProvidersView>;
+  /** Flip a provider's platform-global switch (affects every brand without an override). */
+  setProviderGlobal(actorId: string, actorRole: string, code: string, enabled: boolean): Promise<void>;
+  /** Force a provider on/off for ONE brand (override wins over the global switch). */
+  setProviderSite(actorId: string, actorRole: string, siteId: string, code: string, enabled: boolean): Promise<void>;
+  /** Clear a brand's override so it reverts to the global default. */
+  clearProviderSite(actorId: string, actorRole: string, siteId: string, code: string): Promise<void>;
 }
 
 const num = (v: unknown): number => (typeof v === "string" ? Number(v) : (v as number)) || 0;
@@ -304,6 +320,24 @@ export class PgPlatformRepository implements PlatformRepository {
     const r = await this.q.query("select public.fn_platform_set_global_config($1,$2,$3) as c",
       [actorId, actorRole, JSON.stringify(patch)]);
     return mapGlobalConfig(r.rows[0].c as Record<string, unknown>);
+  }
+  // ── Payment-gateway provider switches (migration 0116) ──
+  async listPaymentProviders(actorRole: string): Promise<PaymentProvidersView> {
+    const r = await this.q.query("select public.fn_admin_list_providers($1) as v", [actorRole]);
+    const v = (r.rows[0]?.v ?? {}) as { providers?: any[]; overrides?: any[] };
+    return {
+      providers: (v.providers ?? []).map((p) => ({ code: String(p.code), displayName: String(p.display_name), enabledGlobal: Boolean(p.enabled_global), sortOrder: Number(p.sort_order) })),
+      overrides: (v.overrides ?? []).map((o) => ({ siteId: String(o.site_id), providerCode: String(o.provider_code), enabled: Boolean(o.enabled) })),
+    };
+  }
+  async setProviderGlobal(actorId: string, actorRole: string, code: string, enabled: boolean): Promise<void> {
+    await this.q.query("select public.fn_platform_set_provider_global($1,$2,$3,$4)", [actorId, actorRole, code, enabled]);
+  }
+  async setProviderSite(actorId: string, actorRole: string, siteId: string, code: string, enabled: boolean): Promise<void> {
+    await this.q.query("select public.fn_platform_set_provider_site($1,$2,$3,$4,$5)", [actorId, actorRole, siteId, code, enabled]);
+  }
+  async clearProviderSite(actorId: string, actorRole: string, siteId: string, code: string): Promise<void> {
+    await this.q.query("select public.fn_platform_clear_provider_site($1,$2,$3,$4)", [actorId, actorRole, siteId, code]);
   }
   async distributePool(actorId: string, actorRole: string, totalCents: number | null, mode: string, overrides?: Record<string, number> | null): Promise<DistributeResult> {
     const r = await this.q.query("select public.fn_platform_distribute_pool($1,$2,$3,$4,$5) as r",
@@ -559,6 +593,37 @@ export class InMemoryPlatformRepository implements PlatformRepository {
     return { ...row };
   }
 
+  // ── Payment-gateway provider switches (migration 0116) — in-memory double ──
+  private providersReg: PaymentProviderRow[] = [
+    { code: "mpesa", displayName: "M-Pesa", enabledGlobal: true, sortOrder: 10 },
+    { code: "megapay", displayName: "Mega Pay", enabledGlobal: false, sortOrder: 20 },
+  ];
+  private providerOverrides = new Map<string, boolean>(); // key `${siteId}:${code}`
+  async listPaymentProviders(actorRole: string): Promise<PaymentProvidersView> {
+    this.gate(actorRole);
+    return {
+      providers: this.providersReg.map((p) => ({ ...p })),
+      overrides: [...this.providerOverrides].map(([k, enabled]) => {
+        const i = k.indexOf(":"); return { siteId: k.slice(0, i), providerCode: k.slice(i + 1), enabled };
+      }),
+    };
+  }
+  async setProviderGlobal(_actorId: string, actorRole: string, code: string, enabled: boolean): Promise<void> {
+    this.gate(actorRole);
+    const p = this.providersReg.find((x) => x.code === code);
+    if (!p) throw new Error("PROVIDER_NOT_FOUND");
+    p.enabledGlobal = enabled;
+  }
+  async setProviderSite(_actorId: string, actorRole: string, siteId: string, code: string, enabled: boolean): Promise<void> {
+    this.gate(actorRole);
+    if (!this.providersReg.find((x) => x.code === code)) throw new Error("PROVIDER_NOT_FOUND");
+    this.providerOverrides.set(`${siteId}:${code}`, enabled);
+  }
+  async clearProviderSite(_actorId: string, actorRole: string, siteId: string, code: string): Promise<void> {
+    this.gate(actorRole);
+    this.providerOverrides.delete(`${siteId}:${code}`);
+  }
+
   private gc: GlobalConfig = {
     depositsEnabled: true, withdrawalsEnabled: true, playEnabled: true, marketersEnabled: true,
     registrationsEnabled: true, maintenanceMessage: null, globalDailyPoolCents: null,
@@ -689,6 +754,24 @@ export class PlatformService {
     return this.repo.distributePool(actorId, actorRole, totalCents, mode, overrides ?? null);
   }
   listPoolDistributions(limit?: number): Promise<PoolDistribution[]> { return this.repo.listPoolDistributions(limit); }
+
+  // ── Payment-gateway provider switches (migration 0116) ──
+  listPaymentProviders(actorRole: string): Promise<PaymentProvidersView> { return this.repo.listPaymentProviders(actorRole); }
+  setProviderGlobal(actorId: string, actorRole: string, code: string, enabled: boolean): Promise<void> {
+    if (!code || typeof code !== "string") throw new Error("INVALID_PROVIDER");
+    if (typeof enabled !== "boolean") throw new Error("INVALID_ENABLED");
+    return this.repo.setProviderGlobal(actorId, actorRole, code, enabled);
+  }
+  setProviderSite(actorId: string, actorRole: string, siteId: string, code: string, enabled: boolean): Promise<void> {
+    if (!siteId || typeof siteId !== "string") throw new Error("INVALID_SITE");
+    if (!code || typeof code !== "string") throw new Error("INVALID_PROVIDER");
+    if (typeof enabled !== "boolean") throw new Error("INVALID_ENABLED");
+    return this.repo.setProviderSite(actorId, actorRole, siteId, code, enabled);
+  }
+  clearProviderSite(actorId: string, actorRole: string, siteId: string, code: string): Promise<void> {
+    if (!siteId || !code) throw new Error("INVALID_ARGS");
+    return this.repo.clearProviderSite(actorId, actorRole, siteId, code);
+  }
 
   // ── Dynamic (demand-based) pool distribution (docs/25 §15) ──
   poolDemand(opts: PoolDemandOpts): Promise<PoolDemandPreview> { return this.repo.poolDemand(opts ?? {}); }

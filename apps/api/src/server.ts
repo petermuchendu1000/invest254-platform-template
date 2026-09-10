@@ -4,6 +4,7 @@ import {
   NotificationService, PgNotificationRepository,
   PushService, PgPushSubscriptionRepository,
   GameConfigStore, mapConfigRow, makePgPools,
+  makeMegaPayClient,
   verifyPassword,
   type GameRepository, type EngagementRepository, type PaymentRepository,
   type Querier, type FairnessRecord, type ListenClient,
@@ -90,6 +91,14 @@ async function buildDeps(): Promise<ApiDeps> {
   });
   await daraja.init();
   console.log("[api] mpesa_config loaded from database; live-reload armed");
+
+  // Mega Pay (migration 0116 — second deposit rail). Credentials come from env (Fly secrets):
+  // MEGAPAY_API_KEY, MEGAPAY_EMAIL, MEGAPAY_ENV (sandbox|production), MEGAPAY_API_BASE (optional).
+  // In sandbox/dev with no creds this is a deterministic offline stub; in production with incomplete
+  // creds it fails loudly on use (never phantom-credits). The provider is only OFFERED to players when
+  // the superadmin switches it on (payment_providers), so this client stays dormant until then.
+  const megapay = makeMegaPayClient();
+  console.log(`[api] mega pay client: env=${process.env.MEGAPAY_ENV ?? "sandbox"}, configured=${Boolean(process.env.MEGAPAY_API_KEY && process.env.MEGAPAY_EMAIL)}`);
 
   // Site-aware minimum withdrawal (multi-tenant). GET /game/config serves each brand its own
   // `site_game_config.min_withdrawal` (via gameConfigForSite below), so the browser validates
@@ -377,6 +386,9 @@ async function buildDeps(): Promise<ApiDeps> {
     // Verify STK callbacks against Safaricom (STKPushQuery) before crediting — defeats forged
     // callbacks. Set MPESA_VERIFY_CALLBACKS=false only if the callback source is otherwise trusted.
     verifyStkCallbacks: process.env.MPESA_VERIFY_CALLBACKS !== "false",
+    // Mega Pay rail (0116): its callback handler ALWAYS re-queries Mega Pay before crediting, so
+    // forged Mega Pay callbacks can't mint balance either.
+    megapay,
     // Site-aware STK AccountReference (multi-tenant): "Account no. <Brand>" per depositing brand.
     accountRefForSite: (siteId) => siteAccountRef(siteId),
     // Per-brand withdrawal floor: enforce the withdrawing site's own min so client and server agree.
@@ -695,4 +707,15 @@ if (Number.isFinite(RECONCILE_MS) && RECONCILE_MS > 0) {
   }, RECONCILE_MS);
   timer.unref();
   console.log(`[api] deposit reconciliation every ${Math.round(RECONCILE_MS / 1000)}s`);
+
+  // Mega Pay rail (0116): the SAME sweep for provider='megapay', using Mega Pay's authoritative
+  // status query, so a Mega Pay deposit whose webhook never arrived still settles. Isolated from the
+  // Daraja sweep above (each scopes to its own provider), and a no-op when Mega Pay isn't configured.
+  const megaTimer = setInterval(() => {
+    void deps.payments
+      .reconcileMegaPayDeposits()
+      .then((r) => { if (r.settled || r.errors) console.log("[payments] megapay reconcile", r); })
+      .catch((err: unknown) => console.error("[payments] megapay reconcile sweep failed:", (err as Error).message));
+  }, RECONCILE_MS);
+  megaTimer.unref();
 }

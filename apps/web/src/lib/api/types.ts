@@ -137,6 +137,19 @@ export interface DepositResult {
   checkoutRequestId: string;
 }
 
+/** Result of a Mega Pay STK deposit (migration 0116). */
+export interface MegaPayDepositResult {
+  transactionId: string;
+  transactionRequestId: string;
+  checkoutRequestId: string;
+}
+
+/** A deposit gateway effective-enabled for the brand (migration 0116). */
+export interface DepositProviderDto {
+  code: string;
+  displayName: string;
+}
+
 export interface WithdrawalResult {
   transactionId: string;
   newBalance: Cents;

@@ -8,7 +8,7 @@ import { useDisplayMoney, USD_LIMITS } from '@/lib/money';
 import { Input } from '@/components/ui/Input';
 import { Button } from '@/components/ui/Button';
 import { api } from '@/lib/api/endpoints';
-import { useDeposit, useWallet } from '@/lib/wallet/hooks';
+import { useDeposit, useDepositMegapay, useWallet } from '@/lib/wallet/hooks';
 import { useBrand } from '@/lib/brand/BrandProvider';
 import { useDepositUi } from '@/lib/wallet/depositUi';
 import { useAuthUi } from '@/lib/auth/ui';
@@ -22,8 +22,14 @@ import { MpesaIcon } from '@/components/wallet/MpesaIcon';
 const digitsOnly = (s: string) => s.replace(/\D/g, '');
 const grouped = (s: string) => (s ? Number(s).toLocaleString('en-KE') : '');
 
-/** Deposit body for the unified wallet sheet (no Modal/header — WalletModal provides those). */
-export function DepositForm() {
+/**
+ * Deposit body for the unified wallet sheet (no Modal/header — WalletModal provides those).
+ * `provider` selects the gateway rail (migration 0116): 'mpesa' (Daraja, default) or 'megapay'.
+ * Both share the identical STK-push UX (phone + amount → prompt → settle-by-poll); only the API
+ * mutation and the provider label differ, so the player experience stays consistent across gateways.
+ */
+export function DepositForm({ provider = 'mpesa' }: { provider?: 'mpesa' | 'megapay' } = {}) {
+  const providerLabel = provider === 'megapay' ? 'Mega Pay' : 'M-Pesa';
   const close = useDepositUi((s) => s.close);
   const prefillAmountCents = useDepositUi((s) => s.prefillAmountCents);
   const pending = useDepositUi((s) => s.pending);
@@ -33,7 +39,9 @@ export function DepositForm() {
   const token = useSession((s) => s.token);
   const accountPhone = useSession((s) => s.user?.phone ?? null);
   const { data: wallet } = useWallet();
-  const deposit = useDeposit();
+  const mpesaDeposit = useDeposit();
+  const megaDeposit = useDepositMegapay();
+  const deposit = provider === 'megapay' ? megaDeposit : mpesaDeposit;
   // Live economy from the SAME endpoint the engine/PaymentService enforce, so the deposit floor/cap
   // the browser validates against is the effective global/brand economy — never a hardcoded constant.
   const brand = useBrand();
@@ -290,7 +298,7 @@ export function DepositForm() {
           ? 'Sign up to deposit'
           : deposit.isPending
             ? 'Sending STK push…'
-            : 'Continue to M-Pesa'}
+            : `Continue to ${providerLabel}`}
       </Button>
     </form>
   );

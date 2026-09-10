@@ -22,6 +22,7 @@ const DOMAIN_STATUS: Readonly<Record<string, number>> = {
   INVALID_AMOUNT: 400,
   NOT_INTEGER_CENTS: 400,
   BELOW_MIN: 400,
+  ABOVE_MAX: 400,            // deposit above the platform-global max (0099) — was unmapped -> 500 (bug fix)
   INVALID_PHONE: 400,
   WITHDRAWALS_DISABLED: 403,
   INSUFFICIENT_FUNDS: 402,
@@ -31,6 +32,12 @@ const DOMAIN_STATUS: Readonly<Record<string, number>> = {
   INVALID_CODE: 400,
   INVALID_C2B: 400,
   CODE_ALREADY_USED: 409,
+  // Mega Pay rail (migration 0116)
+  PROVIDER_NOT_FOUND: 400,
+  PROVIDER_DISABLED: 403,
+  MEGAPAY_NOT_CONFIGURED: 503,
+  MEGAPAY_INITIATE_REJECTED: 502,
+  MEGAPAY_VERIFY_PENDING: 409,   // callback arrived but status not yet final -> caller/retry + reconcile settles it
 };
 
 /** Run a domain call, translating known service errors to controlled ApiErrors. */
@@ -138,6 +145,22 @@ export function parseC2bConfirmation(body: unknown): C2bConfirmation {
   };
 }
 
+/**
+ * Parse a Mega Pay webhook payload (migration 0116). Mega Pay posts back the transaction it settled;
+ * we only need the `transaction_request_id` to look it up — the handler then RE-QUERIES Mega Pay for
+ * the authoritative status before crediting, so we accept the id under any of its documented casings
+ * and never trust status/amount off the wire.
+ */
+export function parseMegaPayCallback(body: unknown): { transactionRequestId: string } {
+  const b = (body ?? {}) as Record<string, unknown>;
+  const trid = b["transaction_request_id"] ?? b["TransactionRequestID"] ?? b["transactionRequestId"]
+    ?? b["TransactionID"] ?? b["transaction_id"];
+  if (trid == null || String(trid).trim() === "") {
+    throw new ApiError("BAD_CALLBACK", "missing transaction_request_id", 400);
+  }
+  return { transactionRequestId: String(trid).trim() };
+}
+
 /** Register player-authenticated, public-callback, and admin routes (E2). */
 export function registerProtectedRoutes(router: Router, deps: ApiDeps): void {
   const auth = requireAuth(deps.verifier);
@@ -164,6 +187,29 @@ export function registerProtectedRoutes(router: Router, deps: ApiDeps): void {
     const phone = requirePhone(body);
     const out = await domain(() => deps.payments.initiateDeposit(ctx.claims!.userId, amount, phone, ctx.siteId));
     return { status: 202, body: { transactionId: out.txId, checkoutRequestId: out.checkoutRequestId } };
+  });
+
+  // The deposit gateways to render for THIS player's brand (migration 0116): the superadmin's global
+  // switch resolved against any per-site override. Fail-open to M-Pesa inside the service, so this
+  // never returns an empty list that would hide the working rail.
+  router.get(`${BASE}/deposits/providers`, auth, site, async (ctx: Ctx) => {
+    const providers = await deps.payments.listDepositProviders(ctx.siteId);
+    return { providers };
+  });
+
+  // Mega Pay STK deposit (migration 0116). Mirrors /deposits but routes through the Mega Pay rail.
+  // The provider must be effective-enabled for this brand (server-authoritative — a client can't
+  // deposit through a gateway the superadmin switched off), and the deposits master switch still applies.
+  router.post(`${BASE}/deposits/megapay`, auth, site, depositLimit, async (ctx: Ctx) => {
+    if (deps.platformGate && !(await deps.platformGate.allows("deposits")))
+      throw new ApiError("SYSTEM_DISABLED", "Deposits are temporarily disabled by the platform.", 403);
+    const enabled = (await deps.payments.listDepositProviders(ctx.siteId)).some((p) => p.code === "megapay");
+    if (!enabled) throw new ApiError("PROVIDER_DISABLED", "Mega Pay is not available.", 403);
+    const body = asObject(ctx.body);
+    const amount = requireIntAmount(body);
+    const phone = requirePhone(body);
+    const out = await domain(() => deps.payments.initiateMegaPayDeposit(ctx.claims!.userId, amount, phone, ctx.siteId));
+    return { status: 202, body: { transactionId: out.txId, transactionRequestId: out.transactionRequestId, checkoutRequestId: out.checkoutRequestId } };
   });
 
   router.post(`${BASE}/withdrawals`, auth, site, withdrawLimit, async (ctx: Ctx) => {
@@ -200,6 +246,20 @@ export function registerProtectedRoutes(router: Router, deps: ApiDeps): void {
   };
   router.post(`${BASE}/deposits/mpesa/callback`, darajaOnly, stkCallback);
   router.post(`${BASE}/s/:slug/deposits/mpesa/callback`, darajaOnly, resolveSlug, stkCallback);
+
+  // ── Mega Pay webhook (migration 0116) ──
+  // Mega Pay POSTs here when a deposit settles (one URL for ALL brands — the transaction_request_id
+  // resolves the originating deposit/brand from our own DB). The handler RE-QUERIES Mega Pay for the
+  // authoritative status before crediting, so a forged POST can't mint balance. Optionally lock to
+  // Mega Pay's source IPs via MEGAPAY_CALLBACK_ALLOWED_CIDRS (unset = disabled, same as Daraja).
+  const megapayOnly = restrictToCidrs("MEGAPAY_CALLBACK_ALLOWED_CIDRS");
+  const megapayCallback = async (ctx: Ctx) => {
+    const cb = parseMegaPayCallback(ctx.body);
+    await domain(() => deps.payments.handleMegaPayCallback(cb.transactionRequestId, ctx.body));
+    return { ok: true };
+  };
+  router.post(`${BASE}/deposits/megapay/callback`, megapayOnly, megapayCallback);
+  router.post(`${BASE}/s/:slug/deposits/megapay/callback`, megapayOnly, resolveSlug, megapayCallback);
 
   // ── Pay Bill (C2B) — auto-verified manual deposits (migration 0115) ──
   // Public C2B endpoints Safaricom calls for every payment to our Pay Bill. Network-allowlisted to

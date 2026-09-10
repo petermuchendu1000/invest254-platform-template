@@ -40,9 +40,20 @@ export interface ClaimResult { status: "credited" | "already_claimed" | "not_fou
 /** Non-secret Pay Bill display + routing config shown in the deposit sheet (migration 0115). */
 export interface PaybillConfig { enabled: boolean; shortcode: string; accountNumber: string; businessName: string; instructions: string; }
 
+/** A deposit gateway effective-enabled for a brand (migration 0116) — shown on the deposit page. */
+export interface DepositProvider { code: string; displayName: string; }
+
 export interface PaymentRepository {
   getBalance(userId: string, siteId?: string): Promise<Cents>;
   createDeposit(userId: string, amountCents: Cents, phone: string, siteId?: string): Promise<string>;
+  /**
+   * Create a pending deposit stamped with an explicit provider (migration 0116, e.g. 'megapay').
+   * Same money-neutral insert as `createDeposit` (which is the 'mpesa'/Daraja shorthand); the
+   * provider tag keeps each rail's reconciliation isolated and drives per-provider history.
+   */
+  createDepositProvider(userId: string, amountCents: Cents, phone: string, provider: string, siteId?: string): Promise<string>;
+  /** The deposit gateways effective-enabled for a brand (global switch + per-site override, migration 0116). */
+  listEffectiveProviders(siteId?: string): Promise<DepositProvider[]>;
   attachStk(txId: string, merchantRequestId: string, checkoutRequestId: string): Promise<boolean>;
   completeDeposit(checkoutRequestId: string, resultCode: number, resultDesc: string, receipt: string | null, raw: unknown): Promise<CompleteResult>;
   createWithdrawal(userId: string, amountCents: Cents, phone: string, minCents: Cents, siteId?: string): Promise<CreateWithdrawalResult>;
@@ -58,8 +69,12 @@ export interface PaymentRepository {
   getTransaction(txId: string): Promise<TxRow | null>;
   /** A player's transaction history (optional kind/status filter), newest-first, cursor-paginated. `siteId` scopes it per brand. */
   listTransactions(userId: string, q: TxListQuery, siteId?: string): Promise<Page<TransactionRecord>>;
-  /** Deposits still non-terminal after `olderThanMs` (oldest first) — input to the reconcile sweep. */
-  listUnsettledDeposits(olderThanMs: number, limit: number): Promise<UnsettledDeposit[]>;
+  /**
+   * Deposits still non-terminal after `olderThanMs` (oldest first) — input to the reconcile sweep.
+   * `provider` scopes the sweep to ONE rail (migration 0116): the Daraja sweep passes 'mpesa' and the
+   * Mega Pay sweep passes 'megapay', so neither ever queries the other provider's ids. Omit for all.
+   */
+  listUnsettledDeposits(olderThanMs: number, limit: number, provider?: string): Promise<UnsettledDeposit[]>;
   /** Idempotently store a C2B confirmation Safaricom pushed for our Pay Bill. Returns true if newly stored. */
   ingestC2b(p: C2bPayment): Promise<boolean>;
   /** A player claims a Pay Bill M-PESA code → credit the Safaricom-recorded amount once. `siteId` scopes the wallet. */
@@ -88,11 +103,19 @@ export class InMemoryPaymentRepository implements PaymentRepository {
   seed(userId: string, cents: Cents): void { this.balances.set(userId, assertCents(cents)); }
   async getBalance(userId: string, _siteId?: string): Promise<Cents> { return this.balances.get(userId) ?? 0; }
 
+  /** Deposit providers effective-enabled for the in-memory repo (settable in tests via `setProviders`). */
+  private providers: DepositProvider[] = [{ code: "mpesa", displayName: "M-Pesa" }, { code: "megapay", displayName: "Mega Pay" }];
+  setProviders(list: DepositProvider[]): void { this.providers = [...list]; }
+  async listEffectiveProviders(_siteId?: string): Promise<DepositProvider[]> { return [...this.providers]; }
+
   async createDeposit(userId: string, amountCents: Cents, phone: string, siteId?: string): Promise<string> {
+    return this.createDepositProvider(userId, amountCents, phone, "mpesa", siteId);
+  }
+  async createDepositProvider(userId: string, amountCents: Cents, phone: string, provider: string, siteId?: string): Promise<string> {
     if (amountCents <= 0) throw new Error("INVALID_AMOUNT");
     if (!this.balances.has(userId)) throw new Error("WALLET_NOT_FOUND");
     const id = randomUUID();
-    this.txns.set(id, { id, userId, kind: "deposit", amount: amountCents, status: "pending", phone, seq: ++this.txSeq, createdAtMs: this.now(), receipt: null, siteId: siteId ?? null });
+    this.txns.set(id, { id, userId, kind: "deposit", amount: amountCents, status: "pending", phone, seq: ++this.txSeq, createdAtMs: this.now(), receipt: null, siteId: siteId ?? null, provider });
     return id;
   }
   async attachStk(txId: string, _merchant: string, checkoutId: string): Promise<boolean> {
@@ -116,10 +139,11 @@ export class InMemoryPaymentRepository implements PaymentRepository {
     return { applied: true, status: "failed", newBalance: await this.getBalance(tx.userId) };
   }
 
-  async listUnsettledDeposits(olderThanMs: number, limit: number): Promise<UnsettledDeposit[]> {
+  async listUnsettledDeposits(olderThanMs: number, limit: number, provider?: string): Promise<UnsettledDeposit[]> {
     const cutoff = this.now() - olderThanMs;
     return [...this.txns.values()]
-      .filter((t) => t.kind === "deposit" && (t.status === "pending" || t.status === "processing") && !!t.checkoutId && t.createdAtMs <= cutoff)
+      .filter((t) => t.kind === "deposit" && (t.status === "pending" || t.status === "processing") && !!t.checkoutId && t.createdAtMs <= cutoff
+        && (provider == null || (t.provider ?? "mpesa") === provider))
       .sort((a, b) => a.createdAtMs - b.createdAtMs || a.seq - b.seq)
       .slice(0, limit)
       .map((t) => ({ txId: t.id, checkoutRequestId: t.checkoutId! }));
@@ -310,6 +334,19 @@ export class PgPaymentRepository implements PaymentRepository {
     const r = await this.q.query("select fn_create_deposit($1,$2,$3,$4) as id", [userId, amountCents, phone, siteId ?? DEFAULT_SITE_ID]);
     return String(r.rows[0].id);
   }
+  async createDepositProvider(userId: string, amountCents: Cents, phone: string, provider: string, siteId?: string): Promise<string> {
+    // migration 0116: fn_create_deposit_provider(user, amount, phone, site_id, provider) — brand + gateway stamped.
+    const r = await this.q.query("select fn_create_deposit_provider($1,$2,$3,$4,$5) as id",
+      [userId, amountCents, phone, siteId ?? DEFAULT_SITE_ID, provider]);
+    return String(r.rows[0].id);
+  }
+  async listEffectiveProviders(siteId?: string): Promise<DepositProvider[]> {
+    // migration 0116: resolves the platform-global switch + this brand's per-site override; enabled only.
+    const r = await this.q.query(
+      "select code, display_name from fn_list_effective_providers($1) where enabled = true order by sort_order, code",
+      [siteId ?? DEFAULT_SITE_ID]);
+    return r.rows.map((x: any) => ({ code: String(x.code), displayName: String(x.display_name) }));
+  }
   async attachStk(txId: string, merchantRequestId: string, checkoutRequestId: string): Promise<boolean> {
     const r = await this.q.query("select fn_attach_stk($1,$2,$3) as ok", [txId, merchantRequestId, checkoutRequestId]);
     return Boolean(r.rows[0]?.ok);
@@ -318,15 +355,16 @@ export class PgPaymentRepository implements PaymentRepository {
     const r = await this.q.query("select applied, status, new_balance from fn_complete_deposit($1,$2,$3,$4,$5)", [checkoutRequestId, resultCode, resultDesc, receipt, JSON.stringify(raw ?? {})]);
     return { applied: Boolean(r.rows[0].applied), status: String(r.rows[0].status), newBalance: toCents(r.rows[0].new_balance) };
   }
-  async listUnsettledDeposits(olderThanMs: number, limit: number): Promise<UnsettledDeposit[]> {
+  async listUnsettledDeposits(olderThanMs: number, limit: number, provider?: string): Promise<UnsettledDeposit[]> {
     const r = await this.q.query(
       `select id, checkout_request_id from transactions
         where kind = 'deposit' and status in ('pending','processing')
           and checkout_request_id is not null
+          and ($3::text is null or provider = $3)
           and created_at <= now() - ($1::double precision * interval '1 millisecond')
         order by created_at asc
         limit $2`,
-      [olderThanMs, limit],
+      [olderThanMs, limit, provider ?? null],
     );
     return r.rows.map((x: any) => ({ txId: String(x.id), checkoutRequestId: String(x.checkout_request_id) }));
   }

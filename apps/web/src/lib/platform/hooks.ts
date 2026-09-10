@@ -43,6 +43,26 @@ export function usePoolDistributions() {
   return useQuery({ queryKey: ['platform', 'pool-distributions'], queryFn: () => platformApi.poolDistributions(t), enabled: !!t });
 }
 
+// ── Payment-gateway provider switches (migration 0116) ──
+export function usePaymentProviders() {
+  const t = useTok();
+  return useQuery({ queryKey: ['platform', 'payment-providers'], queryFn: () => platformApi.paymentProviders(t), enabled: !!t });
+}
+export function useSetProviderGlobal() {
+  const t = useTok(); const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { code: string; enabled: boolean }) => platformApi.setProviderGlobal(t, v.code, v.enabled),
+    onSuccess: (data) => { qc.setQueryData(['platform', 'payment-providers'], data); },
+  });
+}
+export function useSetProviderSite() {
+  const t = useTok(); const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { code: string; siteId: string; enabled: boolean | null }) => platformApi.setProviderSite(t, v.code, v.siteId, v.enabled),
+    onSuccess: (data) => { qc.setQueryData(['platform', 'payment-providers'], data); },
+  });
+}
+
 // Dynamic (demand-based) distribution (docs/25 §15)
 export function usePoolDemand(params: { lookbackDays?: number | undefined; totalCents?: number | undefined }, enabled = true) {
   const t = useTok();

@@ -38,3 +38,4 @@ export * from "./poolcontroller.js";
 export * from "./pgpools.js";
 export * from "./daraja.js";
 export * from "./darajastore.js";
+export * from "./megapay.js";

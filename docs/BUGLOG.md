@@ -5,6 +5,21 @@ entry: what, evidence, root cause, impact, and resolution.
 
 ---
 
+## #21 — Deposit `ABOVE_MAX` mapped to HTTP 500 instead of 400 — FIXED (branch `feat/megapay-gateway`)
+- **Evidence:** `PaymentService.initiateDeposit` throws `ABOVE_MAX` when a deposit exceeds the
+  platform-global max single deposit (migration 0099), but `DOMAIN_STATUS` in `apps/api/src/app.payments.ts`
+  had no entry for `ABOVE_MAX`, so the router mapped it to a generic **500 Internal Server Error**.
+- **Root cause:** the max-deposit enforcement (0099) added the `ABOVE_MAX` throw but the HTTP error map
+  was not updated, so a legitimate client-side validation failure surfaced as a server fault.
+- **Impact:** a player entering an over-cap amount got a 500 (looks like an outage / no actionable
+  message) instead of a clean 400 "amount exceeds the maximum". Pre-existing; low severity, no money effect.
+- **Resolution:** added `ABOVE_MAX: 400` (plus the new Mega Pay codes `PROVIDER_NOT_FOUND`,
+  `PROVIDER_DISABLED`, `MEGAPAY_NOT_CONFIGURED` 503, `MEGAPAY_INITIATE_REJECTED` 502,
+  `MEGAPAY_VERIFY_PENDING` 409) to `DOMAIN_STATUS`. Covered by the deposit-floor/junk test in
+  `app.megapay.test.ts`.
+
+---
+
 ## #20 — Multipliers were pool-blind, tick-blind, transport-less and crash-unsafe — FIXED (branch `feat/issue1-multipliers-live`)
 - **Evidence:** the Phase-2 multiplier engine methods existed but (a) TP/SL/stop-out/DC were never
   evaluated by any loop (the settle methods were dead code nothing called), (b) no WS/REST transport

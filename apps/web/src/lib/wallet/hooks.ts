@@ -66,6 +66,31 @@ export function useDeposit() {
   });
 }
 
+/** Mega Pay STK deposit (migration 0116) — same settle-by-poll UX as the Daraja rail. */
+export function useDepositMegapay() {
+  const token = useSession((s) => s.token);
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { amount: number; phone: string }) => api.createMegapayDeposit(token as string, vars),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['wallet'] });
+      void qc.invalidateQueries({ queryKey: ['transactions'] });
+      pollSettlement(qc);
+    },
+  });
+}
+
+/** Deposit gateways effective-enabled for this player's brand (superadmin switch + per-site override). */
+export function useDepositProviders() {
+  const token = useSession((s) => s.token);
+  return useQuery({
+    queryKey: ['deposit-providers'],
+    enabled: !!token,
+    staleTime: 60_000,
+    queryFn: async () => (await api.depositProviders(token as string)).providers,
+  });
+}
+
 export function useWithdraw() {
   const token = useSession((s) => s.token);
   const qc = useQueryClient();
