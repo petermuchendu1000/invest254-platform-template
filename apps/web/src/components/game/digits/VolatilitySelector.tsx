@@ -123,7 +123,7 @@ export function VolatilitySelector({
       {open ? (
         <div
           role="listbox"
-          className="absolute left-0 top-[calc(100%+6px)] z-30 w-72 max-w-[85vw] rounded-xl border border-border bg-surface-2 p-1 shadow-2xl"
+          className="absolute left-0 top-[calc(100%+6px)] z-40 max-h-[min(60vh,22rem)] w-72 max-w-[85vw] overflow-y-auto overscroll-contain rounded-xl border border-border bg-surface-2 p-1 shadow-2xl"
         >
           {INSTRUMENTS.map((inst) => {
             const active = inst.id === instrument.id;

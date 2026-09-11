@@ -71,11 +71,11 @@ export function DigitsBottomNav() {
 
         <li>
           <Link
-            href="/history"
-            aria-current={pathname.startsWith('/history') ? 'page' : undefined}
+            href="/history/digits"
+            aria-current={pathname.startsWith('/history/digits') ? 'page' : undefined}
             className={cn(
               'flex flex-col items-center gap-1 rounded-xl px-3 py-1.5 text-[11px] font-semibold transition',
-              pathname.startsWith('/history') ? 'text-accent' : 'text-muted hover:text-fg',
+              pathname.startsWith('/history/digits') ? 'text-accent' : 'text-muted hover:text-fg',
             )}
           >
             <Icon path="M12 8v4l3 2M21 12a9 9 0 11-9-9" />

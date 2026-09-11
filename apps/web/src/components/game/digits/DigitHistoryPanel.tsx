@@ -26,7 +26,7 @@ const fmtTime = (ms: number | null): string =>
  * stake, entry spot @ tick, settle spot @ settled-digit @ tick, payout, and P/L. Server-backed
  * (survives sessions/devices), newest-first, with load-more. Purely presentational (brand tokens).
  */
-export function DigitHistoryPanel() {
+export function DigitHistoryPanel({ embedded = true }: { embedded?: boolean } = {}) {
   const { data, isLoading, isError, fetchNextPage, hasNextPage, isFetchingNextPage } = useDigitHistory();
   const { fmt } = useDisplayMoney();
   const rows: DigitHistoryDto[] = (data?.pages ?? []).flatMap((p) => p.items);
@@ -45,7 +45,7 @@ export function DigitHistoryPanel() {
       ) : rows.length === 0 ? (
         <p className="px-4 pb-5 text-sm text-muted">No trades yet. Your placed contracts will appear here with entry &amp; settle details.</p>
       ) : (
-        <div className="table-wrapper max-h-80 overflow-y-auto">
+        <div className={cn('table-wrapper', embedded && 'max-h-80 overflow-y-auto')}>
           <ul className="divide-y divide-border">
             {rows.map((r) => {
               const won = r.result === 'win';

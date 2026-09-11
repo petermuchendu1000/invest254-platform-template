@@ -7,7 +7,6 @@ import { DigitHeatmap } from '@/components/game/digits/DigitHeatmap';
 import { DerivChart } from '@/components/game/digits/DerivChart';
 import { VolatilitySelector } from '@/components/game/digits/VolatilitySelector';
 import { EntryScanner, type ScanSuggestion } from '@/components/game/digits/EntryScanner';
-import { DigitHistoryPanel } from '@/components/game/digits/DigitHistoryPanel';
 import { useInvalidateDigitHistory } from '@/lib/game/useDigitHistory';
 import { useGameSocket, type DigitSettledData } from '@/lib/game/GameSocketProvider';
 import { instrumentById, DEFAULT_INSTRUMENT_ID, type Instrument } from '@/lib/game/instruments';
@@ -17,6 +16,8 @@ import { useBrand } from '@/lib/brand/BrandProvider';
 import { useWallet } from '@/lib/wallet/hooks';
 import { useSession } from '@/lib/auth/session';
 import { useDepositUi } from '@/lib/wallet/depositUi';
+import { useToast } from '@/lib/toast/ToastProvider';
+import { useAuthUi } from '@/lib/auth/ui';
 
 // ── Contract model ───────────────────────────────────────────────────────────────────────────────
 const MARKETS = [
@@ -68,7 +69,19 @@ const outcomesFor = (m: Market): [{ key: Outcome; label: string }, { key: Outcom
       ? [{ key: 'over', label: 'Over' }, { key: 'under', label: 'Under' }]
       : [{ key: 'matches', label: 'Matches' }, { key: 'differs', label: 'Differs' }];
 
-type Pending = { stakeCents: number; outcome: Outcome };
+/** Human, professional contract label for confirmations/receipts (e.g. "Over 5", "Matches 3"). */
+function contractLabel(o: Outcome, barrier: number, pick: number): string {
+  switch (o) {
+    case 'even': return 'Even';
+    case 'odd': return 'Odd';
+    case 'over': return `Over ${barrier}`;
+    case 'under': return `Under ${barrier}`;
+    case 'matches': return `Matches ${pick}`;
+    case 'differs': return `Differs ${pick}`;
+  }
+}
+
+type Pending = { stakeCents: number; outcome: Outcome; manual: boolean; label: string };
 
 /** Deriv-style binary/digits trade surface — trades REAL contracts against the authoritative engine. */
 export function DigitsTradeScreen() {
@@ -79,6 +92,8 @@ export function DigitsTradeScreen() {
   const brand = useBrand();
   const token = useSession((s) => s.token);
   const openDeposit = useDepositUi((s) => s.openDeposit);
+  const openAuth = useAuthUi((s) => s.openAuth);
+  const toast = useToast();
   const { data: wallet } = useWallet();
   const spendable = (wallet?.real ?? 0) + (wallet?.bonus ?? 0);
 
@@ -181,6 +196,7 @@ export function DigitsTradeScreen() {
   // Resolve settlements authoritatively from the engine (single in-flight contract at a time).
   useEffect(() => {
     const off = onDigitSettled((s: DigitSettledData) => {
+      const settled = pendingRef.current; // capture BEFORE clearing (label + manual flag)
       pendingRef.current = null;
       const won = s.won;
       const delta = s.pnlCents; // authoritative P/L in cents
@@ -189,30 +205,71 @@ export function DigitsTradeScreen() {
       setFlash({ won, delta });
       setSettleMarker({ digit: s.digit, won, tSec: Math.floor((getLastInstrumentTick()?.t ?? Date.now()) / 1000) });
       invalidateHistory(); // persist-backed receipt now exists → refresh the history panel
+      // Professional result notification for MANUAL trades (the AUTO bot reports P/L via its own HUD).
+      if (settled?.manual) {
+        const detail = `${settled.label} · settled on digit ${s.digit}`;
+        if (won) toast.push({ tone: 'success', title: `You won +${fmt(delta)}`, description: detail });
+        else toast.push({ tone: 'error', title: `Lost ${fmt(settled.stakeCents)}`, description: detail });
+      }
       window.setTimeout(() => setFlash(null), 900);
     });
     return off;
-  }, [onDigitSettled, invalidateHistory, getLastInstrumentTick]);
+  }, [onDigitSettled, invalidateHistory, getLastInstrumentTick, toast, fmt]);
 
   const place = useCallback(
-    (outcome: Outcome, cents: number): boolean => {
-      if (!Number.isFinite(cents) || cents <= 0) return false;
-      if (pendingRef.current) return false; // one contract in flight at a time
-      if (cents < minStakeCents) return false; // below the site minimum (hint shown in the UI)
-      if (maxStakeCents !== undefined && cents > maxStakeCents) return false; // above the site maximum
-      if (!token || cents > spendable) {
-        openDeposit({ amountCents: cents });
+    (outcome: Outcome, cents: number, manual = false): boolean => {
+      // Every rejection communicates WHY — but only for MANUAL trades; the AUTO bot fires every
+      // ~250ms and must never spam toasts.
+      if (!Number.isFinite(cents) || cents <= 0) {
+        if (manual) toast.push({ tone: 'error', title: 'Enter a stake', description: 'Type a valid amount to trade.' });
         return false;
       }
-      if (winProbability(outcome, barrier) <= 0) return false;
+      if (pendingRef.current) {
+        if (manual) toast.push({ tone: 'info', title: 'Trade in progress', description: 'Wait for your current trade to settle.' });
+        return false;
+      }
+      if (cents < minStakeCents) {
+        if (manual) toast.push({ tone: 'error', title: 'Stake too low', description: `Minimum stake is ${both(minStakeCents)}.` });
+        return false;
+      }
+      if (maxStakeCents !== undefined && cents > maxStakeCents) {
+        if (manual) toast.push({ tone: 'error', title: 'Stake too high', description: `Maximum stake is ${both(maxStakeCents)}.` });
+        return false;
+      }
+      if (!token) {
+        if (manual) {
+          toast.push({ tone: 'info', title: 'Sign in to trade', description: 'Log in or create an account to place a trade.' });
+          openAuth('login');
+        }
+        return false;
+      }
+      if (cents > spendable) {
+        if (manual) {
+          toast.push({ tone: 'error', title: 'Not enough balance', description: `You need ${fmt(cents)} to place this trade — tap to top up.` });
+          openDeposit({ amountCents: cents });
+        }
+        return false;
+      }
+      if (winProbability(outcome, barrier) <= 0) {
+        if (manual) toast.push({ tone: 'error', title: 'Not available', description: 'This pick has no valid payout — choose another barrier.' });
+        return false;
+      }
       const target = outcome === 'over' || outcome === 'under' ? barrier : outcome === 'matches' || outcome === 'differs' ? pick : 0;
-      pendingRef.current = { stakeCents: cents, outcome };
+      const label = contractLabel(outcome, barrier, pick);
+      pendingRef.current = { stakeCents: cents, outcome, manual, label };
       setEntryMarker({ tSec: Math.floor((getLastInstrumentTick()?.t ?? Date.now()) / 1000) });
       setSettleMarker(null);
       openDigit({ instrumentId: instId, kind: outcome, target, stakeCents: cents });
+      if (manual) {
+        toast.push({
+          tone: 'info',
+          title: `Trade placed · ${fmt(cents)}`,
+          description: `${label} on ${instrument.short} · Potential payout ${fmt(totalReturnCents(cents, outcome))}`,
+        });
+      }
       return true;
     },
-    [token, spendable, openDeposit, barrier, pick, instId, openDigit, minStakeCents, maxStakeCents, getLastInstrumentTick],
+    [token, spendable, openDeposit, openAuth, toast, barrier, pick, instId, instrument, openDigit, minStakeCents, maxStakeCents, getLastInstrumentTick, fmt, both, totalReturnCents],
   );
 
   // Entry (IN) + settle (result digit) markers for the CURRENT/last contract, drawn on the chart at
@@ -253,7 +310,7 @@ export function DigitsTradeScreen() {
         const base = stakeCents;
         const cap = Math.min(spendable || base, maxStakeCents ?? Number.POSITIVE_INFINITY);
         const next = Math.min(Math.round(base * Math.pow(mult, lossStreakRef.current)), cap);
-        place(autoOutcomeRef.current, next);
+        place(autoOutcomeRef.current, next, false);
       }
     }, 250);
     return () => window.clearInterval(id);
@@ -292,7 +349,7 @@ export function DigitsTradeScreen() {
       setRunning(true);
       return;
     }
-    place(outcome, stakeCents);
+    place(outcome, stakeCents, true);
   };
 
   const ctaMeta = (o: Outcome) => {
@@ -317,7 +374,7 @@ export function DigitsTradeScreen() {
   }, [running]);
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-1.5 p-0.5 sm:gap-2">
+    <div className="flex h-full min-h-0 flex-col gap-1.5 overflow-y-auto overflow-x-hidden overscroll-contain p-0.5 pb-2 sm:gap-2">
       {/* Market tabs — Matches/Differs · Even/Odd · Over/Under (active = outlined accent pill) */}
       <div className="flex items-center gap-1.5 xs:gap-2">
         {MARKETS.map((m) => (
@@ -337,8 +394,12 @@ export function DigitsTradeScreen() {
         ))}
       </div>
 
-      {/* Chart card — toolbar (1T · instrument · live share) + Deriv-style chart */}
-      <div className="relative flex min-h-[124px] flex-1 flex-col overflow-hidden rounded-xl border border-border bg-surface">
+      {/* Chart card — toolbar (1T · instrument · live share) + Deriv-style chart.
+          STABLE HEIGHT (not flex-1): a fixed share of the viewport so toggling AUTO/MANUAL or
+          returning from the AI scanner (which grows the console) can NEVER squeeze the chart — the
+          root scrolls instead. Also must NOT clip (overflow-visible) so the toolbar dropdowns
+          (timeframe / volatility) can extend beyond it; clipping is on the chart canvas only, below. */}
+      <div className="relative flex h-[42vh] min-h-[220px] shrink-0 flex-col rounded-xl border border-border bg-surface">
         <div className="flex items-center gap-1.5 p-2 pb-1">
           {/* 1T timeframe / zoom */}
           <div ref={tfRef} className="relative shrink-0">
@@ -392,7 +453,7 @@ export function DigitsTradeScreen() {
           </span>
         </div>
 
-        <div className="relative min-h-0 flex-1">
+        <div className="relative min-h-0 flex-1 overflow-hidden rounded-b-xl">
           <DerivChart
             getTicks={getInstrumentTicks}
             getLastTick={getLastInstrumentTick}
@@ -557,9 +618,6 @@ export function DigitsTradeScreen() {
       </div>
 
       <EntryScanner currentInstrumentId={instId} busy={running} onApply={applyScan} />
-
-      {/* Persisted, reviewable receipts: type, stake, entry/settle spot + tick, settled digit, payout, P/L. */}
-      <DigitHistoryPanel />
     </div>
   );
 }

@@ -26,6 +26,7 @@ export * from "./siteregistry.js";
 export * from "./sitesstore.js";
 export * from "./multiengine.js";
 export * from "./platformlive.js";
+export * from "./poolrealtime.js";
 export * from "./payments.js";
 export * from "./paymentservice.js";
 export * from "./admin.js";

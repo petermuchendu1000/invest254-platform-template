@@ -9,6 +9,26 @@ function readVar(cs: CSSStyleDeclaration, name: string, fallback: string): strin
 }
 const secOf = (ms: number) => Math.floor(ms / 1000);
 
+/**
+ * A guaranteed-valid BCP-47 locale for the chart's time-axis tick formatter.
+ *
+ * lightweight-charts defaults its tick/crosshair time formatting to `navigator.language`, then calls
+ * `Date.prototype.toLocaleString(locale, …)`. On some devices/webviews `navigator.language` is NOT a
+ * structurally-valid language tag (e.g. '' or 'en-US@posix'), which makes that call throw
+ * `RangeError: Incorrect locale information provided` on EVERY tick. Because the chart re-renders
+ * constantly, the throw repeatedly aborts React's commit for the whole trade screen — so toasts never
+ * appear and taps stop registering until a hard refresh. We validate the tag and fall back to en-US.
+ */
+function safeChartLocale(): string {
+  const cand = typeof navigator !== 'undefined' ? navigator.language : '';
+  try {
+    if (cand && Intl.getCanonicalLocales(cand).length > 0) return cand;
+  } catch {
+    /* invalid tag → fall through to the safe default */
+  }
+  return 'en-US';
+}
+
 /** Map our semantic entry/settle markers to lightweight-charts series markers, resolving brand
  *  colours from CSS vars. Sorted ascending by time (the library requires it). */
 function buildLcMarkers(markers: Array<{ time: number; kind: 'entry' | 'win' | 'loss'; text?: string }>): any[] {
@@ -106,6 +126,10 @@ export function DerivChart({
 
       const chart = createChart(host, {
         autoSize: true,
+        // Pin a VALIDATED locale so the time-axis tick formatter never calls Date.toLocaleString with
+        // an invalid tag (navigator.language can be '' / 'en-US@posix' on some webviews). That
+        // RangeError otherwise fires every tick and aborts React commits — breaking toasts + taps.
+        localization: { locale: safeChartLocale() },
         layout: { background: { type: ColorType.Solid, color: bg }, textColor: text, fontSize: 10, attributionLogo: false },
         grid: { vertLines: { color: border, style: LineStyle.Dotted }, horzLines: { color: border, style: LineStyle.Dotted } },
         rightPriceScale: { borderColor: border, scaleMargins: { top: 0.12, bottom: 0.12 } },

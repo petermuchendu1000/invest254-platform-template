@@ -131,3 +131,96 @@ export function distributeDynamicPool(
     requiredCents: Math.round(r.required), forecastTurnoverCents: Math.round(r.forecast), targetRtp: r.targetRtp,
   }));
 }
+
+// ── Real-time (intra-day) reallocation ─────────────────────────────────────────────────────────
+// docs/25 §15.1 — the daily allocator (above) sets each brand's budget once, at the EAT-day start.
+// Real-time reallocation reacts WITHIN the day as demand shifts (triggered by confirmed deposits),
+// moving the platform's UNDISTRIBUTED reserve to whichever brands are now under-served — WITHOUT ever
+// reducing a brand's already-granted budget. This monotone (never-decrease) online allocation is
+// "progressive filling" toward the water-fill ideal (max-min fair; cf. Bertsekas & Gallager, *Data
+// Networks*, §6.5.2), which converges to the same fair point the batch allocator would compute, but
+// safely: a brand that has already reserved/paid wins against its budget can never have it clawed back
+// (the DB invariant amount ≥ paid+reserved is preserved by construction, since new ≥ committed).
+
+/** A brand's current intra-day budget alongside its demand, for real-time top-up. */
+export interface BrandCommit extends BrandDemand {
+  /** Today's withdrawal_pool.amount_cents already granted to this brand (0 if no day row yet). */
+  committedTodayCents: number;
+}
+
+/** Per-brand result of a real-time top-up: how much reserve to ADD to today's budget (never negative). */
+export interface HeadroomGrant {
+  siteId: string;
+  committedCents: number;
+  idealCents: number;
+  /** Reserve capital added this pass (≥ 0). */
+  grantCents: number;
+  /** committedCents + grantCents — the new today budget to apply (monotone ≥ committed). */
+  newAmountCents: number;
+}
+
+/**
+ * Distribute the platform's UNDISTRIBUTED reserve (envelope − Σ committed) onto under-served brands,
+ * proportionally to each brand's remaining deficit (ideal − committed), capped at that deficit. PURE +
+ * deterministic. Monotone: grantCents ≥ 0 for every brand (never claws back). Σ newAmount ≤ envelope
+ * whenever Σ committed ≤ envelope (the normal case). If a brand is already at/over its ideal, or the
+ * reserve is exhausted, it gets 0 — nothing is ever reduced.
+ */
+export function grantsFromIdeal(
+  items: { siteId: string; idealCents: number; committedCents: number }[],
+  envelopeCents: number,
+): HeadroomGrant[] {
+  const rows = items.map((it) => {
+    const committed = Math.max(0, Math.floor(it.committedCents || 0));
+    const ideal = Math.max(0, Math.floor(it.idealCents || 0));
+    return { siteId: it.siteId, committed, ideal, deficit: Math.max(0, ideal - committed), grant: 0 };
+  });
+  const G = Math.max(0, Math.floor(envelopeCents));
+  const committedSum = rows.reduce((s, r) => s + r.committed, 0);
+  let headroom = Math.max(0, G - committedSum);
+
+  for (let iter = 0; iter < 16 && headroom > 0; iter++) {
+    const elig = rows.filter((r) => r.grant < r.deficit);
+    const S = elig.reduce((s, r) => s + (r.deficit - r.grant), 0);
+    if (S <= 0) break;
+    const snapshot = headroom;
+    let moved = 0;
+    for (const r of elig) {
+      const want = Math.floor(snapshot * ((r.deficit - r.grant) / S));
+      const give = Math.min(want, r.deficit - r.grant);
+      r.grant += give; moved += give;
+    }
+    headroom -= moved;
+    if (moved === 0) {
+      // integer-rounding remainder: hand the last cents to the largest remaining deficit, then stop.
+      const r = elig.slice().sort((a, b) => (b.deficit - b.grant) - (a.deficit - a.grant))[0];
+      if (r) { const give = Math.min(headroom, r.deficit - r.grant); r.grant += give; headroom -= give; }
+      break;
+    }
+  }
+
+  return rows.map((r) => ({
+    siteId: r.siteId, committedCents: r.committed, idealCents: r.ideal,
+    grantCents: r.grant, newAmountCents: r.committed + r.grant,
+  }));
+}
+
+/**
+ * Real-time reallocation from live demand: compute the water-fill IDEAL for the full envelope, then
+ * top up under-served brands from the reserve (never-clawback). Convenience wrapper that ties the
+ * batch allocator (`distributeDynamicPool`) to `grantsFromIdeal`, so the intra-day and daily paths
+ * share one fairness definition.
+ */
+export function redistributeHeadroom(
+  brands: BrandCommit[],
+  envelopeCents: number,
+  params: DistributeParams = {},
+): HeadroomGrant[] {
+  const ideal = distributeDynamicPool(
+    brands.map((b) => ({ siteId: b.siteId, houseEdge: b.houseEdge, forecastTurnoverCents: b.forecastTurnoverCents })),
+    envelopeCents, params);
+  const idealById = new Map(ideal.map((a) => [a.siteId, a.allocCents]));
+  return grantsFromIdeal(
+    brands.map((b) => ({ siteId: b.siteId, idealCents: idealById.get(b.siteId) ?? 0, committedCents: b.committedTodayCents })),
+    envelopeCents);
+}

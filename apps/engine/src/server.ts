@@ -12,6 +12,8 @@ import { SiteRegistry } from "./siteregistry.js";
 import { SiteResolver, type SiteLookup } from "./siteresolver.js";
 import { startMultiEngine } from "./multiengine.js";
 import { DepositNotifier, type DepositListenClient } from "./platformlive.js";
+import { PgPlatformRepository } from "./platform.js";
+import { PoolRealtimeDistributor } from "./poolrealtime.js";
 import { makeVerifier } from "./auth.js";
 import { DEFAULT_VERSIONED_CONFIG, PlatformGate } from "@invest254/shared";
 
@@ -57,6 +59,8 @@ let loadIsMarketer: ((userId: string) => Promise<boolean>) | undefined;
 const siteAliases = new Map<string, string>();
 /** Opens a dedicated LISTEN connection (session pooler) for the platform live deposit feed. */
 let listenConnect: (() => Promise<DepositListenClient>) | undefined;
+/** Module-scope query handle (transaction pooler) for the real-time pool reallocator. DB mode only. */
+let realtimeQuery: Querier | undefined;
 /** Brand resolver: fast alias cache + (with a DB) a live lookup so brands onboarded AFTER boot
  *  resolve without a restart (GAP 2). Assigned in both the Pg and in-memory branches below. */
 let resolver: SiteResolver;
@@ -70,6 +74,7 @@ if (usingDb) {
   listenConnect = () => listenPool.connect() as unknown as Promise<DepositListenClient>;
   const pool = queryPool;
   const q = pool as unknown as Querier;
+  realtimeQuery = q;
   platformGate = new PlatformGate((sql: string, p?: unknown[]) => q.query(sql, p ?? []));
   repo = new PgGameRepository(q);
   overridesRepo = new PgUserOverridesRepository(q);
@@ -221,9 +226,57 @@ console.log(`[engine] multiplexed WS listening on :${PORT}  store=${usingDb ? "p
 // docs/24: platform live deposit feed. LISTEN `deposit_confirmed` (migration 0071) and fan each
 // confirmed deposit out to connected platform_superadmin sockets. DB mode only.
 if (listenConnect) {
+  // docs/25 §15.1: real-time pool reallocation. Each confirmed deposit nudges the platform's
+  // UNDISTRIBUTED reserve toward brands now under-served vs the water-fill ideal (never-clawback via
+  // fn_pool_topup_today). Envelope-gated (inert until platform_global_config.global_daily_pool_cents
+  // is set) and debounced so deposit bursts trigger at most one reallocation per interval.
+  let poolRealtime: PoolRealtimeDistributor | undefined;
+  if (realtimeQuery) {
+    const rq = realtimeQuery;
+    const actorId = (await rq.query(
+      "select id from profiles where role='platform_superadmin' order by created_at limit 1", [])).rows[0]?.id as string | undefined;
+    if (actorId) {
+      const platformRepo = new PgPlatformRepository(rq);
+      poolRealtime = new PoolRealtimeDistributor({
+        loadInputs: async () => {
+          const envRow = (await rq.query("select global_daily_pool_cents from platform_global_config where id", [])).rows[0];
+          const envelopeCents = Number(envRow?.global_daily_pool_cents ?? 0);
+          if (!(envelopeCents > 0)) return { envelopeCents: 0, rows: [] };
+          const preview = await platformRepo.poolDemand({ totalCents: envelopeCents, lookbackDays: 14 });
+          const committed = new Map<string, number>();
+          for (const r of (await rq.query(
+            "select site_id::text as site_id, amount_cents from withdrawal_pool where trade_day = fn_eat_day()", [])).rows) {
+            committed.set(String(r.site_id), Number(r.amount_cents));
+          }
+          return {
+            envelopeCents,
+            rows: preview.rows.map((r) => ({ siteId: r.siteId, idealCents: r.suggestedCents, committedCents: committed.get(r.siteId) ?? 0 })),
+          };
+        },
+        apply: async (grants) => {
+          await rq.query("select public.fn_pool_topup_today($1,$2,$3)", [
+            actorId, "platform_superadmin",
+            JSON.stringify(grants.map((g) => ({ site_id: g.siteId, amount_cents: g.amountCents }))),
+          ]);
+        },
+        onApplied: (grants) => {
+          const n = grants.filter((g) => g.grantCents > 0).length;
+          if (n > 0) console.log(`[engine] pool realtime: topped up ${n} brand(s) from reserve`);
+        },
+        onError: (err) => console.error("[engine] pool realtime:", err.message),
+      });
+      // Periodic backstop: converge even when deposits are sparse (and cover a missed LISTEN event).
+      setInterval(() => poolRealtime!.trigger(), 5 * 60_000).unref();
+      poolRealtime.trigger(); // initial pass at boot
+      console.log("[engine] real-time pool reallocation armed (envelope-gated)");
+    } else {
+      console.warn("[engine] real-time pool reallocation NOT armed — no platform_superadmin actor found");
+    }
+  }
+
   const depositNotifier = new DepositNotifier({
     connect: listenConnect,
-    onDeposit: (dep) => handle.emitPlatformDeposit(dep),
+    onDeposit: (dep) => { handle.emitPlatformDeposit(dep); poolRealtime?.trigger(); },
     onError: (err, ctx) => console.error(`[engine] deposit-notify ${ctx}:`, err.message),
   });
   await depositNotifier.init();
