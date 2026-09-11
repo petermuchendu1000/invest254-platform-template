@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { formatMoney, formatKes, isForeignDisplay, displayToKesCents, kesCentsToDisplay } from "./money.js";
+import { formatMoney, formatKes, isForeignDisplay, displayToKesCents, kesCentsToDisplay, effectiveMinWithdrawalCents } from "./money.js";
 
 const USD_PER_KES = 1 / 129.388213; // live-style rate (KES->USD)
 
@@ -56,4 +56,21 @@ test("formatMoney: whole display amounts drop decimals; fractional keep 2dp", ()
   assert.equal(formatMoney(fifteen, { currency: "USD", locale: "en-US", fxRateFromKes: USD_PER_KES }), "$15");
   const s = formatMoney(200000, { currency: "USD", locale: "en-US", fxRateFromKes: USD_PER_KES }); // KES 2,000
   assert.ok(/^\$15\.\d{2}$/.test(s), `expected $15.xx, got ${s}`);
+});
+
+test("effectiveMinWithdrawalCents: currency-native minimum (docs/25 §16)", () => {
+  // KES brand: native major units are KES -> ×100, FX irrelevant.
+  assert.equal(effectiveMinWithdrawalCents({ nativeMajor: 2000, legacyKesCents: 200000, currency: "KES", fxRateFromKes: 1 }), 200000);
+  // USD brand: $100 converts to KES cents at the live rate (== displayToKesCents(100, rate)).
+  const usd100 = effectiveMinWithdrawalCents({ nativeMajor: 100, legacyKesCents: 200000, currency: "USD", fxRateFromKes: USD_PER_KES });
+  assert.equal(usd100, displayToKesCents(100, USD_PER_KES));
+  // Drift-free: a withdrawal of exactly $100 (converted at the SAME rate) meets the floor to the cent.
+  assert.equal(displayToKesCents(100, USD_PER_KES), usd100);
+  assert.ok(displayToKesCents(99.99, USD_PER_KES) < usd100, "$99.99 is below the $100 floor");
+  // Foreign brand but FX unavailable -> safe KES fallback (never misread $100 as KES 100).
+  assert.equal(effectiveMinWithdrawalCents({ nativeMajor: 100, legacyKesCents: 200000, currency: "USD", fxRateFromKes: 0 }), 200000);
+  assert.equal(effectiveMinWithdrawalCents({ nativeMajor: 100, legacyKesCents: 200000, currency: "USD" }), 200000);
+  // Native unset -> legacy KES cents.
+  assert.equal(effectiveMinWithdrawalCents({ nativeMajor: null, legacyKesCents: 300000, currency: "KES", fxRateFromKes: 1 }), 300000);
+  assert.equal(effectiveMinWithdrawalCents({ legacyKesCents: 25000, currency: "USD", fxRateFromKes: USD_PER_KES }), 25000);
 });

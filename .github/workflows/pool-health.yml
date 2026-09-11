@@ -1,0 +1,39 @@
+name: Pool Health Monitor
+
+# Defense-in-depth (docs/25 §15.7, BUGLOG #12): an ACTIVE safety net that catches withdrawal-pool
+# starvation of ANY cause — including the low-volume blind spot that let incident #12 go unnoticed
+# (winrate_monitor only alerts with >=50 samples, but starvation suppresses volume). Runs read-only;
+# pages via Telegram (same bot as payout approvals) when a brand cannot fund wins.
+#
+# Requires repo secret DATABASE_URL. Telegram alerting is optional: set repo secrets TELEGRAM_BOT_TOKEN
+# and TELEGRAM_CHAT_IDS (comma-separated) to receive pushes; without them the job still fails loudly
+# (non-zero exit) so the run shows red in the Actions tab.
+on:
+  schedule:
+    - cron: "*/30 * * * *"   # every 30 minutes
+  workflow_dispatch:
+
+concurrency:
+  group: pool-health
+  cancel-in-progress: true
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install psycopg2
+        run: pip install --quiet psycopg2-binary
+      - name: Check pool health
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_IDS: ${{ secrets.TELEGRAM_CHAT_IDS }}
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "No DATABASE_URL secret — skipping (non-prod mirror)."; exit 0
+          fi
+          python3 scripts/pool_health_monitor.py --min-decisions 8

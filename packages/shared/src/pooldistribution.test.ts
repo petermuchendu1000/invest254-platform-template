@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  distributeDynamicPool, emaForecast, targetRtpFor, type BrandDemand,
+  distributeDynamicPool, emaForecast, targetRtpFor, robustExpectedTurnover, type BrandDemand,
 } from "./pooldistribution.js";
 
 /**
@@ -85,4 +85,74 @@ test("determinism + edge cases (G=0, no brands, all-zero forecast)", () => {
   assert.deepEqual(distributeDynamicPool(brands, 0).map((x) => x.allocCents), [0, 0]);
   assert.deepEqual(distributeDynamicPool([], 1_000_000), []);
   assert.deepEqual(distributeDynamicPool([b("x", 0.05, 0), b("y", 0.05, 0)], 1_000_000).map((x) => x.allocCents), [0, 0]);
+});
+
+// ── Anti-starvation floor (docs/25 §15.2) — the fix for the invest254 outage incident ──────────────
+const bx = (siteId: string, houseEdge: number, forecast: number, expected: number): BrandDemand =>
+  ({ siteId, houseEdge, forecastTurnoverCents: forecast, expectedTurnoverCents: expected });
+
+test("robustExpectedTurnover: outage (trailing zeros) does NOT collapse it, unlike the reactive EMA", () => {
+  assert.equal(robustExpectedTurnover([]), 0);
+  assert.equal(robustExpectedTurnover([0, 0, 0, 0]), 0);
+  // 3 busy days then ~2 weeks of outage zeros (the exact incident shape).
+  const series = [8_000_000, 9_000_000, 10_000_000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+  const robust = robustExpectedTurnover(series);
+  assert.ok(robust >= 8_000_000, `robust estimate collapsed under outage: ${robust}`);
+  // the reactive EMA (what the allocator used to rely on) DOES collapse — this is why the pool starved.
+  assert.ok(emaForecast(series, 0.4) < 1_000_000, "EMA should collapse (demonstrates the root cause)");
+});
+
+test("guaranteed floor: a brand whose reactive forecast collapsed to 0 is NOT starved", () => {
+  // invest254 post-outage: forecast=0 but demonstrated demand (expectedTurnover) ~8M keeps the floor up.
+  const out = distributeDynamicPool([bx("inv", 0.05, 0, 8_000_000)], 20_000_000, { floorFrac: 0.015, capMult: 2.5 });
+  const m = by(out);
+  assert.equal(m.inv, 7_600_000, `floor = round(0.95×8M); got ${m.inv}`); // was ~83k under the old allocator
+  assert.ok(sum(out) <= 20_000_000);
+});
+
+test("even a HUGE envelope no longer clamps to the old 2.5×collapsed-forecast cap", () => {
+  // The old bug: with forecast≈0, cap=2.5×required≈0 → invest254 capped at ~83k even for a 1B envelope.
+  // Now the floor (from expectedTurnover) guarantees a viable pool regardless of the collapsed forecast.
+  const out = distributeDynamicPool([bx("inv", 0.05, 0, 8_000_000)], 1_000_000_000, { floorFrac: 0.015, capMult: 2.5 });
+  assert.ok(by(out).inv! >= 7_600_000, `still starved: ${by(out).inv}`);
+});
+
+test("configuredFloorCents is an absolute minimum for ACTIVE brands, never for dead brands", () => {
+  const out = distributeDynamicPool(
+    [b("a", 0.05, 100_000),                       // active (forecast>0), no expectedTurnover
+     b("dead", 0.05, 0)],                          // never any demand
+    50_000_000, { floorFrac: 0, capMult: 2.5, configuredFloorCents: 1_000_000 });
+  const m = by(out);
+  assert.ok(m.a! >= 1_000_000, `active brand must get the configured floor, got ${m.a}`);
+  assert.equal(m.dead, 0, "a brand that never had demand gets no floor (no wasted capital)");
+});
+
+test("floors rationed proportionally when Σ floors exceed the envelope (Σ alloc ≤ G)", () => {
+  const out = distributeDynamicPool(
+    [bx("a", 0.05, 0, 4_000_000), bx("b", 0.05, 0, 4_000_000)],   // each floor = 3.8M, Σ=7.6M
+    3_000_000, { floorFrac: 0, capMult: 2.5 });                    // envelope only 3M
+  const m = by(out);
+  assert.ok(sum(out) <= 3_000_000, `overspent: ${sum(out)}`);
+  assert.ok(Math.abs(m.a! - m.b!) <= 2, "equal floors rationed equally");
+  assert.ok(m.a! > 1_400_000 && m.a! < 1_600_000, `~half the envelope each, got ${m.a}`);
+});
+
+test("floor is a MINIMUM: a healthy brand still gets demand-based top-up above its floor", () => {
+  const out = distributeDynamicPool(
+    [bx("big", 0.05, 5_000_000, 5_000_000),   // healthy: required 4.75M, gets water-fill above floor
+     bx("small", 0.05, 0, 1_000_000)],         // collapsed forecast: floor 950k guaranteed
+    20_000_000, { floorFrac: 0, capMult: 2.5 });
+  const m = by(out);
+  assert.ok(m.small! >= 950_000 - 2, `small floor not honoured: ${m.small}`);
+  assert.ok(m.big! > m.small!, "healthy brand still gets the larger demand-based share");
+  assert.ok(m.big! > 4_750_000, `big should exceed its required via water-fill, got ${m.big}`);
+  assert.ok(sum(out) <= 20_000_000);
+});
+
+test("back-compat: omitting expectedTurnover + configuredFloor reproduces the legacy allocation exactly", () => {
+  const brands = [b("a", 0.05, 1_000_000), b("c", 0.05, 300_000), b("dead", 0.05, 0)];
+  const withFloorParamsButNoData = distributeDynamicPool(brands, 5_000_000, { floorFrac: 0.01, capMult: 3, configuredFloorCents: 0 });
+  const legacy = distributeDynamicPool(brands, 5_000_000, { floorFrac: 0.01, capMult: 3 });
+  assert.deepEqual(withFloorParamsButNoData, legacy, "configuredFloor=0 + no expectedTurnover must be a no-op");
+  assert.equal(by(legacy).dead, 0);
 });

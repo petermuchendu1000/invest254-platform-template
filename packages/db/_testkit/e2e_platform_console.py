@@ -75,6 +75,12 @@ def main():
     cfgr = q1(cur, "select min_stake, version from fn_platform_set_site_config(%s,%s,%s,%s)",
               [ACTOR, PS, site_b, '{"min_stake":50000}'])
     check("set_site_config persists + bumps version", cfgr == (50000, 2), f"{cfgr}")
+    # Currency-native minimum withdrawal (docs/25 §16, migration 0120): settable via the same patch RPC.
+    natr = q1(cur, "select min_withdrawal_native from fn_platform_set_site_config(%s,%s,%s,%s)",
+              [ACTOR, PS, site_b, '{"min_withdrawal_native":100}'])
+    check("set_site_config sets min_withdrawal_native ($100)", natr == (100,), f"{natr}")
+    expect_error(cur, "select fn_platform_set_site_config(%s,%s,%s,%s)",
+                 [ACTOR, PS, site_b, '{"min_withdrawal_native":0}'], "INVALID_MIN_WITHDRAWAL_NATIVE", "non-positive native min rejected")
     # RTP = 1 - house_edge(0.75) = 0.25; win 0.5 -> RTP/win = 0.5 < 1 -> infeasible.
     expect_error(cur, "select fn_platform_set_site_config(%s,%s,%s,%s)",
                  [ACTOR, PS, site_b, '{"target_win_rate":0.5}'], "site_cfg_feasible", "infeasible economy rejected by CHECK")

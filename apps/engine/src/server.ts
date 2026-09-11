@@ -127,8 +127,16 @@ if (usingDb) {
   // payload) + a poll fallback, with historical versions resolved from site_game_config_versions.
   // A dedicated LISTEN connection per brand is opened lazily via pool.connect().
   configFor = async (siteId): Promise<ConfigProvider> => {
+    // Brand DISPLAY currency drives the currency-native near-miss withdrawal line (docs/25 §16). Read
+    // once per brand here; the store converts minWithdrawalNative → KES cents at the live FX rate.
+    let currency = "KES";
+    try {
+      const cr = await q.query("select currency from sites where id = $1::uuid limit 1", [siteId]);
+      if (cr.rows.length) currency = String((cr.rows[0] as Record<string, unknown>).currency ?? "KES");
+    } catch { /* default KES → near-miss uses the legacy min_withdrawal */ }
     const store = new SiteGameConfigStore(siteId, q, {
       connect: () => listenPool.connect() as unknown as Promise<ListenClient>,
+      currency,
     });
     await store.init();
     return store;

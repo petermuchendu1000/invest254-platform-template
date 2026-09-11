@@ -118,13 +118,13 @@ function IdentitySection({ site }: { site: SiteWithConfig }) {
 }
 
 /** Economy — the full game config with a live feasibility preview (mirrors the DB CHECK). */
-type EK = 'targetWinRate' | 'houseEdge' | 'minStakeCents' | 'maxStakeCents' | 'minWithdrawalCents' | 'defaultDurationS' | 'maxMultiplier' | 'driftBias' | 'volatility' | 'tickRateMs';
+type EK = 'targetWinRate' | 'houseEdge' | 'minStakeCents' | 'maxStakeCents' | 'defaultDurationS' | 'maxMultiplier' | 'driftBias' | 'volatility' | 'tickRateMs';
 const EFIELDS: { key: EK; label: string; hint: string; kes?: boolean; pct?: boolean; step?: string }[] = [
   { key: 'targetWinRate', label: 'Win rate (%)', hint: 'Share of rounds a player wins', pct: true, step: '1' },
   { key: 'houseEdge', label: 'House edge (%)', hint: 'House margin; RTP = 100% − edge', pct: true, step: '0.5' },
   { key: 'minStakeCents', label: 'Min stake (KES)', hint: 'Smallest stake', kes: true, step: '1' },
   { key: 'maxStakeCents', label: 'Max stake (KES)', hint: 'Largest stake', kes: true, step: '1' },
-  { key: 'minWithdrawalCents', label: 'Min withdrawal (KES)', hint: 'Reject requests below this', kes: true, step: '1' },
+  // Min withdrawal is edited separately as a CURRENCY-NATIVE value (docs/25 §16) — see EconomySection.
   { key: 'defaultDurationS', label: 'Round duration (s)', hint: '1–3600', step: '1' },
   { key: 'maxMultiplier', label: 'Max payout ×', hint: 'Cap on a single win', step: '0.1' },
   { key: 'driftBias', label: 'Drift bias', hint: 'Advanced (−1..1)', step: '0.001' },
@@ -146,11 +146,18 @@ function EconomySection({ site }: { site: SiteWithConfig }) {
   const [form, setForm] = useState<Record<EK, string>>(init);
   useEffect(() => setForm(init), [init]);
 
+  // Min withdrawal is CURRENCY-NATIVE (docs/25 §16): entered in the brand's own currency (e.g. 100 =>
+  // $100 for a USD brand, 2000 => KES 2,000). The API converts it to the enforced KES-cents floor at
+  // the live FX rate, so KES brands are unchanged and foreign brands get an exact native minimum.
+  const currency = site.currency || 'KES';
+  const [minWd, setMinWd] = useState<string>(c.minWithdrawalNative != null ? String(c.minWithdrawalNative) : '');
+  useEffect(() => setMinWd(c.minWithdrawalNative != null ? String(c.minWithdrawalNative) : ''), [c.minWithdrawalNative]);
+
   const patch = useMemo(() => {
     const out: Record<string, number> = {};
     const snake: Record<EK, string> = {
       targetWinRate: 'target_win_rate', houseEdge: 'house_edge', minStakeCents: 'min_stake', maxStakeCents: 'max_stake',
-      minWithdrawalCents: 'min_withdrawal', defaultDurationS: 'default_duration_s', maxMultiplier: 'max_multiplier',
+      defaultDurationS: 'default_duration_s', maxMultiplier: 'max_multiplier',
       driftBias: 'drift_bias', volatility: 'volatility', tickRateMs: 'tick_rate_ms',
     };
     for (const f of EFIELDS) {
@@ -158,8 +165,10 @@ function EconomySection({ site }: { site: SiteWithConfig }) {
       const next = f.kes ? Math.round(Number(cur) * 100) : f.pct ? Number(cur) / 100 : Number(cur);
       if (Number.isFinite(next) && next !== (c[f.key] as number)) out[snake[f.key]] = next;
     }
+    const mw = Number(minWd);
+    if (minWd !== '' && Number.isFinite(mw) && mw > 0 && mw !== (c.minWithdrawalNative ?? null)) out['min_withdrawal_native'] = mw;
     return out;
-  }, [form, c]);
+  }, [form, c, minWd]);
   const dirty = Object.keys(patch).length;
 
   const merged: SiteConfig = useMemo(() => {
@@ -196,6 +205,10 @@ function EconomySection({ site }: { site: SiteWithConfig }) {
           <Input key={f.key} type="number" inputMode="decimal" step={f.step} label={f.label} hint={f.hint}
             value={form[f.key] ?? ''} onChange={(e) => setForm((s) => ({ ...s, [f.key]: e.target.value }))} />
         ))}
+        <Input key="minWithdrawalNative" type="number" inputMode="decimal" step="0.01"
+          label={`Min withdrawal (${currency})`}
+          hint={`Reject requests below this, in ${currency}. Enforced at the live FX rate (e.g. 100 = $100 on a USD brand).`}
+          value={minWd} onChange={(e) => setMinWd(e.target.value)} />
       </div>
       {dirty > 0 ? (
         <div className={blocked ? 'rounded-brand border border-down/40 bg-down/10 p-3 text-xs text-down' : 'rounded-brand border border-border bg-surface-2 p-3 text-xs text-muted'} role={blocked ? 'alert' : undefined}>

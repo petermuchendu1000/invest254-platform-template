@@ -35,6 +35,10 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           POOL_DAILY_TOTAL_CENTS: ${{ vars.POOL_DAILY_TOTAL_CENTS }}
+          # Absolute anti-starvation floor (docs/25 §15.6, item A): every active brand is funded to at
+          # least max(POOL_MIN_FLOOR_CENTS, targetRtp × robust expected turnover). Optional; the
+          # per-site DB valve (migration 0119) is the always-on guarantee, this is the operator dial.
+          POOL_MIN_FLOOR_CENTS: ${{ vars.POOL_MIN_FLOOR_CENTS }}
         run: |
           if [ -z "$DATABASE_URL" ]; then
             echo "No DATABASE_URL secret — skipping (non-prod mirror)."; exit 0

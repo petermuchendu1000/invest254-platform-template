@@ -55,8 +55,14 @@ export function WithdrawForm() {
   const serverMinWithdrawalCents = config?.minWithdrawalCents ?? MIN_WITHDRAWAL_CENTS;
 
   const { fmt, both, symbol, isForeign, toKesCents, currency, limit, fxRateFromKes } = useDisplayMoney();
-  // Foreign brands: USD-native minimum ($15) converted to KES, honouring the site's KES floor (whole $).
-  const minWithdrawalCents = limit(USD_LIMITS.minWithdrawal, serverMinWithdrawalCents);
+  // Currency-native minimum (docs/25 §16): a foreign brand enforces its own native floor (e.g. $100),
+  // converted to KES cents at the SAME live rate the entered amount uses — so the client floor matches
+  // the server's exactly and a valid amount is never rejected as BELOW_MIN. KES brands (and foreign
+  // brands with no native value set) keep the prior behaviour: the site KES floor, USD-limit-guarded.
+  const nativeMin = config?.minWithdrawalNative ?? null;
+  const minWithdrawalCents = (isForeign && nativeMin != null && nativeMin > 0)
+    ? toKesCents(nativeMin)
+    : limit(USD_LIMITS.minWithdrawal, serverMinWithdrawalCents);
   const sanitizeAmount = (v: string) => (isForeign ? v.replace(/[^0-9.]/g, '').replace(/(\..*)\./g, '$1') : digitsOnly(v));
   const [amount, setAmount] = useState('');
   const [editingPhone, setEditingPhone] = useState(false);
@@ -97,7 +103,7 @@ export function WithdrawForm() {
     e.preventDefault();
     setServerError(null);
     const next: Record<string, string | undefined> = {};
-    if (amountCents < minWithdrawalCents) next['amount'] = `Minimum withdrawal is ${formatKes(minWithdrawalCents)}.`;
+    if (amountCents < minWithdrawalCents) next['amount'] = `Minimum withdrawal is ${fmt(minWithdrawalCents)}.`;
     else if (amountCents > realCents) next['amount'] = 'Amount exceeds your real balance.';
     try {
       normalizeMsisdn(effectivePhone);

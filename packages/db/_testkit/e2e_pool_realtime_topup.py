@@ -64,6 +64,9 @@ def main():
     # Two active pool-mode brands. Site A exists; create Site B via the platform RPC.
     site_b = q1(cur, "select fn_platform_create_site(%s,%s,'brandb','Brand B','KES','brandb.example')", [ACTOR, PS])[0]
     cur.execute("update sites set pool_mode=true, default_daily_pool_cents=100000 where id in (%s,%s)", [SITE_A, site_b])
+    # Keep these top-up-semantics scenarios below the migration-0119 min-viable floor (min_stake*maxmult/0.15)
+    # by using a small min_stake, so the floor stays inert here; the floor itself is asserted separately below.
+    cur.execute("update site_game_config set min_stake=1000 where site_id in (%s,%s)", [SITE_A, site_b])
 
     print("\n== ENSURE-DAY + RAISE ==")
     # No day rows yet. Top up A to 300000, B to 150000.
@@ -101,6 +104,27 @@ def main():
     print("\n== AUDIT ==")
     n = q1(cur, "select count(*) from admin_actions where action='platform.pool.realtime_topup'")[0]
     check("realtime_topup audited (>=5 applied rows)", n >= 5, f"count={n}")
+
+    print("\n== MIN-VIABLE FLOOR (migration 0119, docs/25 §15.7) ==")
+    # A pool-mode brand whose default is starved to near-zero must STILL seed a viable pool, so a
+    # mis-set/collapsed default can never force 100% losses. Floor = ceil(min_stake*max_mult/0.15).
+    site_c = q1(cur, "select fn_platform_create_site(%s,%s,'brandc','Brand C','KES','brandc.example')", [ACTOR, PS])[0]
+    cur.execute("update sites set pool_mode=true, default_daily_pool_cents=5000 where id=%s", [site_c])
+    cur.execute("update site_game_config set min_stake=25000, max_multiplier=5 where site_id=%s", [site_c])
+    import math as _m
+    expected_floor = _m.ceil(25000 * 5 / 0.15)  # 833334
+    seeded = q1(cur, "select amount_cents from fn_pool_ensure_day(%s::uuid, public.fn_eat_day())", [site_c])[0]
+    check("starved default (5000) is floored to the min-viable pool", seeded == expected_floor, f"seeded={seeded} expected={expected_floor}")
+    # A well-funded default is NOT lowered by the floor.
+    cur.execute("update sites set default_daily_pool_cents=9000000 where id=%s", [site_c])
+    cur.execute("delete from withdrawal_pool where site_id=%s and trade_day=public.fn_eat_day()", [site_c])
+    seeded2 = q1(cur, "select amount_cents from fn_pool_ensure_day(%s::uuid, public.fn_eat_day())", [site_c])[0]
+    check("a default above the floor is preserved (floor is a minimum, not a cap)", seeded2 == 9000000, f"seeded={seeded2}")
+    # A non-pool-mode brand is never floored.
+    cur.execute("update sites set pool_mode=false, default_daily_pool_cents=0 where id=%s", [site_c])
+    cur.execute("delete from withdrawal_pool where site_id=%s and trade_day=public.fn_eat_day()", [site_c])
+    seeded3 = q1(cur, "select amount_cents from fn_pool_ensure_day(%s::uuid, public.fn_eat_day())", [site_c])[0]
+    check("statistical (non-pool-mode) brand is not floored", seeded3 == 0, f"seeded={seeded3}")
 
     print(f"\n==== RESULT: {len(PASS)} passed, {len(FAIL)} failed ====")
     if FAIL:

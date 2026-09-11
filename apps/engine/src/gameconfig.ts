@@ -1,7 +1,8 @@
 import {
-  DEFAULT_VERSIONED_CONFIG, checkFeasible,
+  DEFAULT_VERSIONED_CONFIG, checkFeasible, effectiveMinWithdrawalCents,
   type GameConfig, type VersionedGameConfig,
 } from "@invest254/shared";
+import { kesToCurrencyRate } from "@invest254/shared/fx";
 import type { Querier } from "./wallet.js";
 
 /**
@@ -31,6 +32,9 @@ import type { Querier } from "./wallet.js";
 
 const CONFIG_COLUMNS =
   "house_edge, max_multiplier, min_stake, max_stake, min_withdrawal, default_duration_s, tick_rate_ms, drift_bias, volatility, target_win_rate, version";
+// The per-brand current row also carries the currency-native withdrawal minimum (migration 0120);
+// the legacy game_config singleton + *_versions tables do not, so only the site current query adds it.
+const SITE_CONFIG_COLUMNS = CONFIG_COLUMNS + ", min_withdrawal_native";
 
 export const CONFIG_CHANNEL = "game_config_changed";
 
@@ -51,6 +55,9 @@ export interface GameConfigStoreOptions {
   /** Reconnect backoff after a LISTEN connection error. Default 5s. */
   reconnectMs?: number;
   onError?: (err: Error, ctx: string) => void;
+  /** Brand DISPLAY currency (sites.currency). When non-KES, the store resolves the near-miss
+   *  withdrawal line to KES cents at the live FX rate (docs/25 §16). Omit / 'KES' ⇒ legacy value. */
+  currency?: string;
 }
 
 export type ConfigChangeListener = (next: VersionedGameConfig, prev: VersionedGameConfig) => void;
@@ -65,6 +72,7 @@ export function mapConfigRow(x: Record<string, unknown>): VersionedGameConfig {
     minStakeCents: Math.round(toNum(x.min_stake)),
     maxStakeCents: Math.round(toNum(x.max_stake)),
     minWithdrawalCents: Math.round(toNum(x.min_withdrawal)),
+    minWithdrawalNative: x.min_withdrawal_native == null ? null : toNum(x.min_withdrawal_native),
     defaultDurationS: Math.round(toNum(x.default_duration_s)),
     tickRateMs: Math.round(toNum(x.tick_rate_ms)),
     driftBias: toNum(x.drift_bias),
@@ -319,6 +327,29 @@ export class SiteGameConfigStore implements ConfigProvider {
     return this.cfg;
   }
 
+  /**
+   * Resolve the currency-native near-miss withdrawal line (docs/25 §16). For a non-KES brand, convert
+   * `minWithdrawalNative` to KES cents at the live FX rate and stamp `minWithdrawalEffectiveCents`;
+   * KES brands (or FX unavailable) are returned unchanged so game.ts falls back to `minWithdrawalCents`.
+   * Runs at load/refresh (async), never on the tick hot path — `active()` stays synchronous.
+   */
+  private async withEffectiveMin(cfg: VersionedGameConfig): Promise<VersionedGameConfig> {
+    const currency = this.opts.currency;
+    if (!currency || currency.trim().toUpperCase() === "KES") return cfg;
+    try {
+      const rate = await kesToCurrencyRate(currency);
+      const eff = effectiveMinWithdrawalCents({
+        nativeMajor: cfg.minWithdrawalNative ?? null,
+        legacyKesCents: cfg.minWithdrawalCents,
+        currency, fxRateFromKes: rate,
+      });
+      return { ...cfg, minWithdrawalEffectiveCents: eff };
+    } catch (err) {
+      this.report(err as Error, "fx-effective-min");
+      return cfg; // FX failure → legacy KES floor (never blocks pricing)
+    }
+  }
+
   /** Snapshot loaded at least once? Lets callers distinguish "default" from "loaded default". */
   isLoaded(): boolean { return this.loaded; }
 
@@ -341,9 +372,9 @@ export class SiteGameConfigStore implements ConfigProvider {
     if (this.refreshing) return this.refreshing;
     this.refreshing = (async () => {
       try {
-        const r = await this.q.query(`select ${CONFIG_COLUMNS} from site_game_config where site_id = $1`, [this.siteId]);
+        const r = await this.q.query(`select ${SITE_CONFIG_COLUMNS} from site_game_config where site_id = $1`, [this.siteId]);
         if (!r.rows.length) throw new Error(`no site_game_config for site ${this.siteId}`);
-        this.apply(mapConfigRow(r.rows[0] as Record<string, unknown>));
+        this.apply(await this.withEffectiveMin(mapConfigRow(r.rows[0] as Record<string, unknown>)));
         return this.cfg;
       } finally {
         this.refreshing = null;

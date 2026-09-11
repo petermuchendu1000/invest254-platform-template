@@ -21,6 +21,11 @@ function arg(name: string, def: string): string {
 }
 const DRY = process.argv.includes("--dry-run");
 const LOOKBACK = Number(arg("lookback", "14"));
+const BASELINE = Number(arg("baseline", "45"));
+// Anti-starvation absolute floor (docs/25 §15.2): every active brand is funded to at least
+// max(POOL_MIN_FLOOR_CENTS, targetRtp × outage-proof expected turnover), so a deposit/turnover dip
+// can never starve a brand's pool to ~zero again. 0 (unset) leaves only the demand-based floor.
+const MIN_FLOOR = Math.max(0, Math.floor(Number(process.env.POOL_MIN_FLOOR_CENTS ?? "0")) || 0);
 
 const url = process.env.DATABASE_URL;
 if (!url) { console.error("DATABASE_URL is required"); process.exit(2); }
@@ -43,10 +48,10 @@ async function main() {
     const svc = new PlatformService(repo);
 
     if (DRY) {
-      const preview = await svc.poolDemand({ totalCents: total, lookbackDays: LOOKBACK });
-      console.log(`[pool-distribute] DRY-RUN envelope=${money(total)} lookback=${LOOKBACK}d`);
+      const preview = await svc.poolDemand({ totalCents: total, lookbackDays: LOOKBACK, baselineDays: BASELINE, configuredFloorCents: MIN_FLOOR });
+      console.log(`[pool-distribute] DRY-RUN envelope=${money(total)} lookback=${LOOKBACK}d baseline=${BASELINE}d minFloor=${money(MIN_FLOOR)}`);
       for (const r of preview.rows) {
-        console.log(`  ${r.slug.padEnd(14)} forecast/day=${money(r.forecastTurnoverCents).padEnd(14)} required=${money(r.requiredCents).padEnd(14)} suggested=${money(r.suggestedCents)}`);
+        console.log(`  ${r.slug.padEnd(14)} forecast/day=${money(r.forecastTurnoverCents).padEnd(14)} floor=${money(r.floorCents).padEnd(14)} required=${money(r.requiredCents).padEnd(14)} suggested=${money(r.suggestedCents)}`);
       }
       console.log(`  suggested total=${money(preview.suggestedTotalCents)} reserve=${money(preview.reserveCents)}`);
       return;
@@ -55,10 +60,10 @@ async function main() {
     const actor = (await pool.query("select id from profiles where role='platform_superadmin' order by created_at limit 1")).rows[0]?.id as string | undefined;
     if (!actor) { console.error("[pool-distribute] no platform_superadmin actor found — cannot audit; aborting."); process.exit(3); }
 
-    const res = await svc.distributePoolDynamic(actor, "platform_superadmin", { totalCents: total, lookbackDays: LOOKBACK });
-    console.log(`[pool-distribute] applied envelope=${money(total)} lookback=${LOOKBACK}d — per-brand caps:`);
+    const res = await svc.distributePoolDynamic(actor, "platform_superadmin", { totalCents: total, lookbackDays: LOOKBACK, baselineDays: BASELINE, configuredFloorCents: MIN_FLOOR });
+    console.log(`[pool-distribute] applied envelope=${money(total)} lookback=${LOOKBACK}d baseline=${BASELINE}d minFloor=${money(MIN_FLOOR)} — per-brand caps:`);
     for (const r of res.preview.rows) {
-      console.log(`  ${r.slug.padEnd(14)} demand/day=${money(r.forecastTurnoverCents).padEnd(14)} -> cap=${money(r.suggestedCents)}`);
+      console.log(`  ${r.slug.padEnd(14)} demand/day=${money(r.forecastTurnoverCents).padEnd(14)} floor=${money(r.floorCents).padEnd(14)} -> cap=${money(r.suggestedCents)}`);
     }
     console.log(`  distributed total=${money(res.preview.suggestedTotalCents)} reserve=${money(res.preview.reserveCents)} (mode=${res.mode})`);
   } finally {

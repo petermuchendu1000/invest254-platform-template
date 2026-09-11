@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
-  parseCohort, parsePayments, distributeDynamicPool, emaForecast,
+  parseCohort, parsePayments, distributeDynamicPool, emaForecast, robustExpectedTurnover,
   type CohortEconomy, type PaymentsEconomy,
 } from "@invest254/shared";
 import type { Querier } from "./wallet.js";
@@ -25,6 +25,8 @@ export interface SiteRow {
 }
 export interface SiteConfigRow {
   houseEdge: number; maxMultiplier: number; minStakeCents: number; maxStakeCents: number; minWithdrawalCents: number;
+  /** Currency-native minimum withdrawal in the brand's display currency major units (docs/25 §16). */
+  minWithdrawalNative?: number | null;
   defaultDurationS: number; tickRateMs: number; driftBias: number; volatility: number; targetWinRate: number; version: number;
 }
 export interface SiteWithConfig extends SiteRow { config: SiteConfigRow }
@@ -66,6 +68,12 @@ export interface PoolDemandOpts {
   /** EMA smoothing (default 0.4), floor per active brand as fraction of total (default 0.015),
    *  per-brand cap as a multiple of required (default 2.5). */
   alpha?: number | undefined; floorFrac?: number | undefined; capMult?: number | undefined;
+  /** Days of history for the OUTAGE-PROOF anti-starvation baseline (docs/25 §15.2). Default 45,
+   *  clamped [lookbackDays,90]. Only non-zero days count, so a deposit outage cannot drag it down. */
+  baselineDays?: number | undefined;
+  /** Absolute per-brand anti-starvation floor in cents. Each active brand is guaranteed at least
+   *  max(configuredFloorCents, targetRtp × expectedTurnover). Default 0. */
+  configuredFloorCents?: number | undefined;
 }
 export interface PoolDemandRow {
   siteId: string; slug: string; targetRtp: number;
@@ -73,10 +81,16 @@ export interface PoolDemandRow {
   currentPoolCents: number; suggestedCents: number;
   /** suggested / required — <1 means the brand is under-funded for its target RTP at forecast demand. */
   coverage: number;
+  /** OUTAGE-PROOF baseline daily turnover feeding the floor (docs/25 §15.2). */
+  expectedTurnoverCents: number;
+  /** The guaranteed anti-starvation floor applied to this brand = max(configuredFloor, tRtp×expected). */
+  floorCents: number;
 }
 export interface PoolDemandPreview {
   lookbackDays: number; totalCents: number; alpha: number; floorFrac: number; capMult: number;
   rows: PoolDemandRow[]; suggestedTotalCents: number; reserveCents: number;
+  /** Anti-starvation params echoed for audit/visibility (docs/25 §15.2). */
+  baselineDays: number; configuredFloorCents: number;
 }
 export type DistributeDynamicResult = DistributeResult & { preview: PoolDemandPreview };
 
@@ -163,7 +177,9 @@ function mapSiteRow(x: Record<string, unknown>): SiteRow {
 function mapConfigRow(x: Record<string, unknown>): SiteConfigRow {
   return {
     houseEdge: num(x.house_edge), maxMultiplier: num(x.max_multiplier), minStakeCents: num(x.min_stake), maxStakeCents: num(x.max_stake),
-    minWithdrawalCents: num(x.min_withdrawal), defaultDurationS: num(x.default_duration_s), tickRateMs: num(x.tick_rate_ms),
+    minWithdrawalCents: num(x.min_withdrawal),
+    minWithdrawalNative: x.min_withdrawal_native == null ? null : num(x.min_withdrawal_native),
+    defaultDurationS: num(x.default_duration_s), tickRateMs: num(x.tick_rate_ms),
     driftBias: num(x.drift_bias), volatility: num(x.volatility), targetWinRate: num(x.target_win_rate), version: num(x.version),
   };
 }
@@ -189,7 +205,7 @@ export class PgPlatformRepository implements PlatformRepository {
 
   async listSites(): Promise<SiteWithConfig[]> {
     const r = await this.q.query(
-      `select s.*, c.house_edge, c.max_multiplier, c.min_stake, c.max_stake, c.min_withdrawal,
+      `select s.*, c.house_edge, c.max_multiplier, c.min_stake, c.max_stake, c.min_withdrawal, c.min_withdrawal_native,
               c.default_duration_s, c.tick_rate_ms, c.drift_bias, c.volatility, c.target_win_rate, c.version
          from sites s left join site_game_config c on c.site_id = s.id
         order by s.created_at asc`, []);
@@ -362,17 +378,20 @@ export class PgPlatformRepository implements PlatformRepository {
    */
   async poolDemand(opts: PoolDemandOpts): Promise<PoolDemandPreview> {
     const lookbackDays = Math.min(90, Math.max(3, Math.floor(opts.lookbackDays ?? 14)));
+    const baselineDays = Math.min(90, Math.max(lookbackDays, Math.floor(opts.baselineDays ?? 45)));
     const alpha = opts.alpha ?? 0.4, floorFrac = opts.floorFrac ?? 0.015, capMult = opts.capMult ?? 2.5;
+    const configuredFloorCents = Math.max(0, Math.floor(opts.configuredFloorCents ?? 0));
     const sitesR = await this.q.query(
       `select s.id, s.slug, s.default_daily_pool_cents, coalesce(g.house_edge, 0.05) as house_edge
          from public.sites s left join public.site_game_config g on g.site_id = s.id
         where s.status = 'active' and s.pool_mode = true
         order by s.created_at`, []);
+    // One query over the wider baseline window; the reactive forecast uses only its recent tail.
     const turnR = await this.q.query(
       `select d.site_id::text as site_id, (d.pool_day)::text as day, coalesce(sum(p.stake), 0)::bigint as turnover
          from public.position_decision d join public.positions p on p.id = d.position_id
         where d.pool_day > current_date - $1::int
-        group by d.site_id, d.pool_day`, [lookbackDays]);
+        group by d.site_id, d.pool_day`, [baselineDays]);
 
     const perSiteDay = new Map<string, Map<string, number>>();
     for (const row of turnR.rows) {
@@ -380,16 +399,23 @@ export class PgPlatformRepository implements PlatformRepository {
       if (!perSiteDay.has(sid)) perSiteDay.set(sid, new Map());
       perSiteDay.get(sid)!.set(day, num(row.turnover));
     }
-    const days = eatWindowDays(lookbackDays);
+    const baseWindow = eatWindowDays(baselineDays);          // oldest→newest, full baseline
+    const recentWindow = baseWindow.slice(-lookbackDays);    // reactive-forecast tail
     const brands = sitesR.rows.map((s: Record<string, unknown>) => {
       const sid = String(s.id);
       const m = perSiteDay.get(sid) ?? new Map<string, number>();
-      const series = days.map((d) => m.get(d) ?? 0);
+      const baseSeries = baseWindow.map((d) => m.get(d) ?? 0);
+      const recentSeries = recentWindow.map((d) => m.get(d) ?? 0);
+      const forecast = emaForecast(recentSeries, alpha);
+      // Floor baseline is never below the reactive forecast (so a live spike still lifts the floor),
+      // and is outage-proof (non-zero days only) via robustExpectedTurnover.
+      const expectedTurnover = Math.max(forecast, robustExpectedTurnover(baseSeries));
       return {
         siteId: sid, slug: String(s.slug), houseEdge: num(s.house_edge),
         currentPoolCents: num(s.default_daily_pool_cents),
-        recentTurnoverCents: series.reduce((a, b) => a + b, 0),
-        forecastTurnoverCents: emaForecast(series, alpha),
+        recentTurnoverCents: recentSeries.reduce((a, b) => a + b, 0),
+        forecastTurnoverCents: forecast,
+        expectedTurnoverCents: expectedTurnover,
       };
     });
     const totalCents = opts.totalCents != null
@@ -397,21 +423,25 @@ export class PgPlatformRepository implements PlatformRepository {
       : brands.reduce((a, b) => a + b.currentPoolCents, 0);
 
     const alloc = distributeDynamicPool(
-      brands.map((b) => ({ siteId: b.siteId, houseEdge: b.houseEdge, forecastTurnoverCents: b.forecastTurnoverCents })),
-      totalCents, { floorFrac, capMult });
+      brands.map((b) => ({ siteId: b.siteId, houseEdge: b.houseEdge, forecastTurnoverCents: b.forecastTurnoverCents, expectedTurnoverCents: b.expectedTurnoverCents })),
+      totalCents, { floorFrac, capMult, configuredFloorCents });
     const allocById = new Map(alloc.map((a) => [a.siteId, a]));
 
     const rows: PoolDemandRow[] = brands.map((b) => {
       const a = allocById.get(b.siteId)!;
+      const floorCents = (b.forecastTurnoverCents > 0 || b.expectedTurnoverCents > 0)
+        ? Math.max(configuredFloorCents, Math.round(a.targetRtp * b.expectedTurnoverCents)) : 0;
       return {
         siteId: b.siteId, slug: b.slug, targetRtp: a.targetRtp,
         forecastTurnoverCents: Math.round(b.forecastTurnoverCents), recentTurnoverCents: b.recentTurnoverCents,
         requiredCents: a.requiredCents, currentPoolCents: b.currentPoolCents, suggestedCents: a.allocCents,
         coverage: a.requiredCents > 0 ? a.allocCents / a.requiredCents : 1,
+        expectedTurnoverCents: Math.round(b.expectedTurnoverCents), floorCents,
       };
     });
     const suggestedTotalCents = rows.reduce((a, b) => a + b.suggestedCents, 0);
-    return { lookbackDays, totalCents, alpha, floorFrac, capMult, rows, suggestedTotalCents, reserveCents: totalCents - suggestedTotalCents };
+    return { lookbackDays, totalCents, alpha, floorFrac, capMult, rows, suggestedTotalCents,
+      reserveCents: totalCents - suggestedTotalCents, baselineDays, configuredFloorCents };
   }
 
   async distributePoolDynamic(actorId: string, actorRole: string, opts: PoolDemandOpts): Promise<DistributeDynamicResult> {
@@ -668,21 +698,24 @@ export class InMemoryPlatformRepository implements PlatformRepository {
   /** Test/dev demand preview: no turnover history is tracked in-memory, so forecasts are 0 (all idle). */
   async poolDemand(opts: PoolDemandOpts): Promise<PoolDemandPreview> {
     const alpha = opts.alpha ?? 0.4, floorFrac = opts.floorFrac ?? 0.015, capMult = opts.capMult ?? 2.5;
+    const baselineDays = Math.min(90, Math.max(Math.floor(opts.lookbackDays ?? 14), Math.floor(opts.baselineDays ?? 45)));
+    const configuredFloorCents = Math.max(0, Math.floor(opts.configuredFloorCents ?? 0));
     const active = [...this.sites.values()].filter((s) => s.status === "active");
     const totalCents = opts.totalCents != null ? Math.max(0, Math.floor(opts.totalCents)) : 0;
     const alloc = distributeDynamicPool(
-      active.map((s) => ({ siteId: s.siteId, houseEdge: s.config.houseEdge, forecastTurnoverCents: 0 })),
-      totalCents, { floorFrac, capMult });
+      active.map((s) => ({ siteId: s.siteId, houseEdge: s.config.houseEdge, forecastTurnoverCents: 0, expectedTurnoverCents: 0 })),
+      totalCents, { floorFrac, capMult, configuredFloorCents });
     const byId = new Map(alloc.map((a) => [a.siteId, a]));
     const rows: PoolDemandRow[] = active.map((s) => {
       const a = byId.get(s.siteId)!;
       return { siteId: s.siteId, slug: s.slug, targetRtp: a.targetRtp, forecastTurnoverCents: 0,
         recentTurnoverCents: 0, requiredCents: 0, currentPoolCents: 0, suggestedCents: a.allocCents,
-        coverage: 1 };
+        coverage: 1, expectedTurnoverCents: 0, floorCents: 0 };
     });
     return { lookbackDays: Math.floor(opts.lookbackDays ?? 14), totalCents, alpha, floorFrac, capMult,
       rows, suggestedTotalCents: rows.reduce((x, r) => x + r.suggestedCents, 0),
-      reserveCents: totalCents - rows.reduce((x, r) => x + r.suggestedCents, 0) };
+      reserveCents: totalCents - rows.reduce((x, r) => x + r.suggestedCents, 0),
+      baselineDays, configuredFloorCents };
   }
 
   async distributePoolDynamic(actorId: string, actorRole: string, opts: PoolDemandOpts): Promise<DistributeDynamicResult> {

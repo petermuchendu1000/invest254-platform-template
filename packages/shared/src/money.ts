@@ -98,6 +98,33 @@ export function displayToKesCents(amount: number, fxRateFromKes = 1): Cents {
   return Math.round((amount / rate) * 100);
 }
 
+/**
+ * Resolve the EFFECTIVE minimum withdrawal in authoritative KES cents from a per-brand,
+ * currency-native minimum (docs/25 §16). `nativeMajor` is the minimum in the brand's DISPLAY
+ * currency major units (e.g. 100 => $100 for a USD brand, 2000 => KES 2,000 for a KES brand).
+ *   - KES brand: KES cents = round(nativeMajor × 100).
+ *   - Foreign brand WITH a usable live rate: convert nativeMajor → KES cents at that rate, the SAME
+ *     rate the withdrawal amount is converted with, so the comparison is exactly "amount ≥ nativeMajor"
+ *     in display terms — drift-free, no dependence on when the value was set.
+ *   - Foreign brand with NO usable rate, or nativeMajor unset/invalid: fall back to `legacyKesCents`
+ *     (the stored `min_withdrawal`), so enforcement never opens below the safe KES floor.
+ */
+export function effectiveMinWithdrawalCents(opts: {
+  nativeMajor?: number | null;
+  legacyKesCents: Cents;
+  currency?: string;
+  fxRateFromKes?: number;
+}): Cents {
+  const { nativeMajor, legacyKesCents, currency = "KES", fxRateFromKes } = opts;
+  if (nativeMajor != null && Number.isFinite(nativeMajor) && nativeMajor > 0) {
+    if (currency === "KES") return Math.round(nativeMajor * 100);
+    const opts: DisplayCurrencyOpts = fxRateFromKes === undefined ? { currency } : { currency, fxRateFromKes };
+    if (isForeignDisplay(opts)) return displayToKesCents(nativeMajor, fxRateFromKes as number);
+    // foreign brand but no usable FX rate yet → safe KES fallback
+  }
+  return legacyKesCents;
+}
+
 export function addCents(a: Cents, b: Cents): Cents {
   return assertCents(a, "a") + assertCents(b, "b");
 }

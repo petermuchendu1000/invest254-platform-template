@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { displayToKesCents } from "./money.js";
 import {
-  decidePoolOutcome, winProbability, paceTarget, available, poolLiveMultiplier, poolPnlPath,
+  decidePoolOutcome, decidePoolOutcomeFixed, winProbability, paceTarget, available, poolLiveMultiplier, poolPnlPath,
   sessionWinProbability, DEFAULT_POOL_KNOBS, type PoolState, type PoolKnobs, type PlayerSession,
 } from "./pool.js";
 
@@ -243,4 +244,43 @@ test("1000-PLAYER DAY: budget invariant holds every step, no player scoops, per-
   assert.ok(maxWinner <= Math.floor(k.playerShare * amount) + 100000, `no scoop: max winner ${maxWinner} within share cap`);
   assert.ok(covered > 0, "some players won");
   assert.ok(netLosers / active.length > 0.7, `most active players net a loss (got ${(netLosers / active.length).toFixed(2)})`);
+});
+
+// -- Currency-native near-miss line + crossing-only semantics (docs/25 S16; deriv-bot 80%-loss fix) --
+// The near-miss engages on the WITHDRAWAL LINE `W` (KES cents; a USD brand feeds $200 -> KES at the live
+// FX rate) -- but ONLY on the trade that CROSSES it from below. A player already AT/ABOVE the line wins
+// normally (they can withdraw). Fix for the deriv bot: previously any bal+payout>=W voided ~85% of wins
+// even for above-line players/bots, crushing digits to a ~7% win rate.
+test("near-miss fires ONLY on the crossing trade; above-line players win normally (docs/25 S16)", () => {
+  const USD_PER_KES = 1 / 129.5;
+  const W = displayToKesCents(200, USD_PER_KES);           // $200 expressed in KES cents (~2.59M)
+  assert.ok(W > 2_400_000 && W < 2_800_000, "200 line resolved to " + W + " KES cents");
+  const st: PoolState = { amountCents: 50_000_000, paidCents: 0, reservedCents: 0, turnoverCents: 80_000_000 };
+  const sess: PlayerSession = { stakedCents: 0, returnedCents: 0, trades: 0, wins: 0, lossStreak: 0 };
+  const stake = 25000, payout = Math.round(stake * 1.9); // even/odd: m=1.9
+  const kFixed: PoolKnobs = { ...DEFAULT_POOL_KNOBS, meanMultiplier: 1.9, pCap: 0.95 / 1.9, targetSessionRtp: 0.95, maxMultiplier: 1.9 };
+
+  let crossNearMiss = 0, aboveWins = 0, aboveNearMiss = 0, belowWins = 0, rfAboveWins = 0, rfAboveNearMiss = 0;
+  for (let n = 0; n < 500; n++) {
+    // CROSSING from below (bal just under W, a win reaches it): near-miss engages (digits -> void).
+    const cross = decidePoolOutcomeFixed({ stakeCents: stake, payoutCents: payout, pool: st, dayFraction: 0.5, knobs: kFixed, serverSeed: "usd", nonce: n, session: sess, balanceAfterStakeCents: W - Math.floor(payout / 2), minWithdrawalCents: W });
+    if (cross.reason === "near_miss") crossNearMiss++;
+    // ABOVE the line (whale / bot): must WIN normally -- the deriv-bot fix. NEVER near-missed.
+    const above = decidePoolOutcomeFixed({ stakeCents: stake, payoutCents: payout, pool: st, dayFraction: 0.5, knobs: kFixed, serverSeed: "usd", nonce: n, session: sess, balanceAfterStakeCents: W + 5_000_000, minWithdrawalCents: W });
+    if (above.result === "win") aboveWins++;
+    if (above.reason === "near_miss") aboveNearMiss++;
+    // FAR BELOW: a win cannot reach the line -> normal.
+    const below = decidePoolOutcomeFixed({ stakeCents: stake, payoutCents: payout, pool: st, dayFraction: 0.5, knobs: kFixed, serverSeed: "usd", nonce: n, session: sess, balanceAfterStakeCents: 5_000, minWithdrawalCents: W });
+    if (below.result === "win") belowWins++;
+    // rise/fall (curve/candlestick) above the line: also wins normally, never near-missed.
+    const rfAbove = decidePoolOutcome({ stakeCents: stake, pool: st, dayFraction: 0.5, knobs: DEFAULT_POOL_KNOBS, serverSeed: "usd", nonce: n, session: sess, balanceAfterStakeCents: W + 5_000_000, minWithdrawalCents: W });
+    if (rfAbove.result === "win") rfAboveWins++;
+    if (rfAbove.reason === "near_miss") rfAboveNearMiss++;
+  }
+  assert.ok(crossNearMiss > 120, "crossing trades should hit near-miss, got " + crossNearMiss);
+  assert.equal(aboveNearMiss, 0, "digits: above-line players are NEVER near-missed (deriv-bot fix)");
+  assert.equal(rfAboveNearMiss, 0, "rise/fall: above-line players are NEVER near-missed");
+  assert.ok(aboveWins > 150, "digits: above-line whale wins at ~base rate, got " + aboveWins);
+  assert.ok(rfAboveWins > 80, "rise/fall: above-line whale wins normally, got " + rfAboveWins);
+  assert.ok(belowWins > 150, "far-below player wins normally, got " + belowWins);
 });

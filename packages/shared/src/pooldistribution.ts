@@ -27,6 +27,17 @@ export interface BrandDemand {
   houseEdge: number;
   /** EMA-forecast of the brand's daily POOL turnover (staked cents by non-marketer players). */
   forecastTurnoverCents: number;
+  /**
+   * OUTAGE-PROOF baseline daily turnover (staked cents) for the anti-starvation FLOOR (docs/25 §15.2).
+   * Unlike `forecastTurnoverCents` (a reactive EMA that COLLAPSES toward 0 when demand is interrupted —
+   * e.g. a payment/paybill outage — and then, via required = targetRtp × forecast and the per-brand
+   * cap, starves the brand's pool so every win clamps to a loss), this is a robust estimate of the
+   * brand's demonstrated busy-day demand (see `robustExpectedTurnover`). It guarantees each active
+   * brand a floor of `max(configuredFloorCents, round(targetRtp × expectedTurnoverCents))` so a
+   * deposit dip can never zero the pool. When OMITTED, the floor's demand term is 0 (back-compat: the
+   * allocator behaves exactly as before, gated only by the legacy floorFrac bootstrap).
+   */
+  expectedTurnoverCents?: number | undefined;
 }
 
 export interface PoolAllocation {
@@ -45,6 +56,46 @@ export interface DistributeParams {
   /** targetRtp clamp, matching the engine (game.ts). Default [0.05, 0.95]. */
   rtpClampLo?: number;
   rtpClampHi?: number;
+  /**
+   * ABSOLUTE per-brand anti-starvation floor in cents (docs/25 §15.2). Every ACTIVE brand (one with
+   * any recent forecast OR a positive expectedTurnover) is guaranteed at least
+   *     max(configuredFloorCents, round(targetRtp × expectedTurnoverCents))
+   * of the envelope BEFORE the demand-based water-fill runs, so a turnover/deposit dip can never
+   * shrink a brand's pool to ~zero. Rationed proportionally only if Σ floors exceed the envelope
+   * (Σ alloc ≤ totalCents is always preserved). Default 0 (behaviour-neutral).
+   */
+  configuredFloorCents?: number;
+}
+
+/** Linear-interpolated percentile (numpy default 'linear' method) over a NON-empty ascending array. */
+function percentileAsc(sortedAsc: number[], p: number): number {
+  const n = sortedAsc.length;
+  if (n === 0) return 0;
+  if (n === 1) return sortedAsc[0]!;
+  const rank = Math.min(1, Math.max(0, p)) * (n - 1);
+  const lo = Math.floor(rank), hi = Math.ceil(rank), frac = rank - lo;
+  return sortedAsc[lo]! + frac * (sortedAsc[hi]! - sortedAsc[lo]!);
+}
+
+/**
+ * OUTAGE-PROOF expected daily turnover for the anti-starvation floor (docs/25 §15.2). Computed as
+ *     max( p75(non-zero days) , mean(last `recentActive` non-zero days) )
+ * over a daily turnover series (oldest→newest). Rationale, grounded in the incident data:
+ *   - Only NON-ZERO days count, so idle/outage days (a paybill outage → ~0 pool turnover for weeks)
+ *     cannot drag the estimate down — this is what DECOUPLES the payout floor from a deposit outage.
+ *   - p75 favours the brand's demonstrated busy-day demand (robust to a slow early ramp-up and to
+ *     single-day spikes), while the recent-active mean tracks the CURRENT healthy level; the max of
+ *     the two restores the pool to the pre-failure range without over-reacting to one big day.
+ * Returns 0 for an all-zero / empty series (a brand with no demonstrated demand gets no floor).
+ */
+export function robustExpectedTurnover(daily: number[], recentActive = 7): number {
+  const nz = daily.filter((x) => Number.isFinite(x) && x > 0);
+  if (!nz.length) return 0;
+  const asc = [...nz].sort((a, b) => a - b);
+  const p75 = percentileAsc(asc, 0.75);
+  const recent = nz.slice(-Math.max(1, recentActive));
+  const mean = recent.reduce((s, x) => s + x, 0) / recent.length;
+  return Math.max(p75, mean);
 }
 
 /** targetRtp for a brand = clamp(1 − houseEdge), matching the engine's pool RTP clamp. */
@@ -79,25 +130,60 @@ export function distributeDynamicPool(
   const capMult = params.capMult ?? 2.5;
   const lo = params.rtpClampLo ?? 0.05;
   const hi = params.rtpClampHi ?? 0.95;
+  const configuredFloor = Math.max(0, Math.floor(params.configuredFloorCents ?? 0));
   const G = Math.max(0, Math.floor(totalCents));
 
   const rows = brands.map((b) => {
     const targetRtp = targetRtpFor(b.houseEdge, lo, hi);
     const forecast = Math.max(0, b.forecastTurnoverCents || 0);
+    const expected = b.expectedTurnoverCents != null ? Math.max(0, b.expectedTurnoverCents) : 0;
     const required = targetRtp * forecast;
-    return { siteId: b.siteId, targetRtp, forecast, required, cap: required * capMult, alloc: 0 };
+    // Anti-starvation guaranteed floor (docs/25 §15.2): decoupled from the reactive `forecast` so a
+    // demand/deposit interruption cannot zero the pool. Only ACTIVE brands (demonstrated demand) get
+    // one — a brand that has NEVER had turnover gets 0 (no capital wasted on permanently-idle brands).
+    const active = forecast > 0 || expected > 0;
+    const guaranteed = active ? Math.max(configuredFloor, Math.round(targetRtp * expected)) : 0;
+    // The cap must never sit below the guaranteed floor, else water-fill eligibility would fight it.
+    const cap = Math.max(required * capMult, guaranteed);
+    return { siteId: b.siteId, targetRtp, forecast, required, guaranteed, cap, alloc: 0 };
   });
 
   const totalRequired = rows.reduce((s, r) => s + r.required, 0);
-  if (G <= 0 || totalRequired <= 0) {
+  const totalGuaranteed = rows.reduce((s, r) => s + r.guaranteed, 0);
+  if (G <= 0 || (totalRequired <= 0 && totalGuaranteed <= 0)) {
     return rows.map((r) => ({ siteId: r.siteId, allocCents: 0, requiredCents: Math.round(r.required), forecastTurnoverCents: Math.round(r.forecast), targetRtp: r.targetRtp }));
   }
 
-  const floor = Math.floor(G * floorFrac);
   let remaining = G;
-  // 1) floors to active brands (never above their own cap)
+
+  // 0) GUARANTEED anti-starvation floors FIRST (docs/25 §15.2 — the fix for outage-driven pool
+  //    starvation). If the envelope cannot cover Σ floors, ration them proportionally so no brand is
+  //    favoured; the envelope stays a hard ceiling (Σ alloc ≤ G). Fed via expectedTurnover; a brand
+  //    whose reactive forecast collapsed still gets its demonstrated-demand floor here.
+  if (totalGuaranteed > 0) {
+    if (totalGuaranteed <= G) {
+      for (const r of rows) if (r.guaranteed > 0) { r.alloc += r.guaranteed; remaining -= r.guaranteed; }
+    } else {
+      let used = 0;
+      for (const r of rows) if (r.guaranteed > 0) { const g = Math.floor(G * (r.guaranteed / totalGuaranteed)); r.alloc += g; used += g; }
+      remaining = G - used;
+      if (remaining > 0) { // integer-rounding remainder -> largest floor, then the envelope is spent
+        const big = rows.filter((r) => r.guaranteed > 0).sort((a, b) => b.guaranteed - a.guaranteed)[0];
+        if (big) { const g = Math.min(remaining, Math.max(0, Math.floor(big.cap - big.alloc))); big.alloc += g; remaining -= g; }
+      }
+    }
+  }
+  remaining = Math.max(0, remaining);
+
+  // 1) Legacy floorFrac bootstrap: top ACTIVE brands (forecast > 0) UP TO min(floorFrac×G, cap), only
+  //    where the guaranteed floor didn't already reach it. Kept for continuity when no expectedTurnover
+  //    is supplied (unchanged behaviour on the legacy path).
+  const floor = Math.floor(G * floorFrac);
   for (const r of rows) {
-    if (r.forecast > 0) { const g = Math.min(floor, Math.floor(r.cap)); r.alloc += g; remaining -= g; }
+    if (r.forecast > 0) {
+      const target = Math.min(floor, Math.floor(r.cap));
+      if (r.alloc < target) { const g = Math.min(target - r.alloc, remaining); r.alloc += g; remaining -= g; }
+    }
   }
   remaining = Math.max(0, remaining);
 
@@ -217,7 +303,7 @@ export function redistributeHeadroom(
   params: DistributeParams = {},
 ): HeadroomGrant[] {
   const ideal = distributeDynamicPool(
-    brands.map((b) => ({ siteId: b.siteId, houseEdge: b.houseEdge, forecastTurnoverCents: b.forecastTurnoverCents })),
+    brands.map((b) => ({ siteId: b.siteId, houseEdge: b.houseEdge, forecastTurnoverCents: b.forecastTurnoverCents, expectedTurnoverCents: b.expectedTurnoverCents })),
     envelopeCents, params);
   const idealById = new Map(ideal.map((a) => [a.siteId, a.allocCents]));
   return grantsFromIdeal(

@@ -240,6 +240,9 @@ function gameConfigDto(cfg: GameConfig | VersionedGameConfig, economy: PlatformE
     minStakeCents: eff.minStakeCents,
     maxStakeCents: eff.maxStakeCents,
     minWithdrawalCents: effectiveMinWithdrawal(cfg.minWithdrawalCents, p),
+    // Currency-native minimum withdrawal (docs/25 §16): the brand's DISPLAY-currency floor (e.g. 100
+    // => $100). The player app enforces this directly for foreign brands; null => use minWithdrawalCents.
+    minWithdrawalNative: (cfg as GameConfig).minWithdrawalNative ?? null,
     minDepositCents: effectiveMinDeposit(MIN_DEPOSIT_CENTS, p),
     maxDepositCents: effectiveMaxDeposit(null, p),
     maxMultiplier: eff.maxMultiplier,

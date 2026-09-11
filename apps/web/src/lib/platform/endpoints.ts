@@ -4,6 +4,8 @@ import type { CohortEconomy, PaymentsEconomy } from '@invest254/shared/globaleco
 /** A brand's economy (mirrors site_game_config; cents for money fields). */
 export interface SiteConfig {
   houseEdge: number; maxMultiplier: number; minStakeCents: number; maxStakeCents: number; minWithdrawalCents: number;
+  /** Currency-native minimum withdrawal in the brand's display currency major units (docs/25 §16). */
+  minWithdrawalNative?: number | null;
   defaultDurationS: number; tickRateMs: number; driftBias: number; volatility: number; targetWinRate: number; version: number;
 }
 export interface SiteRow {

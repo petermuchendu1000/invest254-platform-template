@@ -10,7 +10,7 @@ import {
   type Querier, type FairnessRecord, type ListenClient,
 } from "@invest254/engine";
 import { createApp, type ApiDeps, type WalletBalance, type BonusStatus, type Brand } from "./app.js";
-import { normalizeHost, PlatformGate, enforcedValue, createLogger, type VersionedGameConfig, type Cents } from "@invest254/shared";
+import { normalizeHost, PlatformGate, enforcedValue, createLogger, effectiveMinWithdrawalCents, type VersionedGameConfig, type Cents } from "@invest254/shared";
 import { BrandOriginAllowlist } from "./cors.js";
 import { makePgMarketerRepo } from "./marketers.pg.js";
 import { makePgReferralRepo } from "./referral.pg.js";
@@ -116,12 +116,24 @@ async function buildDeps(): Promise<ApiDeps> {
     if (!siteId) return fallback;
     try {
       const r = await q.query(
-        "select min_withdrawal from site_game_config where site_id = $1::uuid limit 1",
+        `select c.min_withdrawal, c.min_withdrawal_native, coalesce(s.currency, 'KES') as currency
+           from site_game_config c join sites s on s.id = c.site_id
+          where c.site_id = $1::uuid limit 1`,
         [siteId],
       );
       if (r.rows.length) {
-        const v = Math.round(Number((r.rows[0] as Record<string, unknown>).min_withdrawal));
-        if (Number.isInteger(v) && v > 0) return v as Cents;
+        const row = r.rows[0] as Record<string, unknown>;
+        const legacy = Math.round(Number(row.min_withdrawal));
+        const legacyKesCents = (Number.isInteger(legacy) && legacy > 0 ? legacy : fallback) as Cents;
+        const currency = String(row.currency ?? "KES");
+        const nativeMajor = row.min_withdrawal_native == null ? null : Number(row.min_withdrawal_native);
+        // Currency-native minimum (docs/25 §16): convert to KES cents at the SAME live FX rate the
+        // withdrawal amount uses, so a USD brand enforces exactly its native floor (e.g. $100). KES
+        // brands (rate 1) are unchanged. Falls back to the KES-cents floor if FX is unavailable.
+        const fxRateFromKes = currency === "KES" ? 1 : await kesToCurrencyRate(currency);
+        const eff = effectiveMinWithdrawalCents({ nativeMajor, legacyKesCents, currency, fxRateFromKes });
+        if (Number.isInteger(eff) && eff > 0) return eff as Cents;
+        return legacyKesCents;
       }
     } catch (err) {
       console.error(`[api] site min_withdrawal lookup failed for ${siteId}:`, (err as Error).message);
@@ -578,7 +590,7 @@ async function buildDeps(): Promise<ApiDeps> {
       const h = normalizeHost(ref);
       if (!h) return null;
       const r = await q.query(
-        `select c.house_edge, c.max_multiplier, c.min_stake, c.max_stake, c.min_withdrawal,
+        `select c.house_edge, c.max_multiplier, c.min_stake, c.max_stake, c.min_withdrawal, c.min_withdrawal_native,
                 c.default_duration_s, c.tick_rate_ms, c.drift_bias, c.volatility, c.target_win_rate, c.version
            from site_game_config c join sites s on s.id = c.site_id
           where s.status = 'active'

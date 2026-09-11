@@ -232,7 +232,7 @@ export class GameServer {
       const po = await this.pool.controller.decideReserve({
         siteId: ctx.siteId ?? "", userId: input.userId, stakeCents: input.stakeCents,
         positionId, nonce, openedAtMs, maxMultiplier: this.cfg.maxMultiplier, serverSeed: ctx.seed,
-        balanceAfterStakeCents: newBalance, minWithdrawalCents: this.cfg.minWithdrawalCents,
+        balanceAfterStakeCents: newBalance, minWithdrawalCents: this.cfg.minWithdrawalEffectiveCents ?? this.cfg.minWithdrawalCents,
         // Pool RTP is driven by the operator's house edge (unified config): targetSessionRtp = 1 - edge.
         targetRtp: Math.min(0.95, Math.max(0.05, 1 - this.cfg.houseEdge)),
         // Win frequency unified with the statistical engine (docs/25): the pool derives its mean
@@ -345,7 +345,7 @@ export class GameServer {
       const po = await this.pool.controller.decideReserveFixed({
         siteId: ctx.siteId ?? "", userId: input.userId, stakeCents: input.stakeCents,
         payoutCents: candidate, positionId, nonce, openedAtMs, serverSeed: ctx.seed,
-        balanceAfterStakeCents: newBalance, minWithdrawalCents: this.cfg.minWithdrawalCents,
+        balanceAfterStakeCents: newBalance, minWithdrawalCents: this.cfg.minWithdrawalEffectiveCents ?? this.cfg.minWithdrawalCents,
         // Central RTP dial, identical to the rise/fall pool path: targetRtp = 1 − house_edge.
         targetRtp: Math.min(0.95, Math.max(0.05, 1 - this.cfg.houseEdge)),
       });
@@ -498,7 +498,7 @@ export class GameServer {
       const po = await this.pool.controller.decideReserveFixed({
         siteId: ctx.siteId ?? "", userId: input.userId, stakeCents: input.stakeCents,
         payoutCents: candidate, positionId, nonce, openedAtMs, serverSeed: ctx.seed,
-        balanceAfterStakeCents: newBalance, minWithdrawalCents: this.cfg.minWithdrawalCents,
+        balanceAfterStakeCents: newBalance, minWithdrawalCents: this.cfg.minWithdrawalEffectiveCents ?? this.cfg.minWithdrawalCents,
         targetRtp: Math.min(0.95, Math.max(0.05, 1 - this.cfg.houseEdge)),
       });
       decided = { result: po.result, payoutCents: po.result === "win" ? po.payoutCents : 0, durationMs: poolMultiplierDurationMs(ctx.seed, nonce) };

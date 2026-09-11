@@ -172,13 +172,15 @@ export function decidePoolOutcome(args: {
     ? Math.max(0, Math.floor(k.targetSessionRtp * args.pool.turnoverCents) - args.pool.paidCents - args.pool.reservedCents)
     : Infinity;
   payout = Math.min(payout, avail, playerCap, rtpBudget);
-  // ── Min-withdrawal near-miss (goal-gradient): a win that would reach the withdrawal line is
-  //    (mostly) held just below it, so the player lands "so close" and keeps chasing. A small
-  //    let-through crosses (real withdrawal -> social proof). Only engages near the line. ──
+  // ── Min-withdrawal near-miss (goal-gradient): a win that would CROSS the withdrawal line FROM BELOW
+  //    is (mostly) held just below it, so the player lands "so close" and keeps chasing. A small
+  //    let-through crosses (real withdrawal -> social proof). Engages ONLY on the crossing trade —
+  //    a player already AT/ABOVE the line (bal >= W) wins normally and can withdraw (fixing the bug
+  //    where an above-line player/bot had ~85% of wins voided → ~7% win rate). ──
   let reason: PoolDecision["reason"] = "granted";
   const W = args.minWithdrawalCents ?? 0;
   const bal = args.balanceAfterStakeCents;
-  if (W > 0 && bal != null && bal + payout >= W && rng.next() >= k.letThroughProb) {  // 3rd: let-through
+  if (W > 0 && bal != null && bal < W && bal + payout >= W && rng.next() >= k.letThroughProb) {  // 3rd: let-through
     const frac = k.nearMissLow + (k.nearMissHigh - k.nearMissLow) * rng.next();       // 4th: near-miss target
     payout = Math.min(payout, Math.max(0, Math.floor(frac * W) - bal));
     reason = "near_miss";
@@ -239,10 +241,12 @@ export function decidePoolOutcomeFixed(args: {
     : Infinity;
   if (payout > rtpBudget) return { result: "loss", multiplier: 0, payoutCents: 0, winProbUsed: p, reason: "budget_clamped_to_loss" };
   // (4) Min-withdrawal near-miss lever: a fixed payout cannot be held just below the line, so a
-  //     non-let-through crossing becomes a near-miss LOSS (the player lands short of the line).
+  //     non-let-through CROSSING (from below) becomes a near-miss LOSS (the player lands short of the
+  //     line). Engages ONLY when bal < W and the win would reach it — a player already AT/ABOVE the
+  //     line (bal >= W) wins normally and can withdraw (fixes the ~85%-of-wins-voided bug for digits).
   const W = args.minWithdrawalCents ?? 0;
   const bal = args.balanceAfterStakeCents;
-  if (W > 0 && bal != null && bal + payout >= W && rng.next() >= k.letThroughProb) {   // 3rd draw: let-through
+  if (W > 0 && bal != null && bal < W && bal + payout >= W && rng.next() >= k.letThroughProb) {   // 3rd draw: let-through
     return { result: "loss", multiplier: 0, payoutCents: 0, winProbUsed: p, reason: "near_miss" };
   }
   return { result: "win", multiplier: payout / args.stakeCents, payoutCents: payout, winProbUsed: p, reason: "granted" };

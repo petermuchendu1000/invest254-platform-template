@@ -61,6 +61,9 @@ export interface GameConfigDto {
   maxStakeCents: Cents;
   /** Smallest withdrawal a player can request — effective value (global economy over brand config). */
   minWithdrawalCents: Cents;
+  /** Currency-native minimum withdrawal in the brand's display currency major units (docs/25 §16),
+   *  e.g. 100 => $100. null => use minWithdrawalCents. Foreign brands enforce this exactly. */
+  minWithdrawalNative?: number | null;
   /** Smallest deposit accepted — effective value (global economy over the static default). */
   minDepositCents: Cents;
   /** Largest single deposit accepted, or null for no cap (global economy). */
