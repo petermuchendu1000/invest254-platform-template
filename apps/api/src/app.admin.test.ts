@@ -309,6 +309,27 @@ test("marketer expenses (0068): admin logs an expense; the marketer sees it (tra
   } finally { await api.close(); }
 });
 
+test("marketer expenses (BUGLOG #23): totalCents is the FULL sum, never the limit-capped page sum", async () => {
+  const api = await startTestApi();
+  try {
+    const uid = await register(api, "0712009394", "expmkt2");
+    // Log 3 expenses (7_000 + 11_000 + 13_000 = 31_000 total).
+    for (const c of [7_000, 11_000, 13_000]) {
+      assert.equal((await req(api, "POST", "/api/v1/admin/affiliate/expenses", { token: "admin-1:admin", body: { marketerUserId: uid, category: "data_bundles", amountCents: c } })).status, 200);
+    }
+    // Ask for a SMALLER page (limit=2). The page must be capped, but the total must be the full sum —
+    // previously totalCents was reduce(page) and silently under-counted (would have been 24_000, the
+    // two newest), diverging from fn_commission_balance which nets the full 31_000.
+    const adminList = await json(await req(api, "GET", `/api/v1/admin/affiliate/expenses?marketerUserId=${uid}&limit=2`, { token: "admin-1:admin" }));
+    assert.equal(adminList.items.length, 2, "page respects the limit");
+    assert.equal(adminList.totalCents, 31_000, "total is the FULL sum, not the page");
+
+    const mine = await json(await req(api, "GET", "/api/v1/affiliate/expenses?limit=1", { token: `${uid}:marketer` }));
+    assert.equal(mine.items.length, 1, "marketer page respects the limit");
+    assert.equal(mine.totalCents, 31_000, "marketer total is the FULL sum, not the page");
+  } finally { await api.close(); }
+});
+
 test("J5 game config: admin reads; only superadmin edits; validates; audited", async () => {
   const api = await startTestApi();
   try {

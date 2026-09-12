@@ -51,9 +51,34 @@ jobs:
       - name: Tests
         run: npm test
 
+  # Apply + record any pending migrations BEFORE the code that needs them ships (BUGLOG #24). Atomic
+  # apply+record (scripts/migrate.mts) makes the ledger physically unable to drift from what's applied.
+  # Runs after verify, gates both deploys. Skips gracefully when there's no DB secret (mirror template).
+  migrate:
+    name: migrate (apply + record)
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install
+        run: npm ci
+      - name: Apply pending migrations and record them
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "No DATABASE_URL secret (non-prod mirror) — skipping migrate."; exit 0
+          fi
+          node --import tsx scripts/migrate.mts
+
   deploy-api:
     name: deploy invest254-api
-    needs: verify
+    needs: migrate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -65,7 +90,7 @@ jobs:
 
   deploy-engine:
     name: deploy invest254-engine-pm
-    needs: verify
+    needs: migrate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

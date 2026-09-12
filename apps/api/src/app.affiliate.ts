@@ -104,8 +104,14 @@ export function registerAffiliateRoutes(router: Router, deps: ApiDeps): void {
   // (TikTok promo, data bundles, advances, …). Read-only; own records only.
   router.get(`${BASE}/affiliate/expenses`, auth, site, marketer, async (ctx: Ctx) => {
     const limit = Number(ctx.query.get("limit")) || 100;
-    const items = await domain(() => deps.marketerExpenses.list(ctx.claims!.userId, limit));
-    return { items, totalCents: items.reduce((s, e) => s + e.amountCents, 0) };
+    // `items` is a display PAGE; `totalCents` must be the FULL sum of every logged expense so it
+    // reconciles with the withdrawable (fn_commission_balance nets the full sum). Never sum the page
+    // (it under-counts past the limit — BUGLOG #23).
+    const [items, totalCents] = await domain(async () => Promise.all([
+      deps.marketerExpenses.list(ctx.claims!.userId, limit),
+      deps.marketerExpenses.total(ctx.claims!.userId),
+    ]));
+    return { items, totalCents };
   });
 
   // ── Payouts (I4): marketer request → admin approve/reject → M-Pesa B2C result ──
@@ -195,8 +201,13 @@ export function registerAffiliateRoutes(router: Router, deps: ApiDeps): void {
     const marketerUserId = ctx.query.get("marketerUserId");
     if (!marketerUserId) throw new ApiError("VALIDATION", "marketerUserId query param is required", 400);
     const limit = Number(ctx.query.get("limit")) || 100;
-    const items = await domain(() => deps.marketerExpenses.list(marketerUserId, limit));
-    return { items, totalCents: items.reduce((s, e) => s + e.amountCents, 0) };
+    // Full sum, not the page sum (BUGLOG #23) — the admin "Total logged" must equal what actually
+    // reduces the marketer's withdrawable.
+    const [items, totalCents] = await domain(async () => Promise.all([
+      deps.marketerExpenses.list(marketerUserId, limit),
+      deps.marketerExpenses.total(marketerUserId),
+    ]));
+    return { items, totalCents };
   });
 
   // Operational: run the daily revenue-share accrual for a trading day (idempotent). In

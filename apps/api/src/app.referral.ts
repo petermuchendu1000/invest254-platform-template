@@ -21,6 +21,11 @@ export interface ReferralSummary {
   referralCode: string | null; referralPath: string | null; isMarketer: boolean;
   totalReferrals: number; earnedCents: number; heldCents: number; paidCents: number;
   availableCents: number; minPayoutCents: number;
+  /** Marketer commission actually accrued (deposit_commissions role='marketer', status='accrued') —
+   *  the SAME base that funds held/paid/available in fn_commission_balance. `earnedCents` is the
+   *  wider all-role sum (a player's instant 5% counts there too); in the marketer balance context use
+   *  this so "Earned" reconciles with "Available" even for a player who was later promoted (BUGLOG #23). */
+  marketerEarnedCents: number;
 }
 export interface CommissionRow {
   id: number; depositTxId: string; referredUser: string; referredUsername: string | null;

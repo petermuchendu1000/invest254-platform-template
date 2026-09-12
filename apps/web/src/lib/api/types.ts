@@ -291,6 +291,10 @@ export interface ReferralSummaryDto {
   isMarketer: boolean;
   totalReferrals: number;
   earnedCents: number;
+  /** Marketer commission accrued (role='marketer', status='accrued') — the base that funds
+   *  held/paid/available. Use this (not earnedCents) wherever it sits beside Available so the
+   *  numbers reconcile even for a player who was later promoted to marketer (BUGLOG #23). */
+  marketerEarnedCents: number;
   heldCents: number;
   paidCents: number;
   availableCents: number;

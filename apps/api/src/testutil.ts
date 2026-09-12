@@ -50,7 +50,7 @@ export function makeInMemoryReferralRepo(): InMemoryReferralRepo {
     async myReferral(userId) {
       const b = bal(userId); const code = codes.get(userId) ?? null;
       return { referralCode: code, referralPath: code ? `/r/${code}` : null, isMarketer: (accrued.get(userId) ?? 0) > 0,
-        totalReferrals: 0, earnedCents: b.earned, heldCents: b.held, paidCents: b.paid, availableCents: b.available, minPayoutCents: MIN };
+        totalReferrals: 0, earnedCents: b.earned, marketerEarnedCents: b.earned, heldCents: b.held, paidCents: b.paid, availableCents: b.available, minPayoutCents: MIN };
     },
     async listMyCommissions() { return []; },
     async requestPayout(userId) {
@@ -547,6 +547,10 @@ export async function startTestApi(opts: TestApiOptions = {}): Promise<TestApi> 
         async list(marketerUserId: string, limit: number) {
           return rows.filter((r) => r.marketerUserId === marketerUserId).slice(0, limit)
             .map((r) => ({ id: r.id, category: r.category, amountCents: r.amountCents, note: r.note, createdAtMs: r.createdAtMs, createdBy: r.createdBy }));
+        },
+        async total(marketerUserId: string) {
+          // Full sum over ALL rows (not the limited page) — mirrors fn_marketer_expenses_total (BUGLOG #23).
+          return rows.filter((r) => r.marketerUserId === marketerUserId).reduce((s, r) => s + r.amountCents, 0);
         },
       };
     })(),

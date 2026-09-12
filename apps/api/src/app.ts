@@ -85,6 +85,10 @@ export interface MarketerExpenseRow {
 export interface MarketerExpensesDeps {
   add(actorId: string, actorRole: string, siteId: string, marketerUserId: string, category: string, amountCents: number, note: string | null): Promise<MarketerExpenseRow>;
   list(marketerUserId: string, limit: number): Promise<MarketerExpenseRow[]>;
+  /** Authoritative full sum of ALL logged expenses for a marketer (independent of the display page).
+   *  Mirrors the expense term inside fn_commission_balance so the total shown always reconciles with
+   *  "Available to withdraw" — never derive the total from a limit-capped `list()` page (BUGLOG #23). */
+  total(marketerUserId: string): Promise<number>;
 }
 
 export interface ApiDeps {

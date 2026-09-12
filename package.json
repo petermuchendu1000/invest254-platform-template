@@ -14,6 +14,8 @@
   "scripts": {
     "typecheck": "tsc -b && tsc -p apps/web/tsconfig.json --noEmit",
     "test": "node --import tsx --test $(find packages apps -name '*.test.ts' -not -path '*/node_modules/*')",
+    "migrate": "node --import tsx scripts/migrate.mts",
+    "migrate:status": "node --import tsx scripts/migrations_status.mts",
     "engine": "tsx apps/engine/src/server.ts"
   },
   "devDependencies": {

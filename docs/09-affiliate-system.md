@@ -110,6 +110,16 @@ and the payout RPC is auto-capped at that net. The marketer-finance selector res
 account to its linked website marketer; app accounts with no website marketer can't be charged (nowhere
 to show it).
 
+The marketer dashboard presents this as a **reconciling statement** (migration 0121, BUGLOG #23):
+`Earned (commission) → − Expenses & advances → = Net after expenses → − Already paid out → − Pending
+payout → = Available to withdraw`, where the final line is exactly `fn_commission_balance.available_cents`
+(`max(earned − expenses − paid − held, 0)`). "Net after expenses" is a lifetime subtotal (`earned −
+expenses`), never the withdrawable — the ladder continues past it to the true, floored figure, so no
+number misleads. Two invariants make it tie out: (1) the expense TOTAL shown is the FULL SQL sum
+(`fn_marketer_expenses_total`), never a limit-capped page reduce; and (2) "Earned" in the balance context
+is the accrued-marketer base (`marketerEarnedCents` = `fn_commission_balance.earned_cents`), the same
+base that funds held/paid/available — a player's instant 5% never leaks into a marketer's commission net.
+
 ## 5. Payouts — request → approve → M-Pesa B2C result ✅ (I4)
 A marketer claims their earned commission; a finance admin authorizes it; the money goes out over
 M-Pesa **B2C** and the asynchronous result settles the books. This mirrors the withdrawal

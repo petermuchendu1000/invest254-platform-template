@@ -581,6 +581,12 @@ async function buildDeps(): Promise<ApiDeps> {
           [marketerUserId, limit]);
         return r.rows.map(mapExpenseRow);
       },
+      async total(marketerUserId) {
+        // Full SQL sum over ALL rows (migration 0121) — the same figure that reduces the marketer's
+        // withdrawable in fn_commission_balance, so displayed totals always reconcile (BUGLOG #23).
+        const r = await q.query("select fn_marketer_expenses_total($1::uuid) as total", [marketerUserId]);
+        return Number(r.rows[0]?.total ?? 0);
+      },
     },
     config: () => gameConfig.active(),
     // Brand-aware public config: resolve a site ref (slug|domain|id) -> that brand's live

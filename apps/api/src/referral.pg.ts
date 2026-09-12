@@ -30,7 +30,7 @@ export function makePgReferralRepo(query: Query): ReferralRepo {
                 (p.role = 'marketer') as is_marketer,
                 (select count(*) from public.profiles c where c.referred_by = p.id) as total_referrals,
                 (select coalesce(sum(commission_amount),0) from public.deposit_commissions dc where dc.beneficiary_user = p.id) as earned,
-                b.held_cents, b.paid_cents, b.available_cents
+                b.earned_cents as marketer_earned, b.held_cents, b.paid_cents, b.available_cents
            from public.profiles p, public.fn_commission_balance(p.id) b
           where p.id = $1`, [userId]);
       const r = rows[0] ?? {};
@@ -42,6 +42,7 @@ export function makePgReferralRepo(query: Query): ReferralRepo {
         isMarketer: Boolean(r.is_marketer),
         totalReferrals: num(r.total_referrals),
         earnedCents: num(r.earned),
+        marketerEarnedCents: num(r.marketer_earned),
         heldCents: num(r.held_cents),
         paidCents: num(r.paid_cents),
         availableCents: num(r.available_cents),

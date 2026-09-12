@@ -51,7 +51,9 @@ export function ReferralCommissionsCard() {
 
       <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
         <Stat label="Available" value={formatKes(summary.availableCents)} strong />
-        <Stat label="Earned (lifetime)" value={formatKes(summary.earnedCents)} />
+        {/* In the marketer balance context, "Earned" must be the accrued-marketer base that funds
+            Available/Paid (BUGLOG #23); a player card keeps the wider all-role earnedCents. */}
+        <Stat label="Earned (lifetime)" value={formatKes(summary.isMarketer ? summary.marketerEarnedCents : summary.earnedCents)} />
         <Stat label="Paid out" value={formatKes(summary.paidCents)} />
       </div>
 

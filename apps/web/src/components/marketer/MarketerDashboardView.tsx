@@ -62,11 +62,19 @@ export function MarketerDashboardView() {
   const expTotal = expenses.data?.totalCents ?? 0;
 
   // Money comes from the deposit-commission model (/me/referral), NOT the legacy GGR summary.
+  // Use marketerEarnedCents (accrued marketer commission) — the SAME base that funds held/paid/
+  // available in fn_commission_balance — so every figure below reconciles to "Available" (BUGLOG #23).
   const availableCents = ref.data?.availableCents ?? 0;
-  const earnedAllTime = ref.data?.earnedCents ?? 0;
+  const earnedAllTime = ref.data?.marketerEarnedCents ?? 0;
   const paidOutCents = ref.data?.paidCents ?? 0;
+  const heldCents = ref.data?.heldCents ?? 0;
   const minPayoutCents = ref.data?.minPayoutCents ?? 50000;
+  // "Net after expenses" is a WATERFALL SUBTOTAL (lifetime earnings minus expenses), not the money a
+  // marketer can still take. The withdrawable is netPosition floored at 0 (== availableCents), which
+  // additionally subtracts commission already paid out and pending. Showing earned − expenses alone
+  // overstated the position of any marketer who'd been paid, so we present the full reconciling ladder.
   const netAfterExpenses = earnedAllTime - expTotal;
+  const netPosition = earnedAllTime - expTotal - paidOutCents - heldCents;
 
   const requestPayout = () => {
     setPayoutMsg(null);
@@ -238,10 +246,23 @@ export function MarketerDashboardView() {
                 })}
               </ul>
             )}
-            <div className="mt-2 flex items-center justify-between rounded-xl border border-border bg-surface-2 px-3 py-2">
-              <span className="text-xs text-muted">Net after expenses</span>
-              <span className={`text-sm font-bold tabular-nums ${netAfterExpenses >= 0 ? 'text-up' : 'text-down'}`}>{formatKes(netAfterExpenses)}</span>
+            {/* Reconciling statement: every line flows into the next and ends at the exact figure the
+                hero/KPI show as "Available to withdraw" (= earned − expenses − paid − held, floored at 0). */}
+            <div className="mt-2 flex flex-col gap-1.5 rounded-xl border border-border bg-surface-2 px-3 py-2.5">
+              <StatementRow label="Earned (commission)" value={formatKes(earnedAllTime)} />
+              <StatementRow label="Expenses & advances" value={`\u2212${formatKes(expTotal)}`} tone="down" />
+              <div className="my-0.5 border-t border-border" />
+              <StatementRow label="Net after expenses" value={formatKes(netAfterExpenses)} strong tone={netAfterExpenses >= 0 ? undefined : 'down'} />
+              {paidOutCents > 0 ? <StatementRow label="Already paid out" value={`\u2212${formatKes(paidOutCents)}`} tone="down" /> : null}
+              {heldCents > 0 ? <StatementRow label="Pending payout" value={`\u2212${formatKes(heldCents)}`} tone="down" /> : null}
+              <div className="my-0.5 border-t border-border" />
+              <StatementRow label="Available to withdraw" value={formatKes(availableCents)} strong tone="up" />
             </div>
+            {netPosition < 0 ? (
+              <p className="mt-1.5 text-[11px] leading-snug text-muted">
+                You&apos;ve received {formatKes(paidOutCents + heldCents)} against {formatKes(netAfterExpenses)} earned net of expenses. Upcoming commission clears this balance before a new payout becomes available.
+              </p>
+            ) : null}
           </section>
 
           {/* Recent earnings */}
@@ -320,6 +341,17 @@ function Kpi({ label, value, tone }: { label: string; value: string; tone?: 'up'
     <div className="flex flex-col gap-0.5 rounded-2xl border border-border bg-surface-2 p-3">
       <span className="text-[10px] uppercase tracking-wide text-muted">{label}</span>
       <span className={`text-base font-bold tabular-nums ${tone === 'up' ? 'text-up' : 'text-fg'}`}>{value}</span>
+    </div>
+  );
+}
+
+/** One line of the marketer's reconciling commission statement (earned → −expenses → −paid → available). */
+function StatementRow({ label, value, tone, strong }: { label: string; value: string; tone?: 'up' | 'down' | undefined; strong?: boolean }) {
+  const valueTone = tone === 'up' ? 'text-up' : tone === 'down' ? 'text-down' : 'text-fg';
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <span className={`text-xs ${strong ? 'font-semibold text-fg' : 'text-muted'}`}>{label}</span>
+      <span className={`tabular-nums ${strong ? 'text-sm font-bold' : 'text-sm font-medium'} ${valueTone}`}>{value}</span>
     </div>
   );
 }
