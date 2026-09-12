@@ -384,10 +384,19 @@ export function registerMarketerRoutes(router: Router, deps: ApiDeps): void {
       throw new ApiError("INVALID_CREDENTIALS", "invalid phone or password", 401);
     }
 
-    // 2) Resolve the marketer wallet on the SAME brand as the verified website account. This ties
-    //    the two together so the correct marketer is loaded even when the phone exists on >1 brand.
+    // 2) Resolve the marketer wallet for this phone. Prefer the brand of the verified website account;
+    //    but a marketer's wallet lives on exactly ONE brand, and with anyBrand the password may verify
+    //    against a DIFFERENT brand's account on the same phone (accounts are ordered oldest-first, and a
+    //    person often reuses one password across brands). So when the matched brand has no wallet AND the
+    //    caller gave no explicit brand hint, fall back to this phone's marketer wallet on ANY brand — a
+    //    phone maps to at most one marketer wallet, so this deterministically loads the right one instead
+    //    of 403-ing a real marketer (jake: marketer on 'safitraders' whose password verified against his
+    //    older 'invest254' profile, which has a marketer role but no wallet → wrongly NOT_MARKETER).
     const brand = siteHint ?? session.site;
-    const profile = await domain(() => deps.marketers.profileByPhone(phone, brand));
+    let profile = await domain(() => deps.marketers.profileByPhone(phone, brand));
+    if (!profile && !siteHint) {
+      profile = await domain(() => deps.marketers.profileByPhone(phone, undefined));
+    }
     if (!profile) throw new ApiError("NOT_MARKETER", "not a marketer account", 403);
     if (profile.status !== "active") throw new ApiError("MARKETER_INACTIVE", `marketer is ${profile.status}`, 403);
 

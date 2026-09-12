@@ -113,6 +113,38 @@ export function useAffiliateExpenses(enabled: boolean) {
   });
 }
 
+/** The marketer's own advance requests (newest first) — polled so admin decisions surface live. */
+export function useMyAdvances(enabled: boolean) {
+  const token = useSession((s) => s.token);
+  return useQuery({
+    queryKey: ['affiliate', 'advances'],
+    queryFn: () => api.affiliateAdvances(token as string),
+    enabled: !!token && enabled,
+    retry: false,
+    refetchInterval: enabled ? 15000 : false,
+  });
+}
+
+/** Request a cash advance against future commission (one open request at a time). */
+export function useRequestAdvance() {
+  const token = useSession((s) => s.token);
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { amountCents: number; reason?: string }) => api.requestAdvance(token as string, body),
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: ['affiliate', 'advances'] }); },
+  });
+}
+
+/** Cancel the marketer's own still-pending advance request. */
+export function useCancelAdvance() {
+  const token = useSession((s) => s.token);
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.cancelAdvance(token as string, id),
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: ['affiliate', 'advances'] }); },
+  });
+}
+
 // ── Deposit-based referral commissions (0078/0079) — available to every authed user ─────────────
 /** The caller's referral code, link and commission balance (players + marketers). */
 export function useReferral(enabled = true) {

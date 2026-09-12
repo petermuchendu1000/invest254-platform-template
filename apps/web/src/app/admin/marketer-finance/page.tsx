@@ -15,8 +15,11 @@ import {
   useMarketers,
   useMarketerExpenses,
   useAddMarketerExpense,
+  useAdminAdvances,
+  useDecideAdvance,
 } from '@/lib/admin/hooks';
 import type { AdminCommissionPayoutRow } from '@/lib/admin/types';
+import type { AdminAdvanceDto } from '@/lib/api/types';
 
 /*
  * Marketer & affiliate finance — the single, consolidated home for every marketer/affiliate money
@@ -26,12 +29,13 @@ import type { AdminCommissionPayoutRow } from '@/lib/admin/types';
  * are removed in favour of this hub.
  */
 
-type Tab = 'referral' | 'wallets' | 'expenses' | 'affiliate';
+type Tab = 'referral' | 'wallets' | 'expenses' | 'advances' | 'affiliate';
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'referral', label: 'Referral payouts' },
   { id: 'wallets', label: 'Marketer wallets' },
   { id: 'expenses', label: 'Expenses' },
+  { id: 'advances', label: 'Advances' },
   { id: 'affiliate', label: 'Affiliate payouts' },
 ];
 
@@ -103,6 +107,7 @@ export default function MarketerFinancePage() {
       {tab === 'referral' && <ReferralPayouts />}
       {tab === 'wallets' && <MarketersPanel />}
       {tab === 'expenses' && <Expenses />}
+      {tab === 'advances' && <Advances />}
       {tab === 'affiliate' && <AffiliatePayoutsPanel />}
     </>
   );
@@ -263,6 +268,97 @@ function Expenses() {
           </TableWrap>
         </>
       )}
+    </Section>
+  );
+}
+
+/* ── Marketer advance requests (0122): approve (logs an 'advance' expense) or reject with a reason ── */
+const ADVANCE_STATUSES = [
+  { value: 'requested', label: 'Requested' },
+  { value: 'approved', label: 'Approved' },
+  { value: 'rejected', label: 'Rejected' },
+  { value: 'cancelled', label: 'Cancelled' },
+  { value: 'all', label: 'All' },
+];
+
+function Advances() {
+  const [status, setStatus] = useState('requested');
+  const q = useAdminAdvances(status);
+  const decide = useDecideAdvance();
+  const rows: AdminAdvanceDto[] = q.data?.items ?? [];
+  const [rejecting, setRejecting] = useState<AdminAdvanceDto | null>(null);
+  const pending = rows.filter((r) => r.status === 'requested').length;
+
+  const approve = (r: AdminAdvanceDto) => {
+    const input = window.prompt('Optional note for the marketer (e.g. how it will be recovered):') ?? undefined;
+    const note = input && input.trim() ? input.trim() : undefined;
+    decide.mutate({ id: r.id, approve: true, ...(note ? { note } : {}) });
+  };
+
+  return (
+    <Section title="Marketer advance requests">
+      <Toolbar>
+        <FilterSelect label="Status" value={status} onChange={setStatus} options={ADVANCE_STATUSES} />
+        <span className="text-xs text-muted">{rows.length} shown{pending ? ` · ${pending} awaiting review` : ''}</span>
+      </Toolbar>
+      <p className="mb-3 text-xs text-muted">
+        A marketer requests a cash advance against future commission. <span className="font-medium text-fg">Approve</span> logs
+        it as an <span className="font-medium text-fg">advance</span> expense (immediately reducing their withdrawable and recovered
+        from upcoming commission); <span className="font-medium text-fg">Reject</span> records your reason. The marketer is notified
+        of the outcome either way. Cash is disbursed via the usual payout process.
+      </p>
+      <TableWrap>
+        <thead>
+          <tr>
+            <Th>Marketer</Th>
+            <Th>Phone</Th>
+            <Th className="text-right">Amount</Th>
+            <Th>Reason</Th>
+            <Th>Status</Th>
+            <Th>Requested</Th>
+            <Th>Decision</Th>
+            <Th className="text-right">Actions</Th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.id} className="border-t border-border">
+              <Td><span className="font-medium text-fg">{r.username ?? r.marketerUserId.slice(0, 8)}</span></Td>
+              <Td className="text-muted">{r.phone ?? '—'}</Td>
+              <Td className="text-right"><Money cents={r.amountCents} /></Td>
+              <Td className="text-muted">{r.reason ?? '—'}</Td>
+              <Td><StatusPill status={r.status} /></Td>
+              <Td className="text-muted">{fmtDate(r.createdAtMs)}</Td>
+              <Td className="text-muted">{r.decisionNote ?? (r.decidedAtMs ? fmtDate(r.decidedAtMs) : '—')}</Td>
+              <Td className="text-right">
+                <span className="flex justify-end gap-1.5">
+                  {r.status === 'requested' ? (
+                    <>
+                      <Button size="sm" variant="up" disabled={decide.isPending} onClick={() => approve(r)}>Approve</Button>
+                      <Button size="sm" variant="down" disabled={decide.isPending} onClick={() => setRejecting(r)}>Reject</Button>
+                    </>
+                  ) : (
+                    <span className="text-xs text-muted">—</span>
+                  )}
+                </span>
+              </Td>
+            </tr>
+          ))}
+          {rows.length === 0 ? <tr><Td className="text-muted">{q.isLoading ? 'Loading…' : 'No advance requests for this status.'}</Td></tr> : null}
+        </tbody>
+      </TableWrap>
+      <RejectDialog
+        open={!!rejecting}
+        onClose={() => setRejecting(null)}
+        busy={decide.isPending}
+        title="Reject advance request"
+        subject={rejecting ? `${rejecting.username ?? rejecting.marketerUserId.slice(0, 8)} · ${formatKes(rejecting.amountCents)}` : undefined}
+        consequence={<>No money is committed and nothing is logged against the marketer. They are notified of the decline and your reason, and can submit a new request.</>}
+        onConfirm={(reason) =>
+          rejecting &&
+          decide.mutate({ id: rejecting.id, approve: false, ...(reason ? { note: reason } : {}) }, { onSuccess: () => setRejecting(null) })
+        }
+      />
     </Section>
   );
 }

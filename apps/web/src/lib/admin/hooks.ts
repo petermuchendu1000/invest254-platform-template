@@ -262,6 +262,28 @@ export function useAddMarketerExpense(marketerUserId: string) {
   });
 }
 
+/** Marketer advance-request queue (0122). Polled so new requests surface without a manual refresh. */
+export function useAdminAdvances(status?: string) {
+  const t = useTok();
+  return useQuery({
+    queryKey: ['admin', 'advances', status ?? 'all'],
+    enabled: !!t,
+    queryFn: () => adminApi.advances(t, status),
+    refetchInterval: 15000,
+  });
+}
+
+/** Approve or reject an advance request (with an optional note/reason). Refreshes the queue. */
+export function useDecideAdvance() {
+  const t = useTok();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, approve, note }: { id: string; approve: boolean; note?: string }) =>
+      approve ? adminApi.approveAdvance(t, id, note) : adminApi.rejectAdvance(t, id, note),
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: ['admin', 'advances'] }); },
+  });
+}
+
 // ── Deposits ──
 export function useDeposits(status?: string) {
   const t = useTok();

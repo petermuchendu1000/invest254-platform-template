@@ -520,6 +520,72 @@ export async function startTestApi(opts: TestApiOptions = {}): Promise<TestApi> 
   };
 
   const referralRepo = makeInMemoryReferralRepo();
+
+  // Hoisted so the advance fake can log an expense on approval (mirrors fn_admin_decide_advance).
+  const marketerExpensesFake = (() => {
+    const rows: Array<{ id: string; marketerUserId: string; category: string; amountCents: number; note: string | null; createdBy: string | null; createdAtMs: number }> = [];
+    let seq = 0;
+    return {
+      async add(actorId: string, actorRole: string, _siteId: string, marketerUserId: string, category: string, amountCents: number, note: string | null) {
+        if (!["admin", "superadmin", "platform_admin", "platform_superadmin"].includes(actorRole)) throw new Error("NOT_AUTHORIZED");
+        if (!category.trim()) throw new Error("CATEGORY_REQUIRED");
+        if (!Number.isInteger(amountCents) || amountCents <= 0) throw new Error("INVALID_AMOUNT");
+        const row = { id: `exp-${++seq}`, marketerUserId, category: category.trim(), amountCents, note: note && note.trim() ? note.trim() : null, createdBy: actorId, createdAtMs: Date.now() };
+        rows.unshift(row);
+        return { id: row.id, category: row.category, amountCents: row.amountCents, note: row.note, createdAtMs: row.createdAtMs, createdBy: row.createdBy };
+      },
+      async list(marketerUserId: string, limit: number) {
+        return rows.filter((r) => r.marketerUserId === marketerUserId).slice(0, limit)
+          .map((r) => ({ id: r.id, category: r.category, amountCents: r.amountCents, note: r.note, createdAtMs: r.createdAtMs, createdBy: r.createdBy }));
+      },
+      async total(marketerUserId: string) {
+        return rows.filter((r) => r.marketerUserId === marketerUserId).reduce((s, r) => s + r.amountCents, 0);
+      },
+    };
+  })();
+
+  const marketerAdvancesFake = (() => {
+    type Row = { id: string; siteId: string; marketerUserId: string; amountCents: number; reason: string | null; status: "requested" | "approved" | "rejected" | "cancelled"; decisionNote: string | null; decidedAtMs: number | null; expenseId: string | null; createdAtMs: number };
+    const rows: Row[] = [];
+    let seq = 0;
+    const DSITE = "00000000-0000-0000-0000-000000000001";
+    const mine = (r: Row) => ({ id: r.id, amountCents: r.amountCents, reason: r.reason, status: r.status, decisionNote: r.decisionNote, decidedAtMs: r.decidedAtMs, expenseId: r.expenseId, createdAtMs: r.createdAtMs });
+    const admin = (r: Row) => ({ ...mine(r), marketerUserId: r.marketerUserId, username: null, phone: null, siteId: r.siteId });
+    return {
+      async request(marketerUserId: string, amountCents: number, reason: string | null) {
+        if (!Number.isInteger(amountCents) || amountCents <= 0) throw new Error("INVALID_AMOUNT");
+        if (rows.some((r) => r.marketerUserId === marketerUserId && r.status === "requested")) throw new Error("ADVANCE_PENDING");
+        const row: Row = { id: `adv-${++seq}`, siteId: DSITE, marketerUserId, amountCents, reason: reason && reason.trim() ? reason.trim() : null, status: "requested", decisionNote: null, decidedAtMs: null, expenseId: null, createdAtMs: Date.now() };
+        rows.unshift(row); return mine(row);
+      },
+      async cancel(marketerUserId: string, id: string) {
+        const row = rows.find((r) => r.id === id && r.marketerUserId === marketerUserId && r.status === "requested");
+        if (!row) throw new Error("INVALID_STATE");
+        row.status = "cancelled"; row.decidedAtMs = Date.now(); return mine(row);
+      },
+      async listMine(marketerUserId: string, limit: number) {
+        return rows.filter((r) => r.marketerUserId === marketerUserId).slice(0, limit).map(mine);
+      },
+      async decide(actorId: string, actorRole: string, id: string, approve: boolean, note: string | null) {
+        if (!["admin", "superadmin", "platform_admin", "platform_superadmin"].includes(actorRole)) throw new Error("NOT_AUTHORIZED");
+        const row = rows.find((r) => r.id === id);
+        if (!row) throw new Error("NOT_FOUND");
+        if (row.status !== "requested") throw new Error("INVALID_STATE");
+        const n = note && note.trim() ? note.trim() : null;
+        if (approve) {
+          const exp = await marketerExpensesFake.add(actorId, actorRole, row.siteId, row.marketerUserId, "advance", row.amountCents, n ?? row.reason ?? "Advance request approved");
+          row.status = "approved"; row.expenseId = exp.id;
+        } else { row.status = "rejected"; }
+        row.decisionNote = n; row.decidedAtMs = Date.now();
+        return admin(row);
+      },
+      async adminList(siteId: string | null, status: string | null, limit: number) {
+        return rows.filter((r) => (siteId == null || r.siteId === siteId) && (status == null || r.status === status)).slice(0, limit).map(admin);
+      },
+      async siteOf(id: string) { const r = rows.find((x) => x.id === id); return r ? r.siteId : null; },
+    };
+  })();
+
   const deps: ApiDeps = {
     verifier: stubVerifier(),
     // Silent logger in tests: exercises the request-logging path without spamming test output.
@@ -532,28 +598,8 @@ export async function startTestApi(opts: TestApiOptions = {}): Promise<TestApi> 
     push,
     marketers: makeInMemoryMarketerRepo(),
     referral: referralRepo,
-    marketerExpenses: (() => {
-      const rows: Array<{ id: string; marketerUserId: string; category: string; amountCents: number; note: string | null; createdBy: string | null; createdAtMs: number }> = [];
-      let seq = 0;
-      return {
-        async add(actorId: string, actorRole: string, _siteId: string, marketerUserId: string, category: string, amountCents: number, note: string | null) {
-          if (!["admin", "superadmin", "platform_admin", "platform_superadmin"].includes(actorRole)) throw new Error("NOT_AUTHORIZED");
-          if (!category.trim()) throw new Error("CATEGORY_REQUIRED");
-          if (!Number.isInteger(amountCents) || amountCents <= 0) throw new Error("INVALID_AMOUNT");
-          const row = { id: `exp-${++seq}`, marketerUserId, category: category.trim(), amountCents, note: note && note.trim() ? note.trim() : null, createdBy: actorId, createdAtMs: Date.now() };
-          rows.unshift(row);
-          return { id: row.id, category: row.category, amountCents: row.amountCents, note: row.note, createdAtMs: row.createdAtMs, createdBy: row.createdBy };
-        },
-        async list(marketerUserId: string, limit: number) {
-          return rows.filter((r) => r.marketerUserId === marketerUserId).slice(0, limit)
-            .map((r) => ({ id: r.id, category: r.category, amountCents: r.amountCents, note: r.note, createdAtMs: r.createdAtMs, createdBy: r.createdBy }));
-        },
-        async total(marketerUserId: string) {
-          // Full sum over ALL rows (not the limited page) — mirrors fn_marketer_expenses_total (BUGLOG #23).
-          return rows.filter((r) => r.marketerUserId === marketerUserId).reduce((s, r) => s + r.amountCents, 0);
-        },
-      };
-    })(),
+    marketerExpenses: marketerExpensesFake,
+    marketerAdvances: marketerAdvancesFake,
     config: () => DEFAULT_CONFIG,
     // Brand-aware config for tests: resolve a ref (slug|id) to a TEST brand and return a DISTINCT
     // economy per brand (different maxMultiplier) so tests can prove the response is site-scoped.

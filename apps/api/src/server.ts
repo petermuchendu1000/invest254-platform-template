@@ -50,6 +50,31 @@ function mapExpenseRow(x: Record<string, unknown>) {
   };
 }
 
+/** Map a marketer_advance_requests row (migration 0122) to the MarketerAdvanceRow DTO. */
+function mapAdvanceRow(x: Record<string, unknown>) {
+  const toMs = (v: unknown): number | null => v == null ? null : (v instanceof Date ? v.getTime() : new Date(String(v)).getTime());
+  return {
+    id: String(x.id),
+    amountCents: Number(x.amount_cents) || 0,
+    reason: x.reason == null ? null : String(x.reason),
+    status: String(x.status) as "requested" | "approved" | "rejected" | "cancelled",
+    decisionNote: x.decision_note == null ? null : String(x.decision_note),
+    decidedAtMs: toMs(x.decided_at),
+    expenseId: x.expense_id == null ? null : String(x.expense_id),
+    createdAtMs: toMs(x.created_at) ?? 0,
+  };
+}
+/** Map an admin advance-queue row (adds the marketer identity + brand). */
+function mapAdminAdvanceRow(x: Record<string, unknown>) {
+  return {
+    ...mapAdvanceRow(x),
+    marketerUserId: String(x.marketer_user_id),
+    username: x.username == null ? null : String(x.username),
+    phone: x.phone == null ? null : String(x.phone),
+    siteId: String(x.site_id),
+  };
+}
+
 async function buildDeps(): Promise<ApiDeps> {
   const baseVerifier = makeVerifier();
   const usingDb = Boolean(process.env.DATABASE_URL);
@@ -586,6 +611,32 @@ async function buildDeps(): Promise<ApiDeps> {
         // withdrawable in fn_commission_balance, so displayed totals always reconcile (BUGLOG #23).
         const r = await q.query("select fn_marketer_expenses_total($1::uuid) as total", [marketerUserId]);
         return Number(r.rows[0]?.total ?? 0);
+      },
+    },
+    marketerAdvances: {
+      async request(marketerUserId, amountCents, reason) {
+        const r = await q.query("select * from fn_marketer_request_advance($1::uuid,$2,$3)", [marketerUserId, amountCents, reason]);
+        return mapAdvanceRow(r.rows[0]);
+      },
+      async cancel(marketerUserId, id) {
+        const r = await q.query("select * from fn_marketer_cancel_advance($1::uuid,$2::uuid)", [marketerUserId, id]);
+        return mapAdvanceRow(r.rows[0]);
+      },
+      async listMine(marketerUserId, limit) {
+        const r = await q.query("select * from fn_marketer_advances($1::uuid,$2)", [marketerUserId, limit]);
+        return r.rows.map(mapAdvanceRow);
+      },
+      async decide(actorId, actorRole, id, approve, note) {
+        const r = await q.query("select * from fn_admin_decide_advance($1::uuid,$2,$3::uuid,$4,$5)", [actorId, actorRole, id, approve, note]);
+        return mapAdminAdvanceRow(r.rows[0]);
+      },
+      async adminList(siteId, status, limit) {
+        const r = await q.query("select * from fn_admin_advance_requests($1::uuid,$2,$3)", [siteId, status, limit]);
+        return r.rows.map(mapAdminAdvanceRow);
+      },
+      async siteOf(id) {
+        const r = await q.query("select site_id from marketer_advance_requests where id = $1::uuid", [id]);
+        return r.rows.length ? String(r.rows[0].site_id) : null;
       },
     },
     config: () => gameConfig.active(),

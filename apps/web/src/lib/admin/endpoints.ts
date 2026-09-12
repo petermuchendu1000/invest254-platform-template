@@ -1,5 +1,5 @@
 import { apiFetch } from '@/lib/api/client';
-import type { Paginated, MarketerExpensesResponse, MarketerExpenseRow } from '@/lib/api/types';
+import type { Paginated, MarketerExpensesResponse, MarketerExpenseRow, AdminAdvanceDto } from '@/lib/api/types';
 import type {
   AdjustBalanceResult,
   ResetBalanceResult,
@@ -187,6 +187,16 @@ export const adminApi = {
     apiFetch<unknown>(`/admin/commission-payouts/${id}/paid`, { method: 'POST', token: t, body: { ...(ref ? { ref } : {}), ...(password ? { password } : {}) } }),
   rejectCommissionPayout: (t: string, id: string, reason?: string) =>
     apiFetch<unknown>(`/admin/commission-payouts/${id}/reject`, { method: 'POST', token: t, body: reason ? { reason } : {} }),
+  // 0122 — marketer advance requests: queue (optional status filter) + approve/reject (with a note).
+  advances: (t: string, status?: string) =>
+    apiFetch<{ items: AdminAdvanceDto[] }>('/admin/affiliate/advances', {
+      token: t,
+      query: { status: status && status !== 'all' ? status : undefined, limit: 200 },
+    }),
+  approveAdvance: (t: string, id: string, note?: string) =>
+    apiFetch<AdminAdvanceDto>(`/admin/affiliate/advances/${id}/approve`, { method: 'POST', token: t, body: note ? { note } : {} }),
+  rejectAdvance: (t: string, id: string, note?: string) =>
+    apiFetch<AdminAdvanceDto>(`/admin/affiliate/advances/${id}/reject`, { method: 'POST', token: t, body: note ? { note } : {} }),
 
   // Game config / RTP / seeds
   gameConfig: (t: string) => apiFetch<GameConfigRow>('/admin/game-config', { token: t }),

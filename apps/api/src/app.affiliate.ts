@@ -1,4 +1,4 @@
-import { Router, ApiError, requireAuth, requireRole, requireSite, assertTargetSiteInScope, rateLimit, DEFAULT_SITE_ID, type Ctx } from "./http.js";
+import { Router, ApiError, requireAuth, requireRole, requireSite, adminScopeSite, assertTargetSiteInScope, rateLimit, DEFAULT_SITE_ID, type Ctx } from "./http.js";
 import type { PageQuery } from "@invest254/engine";
 import type { ApiDeps } from "./app.js";
 import { parseB2cResult } from "./app.payments.js";
@@ -27,6 +27,11 @@ const AFFILIATE_STATUS: Readonly<Record<string, number>> = {
   NO_AVAILABLE_COMMISSION: 409,
   PAYOUT_PENDING: 409,
   B2C_UNAVAILABLE: 503,
+  // Advance-request lifecycle (migration 0122)
+  ADVANCE_PENDING: 409,
+  INVALID_AMOUNT: 400,
+  INVALID_STATE: 409,
+  NOT_AUTHORIZED: 403,
 };
 
 /** Parse cursor pagination params from the query string (limit clamped by the repository). */
@@ -209,6 +214,56 @@ export function registerAffiliateRoutes(router: Router, deps: ApiDeps): void {
     ]));
     return { items, totalCents };
   });
+
+  // ── Marketer advance requests (0122): marketer requests a cash advance against future commission →
+  //    admin approves (logs a marketer_expense 'advance', reducing withdrawable) or rejects → the
+  //    system NOTIFIES the marketer of the outcome. One open request per marketer at a time. ──
+  router.post(`${BASE}/affiliate/advances`, auth, site, marketer, async (ctx: Ctx) => {
+    const b = (ctx.body ?? {}) as Record<string, unknown>;
+    const amountCents = Number(b.amountCents);
+    if (!Number.isInteger(amountCents) || amountCents <= 0) throw new ApiError("VALIDATION", "amountCents must be a positive integer (cents)", 400);
+    const reason = typeof b.reason === "string" && b.reason.trim() ? b.reason.trim().slice(0, 500) : null;
+    return domain(() => deps.marketerAdvances.request(ctx.claims!.userId, amountCents, reason));
+  });
+
+  // The marketer's own advance requests (newest first) — powers the dashboard status list.
+  router.get(`${BASE}/affiliate/advances`, auth, site, marketer, async (ctx: Ctx) => {
+    const limit = Number(ctx.query.get("limit")) || 50;
+    return { items: await domain(() => deps.marketerAdvances.listMine(ctx.claims!.userId, limit)) };
+  });
+
+  // Marketer cancels their OWN still-pending request (safety valve).
+  router.post(`${BASE}/affiliate/advances/:id/cancel`, auth, site, marketer, async (ctx: Ctx) =>
+    domain(() => deps.marketerAdvances.cancel(ctx.claims!.userId, ctx.params.id!)));
+
+  // Admin queue (brand-scoped; platform_superadmin sees all). Optional ?status= filter.
+  router.get(`${BASE}/admin/affiliate/advances`, auth, admin, async (ctx: Ctx) => {
+    const status = ctx.query.get("status");
+    const limit = Number(ctx.query.get("limit")) || 100;
+    return { items: await domain(() => deps.marketerAdvances.adminList(adminScopeSite(ctx) ?? null, status, limit)) };
+  });
+
+  // Approve/reject. The RPC writes the admin_actions audit; here we COMMUNICATE the outcome to the
+  // marketer via a per-user in-app notification (approved -> success; rejected -> warning + reason).
+  const decideAdvance = (approve: boolean) => async (ctx: Ctx) => {
+    assertTargetSiteInScope(ctx, await deps.marketerAdvances.siteOf(ctx.params.id!));
+    const b = (ctx.body ?? {}) as Record<string, unknown>;
+    const note = typeof b.note === "string" && b.note.trim() ? b.note.trim().slice(0, 500) : null;
+    const row = await domain(() => deps.marketerAdvances.decide(ctx.claims!.userId, ctx.claims!.role ?? "player", ctx.params.id!, approve, note));
+    try {
+      const kes = `KES ${(row.amountCents / 100).toLocaleString("en-KE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+      await deps.notifications.create(approve
+        ? { userId: row.marketerUserId, title: "Advance approved",
+            body: `Your advance of ${kes} was approved and logged. It will be recovered from your upcoming commission.${note ? ` Note: ${note}` : ""}`,
+            level: "success", dismissible: true, category: "advance", createdBy: ctx.claims!.userId }
+        : { userId: row.marketerUserId, title: "Advance declined",
+            body: `Your advance request for ${kes} was declined.${note ? ` Reason: ${note}` : ""}`,
+            level: "warning", dismissible: true, category: "advance", createdBy: ctx.claims!.userId });
+    } catch { /* never fail the decision because a notification couldn't be written */ }
+    return row;
+  };
+  router.post(`${BASE}/admin/affiliate/advances/:id/approve`, auth, admin, decideAdvance(true));
+  router.post(`${BASE}/admin/affiliate/advances/:id/reject`, auth, admin, decideAdvance(false));
 
   // Operational: run the daily revenue-share accrual for a trading day (idempotent). In
   // production a daily cron calls this (or the RPC directly via service role).

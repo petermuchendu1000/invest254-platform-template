@@ -13,6 +13,7 @@ import type {
   LedgerEntryDto,
   MeDto,
   NotificationDto,
+  MarketerAdvanceDto,
   Paginated,
   PayoutRequestResult,
   ReferralSummaryDto,
@@ -176,6 +177,14 @@ export const api = {
     apiFetch<{ items: CommissionPayoutDto[] }>('/me/referral/payouts', { token }),
   affiliateExpenses: (token: string) =>
     apiFetch<MarketerExpensesResponse>('/affiliate/expenses', { token }),
+
+  // Marketer advance requests (0122): request a cash advance, list own requests, cancel a pending one.
+  affiliateAdvances: (token: string) =>
+    apiFetch<{ items: MarketerAdvanceDto[] }>('/affiliate/advances', { token }),
+  requestAdvance: (token: string, body: { amountCents: number; reason?: string }) =>
+    apiFetch<MarketerAdvanceDto>('/affiliate/advances', { method: 'POST', token, body }),
+  cancelAdvance: (token: string, id: string) =>
+    apiFetch<MarketerAdvanceDto>(`/affiliate/advances/${id}/cancel`, { method: 'POST', token }),
 
   // Sticky notifications (J7)
   notifications: (token: string) => apiFetch<{ items: NotificationDto[] }>('/notifications', { token }),

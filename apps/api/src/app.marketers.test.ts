@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { startTestApi, type TestApi } from "./testutil.js";
+import { SITE_B } from "./testutil.js";
 
 const json = (res: Response): Promise<any> => res.json() as Promise<any>;
 
@@ -133,5 +134,42 @@ test("admin edits a marketer's name + phone; duplicate phone rejected; players g
 
     // players cannot edit marketers
     assert.equal((await req(api, "PATCH", `/api/v1/admin/marketers/${a.id}`, { token: PLAYER, body: { name: "x" } })).status, 403);
+  } finally { await api.close(); }
+});
+
+test("login-web identifies a marketer whose wallet is on a DIFFERENT brand than the password-matched account (jake bug)", async () => {
+  const api = await startTestApi();
+  try {
+    const phone = "0799123456";
+    // 1) The person's WEBSITE account (phone+password) lives on the DEFAULT brand (invest254 / SITE_A).
+    //    anyBrand login will verify the password here and resolve session.site = SITE_A.
+    const reg = await req(api, "POST", "/api/v1/auth/register", { body: { phone, username: "jakebug", password: "Password1" } });
+    assert.equal(reg.status, 201, "register on default brand");
+
+    // 2) Their marketer WALLET is created on a NON-default brand (SITE_B) — exactly jake's shape:
+    //    marketer on 'safitraders' but the password matched his 'invest254' account first.
+    const admB = `u-admin:admin:${SITE_B}`; // stub verifier 3rd segment = site claim -> adminScopeSite = SITE_B
+    const created = await req(api, "POST", "/api/v1/admin/marketers", { token: admB, body: { name: "Jake Ochieng", phone } });
+    assert.equal(created.status, 201, "marketer wallet created on SITE_B");
+
+    // 3) The app logs in with phone + website password and NO brand hint (single generic build).
+    //    Before the fix: session.site = SITE_A has no wallet -> 403 NOT_MARKETER.
+    //    After the fix: fall back to this phone's marketer wallet on ANY brand -> the SITE_B wallet.
+    const res = await req(api, "POST", "/api/v1/marketers/auth/login-web", { body: { phone, password: "Password1" } });
+    assert.equal(res.status, 200, "marketer is identified via the cross-brand wallet fallback");
+    const body = await json(res);
+    assert.ok(body.token, "a marketer-scoped token is issued");
+    assert.equal(body.marketer?.site_id, SITE_B, "the correct (SITE_B) marketer wallet is loaded");
+  } finally { await api.close(); }
+});
+
+test("login-web still 403s when the phone has NO marketer wallet on ANY brand (fallback doesn't over-reach)", async () => {
+  const api = await startTestApi();
+  try {
+    const phone = "0799999001";
+    assert.equal((await req(api, "POST", "/api/v1/auth/register", { body: { phone, username: "plainplayer", password: "Password1" } })).status, 201);
+    // No marketer wallet exists for this phone on any brand.
+    const res = await req(api, "POST", "/api/v1/marketers/auth/login-web", { body: { phone, password: "Password1" } });
+    assert.equal(res.status, 403, "a non-marketer stays NOT_MARKETER");
   } finally { await api.close(); }
 });

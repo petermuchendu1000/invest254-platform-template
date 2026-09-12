@@ -14,6 +14,9 @@ import {
   useRequestCommissionPayout,
   useMarketerProfile,
   useMarketerDemoTopup,
+  useMyAdvances,
+  useRequestAdvance,
+  useCancelAdvance,
 } from '@/lib/affiliate/hooks';
 
 /**
@@ -41,6 +44,13 @@ export function MarketerDashboardView() {
   const demoWallet = useMarketerProfile(true);        // simulated (funny-money) wallet balance
   const demoTopup = useMarketerDemoTopup();            // self-service top-up (no real cash)
   const [demoMsg, setDemoMsg] = useState<string | null>(null);
+
+  const advances = useMyAdvances(true);                // marketer's advance requests (polled)
+  const requestAdvance = useRequestAdvance();
+  const cancelAdvance = useCancelAdvance();
+  const [advAmount, setAdvAmount] = useState('');
+  const [advReason, setAdvReason] = useState('');
+  const [advMsg, setAdvMsg] = useState<{ tone: 'up' | 'down'; text: string } | null>(null);
 
   const s = q.data;
   const isNotAffiliate = q.error instanceof ApiError && q.error.code === 'NOT_AFFILIATE';
@@ -98,6 +108,25 @@ export function MarketerDashboardView() {
       onSuccess: (r) => setDemoMsg(`Demo balance topped up to ${formatKes(r.balanceCents)}.`),
       onError: () => setDemoMsg('Could not top up demo balance. Try again shortly.'),
     });
+  };
+
+  const advRows = advances.data?.items ?? [];
+  const hasPendingAdvance = advRows.some((a) => a.status === 'requested');
+  const submitAdvance = () => {
+    setAdvMsg(null);
+    const kes = Number(advAmount);
+    const amountCents = Math.round(kes * 100);
+    if (!Number.isFinite(kes) || amountCents <= 0) { setAdvMsg({ tone: 'down', text: 'Enter a valid amount in KES.' }); return; }
+    requestAdvance.mutate(
+      { amountCents, ...(advReason.trim() ? { reason: advReason.trim() } : {}) },
+      {
+        onSuccess: () => { setAdvAmount(''); setAdvReason(''); setAdvMsg({ tone: 'up', text: 'Advance requested — an admin will review it shortly. You’ll be notified of the decision.' }); },
+        onError: (e) => {
+          const code = e instanceof ApiError ? e.code : '';
+          setAdvMsg({ tone: 'down', text: code === 'ADVANCE_PENDING' ? 'You already have a pending advance request.' : 'Could not submit your request. Try again shortly.' });
+        },
+      },
+    );
   };
 
   const referralCode = ref.data?.referralCode ?? s?.referralCode ?? '';
@@ -265,6 +294,68 @@ export function MarketerDashboardView() {
             ) : null}
           </section>
 
+          {/* Advances — request cash against future commission */}
+          <section>
+            <SectionTitle>Advances</SectionTitle>
+            <div className="rounded-xl border border-border bg-surface-2 p-3">
+              <p className="text-[11px] leading-snug text-muted">
+                Need cash before payday? Request an advance against your upcoming commission. An admin reviews every request &mdash; approved advances appear in your Expenses &amp; advances above (so your withdrawable already reflects them) and are recovered from future earnings. You&apos;ll be notified of the decision.
+              </p>
+              <div className="mt-2.5 flex flex-col gap-2 sm:flex-row">
+                <input
+                  inputMode="decimal"
+                  value={advAmount}
+                  onChange={(e) => setAdvAmount(e.target.value.replace(/[^0-9.]/g, ''))}
+                  placeholder="Amount (KES)"
+                  aria-label="Advance amount in KES"
+                  className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm tabular-nums text-fg outline-none focus:border-accent sm:max-w-[10rem]"
+                />
+                <input
+                  value={advReason}
+                  onChange={(e) => setAdvReason(e.target.value)}
+                  maxLength={200}
+                  placeholder="Reason (optional)"
+                  aria-label="Advance reason"
+                  className="w-full flex-1 rounded-lg border border-border bg-surface px-3 py-2 text-sm text-fg outline-none focus:border-accent"
+                />
+                <button
+                  onClick={submitAdvance}
+                  disabled={requestAdvance.isPending || hasPendingAdvance || !advAmount}
+                  className="shrink-0 rounded-lg bg-accent py-2 text-sm font-bold text-black transition hover:brightness-105 disabled:opacity-50 sm:px-5"
+                >
+                  {hasPendingAdvance ? 'Pending review' : requestAdvance.isPending ? 'Requesting…' : 'Request advance'}
+                </button>
+              </div>
+              {advMsg ? <p className={`mt-2 text-[11px] ${advMsg.tone === 'up' ? 'text-up' : 'text-down'}`}>{advMsg.text}</p> : null}
+            </div>
+
+            {advRows.length > 0 ? (
+              <ul className="mt-2 flex flex-col gap-1.5">
+                {advRows.map((a) => (
+                  <li key={a.id} className="flex items-center gap-3 rounded-xl border border-border bg-surface-2 px-3 py-2">
+                    <span className="flex min-w-0 flex-1 flex-col leading-tight">
+                      <span className="truncate text-sm font-medium tabular-nums text-fg">{formatKes(a.amountCents)}</span>
+                      <span className="truncate text-[11px] text-muted">
+                        {a.reason ?? '—'} · {new Date(a.createdAtMs).toLocaleDateString('en-KE')}
+                        {a.decisionNote ? ` · ${a.decisionNote}` : ''}
+                      </span>
+                    </span>
+                    <AdvanceBadge status={a.status} />
+                    {a.status === 'requested' ? (
+                      <button
+                        onClick={() => cancelAdvance.mutate(a.id)}
+                        disabled={cancelAdvance.isPending}
+                        className="shrink-0 text-[11px] text-muted underline underline-offset-2 hover:text-fg disabled:opacity-50"
+                      >
+                        Cancel
+                      </button>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </section>
+
           {/* Recent earnings */}
           <section>
             <SectionTitle>Recent earnings</SectionTitle>
@@ -343,6 +434,18 @@ function Kpi({ label, value, tone }: { label: string; value: string; tone?: 'up'
       <span className={`text-base font-bold tabular-nums ${tone === 'up' ? 'text-up' : 'text-fg'}`}>{value}</span>
     </div>
   );
+}
+
+/** Coloured status pill for an advance request. */
+function AdvanceBadge({ status }: { status: 'requested' | 'approved' | 'rejected' | 'cancelled' }) {
+  const map = {
+    requested: { label: 'Pending', cls: 'border-amber-400/40 bg-amber-400/10 text-amber-500' },
+    approved: { label: 'Approved', cls: 'border-up/40 bg-up/10 text-up' },
+    rejected: { label: 'Declined', cls: 'border-down/40 bg-down/10 text-down' },
+    cancelled: { label: 'Cancelled', cls: 'border-border bg-surface-2 text-muted' },
+  } as const;
+  const m = map[status] ?? map.cancelled;
+  return <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold ${m.cls}`}>{m.label}</span>;
 }
 
 /** One line of the marketer's reconciling commission statement (earned → −expenses → −paid → available). */

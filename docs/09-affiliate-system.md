@@ -120,6 +120,18 @@ number misleads. Two invariants make it tie out: (1) the expense TOTAL shown is 
 is the accrued-marketer base (`marketerEarnedCents` = `fn_commission_balance.earned_cents`), the same
 base that funds held/paid/available — a player's instant 5% never leaks into a marketer's commission net.
 
+**Advance requests (migration 0122).** A marketer can REQUEST a cash advance against future commission
+from their dashboard (`POST /affiliate/advances`, one open request at a time). It lands in the admin
+**Advances** queue (marketer-finance). An admin **approves** — which logs a `marketer_expenses` row
+(category `advance`, so it immediately nets the withdrawable and shows in the statement above) and is
+recovered from upcoming commission — or **rejects** with a reason. Either way the system NOTIFIES the
+marketer (per-user in-app notification, category `advance`), and every decision is written to
+`admin_actions`. The request/decision flow does NOT move money; cash disbursement of an approved advance
+goes through the usual (manual) payout process. Endpoints: `GET /affiliate/advances` (marketer),
+`POST /affiliate/advances/:id/cancel` (marketer), `GET /admin/affiliate/advances` +
+`POST /admin/affiliate/advances/:id/{approve,reject}` (admin). RPCs: `fn_marketer_request_advance`,
+`fn_marketer_cancel_advance`, `fn_admin_decide_advance`, `fn_marketer_advances`, `fn_admin_advance_requests`.
+
 ## 5. Payouts — request → approve → M-Pesa B2C result ✅ (I4)
 A marketer claims their earned commission; a finance admin authorizes it; the money goes out over
 M-Pesa **B2C** and the asynchronous result settles the books. This mirrors the withdrawal

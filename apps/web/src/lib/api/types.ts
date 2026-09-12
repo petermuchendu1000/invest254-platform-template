@@ -273,6 +273,26 @@ export interface MarketerExpensesResponse {
   totalCents: Cents;
 }
 
+/** Marketer-initiated advance request lifecycle (migration 0122). */
+export type AdvanceStatus = 'requested' | 'approved' | 'rejected' | 'cancelled';
+export interface MarketerAdvanceDto {
+  id: string;
+  amountCents: Cents;
+  reason: string | null;
+  status: AdvanceStatus;
+  decisionNote: string | null;
+  decidedAtMs: number | null;
+  expenseId: string | null;
+  createdAtMs: number;
+}
+/** Admin queue view of an advance request (adds the marketer's identity + brand). */
+export interface AdminAdvanceDto extends MarketerAdvanceDto {
+  marketerUserId: string;
+  username: string | null;
+  phone: string | null;
+  siteId: string;
+}
+
 /** A sticky notification shown to the player (J7). */
 export interface NotificationDto {
   id: number;

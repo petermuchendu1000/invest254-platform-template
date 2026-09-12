@@ -91,6 +91,37 @@ export interface MarketerExpensesDeps {
   total(marketerUserId: string): Promise<number>;
 }
 
+/** One marketer-initiated advance request (migration 0122). */
+export interface MarketerAdvanceRow {
+  id: string;
+  amountCents: number;
+  reason: string | null;
+  status: "requested" | "approved" | "rejected" | "cancelled";
+  decisionNote: string | null;
+  decidedAtMs: number | null;
+  expenseId: string | null;
+  createdAtMs: number;
+}
+/** Admin queue view of an advance request (adds the marketer's identity + brand). */
+export interface AdminAdvanceRow extends MarketerAdvanceRow {
+  marketerUserId: string;
+  username: string | null;
+  phone: string | null;
+  siteId: string;
+}
+/** Marketer advance-request persistence (marketer requests/cancels; admin decides; both sides read). */
+export interface MarketerAdvancesDeps {
+  request(marketerUserId: string, amountCents: number, reason: string | null): Promise<MarketerAdvanceRow>;
+  cancel(marketerUserId: string, id: string): Promise<MarketerAdvanceRow>;
+  listMine(marketerUserId: string, limit: number): Promise<MarketerAdvanceRow[]>;
+  /** Approve (logs a marketer_expense 'advance') or reject (records the reason). Returns the admin row
+   *  so the caller can notify the marketer (row carries marketerUserId). */
+  decide(actorId: string, actorRole: string, id: string, approve: boolean, note: string | null): Promise<AdminAdvanceRow>;
+  adminList(siteId: string | null, status: string | null, limit: number): Promise<AdminAdvanceRow[]>;
+  /** Brand of a request (for admin site-scope enforcement before deciding). */
+  siteOf(id: string): Promise<string | null>;
+}
+
 export interface ApiDeps {
   /** JWT verifier for player/admin routes; null → DEV header auth (see requireAuth). */
   verifier: Verifier | null;
@@ -157,6 +188,8 @@ export interface ApiDeps {
   referral: ReferralRepo;
   /** Admin-logged marketer expenses (transparency, migration 0068). */
   marketerExpenses: MarketerExpensesDeps;
+  /** Marketer-initiated advance requests (migration 0122): request -> admin approve/reject -> log. */
+  marketerAdvances: MarketerAdvancesDeps;
   /** Platform-wide master switches (migration 0092): deposits/withdrawals/play/marketers/registrations.
    * Optional so test doubles need not supply it; absent => gate skipped (fail-open). server.ts always sets it. */
   platformGate?: PlatformGate;
