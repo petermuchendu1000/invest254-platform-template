@@ -7,9 +7,13 @@ import { DigitHeatmap } from '@/components/game/digits/DigitHeatmap';
 import { DerivChart } from '@/components/game/digits/DerivChart';
 import { VolatilitySelector } from '@/components/game/digits/VolatilitySelector';
 import { EntryScanner, type ScanSuggestion } from '@/components/game/digits/EntryScanner';
+import { DigitResultModal, type DigitResult } from '@/components/game/digits/DigitResultModal';
+import { InsufficientBalanceModal, type InsufficientFundsInfo } from '@/components/game/digits/InsufficientBalanceModal';
+import { DigitHistoryPanel } from '@/components/game/digits/DigitHistoryPanel';
 import { useInvalidateDigitHistory } from '@/lib/game/useDigitHistory';
 import { useGameSocket, type DigitSettledData } from '@/lib/game/GameSocketProvider';
 import { instrumentById, DEFAULT_INSTRUMENT_ID, type Instrument } from '@/lib/game/instruments';
+import { payoutForStake, stakeForPayout } from '@/lib/game/digitPayout';
 import { useDisplayMoney, USD_LIMITS } from '@/lib/money';
 import { api } from '@/lib/api/endpoints';
 import { useBrand } from '@/lib/brand/BrandProvider';
@@ -121,10 +125,20 @@ export function DigitsTradeScreen() {
   const presets = useMemo(() => (isForeign ? [5, 10, 25, 50, 100, 250] : [50, 100, 200, 500, 1000, 5000]), [isForeign]);
   const step = isForeign ? 1 : 50;
   const [stake, setStake] = useState<string>(String(isForeign ? USD_LIMITS.minStake : 200));
+  // Stake <-> Payout entry. In 'payout' mode the input is a TARGET gross payout and the stake is
+  // derived from the PRIMARY outcome's odds (mirrors the reference, whose readout tracks the green
+  // side). `stake`/`stakeCents` stay the single source of truth for place()/onCta/AUTO.
+  const [amountMode, setAmountMode] = useState<'stake' | 'payout'>('stake');
+  const [payoutInput, setPayoutInput] = useState<string>('');
+  const primaryProb = winProbability(outcomesFor(market)[0].key, barrier);
   const stakeCents = useMemo(() => {
+    if (amountMode === 'payout') {
+      const p = Number.parseFloat(payoutInput);
+      return Number.isFinite(p) && p > 0 ? stakeForPayout(toKesCents(p), primaryProb, PAYOUT_FACTOR) : 0;
+    }
     const n = Number.parseFloat(stake);
     return Number.isFinite(n) && n > 0 ? toKesCents(n) : 0;
-  }, [stake, toKesCents]);
+  }, [amountMode, stake, payoutInput, primaryProb, toKesCents]);
 
   // Client-side stake validity (money of record is KES cents). Blocks below-min / above-max BEFORE
   // hitting the engine, and drives a friendly currency-formatted hint (never raw cents).
@@ -154,6 +168,9 @@ export function DigitsTradeScreen() {
   // Session state (authoritative — driven by server digit_settled events).
   const [pnl, setPnl] = useState(0);
   const [flash, setFlash] = useState<{ won: boolean; delta: number } | null>(null);
+  // Reactive mirror of the in-flight contract (pendingRef is a ref, so it can't drive render). Drives
+  // the "trade in play" chip over the chart; set on place, cleared on settle.
+  const [pendingView, setPendingView] = useState<{ label: string; stakeCents: number } | null>(null);
   const [running, setRunning] = useState(false);
   // Persisted trade-history feed invalidation + chart entry/settle markers for the current contract.
   const invalidateHistory = useInvalidateDigitHistory();
@@ -161,6 +178,10 @@ export function DigitsTradeScreen() {
   const [settleMarker, setSettleMarker] = useState<{ digit: number; won: boolean; tSec: number } | null>(null);
   // Transiently highlights the CTA the Entry Scanner suggested after "Load Deep Scanner Bot".
   const [loadedOutcome, setLoadedOutcome] = useState<Outcome | null>(null);
+  // Settled MANUAL trade shown as a focused result card (receipt). Null = no card open.
+  const [result, setResult] = useState<DigitResult | null>(null);
+  // A MANUAL trade blocked for lack of funds -> explicit top-up modal (current/required/shortfall).
+  const [needFunds, setNeedFunds] = useState<InsufficientFundsInfo | null>(null);
 
   const [snap, setSnap] = useState<{ price: number; digit: number | null; changePct: number; freqs: number[] }>({
     price: 0,
@@ -178,7 +199,7 @@ export function DigitsTradeScreen() {
   pnlRef.current = pnl;
 
   const totalReturnCents = useCallback(
-    (cents: number, outcome: Outcome) => Math.round((cents * PAYOUT_FACTOR) / winProbability(outcome, barrier)),
+    (cents: number, outcome: Outcome) => payoutForStake(cents, winProbability(outcome, barrier), PAYOUT_FACTOR),
     [barrier],
   );
 
@@ -198,6 +219,7 @@ export function DigitsTradeScreen() {
     const off = onDigitSettled((s: DigitSettledData) => {
       const settled = pendingRef.current; // capture BEFORE clearing (label + manual flag)
       pendingRef.current = null;
+      setPendingView(null); // contract resolved -> drop the "in play" chip
       const won = s.won;
       const delta = s.pnlCents; // authoritative P/L in cents
       lossStreakRef.current = won ? 0 : lossStreakRef.current + 1;
@@ -205,16 +227,21 @@ export function DigitsTradeScreen() {
       setFlash({ won, delta });
       setSettleMarker({ digit: s.digit, won, tSec: Math.floor((getLastInstrumentTick()?.t ?? Date.now()) / 1000) });
       invalidateHistory(); // persist-backed receipt now exists → refresh the history panel
-      // Professional result notification for MANUAL trades (the AUTO bot reports P/L via its own HUD).
+      // MANUAL trades open a focused result card (receipt); the AUTO bot reports P/L via its own HUD.
       if (settled?.manual) {
-        const detail = `${settled.label} · settled on digit ${s.digit}`;
-        if (won) toast.push({ tone: 'success', title: `You won +${fmt(delta)}`, description: detail });
-        else toast.push({ tone: 'error', title: `Lost ${fmt(settled.stakeCents)}`, description: detail });
+        setResult({
+          won,
+          label: settled.label,
+          digit: s.digit,
+          stakeCents: settled.stakeCents,
+          payoutCents: s.payoutCents,
+          pnlCents: delta,
+        });
       }
       window.setTimeout(() => setFlash(null), 900);
     });
     return off;
-  }, [onDigitSettled, invalidateHistory, getLastInstrumentTick, toast, fmt]);
+  }, [onDigitSettled, invalidateHistory, getLastInstrumentTick]);
 
   const place = useCallback(
     (outcome: Outcome, cents: number, manual = false): boolean => {
@@ -244,10 +271,7 @@ export function DigitsTradeScreen() {
         return false;
       }
       if (cents > spendable) {
-        if (manual) {
-          toast.push({ tone: 'error', title: 'Not enough balance', description: `You need ${fmt(cents)} to place this trade — tap to top up.` });
-          openDeposit({ amountCents: cents });
-        }
+        if (manual) setNeedFunds({ requiredCents: cents, currentCents: spendable });
         return false;
       }
       if (winProbability(outcome, barrier) <= 0) {
@@ -257,16 +281,10 @@ export function DigitsTradeScreen() {
       const target = outcome === 'over' || outcome === 'under' ? barrier : outcome === 'matches' || outcome === 'differs' ? pick : 0;
       const label = contractLabel(outcome, barrier, pick);
       pendingRef.current = { stakeCents: cents, outcome, manual, label };
+      setPendingView({ label, stakeCents: cents });
       setEntryMarker({ tSec: Math.floor((getLastInstrumentTick()?.t ?? Date.now()) / 1000) });
       setSettleMarker(null);
       openDigit({ instrumentId: instId, kind: outcome, target, stakeCents: cents });
-      if (manual) {
-        toast.push({
-          tone: 'info',
-          title: `Trade placed · ${fmt(cents)}`,
-          description: `${label} on ${instrument.short} · Potential payout ${fmt(totalReturnCents(cents, outcome))}`,
-        });
-      }
       return true;
     },
     [token, spendable, openDeposit, openAuth, toast, barrier, pick, instId, instrument, openDigit, minStakeCents, maxStakeCents, getLastInstrumentTick, fmt, both, totalReturnCents],
@@ -333,9 +351,15 @@ export function DigitsTradeScreen() {
   const shareLabel =
     market === 'evenodd' ? 'Even share' : market === 'overunder' ? `Over ${barrier} share` : `Digit ${pick} share`;
 
+  // Round a cents figure into the input's display-currency string (whole units for KES brands).
+  const toAmountStr = (cents: number) =>
+    isForeign ? String(Math.round(toDisplay(cents) * 100) / 100) : String(Math.round(toDisplay(cents)));
+
   const stepStake = (dir: 1 | -1) => {
-    const n = Math.max(0, (Number.parseFloat(stake) || 0) + dir * step);
-    setStake(isForeign ? String(Math.round(n * 100) / 100) : String(Math.round(n)));
+    const cur = amountMode === 'payout' ? payoutInput : stake;
+    const setter = amountMode === 'payout' ? setPayoutInput : setStake;
+    const n = Math.max(0, (Number.parseFloat(cur) || 0) + dir * step);
+    setter(isForeign ? String(Math.round(n * 100) / 100) : String(Math.round(n)));
   };
 
   const onCta = (outcome: Outcome) => {
@@ -374,7 +398,14 @@ export function DigitsTradeScreen() {
   }, [running]);
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-1.5 overflow-y-auto overflow-x-hidden overscroll-contain p-0.5 pb-2 sm:gap-2">
+    <div className="flex h-full min-h-0 flex-col gap-1.5 overflow-y-auto overflow-x-hidden overscroll-contain p-0.5 pb-2 sm:gap-2 lg:flex-row lg:gap-3 lg:overflow-hidden lg:p-1">
+      {/* Left rail (desktop only): persisted trade history. Mobile keeps history on its own page. */}
+      <aside className="hidden lg:flex lg:w-[300px] lg:shrink-0 lg:min-h-0 lg:flex-col lg:overflow-y-auto">
+        <DigitHistoryPanel />
+      </aside>
+
+      {/* Center pane: market tabs + chart + heatmap + digit selector (chart flex-fills on desktop) */}
+      <div className="flex min-h-0 flex-col gap-1.5 sm:gap-2 lg:min-w-0 lg:flex-1 lg:overflow-hidden">
       {/* Market tabs — Matches/Differs · Even/Odd · Over/Under (active = outlined accent pill) */}
       <div className="flex items-center gap-1.5 xs:gap-2">
         {MARKETS.map((m) => (
@@ -399,7 +430,7 @@ export function DigitsTradeScreen() {
           returning from the AI scanner (which grows the console) can NEVER squeeze the chart — the
           root scrolls instead. Also must NOT clip (overflow-visible) so the toolbar dropdowns
           (timeframe / volatility) can extend beyond it; clipping is on the chart canvas only, below. */}
-      <div className="relative flex h-[42vh] min-h-[220px] shrink-0 flex-col rounded-xl border border-border bg-surface">
+      <div className="relative flex h-[42vh] min-h-[220px] shrink-0 flex-col rounded-xl border border-border bg-surface lg:h-auto lg:min-h-0 lg:flex-1 lg:shrink">
         <div className="flex items-center gap-1.5 p-2 pb-1">
           {/* 1T timeframe / zoom */}
           <div ref={tfRef} className="relative shrink-0">
@@ -461,6 +492,12 @@ export function DigitsTradeScreen() {
             barSpacing={tf.barSpacing}
             markers={chartMarkers}
           />
+          {pendingView ? (
+            <div className="pointer-events-none absolute inset-x-0 top-2 mx-auto flex w-fit items-center gap-2 rounded-full border border-accent/40 bg-surface-2/90 px-3 py-1 text-[12px] font-semibold text-fg shadow-lg backdrop-blur">
+              <span className="h-3 w-3 animate-spin rounded-full border-2 border-accent/30 border-t-accent" />
+              {pendingView.label} · {fmt(pendingView.stakeCents)}
+            </div>
+          ) : null}
           {flash ? (
             <div
               className={cn(
@@ -507,7 +544,10 @@ export function DigitsTradeScreen() {
           </div>
         </div>
       ) : null}
+      </div>
 
+      {/* Right pane: the trade console + AI Entry Scanner (fixed-width rail on desktop) */}
+      <div className="flex min-h-0 flex-col gap-1.5 sm:gap-2 lg:w-[380px] lg:shrink-0 lg:overflow-y-auto">
       {/* Console */}
       <div className="flex min-h-0 flex-col gap-1.5">
         {/* AUTO / MANUAL */}
@@ -527,38 +567,64 @@ export function DigitsTradeScreen() {
               ))}
             </div>
 
-            {/* Stake stepper */}
+            {/* Amount mode: enter a STAKE or a target PAYOUT (resolved against the primary side). */}
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-muted">Amount</span>
+              <div className="flex rounded-lg border border-border bg-surface p-0.5 text-[11px] font-bold">
+                {(['stake', 'payout'] as const).map((mm) => (
+                  <button
+                    key={mm}
+                    type="button"
+                    aria-pressed={amountMode === mm}
+                    onClick={() => {
+                      if (mm === amountMode) return;
+                      if (mm === 'payout') setPayoutInput(toAmountStr(payoutForStake(stakeCents, primaryProb, PAYOUT_FACTOR)));
+                      else setStake(toAmountStr(stakeCents));
+                      setAmountMode(mm);
+                    }}
+                    className={cn('rounded-md px-2.5 py-1 capitalize transition', amountMode === mm ? 'bg-accent text-accent-fg' : 'text-muted hover:text-fg')}
+                  >
+                    {mm}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Amount stepper — edits the active quantity (stake, or target payout in payout mode) */}
             <div className="flex items-center gap-3">
-              <button type="button" onClick={() => stepStake(-1)} aria-label="Decrease stake"
+              <button type="button" onClick={() => stepStake(-1)} aria-label="Decrease amount"
                 className="grid h-9 w-9 shrink-0 place-items-center rounded-full border border-border bg-surface text-xl font-light text-muted transition hover:border-accent/60 hover:text-fg">−</button>
               <div className="flex-1 text-center">
-                <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-muted">Stake</div>
+                <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-muted">{amountMode === 'payout' ? 'Payout' : 'Stake'}</div>
                 <div className="flex items-baseline justify-center gap-1.5">
                   <span className="text-base font-bold text-muted">{symbol}</span>
                   <input
                     inputMode="decimal"
-                    value={stake}
-                    onChange={(e) => setStake(e.target.value.replace(/[^0-9.]/g, '').replace(/(\..*)\./g, '$1'))}
-                    aria-label="Stake amount"
+                    value={amountMode === 'payout' ? payoutInput : stake}
+                    onChange={(e) => {
+                      const v = e.target.value.replace(/[^0-9.]/g, '').replace(/(\..*)\./g, '$1');
+                      if (amountMode === 'payout') setPayoutInput(v); else setStake(v);
+                    }}
+                    aria-label={amountMode === 'payout' ? 'Target payout' : 'Stake amount'}
                     className="w-28 bg-transparent text-center text-[20px] font-extrabold tabular-nums text-fg outline-none"
                   />
                 </div>
               </div>
-              <button type="button" onClick={() => stepStake(1)} aria-label="Increase stake"
+              <button type="button" onClick={() => stepStake(1)} aria-label="Increase amount"
                 className="grid h-9 w-9 shrink-0 place-items-center rounded-full border border-border bg-surface text-xl font-light text-muted transition hover:border-accent/60 hover:text-fg">+</button>
             </div>
 
             {/* Presets */}
             <div className="grid grid-cols-6 gap-1.5 xs:gap-2">
               {presets.map((q) => {
-                const active = Number(stake) === q;
-                const belowMin = toKesCents(q) < minStakeCents;
+                const active = Number(amountMode === 'payout' ? payoutInput : stake) === q;
+                const belowMin = amountMode === 'stake' && toKesCents(q) < minStakeCents;
                 return (
                   <button
                     key={q}
                     type="button"
                     disabled={belowMin}
-                    onClick={() => setStake(String(q))}
+                    onClick={() => (amountMode === 'payout' ? setPayoutInput(String(q)) : setStake(String(q)))}
                     className={cn(
                       'rounded-lg border py-1.5 text-[clamp(10.5px,2.8vw,12.5px)] font-semibold tabular-nums transition disabled:cursor-not-allowed disabled:opacity-30',
                       active ? 'border-accent/55 bg-accent/15 text-fg' : 'border-border bg-surface-2 text-muted hover:text-fg',
@@ -568,6 +634,13 @@ export function DigitsTradeScreen() {
                   </button>
                 );
               })}
+            </div>
+
+            {/* Resolved readout: the OTHER quantity — potential payout in Stake mode, required stake
+                in Payout mode — computed against the primary side (Even/Over/Match), like the reference. */}
+            <div className="flex items-center justify-between rounded-lg border border-border bg-surface-2 px-3 py-2">
+              <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-muted">{amountMode === 'payout' ? 'Stake' : 'Payout'}</span>
+              <span className="text-sm font-bold tabular-nums text-fg">{fmt(amountMode === 'payout' ? stakeCents : payoutForStake(stakeCents, primaryProb, PAYOUT_FACTOR))}</span>
             </div>
 
             {/* Min/max hint — always shows the site minimum (currency-formatted, never raw cents);
@@ -618,6 +691,15 @@ export function DigitsTradeScreen() {
       </div>
 
       <EntryScanner currentInstrumentId={instId} busy={running} onApply={applyScan} />
+      </div>
+
+      <DigitResultModal result={result} onClose={() => setResult(null)} />
+
+      <InsufficientBalanceModal
+        info={needFunds}
+        onClose={() => setNeedFunds(null)}
+        onDeposit={(shortfallCents) => { setNeedFunds(null); openDeposit({ amountCents: shortfallCents }); }}
+      />
     </div>
   );
 }

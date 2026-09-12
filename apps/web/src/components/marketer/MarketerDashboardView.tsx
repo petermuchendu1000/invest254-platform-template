@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { formatKes } from '@invest254/shared/money';
 import { ApiError } from '@/lib/api/client';
+import { pageInfo, pageSlice, type PageInfo } from '@/lib/affiliate/paginate';
 import {
   useMarketerLiveSummary,
   useAffiliateReferrals,
@@ -12,8 +13,6 @@ import {
   useReferral,
   useMyCommissions,
   useRequestCommissionPayout,
-  useMarketerProfile,
-  useMarketerDemoTopup,
   useMyAdvances,
   useRequestAdvance,
   useCancelAdvance,
@@ -23,6 +22,14 @@ import {
  * Full-page marketer dashboard (rendered at /dashboard). Extracted from the old covert modal so
  * the marketer gets a real, shareable, back-button-friendly page instead of an overlay.
  *
+ * Information architecture (bank-standard, progressive disclosure):
+ *   1. The dominant, role-first metric — "Available to withdraw" — leads the page with its action.
+ *   2. Performance KPIs and the reconciling commission statement summarise standing at a glance.
+ *   3. Row-level history (earnings, expenses, referrals, advance requests) lives in ONE tabbed
+ *      "Activity" ledger, paged a bounded number of rows at a time — never a 50-row data dump.
+ * The statement is the trust anchor: every line flows into the next and lands on the exact figure
+ * the hero shows as "Available to withdraw" (earned − expenses − paid − held, floored at 0).
+ *
  * Self-heal: a user can hold role='marketer' yet have no `affiliates` row (e.g. an admin promoted
  * them via fn_admin_set_user_role rather than the enroll flow). That makes /affiliate/summary 404
  * with NOT_AFFILIATE. Enrollment is idempotent + marketer-safe, so on that exact error we enroll
@@ -30,6 +37,12 @@ import {
  * then loads instead of dead-ending on "Couldn't load". The server root-cause fix (auto-enroll on
  * marketer promotion) makes this path rare; this stays as a resilient safety net.
  */
+
+/** Rows shown per page in every Activity ledger tab. */
+const LEDGER_PAGE_SIZE = 6;
+
+type ActivityTab = 'earnings' | 'expenses' | 'referrals' | 'advances';
+
 export function MarketerDashboardView() {
   const q = useMarketerLiveSummary(true);
   const referrals = useAffiliateReferrals(true);
@@ -41,9 +54,6 @@ export function MarketerDashboardView() {
   const healAttempted = useRef(false);
   const [payoutMsg, setPayoutMsg] = useState<{ tone: 'up' | 'down'; text: string } | null>(null);
   const [copied, setCopied] = useState(false);
-  const demoWallet = useMarketerProfile(true);        // simulated (funny-money) wallet balance
-  const demoTopup = useMarketerDemoTopup();            // self-service top-up (no real cash)
-  const [demoMsg, setDemoMsg] = useState<string | null>(null);
 
   const advances = useMyAdvances(true);                // marketer's advance requests (polled)
   const requestAdvance = useRequestAdvance();
@@ -51,6 +61,13 @@ export function MarketerDashboardView() {
   const [advAmount, setAdvAmount] = useState('');
   const [advReason, setAdvReason] = useState('');
   const [advMsg, setAdvMsg] = useState<{ tone: 'up' | 'down'; text: string } | null>(null);
+
+  // Activity ledger: one active tab, one 1-based page. Switching tabs resets to the first page so
+  // the marketer never lands on a now-out-of-range page (pageInfo would clamp anyway, but resetting
+  // is the least surprising behaviour).
+  const [tab, setTab] = useState<ActivityTab>('earnings');
+  const [page, setPage] = useState(1);
+  const selectTab = (next: ActivityTab) => { setTab(next); setPage(1); };
 
   const s = q.data;
   const isNotAffiliate = q.error instanceof ApiError && q.error.code === 'NOT_AFFILIATE';
@@ -89,24 +106,16 @@ export function MarketerDashboardView() {
   const requestPayout = () => {
     setPayoutMsg(null);
     payout.mutate(undefined, {
-      onSuccess: (r) => setPayoutMsg({ tone: 'up', text: `Payout of ${formatKes(r.amountCents)} requested — pending admin approval.` }),
+      onSuccess: (r) => setPayoutMsg({ tone: 'up', text: `${formatKes(r.amountCents)} requested · pending approval.` }),
       onError: (e) => {
         const code = e instanceof ApiError ? e.code : '';
         const text = code === 'BELOW_MIN'
-          ? `You need at least ${formatKes(minPayoutCents)} to request a payout.`
+          ? `Min ${formatKes(minPayoutCents)} to withdraw.`
           : code === 'PAYOUT_PENDING'
-            ? 'You already have a payout awaiting approval.'
-            : 'Could not request payout. Try again shortly.';
+            ? 'Payout already pending.'
+            : 'Could not request. Try again.';
         setPayoutMsg({ tone: 'down', text });
       },
-    });
-  };
-
-  const topUpDemo = () => {
-    setDemoMsg(null);
-    demoTopup.mutate(undefined, {
-      onSuccess: (r) => setDemoMsg(`Demo balance topped up to ${formatKes(r.balanceCents)}.`),
-      onError: () => setDemoMsg('Could not top up demo balance. Try again shortly.'),
     });
   };
 
@@ -120,10 +129,10 @@ export function MarketerDashboardView() {
     requestAdvance.mutate(
       { amountCents, ...(advReason.trim() ? { reason: advReason.trim() } : {}) },
       {
-        onSuccess: () => { setAdvAmount(''); setAdvReason(''); setAdvMsg({ tone: 'up', text: 'Advance requested — an admin will review it shortly. You’ll be notified of the decision.' }); },
+        onSuccess: () => { setAdvAmount(''); setAdvReason(''); setAdvMsg({ tone: 'up', text: 'Requested · pending review.' }); setTab('advances'); setPage(1); },
         onError: (e) => {
           const code = e instanceof ApiError ? e.code : '';
-          setAdvMsg({ tone: 'down', text: code === 'ADVANCE_PENDING' ? 'You already have a pending advance request.' : 'Could not submit your request. Try again shortly.' });
+          setAdvMsg({ tone: 'down', text: code === 'ADVANCE_PENDING' ? 'Advance already pending.' : 'Could not submit. Try again.' });
         },
       },
     );
@@ -146,6 +155,16 @@ export function MarketerDashboardView() {
     enroll.reset();
     void q.refetch();
   };
+
+  // Count backing the active tab drives its pager. Referrals shows the authoritative platform total
+  // (some rows may still be unfetched behind the cursor) so the badge never under-reports a team.
+  const activeCount =
+    tab === 'earnings' ? commRows.length
+    : tab === 'expenses' ? expRows.length
+    : tab === 'referrals' ? refRows.length
+    : advRows.length;
+  const info = pageInfo(activeCount, page, LEDGER_PAGE_SIZE);
+  const referralsTotal = ref.data?.totalReferrals ?? s?.totalReferrals ?? refRows.length;
 
   return (
     <section className="flex w-full flex-col gap-5">
@@ -186,16 +205,11 @@ export function MarketerDashboardView() {
         <div className="flex flex-col gap-5">
           {/* Share your link (link-first — easiest to share) */}
           {referralLink ? (
-            <section className="rounded-2xl border border-accent/30 bg-accent/5 p-4">
-              <p className="text-[11px] font-medium uppercase tracking-wide text-muted">Your referral link</p>
-              <p className="mt-1 truncate text-sm text-fg">{referralLink}</p>
-              <div className="mt-3 flex gap-2">
-                <button onClick={copyLink} className="flex-1 rounded-xl bg-accent py-2.5 text-sm font-bold text-black transition hover:brightness-105">
-                  {copied ? 'Copied!' : 'Copy link'}
-                </button>
-                <span className="grid place-items-center rounded-xl border border-border px-3 font-mono text-xs text-muted">{referralCode}</span>
-              </div>
-              <p className="mt-2 text-[11px] text-muted">Earn 25% of every deposit from players you refer (20%/17% deeper in your team).</p>
+            <section className="flex items-center gap-2 rounded-xl border border-accent/30 bg-accent/5 px-3 py-2">
+              <span className="min-w-0 flex-1 truncate text-sm text-fg" title={referralLink}>{referralLink}</span>
+              <button onClick={copyLink} className="shrink-0 rounded-lg bg-accent px-3 py-1.5 text-xs font-bold text-black transition hover:brightness-105">
+                {copied ? 'Copied!' : 'Copy'}
+              </button>
             </section>
           ) : null}
 
@@ -213,24 +227,8 @@ export function MarketerDashboardView() {
             {payoutMsg ? (
               <p className={`mt-2 text-xs ${payoutMsg.tone === 'up' ? 'text-up' : 'text-down'}`}>{payoutMsg.text}</p>
             ) : (
-              <p className="mt-2 text-[11px] text-muted">Paid to M-Pesa after admin approval · min {formatKes(minPayoutCents)}.</p>
+              <p className="mt-2 text-[11px] text-muted">M-Pesa · min {formatKes(minPayoutCents)}.</p>
             )}
-          </section>
-
-          {/* Demo wallet: self-service funny-money top-up (no admin needed — migration 0102) */}
-          <section className="rounded-2xl border border-border bg-card p-4">
-            <p className="text-[11px] font-medium uppercase tracking-wide text-muted">Demo balance (for showcasing the game)</p>
-            <p className="mt-1 text-2xl font-black tabular-nums text-fg">{formatKes(demoWallet.data?.balance_cents ?? 0)}</p>
-            <button
-              onClick={topUpDemo}
-              disabled={demoTopup.isPending}
-              className="mt-3 w-full rounded-xl border border-up/40 bg-up/10 py-2.5 text-sm font-bold text-up transition hover:bg-up/20 disabled:opacity-50 sm:w-auto sm:px-8"
-            >
-              {demoTopup.isPending ? 'Topping up…' : 'Top up demo balance'}
-            </button>
-            <p className="mt-2 text-[11px] text-muted">
-              {demoMsg ?? 'Instant, self-service demo funds to showcase the game — not real money, no admin needed.'}
-            </p>
           </section>
 
           {/* KPI grid */}
@@ -240,7 +238,7 @@ export function MarketerDashboardView() {
               <Kpi label="Available" value={formatKes(availableCents)} tone="up" />
               <Kpi label="Earned all-time" value={formatKes(earnedAllTime)} />
               <Kpi label="Paid out" value={formatKes(paidOutCents)} />
-              <Kpi label="Total referrals" value={String(ref.data?.totalReferrals ?? s.totalReferrals)} />
+              <Kpi label="Total referrals" value={String(referralsTotal)} />
               <Kpi label="Active (7d)" value={String(s.activePlayers7d)} />
               <Kpi label="New today" value={String(s.referralsToday)} />
               <Kpi label="Active today" value={String(s.activePlayersToday)} />
@@ -248,58 +246,32 @@ export function MarketerDashboardView() {
             </div>
           </section>
 
-          {/* Expenses — full transparency */}
+          {/* Commission statement — the reconciling trust anchor (earned → −expenses → −paid → available) */}
           <section>
-            <div className="mb-2 flex items-center justify-between">
-              <SectionTitle>Expenses &amp; advances</SectionTitle>
-              <span className="text-xs font-semibold tabular-nums text-down">−{formatKes(expTotal)}</span>
-            </div>
-            {expenses.isLoading ? (
-              <div className="h-16 animate-pulse rounded-xl bg-surface-2" />
-            ) : expRows.length === 0 ? (
-              <p className="rounded-xl border border-border bg-surface-2 px-3 py-3 text-center text-xs text-muted">No expenses logged. Everything you earn is yours.</p>
-            ) : (
-              <ul className="flex flex-col gap-1.5">
-                {expRows.map((e) => {
-                  const m = catMeta(e.category);
-                  return (
-                    <li key={e.id} className="flex items-center gap-3 rounded-xl border border-border bg-surface-2 px-3 py-2">
-                      <span className="text-lg leading-none">{m.glyph}</span>
-                      <span className="flex min-w-0 flex-1 flex-col leading-tight">
-                        <span className="truncate text-sm font-medium text-fg">{m.label}</span>
-                        <span className="truncate text-[11px] text-muted">{e.note ?? '—'} · {new Date(e.createdAtMs).toLocaleDateString('en-KE')}</span>
-                      </span>
-                      <span className="shrink-0 text-sm font-semibold tabular-nums text-down">−{formatKes(e.amountCents)}</span>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-            {/* Reconciling statement: every line flows into the next and ends at the exact figure the
-                hero/KPI show as "Available to withdraw" (= earned − expenses − paid − held, floored at 0). */}
-            <div className="mt-2 flex flex-col gap-1.5 rounded-xl border border-border bg-surface-2 px-3 py-2.5">
-              <StatementRow label="Earned (commission)" value={formatKes(earnedAllTime)} />
-              <StatementRow label="Expenses & advances" value={`\u2212${formatKes(expTotal)}`} tone="down" />
+            <SectionTitle>Statement</SectionTitle>
+            <div className="flex flex-col gap-1.5 rounded-2xl border border-border bg-surface-2 px-4 py-3">
+              <StatementRow label="Earned" value={formatKes(earnedAllTime)} />
+              <StatementRow label="Expenses" value={`\u2212${formatKes(expTotal)}`} tone="down" />
               <div className="my-0.5 border-t border-border" />
-              <StatementRow label="Net after expenses" value={formatKes(netAfterExpenses)} strong tone={netAfterExpenses >= 0 ? undefined : 'down'} />
-              {paidOutCents > 0 ? <StatementRow label="Already paid out" value={`\u2212${formatKes(paidOutCents)}`} tone="down" /> : null}
-              {heldCents > 0 ? <StatementRow label="Pending payout" value={`\u2212${formatKes(heldCents)}`} tone="down" /> : null}
+              <StatementRow label="Net" value={formatKes(netAfterExpenses)} strong tone={netAfterExpenses >= 0 ? undefined : 'down'} />
+              {paidOutCents > 0 ? <StatementRow label="Paid out" value={`\u2212${formatKes(paidOutCents)}`} tone="down" /> : null}
+              {heldCents > 0 ? <StatementRow label="Pending" value={`\u2212${formatKes(heldCents)}`} tone="down" /> : null}
               <div className="my-0.5 border-t border-border" />
-              <StatementRow label="Available to withdraw" value={formatKes(availableCents)} strong tone="up" />
+              <StatementRow label="Available" value={formatKes(availableCents)} strong tone="up" />
             </div>
             {netPosition < 0 ? (
               <p className="mt-1.5 text-[11px] leading-snug text-muted">
-                You&apos;ve received {formatKes(paidOutCents + heldCents)} against {formatKes(netAfterExpenses)} earned net of expenses. Upcoming commission clears this balance before a new payout becomes available.
+                Received {formatKes(paidOutCents + heldCents)} of {formatKes(netAfterExpenses)} net. Upcoming commission clears the balance.
               </p>
             ) : null}
           </section>
 
-          {/* Advances — request cash against future commission */}
+          {/* Request an advance — the action lives with the money; its history is in Activity ▸ Advances */}
           <section>
-            <SectionTitle>Advances</SectionTitle>
-            <div className="rounded-xl border border-border bg-surface-2 p-3">
+            <SectionTitle>Advance</SectionTitle>
+            <div className="rounded-2xl border border-border bg-surface-2 p-3">
               <p className="text-[11px] leading-snug text-muted">
-                Need cash before payday? Request an advance against your upcoming commission. An admin reviews every request &mdash; approved advances appear in your Expenses &amp; advances above (so your withdrawable already reflects them) and are recovered from future earnings. You&apos;ll be notified of the decision.
+                Cash against upcoming commission. Admin-reviewed, recovered from earnings.
               </p>
               <div className="mt-2.5 flex flex-col gap-2 sm:flex-row">
                 <input
@@ -314,7 +286,7 @@ export function MarketerDashboardView() {
                   value={advReason}
                   onChange={(e) => setAdvReason(e.target.value)}
                   maxLength={200}
-                  placeholder="Reason (optional)"
+                  placeholder="Reason"
                   aria-label="Advance reason"
                   className="w-full flex-1 rounded-lg border border-border bg-surface px-3 py-2 text-sm text-fg outline-none focus:border-accent"
                 />
@@ -328,89 +300,157 @@ export function MarketerDashboardView() {
               </div>
               {advMsg ? <p className={`mt-2 text-[11px] ${advMsg.tone === 'up' ? 'text-up' : 'text-down'}`}>{advMsg.text}</p> : null}
             </div>
+          </section>
 
-            {advRows.length > 0 ? (
-              <ul className="mt-2 flex flex-col gap-1.5">
-                {advRows.map((a) => (
-                  <li key={a.id} className="flex items-center gap-3 rounded-xl border border-border bg-surface-2 px-3 py-2">
-                    <span className="flex min-w-0 flex-1 flex-col leading-tight">
-                      <span className="truncate text-sm font-medium tabular-nums text-fg">{formatKes(a.amountCents)}</span>
-                      <span className="truncate text-[11px] text-muted">
-                        {a.reason ?? '—'} · {new Date(a.createdAtMs).toLocaleDateString('en-KE')}
-                        {a.decisionNote ? ` · ${a.decisionNote}` : ''}
-                      </span>
-                    </span>
-                    <AdvanceBadge status={a.status} />
-                    {a.status === 'requested' ? (
+          {/* Activity — one tabbed, paged ledger replaces four unbounded lists (bank-standard). */}
+          <section>
+            <SectionTitle>Activity</SectionTitle>
+            <div role="tablist" aria-label="Activity" className="flex gap-1 overflow-x-auto rounded-xl border border-border bg-surface-2 p-1">
+              <TabButton active={tab === 'earnings'} onClick={() => selectTab('earnings')} label="Earnings" count={commRows.length} />
+              <TabButton active={tab === 'expenses'} onClick={() => selectTab('expenses')} label="Expenses" count={expRows.length} />
+              <TabButton active={tab === 'referrals'} onClick={() => selectTab('referrals')} label="Referrals" count={referralsTotal} />
+              <TabButton active={tab === 'advances'} onClick={() => selectTab('advances')} label="Advances" count={advRows.length} />
+            </div>
+
+            <div className="mt-2.5" role="tabpanel">
+              {/* EARNINGS */}
+              {tab === 'earnings' ? (
+                commissions.isLoading && commRows.length === 0 ? (
+                  <LedgerSkeleton />
+                ) : commRows.length === 0 ? (
+                  <EmptyRow>No earnings yet.</EmptyRow>
+                ) : (
+                  <>
+                    <ul className="flex flex-col gap-1.5">
+                      {pageSlice(commRows, page, LEDGER_PAGE_SIZE).map((c) => (
+                        <li key={c.id} className="flex items-center justify-between rounded-xl border border-border bg-surface-2 px-3 py-2">
+                          <span className="flex min-w-0 flex-col leading-tight">
+                            <span className="truncate text-sm font-medium text-fg">{c.referredUsername ?? 'Referred deposit'}</span>
+                            <span className="truncate text-[11px] text-muted">{Math.round(c.rate * 100)}% of {formatKes(c.depositAmountCents)} deposit · {new Date(c.createdAtMs).toLocaleDateString('en-KE')}</span>
+                          </span>
+                          <span className="shrink-0 text-sm font-semibold tabular-nums text-up">+{formatKes(c.commissionCents)}</span>
+                        </li>
+                      ))}
+                    </ul>
+                    <Pager info={info} onPrev={() => setPage((p) => p - 1)} onNext={() => setPage((p) => p + 1)} />
+                  </>
+                )
+              ) : null}
+
+              {/* EXPENSES & ADVANCES (recovered) */}
+              {tab === 'expenses' ? (
+                expenses.isLoading && expRows.length === 0 ? (
+                  <LedgerSkeleton />
+                ) : expRows.length === 0 ? (
+                  <EmptyRow>No expenses.</EmptyRow>
+                ) : (
+                  <>
+                    <ul className="flex flex-col gap-1.5">
+                      {pageSlice(expRows, page, LEDGER_PAGE_SIZE).map((e) => {
+                        const m = catMeta(e.category);
+                        return (
+                          <li key={e.id} className="flex items-center gap-3 rounded-xl border border-border bg-surface-2 px-3 py-2">
+                            <span className="text-lg leading-none">{m.glyph}</span>
+                            <span className="flex min-w-0 flex-1 flex-col leading-tight">
+                              <span className="truncate text-sm font-medium text-fg">{m.label}</span>
+                              <span className="truncate text-[11px] text-muted">{e.note ?? '—'} · {new Date(e.createdAtMs).toLocaleDateString('en-KE')}</span>
+                            </span>
+                            <span className="shrink-0 text-sm font-semibold tabular-nums text-down">−{formatKes(e.amountCents)}</span>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                    <Pager info={info} onPrev={() => setPage((p) => p - 1)} onNext={() => setPage((p) => p + 1)} />
+                  </>
+                )
+              ) : null}
+
+              {/* REFERRALS (cursor-paged pool + client windowing) */}
+              {tab === 'referrals' ? (
+                referrals.isLoading && refRows.length === 0 ? (
+                  <LedgerSkeleton />
+                ) : refRows.length === 0 ? (
+                  <EmptyRow>No referrals yet.</EmptyRow>
+                ) : (
+                  <>
+                    <ul className="flex flex-col gap-1.5">
+                      {pageSlice(refRows, page, LEDGER_PAGE_SIZE).map((r, i) => (
+                        <li key={`${r.username}-${info.start + i}`} className="flex items-center justify-between rounded-xl border border-border bg-surface-2 px-3 py-2">
+                          <span className="flex items-center gap-2 min-w-0">
+                            <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-accent/15 text-[11px] font-bold text-accent">
+                              {(r.username || '?').slice(0, 2).toUpperCase()}
+                            </span>
+                            <span className="flex min-w-0 flex-col leading-tight">
+                              <span className="truncate text-sm font-medium text-fg">@{r.username}</span>
+                              <span className="text-[11px] text-muted">Joined {new Date(r.joinedAtMs).toLocaleDateString('en-KE')}</span>
+                            </span>
+                          </span>
+                          <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium ${r.lifetimeGgrCents > 0 ? 'bg-up/15 text-up' : 'bg-surface-2 text-muted'}`}>
+                            {r.lifetimeGgrCents > 0 ? 'Active' : 'New'}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                    <Pager info={info} onPrev={() => setPage((p) => p - 1)} onNext={() => setPage((p) => p + 1)} />
+                    {referrals.hasNextPage ? (
                       <button
-                        onClick={() => cancelAdvance.mutate(a.id)}
-                        disabled={cancelAdvance.isPending}
-                        className="shrink-0 text-[11px] text-muted underline underline-offset-2 hover:text-fg disabled:opacity-50"
+                        onClick={() => referrals.fetchNextPage()}
+                        disabled={referrals.isFetchingNextPage}
+                        className="mt-2 w-full rounded-lg border border-border py-2 text-xs font-medium text-fg transition hover:bg-surface-2 disabled:opacity-50"
                       >
-                        Cancel
+                        {referrals.isFetchingNextPage ? 'Loading…' : `Load more (${refRows.length}/${referralsTotal})`}
                       </button>
                     ) : null}
-                  </li>
-                ))}
-              </ul>
-            ) : null}
+                  </>
+                )
+              ) : null}
+
+              {/* ADVANCE REQUESTS */}
+              {tab === 'advances' ? (
+                advances.isLoading && advRows.length === 0 ? (
+                  <LedgerSkeleton />
+                ) : advRows.length === 0 ? (
+                  <EmptyRow>No advances yet.</EmptyRow>
+                ) : (
+                  <>
+                    <ul className="flex flex-col gap-1.5">
+                      {pageSlice(advRows, page, LEDGER_PAGE_SIZE).map((a) => (
+                        <li key={a.id} className="flex items-center gap-3 rounded-xl border border-border bg-surface-2 px-3 py-2">
+                          <span className="flex min-w-0 flex-1 flex-col leading-tight">
+                            <span className="truncate text-sm font-medium tabular-nums text-fg">{formatKes(a.amountCents)}</span>
+                            <span className="truncate text-[11px] text-muted">
+                              {a.reason ?? '—'} · {new Date(a.createdAtMs).toLocaleDateString('en-KE')}
+                              {a.decisionNote ? ` · ${a.decisionNote}` : ''}
+                            </span>
+                          </span>
+                          <AdvanceBadge status={a.status} />
+                          {a.status === 'requested' ? (
+                            <button
+                              onClick={() => cancelAdvance.mutate(a.id)}
+                              disabled={cancelAdvance.isPending}
+                              className="shrink-0 text-[11px] text-muted underline underline-offset-2 hover:text-fg disabled:opacity-50"
+                            >
+                              Cancel
+                            </button>
+                          ) : null}
+                        </li>
+                      ))}
+                    </ul>
+                    <Pager info={info} onPrev={() => setPage((p) => p - 1)} onNext={() => setPage((p) => p + 1)} />
+                  </>
+                )
+              ) : null}
+            </div>
           </section>
 
-          {/* Recent earnings */}
-          <section>
-            <SectionTitle>Recent earnings</SectionTitle>
-            {commRows.length === 0 ? (
-              <p className="rounded-xl border border-border bg-surface-2 px-3 py-3 text-center text-xs text-muted">No commission yet.</p>
-            ) : (
-              <ul className="flex flex-col gap-1.5">
-                {commRows.slice(0, 8).map((c) => (
-                  <li key={c.id} className="flex items-center justify-between rounded-xl border border-border bg-surface-2 px-3 py-2">
-                    <span className="flex flex-col leading-tight">
-                      <span className="text-sm font-medium text-fg">{c.referredUsername ?? 'Referred deposit'}</span>
-                      <span className="text-[11px] text-muted">{Math.round(c.rate * 100)}% of {formatKes(c.depositAmountCents)} deposit · {new Date(c.createdAtMs).toLocaleDateString('en-KE')}</span>
-                    </span>
-                    <span className="text-sm font-semibold tabular-nums text-up">+{formatKes(c.commissionCents)}</span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-
-          {/* Referrals */}
-          <section>
-            <SectionTitle>Your referrals ({s.totalReferrals})</SectionTitle>
-            {refRows.length === 0 ? (
-              <p className="rounded-xl border border-border bg-surface-2 px-3 py-3 text-center text-xs text-muted">Share your code to start earning.</p>
-            ) : (
-              <ul className="flex flex-col gap-1.5">
-                {refRows.slice(0, 8).map((r, i) => (
-                  <li key={`${r.username}-${i}`} className="flex items-center justify-between rounded-xl border border-border bg-surface-2 px-3 py-2">
-                    <span className="flex items-center gap-2 min-w-0">
-                      <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-accent/15 text-[11px] font-bold text-accent">
-                        {(r.username || '?').slice(0, 2).toUpperCase()}
-                      </span>
-                      <span className="flex min-w-0 flex-col leading-tight">
-                        <span className="truncate text-sm font-medium text-fg">@{r.username}</span>
-                        <span className="text-[11px] text-muted">Joined {new Date(r.joinedAtMs).toLocaleDateString('en-KE')}</span>
-                      </span>
-                    </span>
-                    <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium ${r.lifetimeGgrCents > 0 ? 'bg-up/15 text-up' : 'bg-surface-2 text-muted'}`}>
-                      {r.lifetimeGgrCents > 0 ? 'Active' : 'New'}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-
-          <p className="pb-1 text-center text-[11px] text-muted">Live · updates every 5s · full transparency</p>
+          <p className="pb-1 text-center text-[11px] text-muted">Live · 5s</p>
         </div>
       )}
     </section>
   );
 }
 
-// ── Category presentation ───────────────────────────────────────────────────────────────────────
+// ── Category presentation ────────────────────────────────────────────────────────────────────────
 const CATEGORY_META: Record<string, { label: string; glyph: string }> = {
   tiktok_promo: { label: 'TikTok promo', glyph: '🎵' },
   data_bundles: { label: 'Data bundles', glyph: '📶' },
@@ -432,6 +472,52 @@ function Kpi({ label, value, tone }: { label: string; value: string; tone?: 'up'
     <div className="flex flex-col gap-0.5 rounded-2xl border border-border bg-surface-2 p-3">
       <span className="text-[10px] uppercase tracking-wide text-muted">{label}</span>
       <span className={`text-base font-bold tabular-nums ${tone === 'up' ? 'text-up' : 'text-fg'}`}>{value}</span>
+    </div>
+  );
+}
+
+/** A single tab in the Activity ledger, with a live count badge. */
+function TabButton({ active, onClick, label, count }: { active: boolean; onClick: () => void; label: string; count?: number }) {
+  return (
+    <button
+      role="tab"
+      aria-selected={active}
+      onClick={onClick}
+      className={`flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition ${active ? 'bg-accent text-accent-fg shadow-sm' : 'text-muted hover:text-fg'}`}
+    >
+      {label}
+      {typeof count === 'number' ? (
+        <span className={`rounded-full px-1.5 py-0.5 text-[10px] tabular-nums ${active ? 'bg-black/15 text-accent-fg' : 'bg-surface text-muted'}`}>{count}</span>
+      ) : null}
+    </button>
+  );
+}
+
+/** "Showing X–Y of N" with prev/next controls. Hidden entirely when a single (or empty) page. */
+function Pager({ info, onPrev, onNext }: { info: PageInfo; onPrev: () => void; onNext: () => void }) {
+  if (info.total === 0 || info.pageCount <= 1) return null;
+  return (
+    <div className="mt-2 flex items-center justify-between gap-2 text-[11px] text-muted">
+      <span className="tabular-nums">{info.start + 1}-{info.end} of {info.total}</span>
+      <div className="flex items-center gap-1">
+        <button onClick={onPrev} disabled={!info.hasPrev} className="rounded-lg border border-border px-2.5 py-1 font-medium text-fg transition hover:bg-surface-2 disabled:opacity-40" aria-label="Previous page">Prev</button>
+        <span className="px-1 tabular-nums">{info.page}/{info.pageCount}</span>
+        <button onClick={onNext} disabled={!info.hasNext} className="rounded-lg border border-border px-2.5 py-1 font-medium text-fg transition hover:bg-surface-2 disabled:opacity-40" aria-label="Next page">Next</button>
+      </div>
+    </div>
+  );
+}
+
+function EmptyRow({ children }: { children: React.ReactNode }) {
+  return <p className="rounded-xl border border-border bg-surface-2 px-3 py-3 text-center text-xs text-muted">{children}</p>;
+}
+
+function LedgerSkeleton() {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="h-11 animate-pulse rounded-xl bg-surface-2" />
+      <div className="h-11 animate-pulse rounded-xl bg-surface-2" />
+      <div className="h-11 animate-pulse rounded-xl bg-surface-2" />
     </div>
   );
 }

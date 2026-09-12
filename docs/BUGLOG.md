@@ -5,6 +5,47 @@ entry: what, evidence, root cause, impact, and resolution.
 
 ---
 
+## #25 — Marketer dashboard: demo-balance card removed + bank-standard information architecture; latent `bg-card` no-op token caught — FIXED (branch `feat/marketer-dashboard-bank-standard`)
+- **Request (operator, Issue 1):** remove the "Demo balance (for showcasing the game)" card from the
+  marketer dashboard, then reorganise the dashboard to bank standards — "if we have 50 expenses, do we
+  really list all of them? pages? tables?"
+- **Change 1 — demo card removed.** Deleted the self-service demo-wallet section (`useMarketerProfile`
+  + `useMarketerDemoTopup` usage, `demoWallet`/`demoTopup`/`demoMsg` state and the `topUpDemo` handler)
+  from `apps/web/src/components/marketer/MarketerDashboardView.tsx`. **Frontend-only** — the backend
+  demo-topup endpoint, hooks (`api.marketerMe`/`api.marketerDemoTopup`), migration 0102 and
+  `app.marketers.demotopup.test.ts` are untouched, so nothing else regresses and the capability can be
+  re-surfaced elsewhere if ever wanted.
+- **Change 2 — bank-standard IA (progressive disclosure).** The four unbounded lists were the real
+  defect: **Expenses rendered EVERY row** (`expRows.map` with no cap — the literal "50 expenses" dump),
+  while Earnings/Referrals hard-capped at `.slice(0, 8)` with **no way to see the rest** (referrals even
+  had cursor pagination available but unused). Replaced them with ONE tabbed **Activity** ledger
+  (Earnings · Expenses · Referrals · Advances), each paged at `LEDGER_PAGE_SIZE = 6` with an explicit
+  "Showing X-Y of N · page/pages · Prev/Next" pager; referrals additionally drive the real
+  `useAffiliateReferrals` cursor via a "Load more" control. The reconciling commission statement was
+  promoted to its own summary card (the trust anchor), and the advance REQUEST form kept as an action
+  card with its history moved into Activity ▸ Advances. Hero ("Available to withdraw") stays the
+  dominant, role-first metric. Grounded in fintech-dashboard research: lead with one metric, disclose
+  detail progressively, paginate with explicit indicators (not infinite scroll) on mobile.
+- **Latent bug caught (pre-existing):** the removed demo card and (initially) the new tab control used
+  the Tailwind class `bg-card`, but **`card` is not a defined colour token** (tailwind.config only
+  defines bg/surface/surface-2/border/fg/muted/up/down/accent/accent-fg/brand/warn/info). Evidence: the
+  compiled stylesheet contains **zero** `bg-card` rules (`grep -c bg-card .next/static/css/*.css → 0`).
+  Impact: any element relying on `bg-card` for its fill silently rendered transparent. Resolution: the
+  new Activity tabs use the app's established segmented-control tokens (`bg-accent text-accent-fg
+  shadow-sm` for the active tab, matching `WalletModal`); `bg-card` no longer appears anywhere.
+- **New pure module + tests:** `apps/web/src/lib/affiliate/paginate.ts` (`pageInfo`, `pageSlice`) is
+  total by construction — hostile input (page 0/999, negative/NaN size, empty list) is clamped, never
+  thrown, so a transient data shape can't crash the page. Covered by `paginate.test.ts` (10 cases incl.
+  a 5,000-iteration fuzz proving the pages tile the list exactly once, in order, with no gaps/overlaps).
+- **Verification (E2E, real-life scenarios):** green baseline captured first (`tsc --noEmit` + full
+  `next build`), then re-run after the change — both exit 0, `/dashboard` builds. Full web lib suite:
+  **52/52 pass** (incl. the 10 new pagination tests), zero regressions. Rendered the redesign against
+  the app's actual compiled Tailwind + default dark tokens with mock data at scale (12 earnings, **50
+  expenses**, 26 referrals, 3 advances) and screenshotted mobile (400px) + desktop (920px) across every
+  tab and page — confirms the demo card is gone, the 50-expense list is paged 6-at-a-time (1/9), and
+  layout reflows to a 4-col grid on desktop. No money-path or API changes; the reconciliation ladder
+  (earned − expenses − paid − held ⇒ available) is preserved byte-for-byte.
+
 ## #24 — Migration 0118 (real-time pool top-up) was NEVER applied to prod, yet the live engine calls it — FIXED (migration 0118 applied + ledger reconciled)
 - **Caught while** reconciling the migration ledger during the BUGLOG #23 rollout: the CI `migrations-ledger`
   gate had been RED for 6+ consecutive runs on `main` (i.e. before the #23 merge), flagging 0117–0120 as
