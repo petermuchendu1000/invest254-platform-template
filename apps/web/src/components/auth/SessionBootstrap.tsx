@@ -5,7 +5,7 @@ import { api } from '@/lib/api/endpoints';
 import { ApiError } from '@/lib/api/client';
 import { useSession } from '@/lib/auth/session';
 import { roleFromToken } from '@/lib/auth/token';
-import { isImpersonating } from '@/lib/platform/impersonate';
+import { isImpersonating, clearImpersonation } from '@/lib/platform/impersonate';
 
 /**
  * Validates a persisted token on load and populates the profile (or clears on 401). It also
@@ -40,7 +40,9 @@ export function SessionBootstrap() {
         }
       })
       .catch((e) => {
-        if (e instanceof ApiError && e.status === 401) reset();
+        // A dead/expired token (incl. a spent impersonation token) must also drop the fence, else a
+        // stale brand scope would survive into the next session.
+        if (e instanceof ApiError && e.status === 401) { clearImpersonation(); reset(); }
       });
     return () => {
       active = false;

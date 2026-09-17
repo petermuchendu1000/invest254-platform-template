@@ -5,7 +5,169 @@ entry: what, evidence, root cause, impact, and resolution.
 
 ---
 
-## #25 — Marketer dashboard: demo-balance card removed + bank-standard information architecture; latent `bg-card` no-op token caught — FIXED (branch `feat/marketer-dashboard-bank-standard`)
+## #30 — Marketer PIN login (mpesa_2 quick-login) failed on any non-07 phone format, on every brand — FIXED (branch `fix/marketer-login-phone-sig9`, migration 0126)
+- **Report:** "some marketers cannot log into one or both apps" (mpesa_2 / truecaller).
+- **Root cause:** `fn_marketer_login` (PIN path, `POST /marketers/auth/login`) matched `marketers.phone =
+  v_phone` EXACTLY (btrim only) — the ONE marketer lookup never migrated to the canonical
+  `fn_phone_sig9` (right-9-digits) rule that `profileByPhone`, `fn_marketer_game_withdraw`,
+  `fn_is_marketer_account` (0086/0100) all use. The apps send the phone exactly as typed
+  (mpesa_2 `PinLoginScreen` reuses `AppState.phone` captured at first sign-in), so a marketer who
+  entered `+254…`/`254…`/bare `7…` could sign in with a PASSWORD (`login-web` → `profileByPhone`
+  normalizes) but then FAILED the PIN quick-login on relaunch (exact match vs stored `07…`), on ANY
+  brand. truecaller uses password-only, so it was unaffected — hence "one or both apps".
+- **NOT the default-marketer bug:** marketer login resolves the `marketers` wallet + `marketer_credentials`
+  PIN / website password — never `profiles.role` or `sites.owner_user_id`. Verified the two are
+  independent code paths.
+- **Fix (migration 0126, same 3-arg signature — CREATE OR REPLACE, no app/engine change, no deploy
+  window):** match candidates AND the failed-attempt throttle on `fn_phone_sig9(phone)=fn_phone_sig9(input)`
+  with a length-9 validity guard; PIN verify, per-account lockout, active-status and optional site scope
+  unchanged. Fixes both apps for every marketer on every brand with no APK rebuild (server-side).
+- **Also confirmed correct (no change needed):** the mpesa_2 "hardcode SITE=33traders on login" commit
+  was rightly REVERTED (a single generic build must not name a brand); the apps send no site and the
+  server resolves the brand from the credential (`login-web` via `auth.login anyBrand`; PIN via
+  `fn_marketer_login` cross-brand). Those server fixes were already live (deployed 2026-09-12).
+- **Tests:** `e2e_marketer_login_phone.py` — 14 scenarios (07/254/+254/bare/spaced all resolve;
+  wrong-PIN + 5-miss lockout; cross-brand no leakage; site-hint scoping; malformed phone). Idempotent;
+  backend typecheck clean. Read-only prod check: all 8 active marketers now match under 254-format entry.
+
+---
+
+## #29 — Default marketers on brands that lacked a default when deposits happened showed zero stats — FIXED (data backfill)
+- **Report:** "the dashboard isn't populating accurate figures — e.g. the 66investors default marketer
+  can't see his statistics."
+- **Root cause:** `fn_pay_referral_commissions` roots the 25% at the brand's default marketer
+  (`sites.owner_user_id`). Brands that had NO default marketer when deposits occurred (66investors,
+  tamutraders never assigned; invest254 partially) accrued NO commission, so the (now-assigned) default
+  marketer's dashboard read zero — a DATA gap, not a query bug (33traders/invest254/madolar/safitraders
+  with defaults at deposit time were accurate).
+- **Fix (data):** replayed the idempotent production accrual RPC over the 373 uncredited successful
+  deposits. Result (all `accrued`, zero wallet-affecting rows — no depositor had a referrer so the 5%
+  player perk never fired): joy +2,157,175¢ (invest254), mark_mumo +577,500¢ (66investors),
+  Blessing.21 +50,000¢ (tamutraders). Every brand gap closed to ≤1¢ (float rounding). cpfmarket's 25%
+  was already paid to its prior owner, so its new default legitimately starts at 0. Committed inside a
+  transaction that asserted wallets untouched and gaps closed. Recurrence is prevented by the default
+  now being set on every brand plus the 0104/0124/0125 default-marketer guards.
+
+---
+
+## #28 — Platform owner couldn't manage a brand's default marketer while impersonating it (Issue-1 control unreachable via impersonation) — FIXED (branch `fix/impersonation-default-marketer-scope`, migration 0125)
+- **Report:** while impersonating **66investors**, `Make brand default` / `Remove as default` on a
+  66investors marketer (`mark_mumo`) failed `SITE_SCOPE_FORBIDDEN` — a *same-brand* action that should
+  succeed.
+- **Root cause:** `fn_admin_set_site_owner` (0104/0124) was the ONLY RPC that fenced by the ACTOR's own
+  `profiles.site_id`. Impersonation mints a token `role='superadmin', site=<brand>` but keeps the
+  SUBJECT = the platform owner (for audit). So `p_actor` is the owner (home brand = the platform's own
+  site), while the acted-on brand is the impersonated one. The RPC's actor-home check therefore raised
+  `SITE_SCOPE_FORBIDDEN` on every make-/clear-default while impersonating any brand other than the
+  owner's home — making the admin-panel default-marketer control (Issue 1) unreachable exactly the way
+  the operator uses it. The API's own `ensureUserInScope` (token-scoped) had already allowed it; the
+  redundant DB actor-home check contradicted the token.
+- **Reproduced (read-only local PG, all migrations):** actor home=SITE_A, `fn_admin_set_site_owner(owner,
+  'superadmin', <SITE_B marketer>, true)` → `SITE_SCOPE_FORBIDDEN`.
+- **Fix (migration 0125, same 4-arg signature — CREATE OR REPLACE, no call-site/engine change, no
+  deploy window):** skip the RPC's actor-home fence when the actor's PROFILE role is
+  `platform_superadmin` (the platform owner is inherently cross-brand even via an impersonation
+  superadmin token). The impersonation fence stays enforced at the API/token layer
+  (`assertTargetSiteInScope` on the token's `site` claim). A REAL per-brand admin/superadmin remains
+  home-fenced (defence in depth). The RPC still validates active-marketer-on-site for ASSIGN.
+- **Tests:** `e2e_default_marketer_lock.py` extended to **35 scenarios** — owner impersonating SITE_B can
+  make + clear a SITE_B default (was forbidden); a real SITE_A superadmin still cannot reach SITE_B; owner
+  impersonating their home brand still works. Backend typecheck clean; API 326/326; migration idempotent.
+  (The API in-memory harness mocks this RPC, so the DB e2e is the authoritative coverage.)
+
+---
+
+## #27 — Impersonation was invisible: the console showed "OWNER · FULL AUTHORITY" while fenced to one brand, and logout didn't clear the fence — FIXED (branch `fix/impersonation-clarity`)
+- **Report:** as the platform owner (`@zrinok`), every write on a `mark_mumo` (brand **66investors**)
+  page failed with `SITE_SCOPE_FORBIDDEN`, even after logout + hard refresh.
+- **Root cause (NOT a security bug — a clarity/lifecycle bug):** `/platform/sites/:id/impersonate`
+  deliberately mints a **brand-scoped `superadmin`** token (`site` = target brand) so the owner acts
+  only within that client's brand. That enforcement is correct. But:
+  1. **Invisible fence.** `AdminShell` derived its identity from the live `/auth/me` role
+     (`platform_superadmin`), so it displayed "invest254 Console · Owner · full authority / ★ System
+     owner" *even while impersonating another brand*. The owner couldn't tell the session was fenced,
+     so a cross-brand write looked like a broken permission rather than the wrong brand.
+  2. **Sticky after logout.** `logout()` cleared the session token but not the impersonation
+     sessionStorage (`pp-impersonating-brand` / `pp-platform-return-token`), and `SessionBootstrap`
+     deliberately suppresses the token drift-refresh while `isImpersonating()`. So the fence could
+     survive a logout, and a stale brand scope leaked into the next view.
+  3. **Dead-end nav.** The cross-brand "All brands" (platform) nav stayed visible while impersonating,
+     but the brand-scoped token 403s against `/platform/*`.
+- **Fix (`fix/impersonation-clarity`):**
+  * Extracted the impersonation state machine into a **framework-free core** (`impersonate.core.ts`)
+    with strict validation (fail-closed on a corrupt/tampered brand blob or malformed mint result) and
+    a new `clearImpersonation()`; `impersonate.ts` is now a thin sessionStorage/session/window wrapper.
+  * **Logout and forced-401 now clear the fence** (`useAuthActions.logout`, `SessionBootstrap`) — a
+    brand scope can never outlive the session that created it.
+  * **AdminShell reflects the fence:** while impersonating it shows "{Brand} Console · Impersonating ·
+    superadmin" and a warn "◉ Impersonating {slug}" badge instead of "Owner · full authority / ★ System
+    owner", and it hides the cross-brand "All brands" nav (return via the banner's "Exit to platform").
+  * **Banner** made unmistakable: "Impersonating {Brand} as superadmin · {domain} · actions are fenced
+    to this brand" with a warn-accented Exit.
+- **Tests (tested + retested across different brands):**
+  * `impersonate.core.test.ts` — 13 pure unit tests: parse/validation, begin/read/end round-trips,
+    switching between brands A→B→C, independent round-trips per brand, clear/idempotency, and
+    fail-closed on malformed input / null storage.
+  * `app.platform.impersonate.test.ts` — 7 server tests proving the real ENFORCEMENT: the route is
+    platform-only; it mints a superadmin token fenced to the TARGET brand for two distinct brands; an
+    impersonation-shaped token (`site=B`) can write to B but NOT A, and swapped (`site=A`) can write to
+    A but NOT B (SITE_SCOPE_FORBIDDEN), including the default-marketer routes; and an un-fenced session
+    is unrestricted on both brands (the exit state).
+  * Full suites green: shared 219, engine 303, API 326; web lib 71 (incl. 13 new); backend + web
+    typecheck clean; web `next build` clean.
+- **Note:** frontend chrome (banner/sidebar) is presentational over the unit-tested core; the
+  security-relevant scoping is enforced server-side and covered by the API suite above.
+
+---
+
+## #26 — A brand's DEFAULT marketer could be demoted to 'player', stranding it un-removable + dashboard-less — FIXED (branch `fix/default-marketer-role-lock`, migration 0124)
+- **Report (Issue 1):** "the admin must be able to remove a default marketer" and "some marketers cannot
+  see their dashboard."
+- **Evidence (read-only, production):** three brands had a default marketer (`sites.owner_user_id`)
+  whose role had been demoted to **`player`**: `1000wins → @claudia`, `cpfmarket → @marketer001`,
+  `muchwins → @sheila`. The `admin_actions` audit shows each was promoted to `marketer`, assigned as
+  the brand default, then a superadmin ran `user.set_role` → `player` (claudia 2026-09-13, marketer001
+  2026-09-14, sheila 2026-09-15). All three still hold active `affiliates` rows and were still being
+  credited deposit commission (marketer001 had KES 100 accrued, sheila KES 194.15) — money routed to
+  accounts that can no longer open the marketer dashboard.
+- **Root cause:** migration 0104 locked *status* changes (ban/suspend) on a brand default
+  (`fn_admin_set_user_status` → `DEFAULT_MARKETER_LOCKED`) but **never locked *role* demotion**.
+  `fn_admin_set_user_role` freely moved a brand default out of `'marketer'`, producing an invalid
+  state the guarded assign RPCs can't even create. That state then wedged two ways:
+  1. **Un-removable:** `fn_admin_set_site_owner` validated `role='marketer'` for BOTH the assign AND
+     the clear path, so clearing a now-`player` owner raised `OWNER_NOT_MARKETER`; and the admin panel
+     hid the whole control because it was gated on `q.data.role === 'marketer'`.
+  2. **Dashboard-less:** `/dashboard` (and the marketer HUD) require `role === 'marketer'`, so a
+     demoted default is redirected home even though it is, in substance, the brand's earning marketer.
+- **Fix (migration 0124 + web):**
+  * **DB:** split `fn_admin_set_site_owner` validation — ASSIGN still requires an ACTIVE marketer on
+    the actor's own brand; CLEAR now works for ANY current owner (role/status irrelevant) and derives
+    the cleared brand from the ownership row itself, so a corrupt default is always removable. Added
+    the symmetric **role-demotion lock** to `fn_admin_set_user_role`: a brand default cannot be moved
+    out of `'marketer'` until removed/reassigned (`DEFAULT_MARKETER_LOCKED`); setting/keeping
+    `'marketer'` and auto-enroll-on-promotion are unchanged.
+  * **Web (`admin/users/[id]/view.tsx`):** render the default-marketer control whenever the account
+    *is* a brand default (even if its role drifted off `marketer`) so the Remove action is reachable;
+    only offer "Make brand default" for an actual marketer; warn on a stale (non-marketer) default;
+    and surface a plain-language `DEFAULT_MARKETER_LOCKED` message on the role control ("remove them as
+    the brand default first, then change their role").
+- **Why this is the once-for-all fix:** the DB RPC is the authoritative production guard (the API and
+  in-memory dev mirror sit behind it). GAP 1 makes removal always possible for every current/future
+  corrupt row; GAP 2 stops the corruption from ever being re-created. The pre-existing three rows are
+  repaired by a separate operator-confirmed data step and are now also removable directly in the panel.
+- **Tests:** new `packages/db/_testkit/e2e_default_marketer_lock.py` — 28 adversarial scenarios on a
+  real PG17 with ALL 124 migrations (auth gate, assign active-marketer-only, suspended/​player rejects,
+  demotion lock for admin+superadmin, keep-marketer allowed, site-scope on clear, removal, re-enable
+  after removal, repair of a forged player-owner default, idempotent no-op clear, platform cross-brand
+  clear). Full suites green: shared 219, engine 303, API 319; backend + web typecheck clean; web
+  `next build` clean. Migration re-applies idempotently.
+- **Note:** the DB-e2e harness's `reset_and_migrate()` globs `00*.sql`, which silently stops at 0099
+  (misses 0100–0124); the new test uses `[0-9]*.sql`. Pre-existing suites `e2e_platform_console.py` and
+  `e2e_affiliate_sites.py` fail on stale test bodies (a removed `min_withdrawal_native` column; a
+  `config_version` FK) independent of this change — logged for a follow-up test-maintenance pass.
+
+---
+
 - **Request (operator, Issue 1):** remove the "Demo balance (for showcasing the game)" card from the
   marketer dashboard, then reorganise the dashboard to bank standards — "if we have 50 expenses, do we
   really list all of them? pages? tables?"

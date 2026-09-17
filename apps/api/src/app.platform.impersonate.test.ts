@@ -1,0 +1,167 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { startTestApi, TEST_ADMIN, SITE_A, SITE_B, type TestApi } from "./testutil.js";
+
+/**
+ * Platform-owner IMPERSONATION — mint + gate + the brand fence it creates (docs/24 §370).
+ *
+ * The impersonation feature "logs" the platform owner into a client brand's console as a
+ * brand-scoped superadmin. This proves, end-to-end and across DIFFERENT brands:
+ *   1. MINT   — POST /platform/sites/:id/impersonate returns role='superadmin' + `site` = the TARGET
+ *               brand (subject stays the owner for audit). Tested for two distinct brands.
+ *   2. GATE   — the route is platform_superadmin-only; a per-brand admin/superadmin is refused.
+ *   3. FENCE  — a token of the exact shape impersonation mints (`owner:superadmin:<brand>`) can only
+ *               WRITE inside that brand; a cross-brand write is refused with SITE_SCOPE_FORBIDDEN.
+ *               Retested with the brands swapped so neither direction leaks.
+ *   4. EXIT   — the platform owner's own token (no `site` claim, rank 5) is unrestricted on BOTH
+ *               brands — i.e. leaving impersonation restores full cross-brand authority.
+ */
+
+const json = (r: Response): Promise<any> => r.json() as Promise<any>;
+interface Opts { token?: string; body?: unknown }
+function req(api: TestApi, method: string, path: string, o: Opts = {}): Promise<Response> {
+  const headers: Record<string, string> = {};
+  if (o.token) headers["authorization"] = `Bearer ${o.token}`;
+  const init: RequestInit = { method, headers };
+  if (o.body !== undefined) { headers["content-type"] = "application/json"; init.body = JSON.stringify(o.body); }
+  return fetch(`${api.baseUrl}${path}`, init);
+}
+
+const OWNER = TEST_ADMIN;
+const PLATFORM = `${OWNER}:platform_superadmin`;              // the owner's own session (no site claim)
+const ADMIN = `${OWNER}:admin`;
+const SUPERADMIN = `${OWNER}:superadmin`;
+
+/** A user on each of the two brands, so cross-brand writes have a concrete, resolvable target. */
+async function seedTwoBrandUsers(api: TestApi) {
+  const uA = (await api.identity.register("254790000001", "impUserA", "hash_" + "a".repeat(24), undefined, SITE_A)).userId;
+  const uB = (await api.identity.register("254790000001", "impUserB", "hash_" + "b".repeat(24), undefined, SITE_B)).userId;
+  return { uA, uB };
+}
+
+// ── 2. GATE ──────────────────────────────────────────────────────────────────────────────────────
+test("impersonate route is platform_superadmin-only (per-brand admin/superadmin refused; needs auth)", async () => {
+  const api = await startTestApi();
+  try {
+    const path = `/api/v1/platform/sites/${SITE_A}/impersonate`;
+    assert.equal((await req(api, "POST", path, { token: ADMIN })).status, 403, "admin refused");
+    assert.equal((await req(api, "POST", path, { token: SUPERADMIN })).status, 403, "superadmin refused");
+    assert.equal((await req(api, "POST", path)).status, 401, "anonymous refused");
+  } finally { await api.close(); }
+});
+
+// ── 1. MINT (two different brands) ─────────────────────────────────────────────────────────────────
+test("impersonate mints a superadmin token fenced to the TARGET brand — for two distinct brands", async () => {
+  const api = await startTestApi();
+  try {
+    // Default brand (SITE_A) is present out of the box; create a second brand to impersonate.
+    const created = await req(api, "POST", "/api/v1/platform/sites", { token: PLATFORM, body: { slug: "brandb", name: "Brand B", primaryDomain: "brandb.example" } });
+    assert.equal(created.status, 201);
+    const brandBId = (await json(created)).siteId as string;
+
+    // Impersonate brand A (the default).
+    const impA = await req(api, "POST", `/api/v1/platform/sites/${SITE_A}/impersonate`, { token: PLATFORM });
+    assert.equal(impA.status, 200);
+    const a = await json(impA);
+    assert.equal(a.role, "superadmin", "A: role is a brand-scoped superadmin");
+    assert.equal(a.site, SITE_A, "A: token is fenced to brand A");
+    assert.equal(a.brand.siteId, SITE_A);
+    assert.ok(typeof a.token === "string" && a.token.length > 0, "A: a token is returned");
+
+    // Impersonate brand B — must be fenced to B, not A.
+    const impB = await req(api, "POST", `/api/v1/platform/sites/${brandBId}/impersonate`, { token: PLATFORM });
+    assert.equal(impB.status, 200);
+    const b = await json(impB);
+    assert.equal(b.role, "superadmin", "B: role is a brand-scoped superadmin");
+    assert.equal(b.site, brandBId, "B: token is fenced to brand B");
+    assert.equal(b.brand.slug, "brandb");
+    assert.notEqual(b.site, a.site, "the two impersonations are fenced to different brands");
+
+    // Unknown brand -> 404.
+    const missing = await req(api, "POST", `/api/v1/platform/sites/99999999-9999-9999-9999-999999999999/impersonate`, { token: PLATFORM });
+    assert.equal(missing.status, 404);
+  } finally { await api.close(); }
+});
+
+// ── 3. FENCE — an impersonation-shaped token only writes inside its brand (both directions) ─────────
+test("an impersonation superadmin token (site=B) can write to B but NOT to A", async () => {
+  const api = await startTestApi();
+  try {
+    const { uA, uB } = await seedTwoBrandUsers(api);
+    const IMP_B = `${OWNER}:superadmin:${SITE_B}`;   // exactly what /impersonate mints for brand B
+
+    const cross = await req(api, "POST", `/api/v1/admin/users/${uA}/overrides`, { token: IMP_B, body: { winRate: 0.5 } });
+    assert.equal(cross.status, 403, "B-fenced session cannot write a brand-A user");
+    assert.equal((await json(cross)).error.code, "SITE_SCOPE_FORBIDDEN");
+
+    const same = await req(api, "POST", `/api/v1/admin/users/${uB}/overrides`, { token: IMP_B, body: { winRate: 0.5 } });
+    assert.notEqual(same.status, 403, "B-fenced session can write its own brand-B user");
+  } finally { await api.close(); }
+});
+
+test("swapped: an impersonation superadmin token (site=A) can write to A but NOT to B", async () => {
+  const api = await startTestApi();
+  try {
+    const { uA, uB } = await seedTwoBrandUsers(api);
+    const IMP_A = `${OWNER}:superadmin:${SITE_A}`;   // impersonating the default brand
+
+    const cross = await req(api, "POST", `/api/v1/admin/users/${uB}/overrides`, { token: IMP_A, body: { winRate: 0.5 } });
+    assert.equal(cross.status, 403, "A-fenced session cannot write a brand-B user");
+    assert.equal((await json(cross)).error.code, "SITE_SCOPE_FORBIDDEN");
+
+    const same = await req(api, "POST", `/api/v1/admin/users/${uA}/overrides`, { token: IMP_A, body: { winRate: 0.5 } });
+    assert.notEqual(same.status, 403, "A-fenced session can write its own brand-A user");
+  } finally { await api.close(); }
+});
+
+// ── FENCE also covers the default-marketer controls (Issue 1 routes) ───────────────────────────────
+test("an impersonation superadmin token cannot set/clear a default marketer in another brand", async () => {
+  const api = await startTestApi();
+  try {
+    // A marketer on brand B; a session fenced to brand A must not touch it.
+    const mB = (await api.identity.register("254790000009", "mktB", "hash_" + "m".repeat(24), undefined, SITE_B)).userId;
+    api.identity.adminSetRole(mB, "marketer");
+    const IMP_A = `${OWNER}:superadmin:${SITE_A}`;
+
+    const mk = await req(api, "POST", `/api/v1/admin/marketers/${mB}/make-default`, { token: IMP_A });
+    assert.equal(mk.status, 403, "A-fenced session cannot make a brand-B marketer the default");
+    assert.equal((await json(mk)).error.code, "SITE_SCOPE_FORBIDDEN");
+
+    const clr = await req(api, "POST", `/api/v1/admin/marketers/${mB}/clear-default`, { token: IMP_A });
+    assert.equal(clr.status, 403, "A-fenced session cannot clear a brand-B default");
+  } finally { await api.close(); }
+});
+
+// ── 4. EXIT — an UN-FENCED session (no site claim) is unrestricted on BOTH brands ───────────────────
+/** The scope error code for a response, or null when the request was not scope-blocked. */
+async function scopeBlock(r: Response): Promise<string | null> {
+  if (r.status !== 403) return null;
+  try { return ((await r.json()) as any).error?.code ?? null; } catch { return null; }
+}
+
+test("the platform owner (no site claim) is NEVER brand-fenced — no SITE_SCOPE_FORBIDDEN on either brand", async () => {
+  const api = await startTestApi();
+  try {
+    const { uA, uB } = await seedTwoBrandUsers(api);
+    // NB: the in-memory override RPC only accepts a literal 'superadmin' actor, so the real
+    // platform_superadmin gets NOT_AUTHORIZED here (a harness-mirror gap, not a scope block; the live
+    // DB RPC allows it). The invariant we assert is the security-relevant one: the owner is never
+    // brand-FENCED — adminScopeSite returns "unrestricted" for rank-5, so SITE_SCOPE_FORBIDDEN never fires.
+    const onA = await req(api, "POST", `/api/v1/admin/users/${uA}/overrides`, { token: PLATFORM, body: { winRate: 0.5 } });
+    const onB = await req(api, "POST", `/api/v1/admin/users/${uB}/overrides`, { token: PLATFORM, body: { winRate: 0.5 } });
+    assert.notEqual(await scopeBlock(onA), "SITE_SCOPE_FORBIDDEN", "owner not fenced on brand A");
+    assert.notEqual(await scopeBlock(onB), "SITE_SCOPE_FORBIDDEN", "owner not fenced on brand B");
+  } finally { await api.close(); }
+});
+
+test("an un-fenced superadmin session (no site claim) can write to EITHER brand (200) — the exit state", async () => {
+  const api = await startTestApi();
+  try {
+    const { uA, uB } = await seedTwoBrandUsers(api);
+    const UNFENCED = `${OWNER}:superadmin`;   // superadmin with NO `site` claim == not impersonating
+    const onA = await req(api, "POST", `/api/v1/admin/users/${uA}/overrides`, { token: UNFENCED, body: { winRate: 0.5 } });
+    const onB = await req(api, "POST", `/api/v1/admin/users/${uB}/overrides`, { token: UNFENCED, body: { winRate: 0.5 } });
+    assert.equal(onA.status, 200, "un-fenced superadmin writes brand A");
+    assert.equal(onB.status, 200, "un-fenced superadmin writes brand B");
+  } finally { await api.close(); }
+});

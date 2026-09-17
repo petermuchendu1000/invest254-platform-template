@@ -103,7 +103,7 @@ export default function UserDetailPage({ params }: { params: { id: string } }) {
               <ResetBalance id={id} />
               <OverridesPanel id={id} />
               <NotificationSend id={id} />
-              {q.data.role === 'marketer' ? <DefaultMarketerControl id={id} isDefault={q.data.isBrandDefaultMarketer} username={q.data.username} /> : null}
+              {(q.data.role === 'marketer' || q.data.isBrandDefaultMarketer) ? <DefaultMarketerControl id={id} isDefault={q.data.isBrandDefaultMarketer} username={q.data.username} role={q.data.role} /> : null}
               {q.data.role === 'marketer' ? <CommissionRate id={id} /> : null}
               {q.data.role === 'marketer' ? <MarketerExpenses id={id} /> : null}
               <DeleteAccount id={id} role={q.data.role} username={q.data.username} />
@@ -334,7 +334,13 @@ function RoleManage({ id, current }: { id: string; current: string }) {
       { id, role },
       {
         onSuccess: () => toast.push({ tone: 'success', title: 'Role updated', description: 'Takes effect on the user’s next login.' }),
-        onError: (e) => toast.push({ tone: 'error', title: 'Update failed', description: e instanceof ApiError ? e.message : 'Try again.' }),
+        onError: (e) => {
+          const code = e instanceof ApiError ? e.code : '';
+          const description = code === 'DEFAULT_MARKETER_LOCKED'
+            ? 'This marketer is a brand’s default. Remove them as the brand default first (Brand default marketer → Remove as default), then change their role.'
+            : e instanceof ApiError ? e.message : 'Try again.';
+          toast.push({ tone: 'error', title: 'Update failed', description });
+        },
       },
     );
   }
@@ -423,11 +429,14 @@ function DeleteAccount({ id, role, username }: { id: string; role: string; usern
 /** Make (or clear) this marketer as the brand's DEFAULT marketer — earns 25% of every deposit on the
  *  brand (docs/09 §3). Server-side (migration 0104) the target must be an ACTIVE marketer on the
  *  admin's own brand, and a brand default can't be banned/suspended until reassigned. */
-function DefaultMarketerControl({ id, isDefault, username }: { id: string; isDefault: boolean; username: string }) {
+function DefaultMarketerControl({ id, isDefault, username, role }: { id: string; isDefault: boolean; username: string; role: string }) {
   const m = useSetDefaultMarketer();
   const toast = useToast();
   const myRole = useSession((s) => s.user?.role);
   if (myRole !== 'admin' && myRole !== 'superadmin' && myRole !== 'platform_superadmin') return null;
+  // Removing a default must ALWAYS be possible (even if this account's role has drifted off
+  // 'marketer' — the exact live corruption, migration 0124). Only ASSIGNING requires a marketer.
+  const isStaleDefault = isDefault && role !== 'marketer';
 
   function run(makeDefault: boolean) {
     m.mutate(
@@ -462,7 +471,7 @@ function DefaultMarketerControl({ id, isDefault, username }: { id: string; isDef
             busy={m.isPending}
             onConfirm={() => run(false)}
           />
-        ) : (
+        ) : role === 'marketer' ? (
           <ConfirmButton
             label="Make brand default"
             confirmLabel="Confirm — earns 25% of deposits"
@@ -471,8 +480,15 @@ function DefaultMarketerControl({ id, isDefault, username }: { id: string; isDef
             busy={m.isPending}
             onConfirm={() => run(true)}
           />
-        )}
+        ) : null}
       </Card>
+      {isStaleDefault ? (
+        <p className="text-xs text-down">
+          ⚠ This account is the brand default but is no longer an active marketer (role: {role}). It is still
+          earning 25% of every deposit yet can’t open the marketer dashboard. Remove it as default, then assign
+          an active marketer.
+        </p>
+      ) : null}
       <p className="text-xs text-muted">
         Every deposit on this brand credits the default marketer 25% (whether or not the player used a referral link).
         Only one active marketer can be the default at a time.

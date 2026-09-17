@@ -5,6 +5,7 @@ import { api, type RegisterInput } from '@/lib/api/endpoints';
 import { ApiError } from '@/lib/api/client';
 import { useSession } from '@/lib/auth/session';
 import { roleFromToken } from '@/lib/auth/token';
+import { clearImpersonation } from '@/lib/platform/impersonate';
 import { useBrand } from '@/lib/brand/BrandProvider';
 import { useWelcomeBonusFx } from '@/lib/game/welcomeBonusFx';
 
@@ -59,6 +60,9 @@ export function useAuthActions() {
   }
 
   function logout() {
+    // Drop any brand impersonation fence BEFORE clearing the session so a scoped superadmin token
+    // can never outlive the logout (the "stale fence after logout" bug). Safe when not impersonating.
+    clearImpersonation();
     reset();
   }
 

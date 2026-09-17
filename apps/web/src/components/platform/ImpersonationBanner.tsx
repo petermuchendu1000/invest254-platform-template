@@ -17,16 +17,19 @@ export function ImpersonationBanner() {
 
   if (!brand) return null;
   return (
-    <div className="sticky top-0 z-50 flex flex-wrap items-center justify-between gap-2 border-b border-warn/40 bg-warn/15 px-4 py-2 text-sm">
-      <span className="flex items-center gap-2 text-fg">
-        <span className="inline-block h-2 w-2 rounded-full bg-warn animate-pulse" />
-        Viewing <strong className="font-semibold">{brand.name}</strong> as <strong className="font-semibold">superadmin</strong>
-        <span className="text-muted">· via platform console</span>
+    <div className="sticky top-0 z-50 flex flex-wrap items-center justify-between gap-2 border-b border-warn/50 bg-warn/20 px-4 py-2 text-sm">
+      <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-fg">
+        <span className="inline-block h-2 w-2 shrink-0 rounded-full bg-warn animate-pulse" />
+        <span>
+          Logged in as <strong className="font-semibold">superadmin</strong> · accessing{' '}
+          <strong className="font-semibold">{brand.name}</strong>
+        </span>
+        <span className="font-mono text-xs text-muted">{brand.primaryDomain ?? brand.slug}</span>
       </span>
       <button
         type="button"
         onClick={endImpersonation}
-        className="rounded-lg border border-border bg-surface px-2.5 py-1 text-xs font-semibold text-fg hover:bg-surface-2"
+        className="rounded-lg border border-warn/50 bg-warn/15 px-2.5 py-1 text-xs font-semibold text-warn hover:bg-warn/25"
       >
         ← Exit to platform
       </button>

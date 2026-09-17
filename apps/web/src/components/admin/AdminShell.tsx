@@ -12,6 +12,7 @@ import { useAuthActions } from '@/lib/auth/useAuthActions';
 import { useHydrated } from '@/lib/useHydrated';
 import { LogoMark } from '@/components/layout/Logo';
 import { useSidebarCollapsed } from '@/lib/useSidebarCollapsed';
+import { getImpersonatingBrand, type ImpersonatedBrand } from '@/lib/platform/impersonate';
 
 type NavItem = { href: string; label: string; icon: React.ReactNode };
 type NavSection = { title: string; items: NavItem[]; superadmin?: boolean; platform?: boolean };
@@ -67,6 +68,11 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
   const openAuth = useAuthUi((s) => s.openAuth);
   const { logout } = useAuthActions();
   const { collapsed, toggle } = useSidebarCollapsed('admin-sidebar-collapsed');
+  // Impersonation fence (sessionStorage — client-only; read after mount to avoid an SSR/CSR
+  // hydration mismatch). While set, this session is a brand-scoped superadmin, NOT the platform
+  // owner's own account, so the chrome below must say so and drop the cross-brand nav.
+  const [impersonating, setImpersonating] = React.useState<ImpersonatedBrand | null>(null);
+  React.useEffect(() => { setImpersonating(getImpersonatingBrand()); }, []);
 
   if (!hydrated) {
     return (
@@ -101,7 +107,11 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
 
   const isPlatform = user?.role === 'platform_superadmin';
   const isSuper = user?.role === 'superadmin' || isPlatform;
-  const sections = SECTIONS.filter((s) => (!s.superadmin || isSuper) && (!s.platform || isPlatform));
+  // While impersonating a brand the active token is only a brand-scoped superadmin — the cross-brand
+  // "All brands" (platform) nav would 403 against it, so hide it and route back via the banner's
+  // "Exit to platform". Superadmin (brand-scoped) sections remain valid for the impersonated brand.
+  const showPlatformNav = isPlatform && !impersonating;
+  const sections = SECTIONS.filter((s) => (!s.superadmin || isSuper) && (!s.platform || showPlatformNav));
   const active = (href: string) => (href === '/admin' ? pathname === '/admin' : pathname?.startsWith(href));
 
   return (
@@ -118,9 +128,11 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
           <Link href="/admin" className={cn('flex min-w-0 items-center gap-2', collapsed && 'md:hidden')}>
             <LogoMark className="h-7 w-7 shrink-0" />
             <span className="flex flex-col leading-tight">
-              <span className="text-sm font-semibold tracking-tight">invest254 {isSuper ? 'Console' : 'Admin'}</span>
+              <span className="text-sm font-semibold tracking-tight">
+                {impersonating ? impersonating.name : 'invest254'} {isSuper ? 'Console' : 'Admin'}
+              </span>
               <span className={cn('text-[10px] font-medium uppercase tracking-wide', isSuper ? 'text-warn' : 'text-muted')}>
-                {isSuper ? 'Owner · full authority' : 'Operations'}
+                {impersonating ? 'Logged in as superadmin' : isSuper ? 'Owner · full authority' : 'Operations'}
               </span>
             </span>
           </Link>
@@ -192,10 +204,11 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
                 <span
                   className={cn(
                     'inline-flex w-fit items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide',
-                    isSuper ? 'bg-warn/15 text-warn' : 'bg-surface-2 text-muted',
+                    impersonating ? 'bg-warn/20 text-warn' : isSuper ? 'bg-warn/15 text-warn' : 'bg-surface-2 text-muted',
                   )}
+                  title={impersonating ? `Logged in as superadmin, accessing ${impersonating.name}` : undefined}
                 >
-                  {isSuper ? '★ System owner' : 'Operator'}
+                  {impersonating ? `Accessing ${impersonating.slug}` : isSuper ? '★ System owner' : 'Operator'}
                 </span>
               </div>
               <Button variant="secondary" size="sm" onClick={logout}>
