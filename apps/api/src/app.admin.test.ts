@@ -832,3 +832,17 @@ test("admin bulk: mass suspend / notify / reset-balance with per-user partial re
     assert.equal((await req(api, "POST", "/api/v1/admin/users/bulk", { token: a, body: { action: "suspend", userIds: [b], reason: "x" } })).status, 403);
   } finally { await api.close(); }
 });
+
+test("system logs (/admin/logs) are owner-only: admin/superadmin refused, platform_superadmin allowed (BUGLOG #33)", async () => {
+  const api = await startTestApi();
+  try {
+    assert.equal((await req(api, "GET", "/api/v1/admin/logs", { token: "admin-1:admin" })).status, 403, "admin refused");
+    assert.equal((await req(api, "GET", "/api/v1/admin/logs", { token: "root-1:superadmin" })).status, 403, "superadmin refused");
+    assert.equal((await req(api, "GET", "/api/v1/admin/logs")).status, 401, "anonymous refused");
+    const ok = await req(api, "GET", "/api/v1/admin/logs?level=error&limit=10", { token: "root-1:platform_superadmin" });
+    assert.equal(ok.status, 200, "platform_superadmin allowed");
+    const body = await json(ok);
+    assert.ok(Array.isArray(body.items), "returns a page (in-memory harness has no persisted logs)");
+    assert.ok("nextCursor" in body, "page shape includes nextCursor");
+  } finally { await api.close(); }
+});

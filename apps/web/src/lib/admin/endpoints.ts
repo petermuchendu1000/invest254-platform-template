@@ -7,6 +7,7 @@ import type {
   BulkActionResult,
   AdminBulkResult,
   AdminAuditRow,
+  AdminSystemLogRow,
   AdminNotificationRow,
   NotificationInput,
   NotificationTemplateRow,
@@ -130,6 +131,10 @@ export const adminApi = {
     apiFetch<unknown>(`/admin/withdrawals/${id}/approve`, { method: 'POST', token: t, body: { password } }),
   rejectWithdrawal: (t: string, id: string) =>
     apiFetch<unknown>(`/admin/withdrawals/${id}/reject`, { method: 'POST', token: t }),
+  // Manually finalize a stuck (pending/processing) withdrawal as PAID when the provider result callback
+  // never arrived (Mega Pay / Daraja). Same superadmin-password gate as approve; the client then shows paid.
+  markWithdrawalPaid: (t: string, id: string, password: string) =>
+    apiFetch<unknown>(`/admin/withdrawals/${id}/mark-paid`, { method: 'POST', token: t, body: { password } }),
   // Bulk withdrawal moderation (partial success per row; approve dispatches M-Pesa B2C each).
   // A single superadmin password authorizes the whole approve batch.
   bulkWithdrawals: (t: string, body: { action: 'approve' | 'reject'; txIds: string[]; password?: string }) =>
@@ -232,6 +237,19 @@ export const adminApi = {
     apiFetch<Paginated<AdminAuditRow>>('/admin/audit', {
       token: t,
       query: { cursor: p.cursor ?? undefined, limit: p.limit },
+    }),
+  // Owner-only System logs (docs/36). Persisted structured log lines with filters.
+  systemLogs: (
+    t: string,
+    p: Page & { app?: string; level?: string; status?: number; q?: string; requestId?: string; sinceMs?: number } = {},
+  ) =>
+    apiFetch<Paginated<AdminSystemLogRow>>('/admin/logs', {
+      token: t,
+      query: {
+        cursor: p.cursor ?? undefined, limit: p.limit,
+        app: p.app || undefined, level: p.level || undefined, status: p.status, q: p.q || undefined,
+        requestId: p.requestId || undefined, sinceMs: p.sinceMs,
+      },
     }),
 
   // Marketers — special players who RECEIVE payments; wallet, Fuliza, airtime, PIN, status.

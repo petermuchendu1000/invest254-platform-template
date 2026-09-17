@@ -593,6 +593,23 @@ export function registerAdminRoutes(router: Router, deps: ApiDeps): void {
 
   router.get(`${BASE}/admin/audit`, auth, admin, async (ctx: Ctx) => deps.admin.listAudit(pageQuery(ctx)));
 
+  // Owner-only System logs (docs/36, BUGLOG #33): the persisted structured request/error/money-path
+  // log lines, newest-first, filterable (level, status, q, requestId, since). platform_superadmin only
+  // — system logs are cross-brand operational data, not a per-brand admin surface.
+  router.get(`${BASE}/admin/logs`, auth, requireRole("platform_superadmin"), async (ctx: Ctx) => {
+    const num = (k: string): number | undefined => {
+      const v = ctx.query.get(k); if (v === null || v.trim() === "") return undefined;
+      const n = Number(v); return Number.isFinite(n) ? n : undefined;
+    };
+    const str = (k: string): string | undefined => {
+      const v = ctx.query.get(k); return v && v.trim() ? v.trim() : undefined;
+    };
+    return deps.admin.listSystemLogs({
+      limit: num("limit"), cursor: ctx.query.get("cursor"),
+      app: str("app"), level: str("level"), status: num("status"), q: str("q"), requestId: str("requestId"), sinceMs: num("sinceMs"),
+    });
+  });
+
   // ── J5: game configuration + RTP monitor + seed rotation (superadmin mutations) ───────────────
 
   // Resolve the brand this admin edit targets: a site-scoped operator is pinned to their JWT `site`

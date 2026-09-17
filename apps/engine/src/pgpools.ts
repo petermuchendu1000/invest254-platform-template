@@ -59,7 +59,7 @@ export function makePgPools(Pool: typeof PgPool, log: (msg: string) => void = ()
   });
   const listenPool = new Pool({
     connectionString: listenUrl,
-    max: Number(process.env.PG_LISTEN_POOL_MAX ?? 4),
+    max: Number(process.env.PG_LISTEN_POOL_MAX ?? 6),
     idleTimeoutMillis: 0, // never reap a LISTEN connection
     connectionTimeoutMillis: 10_000,
   });

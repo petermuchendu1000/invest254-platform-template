@@ -352,6 +352,24 @@ export interface AdminDayReport {
   poolPaidCents: Cents;
 }
 
+export interface AdminSystemLogRow {
+  id: string;
+  tMs: number;
+  app: string | null;
+  level: string;
+  msg: string;
+  requestId: string | null;
+  method: string | null;
+  path: string | null;
+  status: number | null;
+  durationMs: number | null;
+  ip: string | null;
+  userId: string | null;
+  role: string | null;
+  siteId: string | null;
+  fields: unknown;
+}
+
 export interface AdminAuditRow {
   id: string;
   actorId: string;
@@ -359,8 +377,7 @@ export interface AdminAuditRow {
   action: string;
   targetType: string;
   targetId: string | null;
-  detail: unknown;
-  createdAtMs: number;
+  detail: unknown;  createdAtMs: number;
 }
 
 export interface MpesaConfigRow {

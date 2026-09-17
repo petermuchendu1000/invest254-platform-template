@@ -29,6 +29,9 @@ const STATUS_OPTIONS = [
 
 // A withdrawal is actionable (approve / reject) only while it is still awaiting moderation.
 const ACTIONABLE = new Set(['pending', 'requested']);
+// "Mark as paid" applies while the payout is not yet finalised — an awaiting row OR one stuck in
+// 'processing' because the provider's B2C result callback never arrived (Mega Pay / Daraja failure).
+const MARKPAYABLE = new Set(['pending', 'requested', 'processing']);
 
 /** Clickable player identity → user detail page. */
 function UserCell({ userId, username }: { userId: string; username: string }) {
@@ -294,18 +297,21 @@ function Row({ r, checked, onToggle }: { r: AdminWithdrawalRow; checked: boolean
   const action = useWithdrawalAction();
   const toast = useToast();
   const canAct = ACTIONABLE.has(r.status.toLowerCase());
+  const canMarkPaid = MARKPAYABLE.has(r.status.toLowerCase());
   // Net cash the house is up on this player: lifetime deposits minus lifetime paid withdrawals.
   const netCents = r.totalDepositsCents - r.totalWithdrawalsCents;
 
-  function run(act: 'approve' | 'reject', password?: string) {
+  function run(act: 'approve' | 'reject' | 'mark-paid', password?: string) {
     action.mutate(
       { id: r.txId, action: act, ...(password ? { password } : {}) },
       {
         onSuccess: () =>
           toast.push({
             tone: 'success',
-            title: act === 'approve' ? 'Withdrawal approved' : 'Withdrawal rejected',
-            description: act === 'approve' ? 'M-Pesa payout dispatched.' : 'Funds returned to the player.',
+            title: act === 'approve' ? 'Withdrawal approved' : act === 'mark-paid' ? 'Marked as paid' : 'Withdrawal rejected',
+            description: act === 'approve' ? 'M-Pesa payout dispatched.'
+              : act === 'mark-paid' ? 'Recorded as paid — the player now sees this withdrawal as complete.'
+                : 'Funds returned to the player.',
           }),
         onError: (e) =>
           toast.push({ tone: 'error', title: 'Action failed', description: e instanceof ApiError ? e.message : 'Try again.' }),
@@ -340,10 +346,23 @@ function Row({ r, checked, onToggle }: { r: AdminWithdrawalRow; checked: boolean
       </Td>
       <Td><TimeCell ms={r.createdAtMs} /></Td>
       <Td className="text-right">
-        {canAct ? (
+        {canAct || canMarkPaid ? (
           <span className="inline-flex items-center justify-end gap-1.5">
-            <PasswordConfirmButton label="Approve" confirmLabel="Authorize payout" variant="primary" busy={action.isPending} onConfirm={(pw) => run('approve', pw)} />
-            <ConfirmButton label="Reject" confirmLabel="Reject" variant="outline" busy={action.isPending} onConfirm={() => run('reject')} />
+            {canAct ? (
+              <PasswordConfirmButton label="Approve" confirmLabel="Authorize payout" variant="primary" busy={action.isPending} onConfirm={(pw) => run('approve', pw)} />
+            ) : null}
+            {canAct ? (
+              <ConfirmButton label="Reject" confirmLabel="Reject" variant="outline" busy={action.isPending} onConfirm={() => run('reject')} />
+            ) : null}
+            {canMarkPaid ? (
+              <PasswordConfirmButton
+                label="Mark paid"
+                confirmLabel="Confirm paid"
+                variant={canAct ? 'outline' : 'primary'}
+                busy={action.isPending}
+                onConfirm={(pw) => run('mark-paid', pw)}
+              />
+            ) : null}
           </span>
         ) : (
           <span className="text-xs text-muted">—</span>

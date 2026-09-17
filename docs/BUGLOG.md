@@ -5,6 +5,168 @@ entry: what, evidence, root cause, impact, and resolution.
 
 ---
 
+## #36 — Daraja B2C payouts failed SILENTLY when initiator/credential unset → withdrawals stranded in `processing` — FIXED (branch `fix/daraja-b2c-fail-loud`)
+- **Surfaced by log analysis (post-#34/#35):** the only recurring non-4xx warning was
+  `[payments] Daraja credentials not configured … using StubDarajaClient`. That specific line is benign
+  (a boot-time ENV fallback; the API immediately loads the real STK creds from `mpesa_config` — "mpesa_config
+  loaded from database"). But investigating it exposed a real latent gap.
+- **Root cause:** `missingDarajaCredentials` only validates the **STK-4** (consumerKey/secret/shortcode/passkey).
+  Live `mpesa_config` has those set, so the API builds a real `HttpDarajaClient` — but `b2c_initiator`
+  and `b2c_security_credential` were **EMPTY**. `HttpDarajaClient.b2cPayment` POSTed those empty fields
+  straight to Safaricom, which rejects the payout with no usable ConversationID/result callback. Because
+  `fn_approve_withdrawal` flips the row to `processing` **before** the API dispatches, a rejected B2C left
+  the withdrawal **stuck in `processing` with `conversation_id = NULL`** — the exact stranded-withdrawal
+  state the operator had to clear by hand, with nothing in the logs explaining why.
+- **Fix (code — surfaces the misconfig; the credentials themselves are operator config):**
+  - New `missingB2cCredentials(cfg)` (b2cInitiator, b2cSecurityCredential, b2cResultUrl, b2cTimeoutUrl) —
+    B2C readiness is now checked **independently** of STK.
+  - `HttpDarajaClient.b2cPayment` now **fails loudly** with `MPESA_B2C_NOT_CONFIGURED:<missing>` *before*
+    any network call, instead of POSTing empty creds and getting a silent Safaricom rejection.
+  - `makeDarajaClientFromConfig` logs a clear **warning at every build/reload** when STK is ready but B2C
+    is not — so the gap shows up proactively in the System logs UI (thanks to #34), not only when a
+    withdrawal is attempted.
+  - API `DOMAIN_STATUS`: `MPESA_B2C_NOT_CONFIGURED → 503`, so an admin approve returns a clear message.
+- **Operator action still required:** set **B2C Initiator Name** + **B2C Security Credential** (Safaricom
+  Daraja) in Admin → M-Pesa. STK deposits are unaffected and already live.
+- **Tests:** `daraja.b2c.test.ts` (3 — missing-creds detection independent of STK; b2cPayment fails loud
+  with no network; STK-only config still yields a usable deposit client with B2C guarded). Suites green:
+  engine 314 / API 333; typecheck clean. No migration, no web change.
+
+---
+
+## #35 — Engine starved the session pooler: one LISTEN connection per brand for a GLOBAL channel — FIXED (branch `fix/engine-config-listen-multiplex`)
+- **Surfaced by #34:** with system logs now capturing the engine, `[config] listen-connect [site …]:
+  timeout exceeded when trying to connect` was firing ~49×/30min across brands.
+- **Root cause:** the engine opened a **dedicated session-pooler LISTEN connection per brand** for the
+  per-site config store (`configFor` → `SiteGameConfigStore({ connect })`), each held forever
+  (`idleTimeoutMillis: 0`). But `listenPool` `max = 4` and there were **10 active brands** (plus the
+  sites-store + deposit-feed LISTENs), so the first few brands permanently occupied the pool and every
+  other brand's `connect()` timed out at 10s — forever — leaving those brands on the 15s poll fallback
+  and spamming errors. `site_game_config_changed` is a **GLOBAL** channel (payload = the changed
+  site_id), so N connections all listening to the same channel was pure waste.
+- **Fix:** a `SharedSiteConfigListener` — **ONE** session connection LISTENing on the global channel,
+  fanning each notification out to the matching brand's `refresh()` by payload (refresh-all when a
+  notification carries no payload). Per-brand stores are now **poll-only** (the 15s fallback stays as a
+  safety net), so a dropped shared connection degrades to polling, not silence; the shared listener
+  reconnects with backoff. Engine session-LISTEN usage drops from ~12 → 3 (shared-config + sites +
+  deposit) regardless of brand count. Also raised `PG_LISTEN_POOL_MAX` default 4 → 6 for reconnect
+  headroom. No migration, no per-request/hot-path change.
+- **Tests:** `siteconfiglisten.test.ts` (5 unit — one connection for many brands, payload dispatch,
+  refresh-all on no payload, unknown-brand no-op, a throwing handler doesn't break others, reconnect
+  after error re-arms LISTEN, `stop()` halts reconnects). Suites green: engine 311 / API 333; typecheck
+  clean. Verified post-deploy that the timeout errors stop.
+
+---
+
+## #34 — System logs were only half-wired: the WS engine + all direct console.* were never captured — FIXED (branch `fix/system-logs-wire-all`, migration 0129)
+- **Report (follow-up to #33):** "map and wire the ENTIRE logs" — #33 only persisted API request/error
+  lines; the rest of the system was still invisible.
+- **Map (exhaustive, no assumptions):** grepped every `createLogger` and every `console.*` in the
+  backend. Findings: (a) the **WS engine has NO structured logger** — its boot, **crash recovery**,
+  **daily-seed rotation**, **pool top-ups**, **payments/Daraja/MegaPay**, and WS error reporting are all
+  `console.*` → stdout only; (b) the **API had 22 `console.*`** (boot/pool via `makePgPools`) bypassing
+  the sink; (c) all these are low-frequency events — no per-tick/per-message hot path — so safe to persist.
+- **Fix (both processes, one shared module):** new `systemlog.ts` `makeSystemLogPersister(pool,{app})`
+  provides (1) a `loggerSink` for the structured logger and (2) `captureConsole()` that monkey-patches
+  `console.{log,info,warn,error,debug}` so EVERY direct console call is persisted too — fully guarded
+  (fire-and-forget, re-entrancy-safe, never throws/blocks/recurses). The **API** uses it as its logger
+  sink AND captures console (`app='api'`); the **engine** installs `captureConsole()` (`app='engine'`)
+  right after its pool is created. Added migration 0129 (`app` column + index, backfilled `'api'`) so
+  the UI can filter by process; the read path, `GET /admin/logs`, and the UI gained an `app` filter +
+  per-row service badge. Default persist level raised to **`info`** (captures the full request stream +
+  every event; `debug`/health excluded); retention prune unchanged.
+- **Coverage now:** API requests + errors + money-path (reconcile) + boot console; engine boot + crash
+  recovery + seed rotation + pool realtime + platform live-feed + payments (Daraja/MegaPay) + WS errors.
+- **Tests:** `systemlog.test.ts` (4 unit: sink promotes columns + drops below-threshold; console capture
+  maps level, tags app, serializes Errors, marks `via:console`, restores originals; null-pool no-op;
+  idempotent install) + `e2e_system_logs.py` extended to 13 (adds `app` filter). Suites green: engine
+  307 / API 333; backend + web typecheck clean; `next build` clean; migrations idempotent.
+
+---
+
+## #33 — System logging was implemented but had no UI (owner couldn't view logs) — FIXED (branch `fix/system-logs-ui`, migration 0128)
+- **Report:** "I don't have a UI to see all system logs — it was implemented but the UI was never."
+- **State found:** the shared structured logger + per-request logging (docs/36) were implemented, but
+  emitted **stdout only** (Fly). There was no queryable store, no API and no UI — distinct from the
+  business **Audit log** (`admin_actions`, which already has `/admin/audit`). So system/request/error
+  logs could only be seen via `fly logs`.
+- **Fix (end-to-end):**
+  * **DB (migration 0128):** append-only `system_logs` table (promoted queryable columns + `fields`
+    jsonb) with keyset + filter indexes, and `fn_prune_system_logs(keep_days)` for retention.
+  * **API sink (`server.ts`):** a logger sink that keeps the stdout line AND persists lines at
+    `>= LOG_PERSIST_LEVEL` (default `warn`) to `system_logs` — fire-and-forget, so logging can never
+    block/fail a request. Wired as the app + reconcile-sweep logger (so money-path errors persist too),
+    plus a periodic retention prune (`LOG_RETENTION_DAYS`, default 30).
+  * **Read path:** `GET /admin/logs` — **platform_superadmin only** (system logs are cross-brand
+    operational data) — via `AdminService.listSystemLogs` with filters (level, status, q on msg|path,
+    requestId, since) + cursor pagination; in-memory harness returns an empty page.
+  * **Web:** a **System logs** page (`/admin/logs`) under the owner Platform nav — level filter,
+    debounced message/path search, level/status badges, request-id correlation, load-more.
+- **Tests:** `e2e_system_logs.py` (11 DB scenarios: newest-first, level/status/requestId/since/text
+  filters, keyset paging, retention prune) + `app.admin.test.ts` +1 (owner-only gate: admin/superadmin
+  403, anon 401, platform_superadmin 200 page shape). Full suites green: engine 303 / API 333; backend
+  + web typecheck clean; `next build` clean (`/admin/logs` builds); migration idempotent.
+- **Scope note:** persists API logs (requests, errors, money-path, Mega Pay/Daraja reconcile) — the
+  actionable set. Engine (WS) logs can be wired to the same sink as a follow-up. Default persist level
+  is `warn` (errors + rejections); set `LOG_PERSIST_LEVEL=info` to capture the full request stream.
+
+---
+
+## #32 — Approved withdrawals stuck in "processing" forever; no way to mark a payout paid when the B2C callback fails — FIXED (branch `fix/admin-mark-withdrawal-paid`, migration 0127)
+- **Report:** approved/paid withdrawals still show "processing"; the admin needs to mark a payment paid
+  manually when the rail (e.g. Mega Pay) fails to reflect it, and that must show as paid on the client.
+- **Root cause:** the withdrawal lifecycle debits the wallet at request (`fn_create_withdrawal`), flips to
+  `processing` on approval (B2C dispatched), and only reaches `success` when the provider's async result
+  callback arrives (`fn_complete_withdrawal`). When that callback never lands — a known Mega Pay / Daraja
+  failure mode — the row is stranded in `processing`: the money already left the wallet, the player was
+  paid out-of-band, but the client shows "processing" indefinitely and there was **no admin action** to
+  finalise it (only approve/reject existed). 4 live rows were stuck (invest254 ×2, madolar ×2).
+- **Fix:**
+  * **DB (migration 0127):** `fn_admin_mark_withdrawal_paid(tx, admin, receipt)` transitions a
+    pending/processing withdrawal → `success` with a manual receipt + an `admin_actions` audit row.
+    **No wallet change** (money already debited at request). Idempotent on an already-paid row; **refuses**
+    a failed/reversed row (`WITHDRAWAL_ALREADY_REVERSED`) so a returned payout is never double-paid.
+  * **API:** `POST /admin/withdrawals/:id/mark-paid` — same guards as approve: `requireRole('admin')` +
+    superadmin approval-password + `assertTargetSiteInScope` (brand-scoped). Threaded through
+    PaymentService/PaymentRepository (pg + in-memory) → fires the same success event as the B2C path so
+    the activity feed reflects it.
+  * **Web:** a password-gated **"Mark paid"** action in the Withdrawals queue for `pending`/`processing`
+    rows; the player's client then shows the withdrawal as paid (reads the same tx status).
+- **Tests:** `e2e_admin_mark_withdrawal_paid.py` (17 DB scenarios: processing→paid with wallet unchanged,
+  idempotent, pending→paid, reversed refused, unknown tx, audit row) + `app.approvalgate.e2e.test.ts` +4
+  (password gate, processing→success + idempotent, brand-scope, reversed→409). Full suites green:
+  engine 303 / API 332; backend + web typecheck clean; `next build` clean; migration idempotent.
+- **Note:** the 4 currently-stuck rows are left for the operator to mark paid (or reject) per-row via the
+  new control — only the operator knows whether each recipient was actually paid out-of-band.
+
+---
+
+## #31 — A soft-DELETED same-phone account shadowed a marketer's login; @jake locked out of the mpesa app — FIXED (branch `fix/marketer-login-deleted-shadow`)
+- **Report:** @jake (marketer) still could not log into the mpesa app after the #30 PIN fix.
+- **Investigation (live data, no guessing):** jake has 5 same-phone (`0113488568`) accounts across brands,
+  oldest-first: **`@dave` player invest254 `status=deleted` (has password)**, `@jake` marketer safitraders
+  active, `@boyz` tamutraders banned, `@jake` madolar player active, `@boyz` 33traders active. His marketer
+  wallet is on safitraders (active). The app's non-PIN path is `login-web` (password) → `auth.login({anyBrand:true})`.
+- **Root cause:** `AuthService.login` built the candidate list oldest-first, **broke on the FIRST password
+  match, then rejected it if `deleted`**. Since jake reuses one password, the first match was his OLDEST
+  account — the soft-deleted `@dave` — so login threw `INVALID_CREDENTIALS` and never reached his active
+  safitraders marketer account. A soft-deleted account was **shadowing** a valid same-phone account in the
+  cross-brand (marketer-app) path. (Not the default-marketer bug — verified independent code paths.)
+- **Fix (`apps/engine/src/authservice.ts`):** SKIP `deleted` candidates during password matching, so a
+  soft-deleted account can never shadow a valid same-phone account; keep the hard "deleted can't sign in"
+  rule (a deleted-ONLY phone still 401s) and constant-time behaviour (a dummy verify when every candidate
+  was skipped). Single-account (normal per-brand web) login is unchanged. Code-only (no migration); ships
+  on the next Fly deploy.
+- **Ripple checked:** callers of `auth.login` are the per-brand web login (single candidate — unchanged)
+  and the marketer `login-web` (`anyBrand` — fixed). After the fix jake resolves via ANY non-deleted match
+  (his safitraders marketer directly, or a player/banned account → `profileByPhone` any-brand fallback →
+  safitraders wallet). Combined with #30 (PIN sig-9) and his now-present marketer PIN, BOTH app login paths
+  work. If a marketer's password matches ONLY a deleted account, that is a password-reset case, not this bug.
+- **Tests:** `app.marketers.webauth.test.ts` +2 — the deleted-shadow scenario now logs in (was 401), and a
+  deleted-ONLY phone still 401s. Full suites green: shared 219 / engine 303 / API 328; typecheck clean.
+
+---
+
 ## #30 — Marketer PIN login (mpesa_2 quick-login) failed on any non-07 phone format, on every brand — FIXED (branch `fix/marketer-login-phone-sig9`, migration 0126)
 - **Report:** "some marketers cannot log into one or both apps" (mpesa_2 / truecaller).
 - **Root cause:** `fn_marketer_login` (PIN path, `POST /marketers/auth/login`) matched `marketers.phone =

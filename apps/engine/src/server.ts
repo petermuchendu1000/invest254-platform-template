@@ -15,6 +15,8 @@ import { DepositNotifier, type DepositListenClient } from "./platformlive.js";
 import { PgPlatformRepository } from "./platform.js";
 import { PoolRealtimeDistributor } from "./poolrealtime.js";
 import { makeVerifier } from "./auth.js";
+import { makeSystemLogPersister } from "./systemlog.js";
+import { SharedSiteConfigListener } from "./siteconfiglisten.js";
 import { DEFAULT_VERSIONED_CONFIG, PlatformGate } from "@invest254/shared";
 
 /**
@@ -75,6 +77,10 @@ if (usingDb) {
   const pool = queryPool;
   const q = pool as unknown as Querier;
   realtimeQuery = q;
+  // Owner-visible System logs (docs/36, BUGLOG #34): the engine has no structured logger — its boot,
+  // crash-recovery, seed-rotation, pool and payments/Daraja/MegaPay events are all console.*. Capture
+  // them (tagged app='engine') so the System logs UI shows the WHOLE system, not just the API.
+  makeSystemLogPersister(pool as unknown as { query: (sql: string, params?: unknown[]) => Promise<{ rows?: unknown[] }> }, { app: "engine" }).captureConsole();
   platformGate = new PlatformGate((sql: string, p?: unknown[]) => q.query(sql, p ?? []));
   repo = new PgGameRepository(q);
   overridesRepo = new PgUserOverridesRepository(q);
@@ -103,6 +109,15 @@ if (usingDb) {
   await sitesStore.init();
   console.log(`[engine] pool controller ready; pool_mode brands: ${sitesStore.poolModeBrandCount()} (live)`);
 
+  // ONE shared LISTEN connection on the GLOBAL site_game_config_changed channel, fanned out to every
+  // brand's config store — instead of a dedicated session-pooler connection per brand, which starved
+  // the tiny listen pool once brand count exceeded PG_LISTEN_POOL_MAX (BUGLOG #35). Per-brand stores
+  // stay poll-only as the safety net, so a dropped shared connection degrades to polling, not silence.
+  const siteConfigListener = new SharedSiteConfigListener({
+    connect: () => listenPool.connect() as unknown as Promise<ListenClient>,
+    onError: (err, ctx) => console.error(`[engine] site-config ${ctx}:`, err.message),
+  });
+
   // Canonical "is this a demo/marketer account?" (migration 0084: fn_is_marketer_account). One source
   // of truth for the pool exemption AND the money layer's demo routing, so they can never diverge. A
   // short TTL cache keeps it off the trade hot path (marketer status changes rarely).
@@ -123,9 +138,9 @@ if (usingDb) {
     }
   };
 
-  // Each brand gets its own live store: LISTEN site_game_config_changed (filtered to the brand's
-  // payload) + a poll fallback, with historical versions resolved from site_game_config_versions.
-  // A dedicated LISTEN connection per brand is opened lazily via pool.connect().
+  // Each brand gets its own live store: a poll fallback + INSTANT push via the ONE shared LISTEN
+  // connection (siteConfigListener) — no per-brand session connection (BUGLOG #35). Historical
+  // versions resolved from site_game_config_versions.
   configFor = async (siteId): Promise<ConfigProvider> => {
     // Brand DISPLAY currency drives the currency-native near-miss withdrawal line (docs/25 §16). Read
     // once per brand here; the store converts minWithdrawalNative → KES cents at the live FX rate.
@@ -134,11 +149,11 @@ if (usingDb) {
       const cr = await q.query("select currency from sites where id = $1::uuid limit 1", [siteId]);
       if (cr.rows.length) currency = String((cr.rows[0] as Record<string, unknown>).currency ?? "KES");
     } catch { /* default KES → near-miss uses the legacy min_withdrawal */ }
-    const store = new SiteGameConfigStore(siteId, q, {
-      connect: () => listenPool.connect() as unknown as Promise<ListenClient>,
-      currency,
-    });
+    const store = new SiteGameConfigStore(siteId, q, { currency }); // poll-only; push comes from the shared listener
     await store.init();
+    // Instant hot-reload without a per-brand connection: the shared listener nudges THIS brand's
+    // refresh when site_game_config_changed fires with its site_id (payload).
+    siteConfigListener.register(siteId, () => { void store.refresh().catch(() => { /* poll covers it */ }); });
     return store;
   };
   // Live resolution for a brand ONBOARDED AFTER boot (GAP 2): on an alias miss, look the ref up in

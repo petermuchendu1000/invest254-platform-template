@@ -66,6 +66,12 @@ export interface PaymentRepository {
   approveWithdrawal(txId: string, adminId: string): Promise<ApproveResult>;
   rejectWithdrawal(txId: string, adminId: string): Promise<{ reversed: boolean; newBalance: Cents }>;
   completeWithdrawal(txId: string, resultCode: number, conversationId: string | null, receipt: string | null, raw: unknown): Promise<CompleteResult>;
+  /**
+   * Admin manual completion: finalize a pending/processing withdrawal as PAID when the provider's B2C
+   * result callback never arrived (Mega Pay / Daraja failure). No wallet change (money already debited
+   * at create); idempotent on an already-paid row; refuses a failed/reversed row (would double-pay).
+   */
+  markWithdrawalPaid(txId: string, adminId: string, receipt: string | null): Promise<CompleteResult>;
   getTransaction(txId: string): Promise<TxRow | null>;
   /** A player's transaction history (optional kind/status filter), newest-first, cursor-paginated. `siteId` scopes it per brand. */
   listTransactions(userId: string, q: TxListQuery, siteId?: string): Promise<Page<TransactionRecord>>;
@@ -256,6 +262,16 @@ export class InMemoryPaymentRepository implements PaymentRepository {
     this.ledger.push({ userId: tx.userId, type: "withdrawal_reversal", amount: tx.amount, ref: `transactions:${tx.id}` });
     return { applied: true, status: "failed", newBalance: bal };
   }
+  async markWithdrawalPaid(txId: string, _adminId: string, receipt: string | null): Promise<CompleteResult> {
+    const tx = this.txns.get(txId);
+    if (!tx || tx.kind !== "withdrawal") throw new Error("TX_NOT_FOUND");
+    if (tx.status === "success") return { applied: false, status: "success", newBalance: await this.getBalance(tx.userId) };
+    if (["failed", "reversed"].includes(tx.status)) throw new Error("WITHDRAWAL_ALREADY_REVERSED");
+    // pending|processing -> paid. Money already debited at create; no wallet change (mirrors the RPC).
+    tx.status = "success";
+    tx.receipt = receipt ?? tx.receipt ?? null;
+    return { applied: true, status: "success", newBalance: await this.getBalance(tx.userId) };
+  }
   async getTransaction(txId: string): Promise<TxRow | null> {
     const tx = this.txns.get(txId);
     return tx ? { id: tx.id, userId: tx.userId, kind: tx.kind, amountCents: tx.amount, status: tx.status, phone: tx.phone } : null;
@@ -418,6 +434,10 @@ export class PgPaymentRepository implements PaymentRepository {
   }
   async completeWithdrawal(txId: string, resultCode: number, conversationId: string | null, receipt: string | null, raw: unknown): Promise<CompleteResult> {
     const r = await this.q.query("select applied, status, new_balance from fn_complete_withdrawal($1,$2,$3,$4,$5)", [txId, resultCode, conversationId, receipt, JSON.stringify(raw ?? {})]);
+    return { applied: Boolean(r.rows[0].applied), status: String(r.rows[0].status), newBalance: toCents(r.rows[0].new_balance) };
+  }
+  async markWithdrawalPaid(txId: string, adminId: string, receipt: string | null): Promise<CompleteResult> {
+    const r = await this.q.query("select applied, status, new_balance from fn_admin_mark_withdrawal_paid($1,$2,$3)", [txId, adminId, receipt]);
     return { applied: Boolean(r.rows[0].applied), status: String(r.rows[0].status), newBalance: toCents(r.rows[0].new_balance) };
   }
   async getTransaction(txId: string): Promise<TxRow | null> {

@@ -56,6 +56,7 @@ const SECTIONS: NavSection[] = [
     platform: true,
     items: [
       { href: '/platform', label: 'All brands', icon: <Icon d="M3 21h18M5 21V7l7-4 7 4v14M9 21v-6h6v6" /> },
+      { href: '/admin/logs', label: 'System logs', icon: <Icon d="M4 5h16M4 5a1 1 0 00-1 1v12a1 1 0 001 1h16a1 1 0 001-1V6a1 1 0 00-1-1M8 9h8M8 13h8M8 17h5" /> },
     ],
   },
 ];

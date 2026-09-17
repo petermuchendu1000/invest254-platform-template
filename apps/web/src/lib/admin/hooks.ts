@@ -213,8 +213,10 @@ export function useWithdrawalAction() {
   const t = useTok();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (v: { id: string; action: 'approve' | 'reject'; password?: string }) =>
-      v.action === 'approve' ? adminApi.approveWithdrawal(t, v.id, v.password ?? '') : adminApi.rejectWithdrawal(t, v.id),
+    mutationFn: (v: { id: string; action: 'approve' | 'reject' | 'mark-paid'; password?: string }) =>
+      v.action === 'approve' ? adminApi.approveWithdrawal(t, v.id, v.password ?? '')
+        : v.action === 'mark-paid' ? adminApi.markWithdrawalPaid(t, v.id, v.password ?? '')
+          : adminApi.rejectWithdrawal(t, v.id),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['admin', 'withdrawals'] });
       void qc.invalidateQueries({ queryKey: ['admin', 'overview'] });
@@ -453,6 +455,18 @@ export function useAudit() {
     enabled: !!t,
     initialPageParam: null as string | null,
     queryFn: ({ pageParam }) => adminApi.audit(t, { cursor: pageParam }),
+    getNextPageParam: (l: Paginated<unknown>) => l.nextCursor ?? undefined,
+  });
+}
+
+/** Owner-only System logs (docs/36) with server-side filters; refetches when a filter changes. */
+export function useSystemLogs(filters: { app?: string; level?: string; status?: number; q?: string; requestId?: string; sinceMs?: number } = {}) {
+  const t = useTok();
+  return useInfiniteQuery({
+    queryKey: ['admin', 'logs', filters],
+    enabled: !!t,
+    initialPageParam: null as string | null,
+    queryFn: ({ pageParam }) => adminApi.systemLogs(t, { cursor: pageParam, ...filters }),
     getNextPageParam: (l: Paginated<unknown>) => l.nextCursor ?? undefined,
   });
 }

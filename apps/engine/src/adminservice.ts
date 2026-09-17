@@ -1,6 +1,7 @@
 import type { Page, PageQuery } from "./paging.js";
 import type {
   AdminRepository, AdminOverview, AdminUserRow, AdminUserDetail, AdminWithdrawalRow, AdminAuditRow,
+  AdminSystemLogRow, AdminSystemLogQuery,
   AdminUserListQuery, AdminWithdrawalListQuery, AdminTransactionRow, AdminTransactionListQuery,
   SetUserStatusResult, SetCommissionRateResult,
   AdjustBalanceResult, AdjustBalanceKindResult, ClearBalanceResult, ResetBalanceResult, BalanceKind, UserOverrideRow, UserOverridePatch,
@@ -67,6 +68,7 @@ export class AdminService {
   listTransactions(q: AdminTransactionListQuery): Promise<Page<AdminTransactionRow>> { return this.repo.listTransactions(q); }
 
   listAudit(q: PageQuery, siteId?: string): Promise<Page<AdminAuditRow>> { return this.repo.listAudit(q, siteId); }
+  listSystemLogs(q: AdminSystemLogQuery): Promise<Page<AdminSystemLogRow>> { return this.repo.listSystemLogs(q); }
 
   /** Manual wallet credit/debit (J3) — signed cents, mandatory reason; guards + audit live in the repo/RPC. */
   adjustBalance(actorId: string, actorRole: string, targetId: string, amountCents: number, reason: string): Promise<AdjustBalanceResult> {

@@ -88,6 +88,21 @@ export interface AdminAuditRow {
   id: string; actorId: string; actorRole: string; action: string;
   targetType: string; targetId: string | null; detail: unknown; createdAtMs: number;
 }
+/** One persisted system-log line (docs/36) surfaced to the owner-only System logs UI. */
+export interface AdminSystemLogRow {
+  id: string; tMs: number; app: string | null; level: string; msg: string;
+  requestId: string | null; method: string | null; path: string | null;
+  status: number | null; durationMs: number | null; ip: string | null;
+  userId: string | null; role: string | null; siteId: string | null; fields: unknown;
+}
+export interface AdminSystemLogQuery extends PageQuery {
+  app?: string | undefined;         // which process ('api' | 'engine')
+  level?: string | undefined;       // exact level (debug|info|warn|error)
+  status?: number | undefined;      // exact HTTP status
+  q?: string | undefined;           // substring match on msg/path
+  requestId?: string | undefined;   // correlate one request's lines
+  sinceMs?: number | undefined;     // t >= since
+}
 export interface AdminUserListQuery extends PageQuery {
   role?: string | undefined; status?: string | undefined; q?: string | undefined;
   // Numeric threshold filters (all in cents / counts; undefined = no bound).
@@ -307,6 +322,8 @@ export interface AdminRepository {
   /** Unified deposits + withdrawals feed for the Finance transactions explorer (newest-first, keyset). */
   listTransactions(q: AdminTransactionListQuery): Promise<Page<AdminTransactionRow>>;
   listAudit(q: PageQuery, siteId?: string): Promise<Page<AdminAuditRow>>;
+  /** Owner-only: the persisted system logs (docs/36), newest-first, filterable + cursor-paginated. */
+  listSystemLogs(q: AdminSystemLogQuery): Promise<Page<AdminSystemLogRow>>;
   adjustBalance(actorId: string, actorRole: string, targetId: string, amountCents: Cents, reason: string): Promise<AdjustBalanceResult>;
   /** Reset a user's real wallet to their most recent successful deposit amount (audited). */
   resetBalanceToLastFunded(actorId: string, actorRole: string, targetId: string, reason: string): Promise<ResetBalanceResult>;
@@ -872,6 +889,36 @@ export class PgAdminRepository implements AdminRepository {
       targetType: String(x.target_type), targetId: x.target_id == null ? null : String(x.target_id), detail: x.detail, createdAtMs: ms(x.created_at),
     }));
     return pageFrom(rows, limit, (a) => `${a.createdAtMs}:${a.id}`);
+  }
+
+  async listSystemLogs(query: AdminSystemLogQuery): Promise<Page<AdminSystemLogRow>> {
+    const limit = clampLimit(query.limit);
+    const cur = decodeKeyset(query.cursor);
+    const r = await this.q.query(
+      `select id, t, level, msg, request_id, method, path, status, duration_ms, ip, user_id, role, site_id, fields, app
+         from system_logs
+        where ($1::timestamptz is null or (t, id) < ($1::timestamptz, $2::bigint))
+          and ($4::text is null or level = $4)
+          and ($5::int  is null or status = $5)
+          and ($6::text is null or request_id = $6)
+          and ($7::timestamptz is null or t >= $7)
+          and ($8::text is null or (msg ilike '%'||$8||'%' or path ilike '%'||$8||'%'))
+          and ($9::text is null or app = $9)
+        order by t desc, id desc
+        limit $3`,
+      [cur ? new Date(cur.tsMs).toISOString() : null, cur ? Number(cur.id) : null, limit + 1,
+       query.level ?? null, query.status ?? null, query.requestId ?? null,
+       query.sinceMs ? new Date(query.sinceMs).toISOString() : null, query.q ?? null, query.app ?? null]);
+    const rows: AdminSystemLogRow[] = r.rows.map((x) => ({
+      id: String(x.id), tMs: ms(x.t), app: x.app == null ? null : String(x.app), level: String(x.level), msg: String(x.msg),
+      requestId: x.request_id == null ? null : String(x.request_id),
+      method: x.method == null ? null : String(x.method), path: x.path == null ? null : String(x.path),
+      status: x.status == null ? null : Number(x.status), durationMs: x.duration_ms == null ? null : Number(x.duration_ms),
+      ip: x.ip == null ? null : String(x.ip), userId: x.user_id == null ? null : String(x.user_id),
+      role: x.role == null ? null : String(x.role), siteId: x.site_id == null ? null : String(x.site_id),
+      fields: x.fields ?? {},
+    }));
+    return pageFrom(rows, limit, (a) => `${a.tMs}:${a.id}`);
   }
 
   async adjustBalance(actorId: string, actorRole: string, targetId: string, amountCents: Cents, reason: string): Promise<AdjustBalanceResult> {
@@ -1691,6 +1738,10 @@ export class InMemoryAdminRepository implements AdminRepository {
       _ts: a.createdAtMs, _id: String(a.id).padStart(12, "0"),
     }));
     return memKeyset(rows, q);
+  }
+  // System logs are only persisted by the DB-backed sink (docs/36); the in-memory harness has none.
+  async listSystemLogs(_q: AdminSystemLogQuery): Promise<Page<AdminSystemLogRow>> {
+    return { items: [], nextCursor: null };
   }
 
   async adjustBalance(actorId: string, actorRole: string, targetId: string, amountCents: Cents, reason: string): Promise<AdjustBalanceResult> {

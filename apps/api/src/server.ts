@@ -3,7 +3,7 @@ import {
   PaymentService, AuthService, AffiliateService, AdminService, PgAdminRepository, PlatformService, PgPlatformRepository, DarajaConfigStore, makeVerifier,
   NotificationService, PgNotificationRepository,
   PushService, PgPushSubscriptionRepository,
-  GameConfigStore, mapConfigRow, makePgPools,
+  GameConfigStore, mapConfigRow, makePgPools, makeSystemLogPersister,
   makeMegaPayClient,
   verifyPassword,
   type GameRepository, type EngagementRepository, type PaymentRepository,
@@ -89,6 +89,23 @@ async function buildDeps(): Promise<ApiDeps> {
   const { queryPool, listenPool } = makePgPools(Pool, (m) => console.log(`[api] ${m}`));
   const pool = queryPool;
   const q = pool as unknown as Querier;
+
+  // Owner-visible System logs (docs/36, BUGLOG #33/#34): persist structured request/event lines AND
+  // capture every direct console.* call in this process, tagged app='api'. Fire-and-forget; never
+  // blocks a request. Level is env-driven (LOG_PERSIST_LEVEL, default 'info' -> all requests + events).
+  const logPersister = makeSystemLogPersister(pool as unknown as { query: (sql: string, params?: unknown[]) => Promise<{ rows?: unknown[] }> }, { app: "api" });
+  const dbLog = createLogger({ bindings: { app: "api" }, sink: logPersister.loggerSink });
+  logPersister.captureConsole();
+  // Retention: prune old rows so the store stays bounded (env LOG_RETENTION_DAYS, default 30).
+  const LOG_PRUNE_MS = Number(process.env.LOG_PRUNE_INTERVAL_MS ?? 6 * 60 * 60 * 1000);
+  const LOG_KEEP_DAYS = Number(process.env.LOG_RETENTION_DAYS ?? 30);
+  if (Number.isFinite(LOG_PRUNE_MS) && LOG_PRUNE_MS > 0) {
+    const prune = (): void => void q.query("select public.fn_prune_system_logs($1) as n", [LOG_KEEP_DAYS])
+      .then((r: { rows?: Array<{ n?: number }> }) => { const n = Number(r.rows?.[0]?.n ?? 0); if (n > 0) dbLog.info("system_logs pruned", { pruned: n, keepDays: LOG_KEEP_DAYS }); })
+      .catch(() => { /* non-fatal */ });
+    const t = setInterval(prune, LOG_PRUNE_MS); t.unref();
+    setTimeout(prune, 60_000).unref();
+  }
 
   // Live game configuration for the public GET /game/config. Same store the WS engine uses,
   // so the limits the browser validates against are the limits the engine enforces.
@@ -590,7 +607,7 @@ async function buildDeps(): Promise<ApiDeps> {
     telegramTopics: { approved: telegramTopics.approved, rejected: telegramTopics.rejected },
     onCommissionRequested: commissionRequestedAlert,
     corsAllowOrigin: (origin: string) => brandCors.allows(origin),
-    logger: log,
+    logger: dbLog,
     marketers: makePgMarketerRepo((sql, params) => q.query(sql, params ?? [])),
     referral: referralRepo,
     marketerExpenses: {
@@ -774,7 +791,7 @@ server.listen(PORT, () => {
 // deposit is left stranded and no unpaid one is credited. Set to 0 to disable.
 const RECONCILE_MS = Number(process.env.DEPOSIT_RECONCILE_INTERVAL_MS ?? 300_000);
 if (Number.isFinite(RECONCILE_MS) && RECONCILE_MS > 0) {
-  const recLog = log.child({ module: "payments.reconcile" });
+  const recLog = (deps.logger ?? log).child({ module: "payments.reconcile" });
   const timer = setInterval(() => {
     void deps.payments
       .reconcileDeposits()

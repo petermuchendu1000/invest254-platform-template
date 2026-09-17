@@ -420,6 +420,20 @@ export class PaymentService {
   rejectWithdrawal(txId: string, adminId: string): Promise<{ reversed: boolean; newBalance: Cents }> {
     return this.repo.rejectWithdrawal(txId, adminId);
   }
+  /**
+   * Admin manually finalizes a withdrawal as PAID when the provider's B2C result callback never
+   * arrived (Mega Pay / Daraja failure). No wallet change (money already debited at create). On a
+   * genuine transition to 'success' it fires the same success event as the B2C path, so the client
+   * and activity feed reflect the completed payout. Idempotent; refuses a failed/reversed row.
+   */
+  async markWithdrawalPaid(txId: string, adminId: string, receipt: string | null): Promise<CompleteResult> {
+    const res = await this.repo.markWithdrawalPaid(txId, adminId, receipt);
+    if (res.applied && res.status === "success") {
+      const tx = await this.repo.getTransaction(txId);
+      if (tx) this.events.onWithdrawalSuccess?.({ userId: tx.userId, amountCents: tx.amountCents });
+    }
+    return res;
+  }
   /** Daraja B2C result handler (idempotent). Success keeps the debit; failure reverses it. */
   async handleB2cResult(txId: string, resultCode: number, conversationId: string | null, receipt: string | null, raw: unknown): Promise<CompleteResult> {
     const res = await this.repo.completeWithdrawal(txId, resultCode, conversationId, receipt, raw);

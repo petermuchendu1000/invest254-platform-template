@@ -37,6 +37,45 @@ async function createMarketer(api: TestApi, name: string, phone: string): Promis
 const loginWeb = (api: TestApi, phone: string, password: string) =>
   req(api, "POST", "/api/v1/marketers/auth/login-web", { body: { phone, password } });
 
+test("anyBrand login-web: an OLDER soft-DELETED same-phone account never shadows the active marketer (BUGLOG #31, jake)", async () => {
+  // jake: his oldest same-phone account (@dave, invest254) was soft-DELETED; auth.login matched it
+  // first (oldest) and rejected it as deleted, 401-ing his active safitraders marketer login. The
+  // marketer apps have no other non-PIN path, so he was locked out. Login must SKIP deleted candidates.
+  const api = await startTestApi();
+  try {
+    const PHONE = "0113488568", PW = "sharedpass1";
+    // 1) OLDER account on brand B, same phone + password -> will be soft-deleted (jake's '@dave').
+    const reg = await req(api, "POST", "/api/v1/auth/register", { body: { phone: PHONE, username: "dave", password: PW, site: "brandb" } });
+    assert.equal(reg.status, 201, "older brand-B account registered");
+    const deletedUserId = (await json(reg)).userId as string;
+    // 2) NEWER account on the default brand + a marketer wallet (jake's active identity).
+    await registerWebsiteAccount(api, PHONE, "jake", PW);
+    const marketerId = await createMarketer(api, "Jake Ochieng", PHONE);
+    // 3) Soft-delete the older brand-B account (status='deleted').
+    const del = await req(api, "POST", `/api/v1/admin/users/${deletedUserId}/delete`, { token: ADMIN });
+    assert.equal(del.status, 200, "older account soft-deleted");
+    // 4) login-web must skip the deleted shadow and resolve the active marketer (was 401 before the fix).
+    const res = await loginWeb(api, PHONE, PW);
+    assert.equal(res.status, 200, "login-web resolves past the deleted shadow account");
+    const body = await json(res);
+    assert.equal(body.marketer.id, marketerId, "resolves the active marketer identity");
+    assert.equal(body.marketer.name, "Jake Ochieng");
+  } finally { await api.close(); }
+});
+
+test("a phone whose ONLY account is deleted still cannot sign in (deleted is a hard block)", async () => {
+  const api = await startTestApi();
+  try {
+    const PHONE = "0799000123", PW = "onlydeleted1";
+    const reg = await req(api, "POST", "/api/v1/auth/register", { body: { phone: PHONE, username: "gone", password: PW } });
+    const uid = (await json(reg)).userId as string;
+    await createMarketer(api, "Gone", PHONE);
+    assert.equal((await req(api, "POST", `/api/v1/admin/users/${uid}/delete`, { token: ADMIN })).status, 200);
+    // Even with a marketer wallet, a deleted-only identity must NOT authenticate.
+    assert.equal((await loginWeb(api, PHONE, PW)).status, 401, "deleted-only phone is rejected");
+  } finally { await api.close(); }
+});
+
 test("happy path: website login fetches the correct marketer name + number", async () => {
   const api = await startTestApi();
   try {

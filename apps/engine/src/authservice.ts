@@ -206,9 +206,19 @@ export class AuthService {
     if (candidates.length === 0) {
       await verifyPassword(input.password, await DUMMY_HASH);
     } else {
+      let verifiedAny = false;
       for (const c of candidates) {
+        // A soft-DELETED account can never sign in (see below). In the anyBrand path a person may
+        // hold several same-phone accounts across brands (the marketer apps), returned oldest-first;
+        // a deleted account must NOT shadow a valid one it happens to precede — skip it so matching
+        // continues to the caller's real account. (BUGLOG #31 — jake's deleted invest254 account
+        // was blocking his active safitraders marketer login.)
+        if (c.status === "deleted") continue;
+        verifiedAny = true;
         if (await verifyPassword(input.password, c.passwordHash)) { rec = c; break; }
       }
+      // Constant time when every candidate was skipped (all-deleted phone): still cost one verify.
+      if (!verifiedAny) await verifyPassword(input.password, await DUMMY_HASH);
     }
     if (!rec) throw new Error("INVALID_CREDENTIALS");
     // A soft-DELETED account is treated as if it does not exist: same error as bad credentials, so a

@@ -117,6 +117,11 @@ export class HttpDarajaClient implements DarajaClient {
     throw new Error(`DARAJA_STKQUERY_${res.status}:${JSON.stringify(j)}`);
   }
   async b2cPayment(a: B2cArgs): Promise<B2cResult> {
+    // B2C payouts need their OWN initiator + security credential (separate from the STK-Push creds).
+    // If they're not set, FAIL LOUDLY here instead of POSTing empty creds to Safaricom — which is
+    // silently rejected and strands the withdrawal in 'processing' with no result callback (BUGLOG #36).
+    const missB2c = missingB2cCredentials(this.cfg);
+    if (missB2c.length) throw new Error(`MPESA_B2C_NOT_CONFIGURED:${missB2c.join(",")}`);
     // The B2C result route is keyed by transaction id (`/withdrawals/mpesa/result/:txId`), so when a
     // resultId is supplied we append it to the configured base URL and Safaricom POSTs the result to
     // that exact path. Without a resultId we fall back to the raw configured URL (legacy behaviour).
@@ -182,6 +187,20 @@ export function missingDarajaCredentials(cfg: DarajaConfig): string[] {
 }
 
 /**
+ * The B2C-specific credentials a withdrawal PAYOUT cannot run without. These are separate from the
+ * STK-Push creds above: a brand can have STK (deposits) fully working while B2C (payouts) is
+ * unconfigured, in which case every approved withdrawal would strand in 'processing'. Empty = ready.
+ */
+export function missingB2cCredentials(cfg: DarajaConfig): string[] {
+  const missing: string[] = [];
+  if (!cfg.b2cInitiator) missing.push("b2cInitiator");
+  if (!cfg.b2cSecurityCredential) missing.push("b2cSecurityCredential");
+  if (!cfg.b2cResultUrl) missing.push("b2cResultUrl");
+  if (!cfg.b2cTimeoutUrl) missing.push("b2cTimeoutUrl");
+  return missing;
+}
+
+/**
  * Build the real client when the four required credentials resolve (DB config preferred, env as
  * fallback). When incomplete: in `production` return a client that FAILS LOUDLY on use (never a
  * silent stub that could phantom-credit unpaid deposits); in sandbox/dev return the deterministic
@@ -190,7 +209,15 @@ export function missingDarajaCredentials(cfg: DarajaConfig): string[] {
 export function makeDarajaClientFromConfig(over: Partial<DarajaConfig> = {}, env: NodeJS.ProcessEnv = process.env): DarajaClient {
   const cfg = resolveDarajaConfig(over, env);
   const missing = missingDarajaCredentials(cfg);
-  if (missing.length === 0) return new HttpDarajaClient(cfg);
+  if (missing.length === 0) {
+    // STK is ready; warn (once per build/reload) if B2C payouts are NOT — surfaces in System logs so
+    // an operator sees WHY withdrawals stall instead of a silent Safaricom rejection (BUGLOG #36).
+    const missB2c = missingB2cCredentials(cfg);
+    if (missB2c.length) {
+      console.warn(`[payments] Daraja STK is configured but B2C payouts are NOT (missing: ${missB2c.join(", ")}) — approved withdrawals will fail with MPESA_B2C_NOT_CONFIGURED until these are set (Admin → M-Pesa).`);
+    }
+    return new HttpDarajaClient(cfg);
+  }
   if (cfg.env === "production") {
     console.error(
       `[payments] Daraja env=production but credentials incomplete (missing: ${missing.join(", ")}) — ` +

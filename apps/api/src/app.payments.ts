@@ -32,12 +32,14 @@ const DOMAIN_STATUS: Readonly<Record<string, number>> = {
   INVALID_CODE: 400,
   INVALID_C2B: 400,
   CODE_ALREADY_USED: 409,
+  WITHDRAWAL_ALREADY_REVERSED: 409,   // manual mark-paid on a failed/reversed withdrawal (would double-pay)
   // Mega Pay rail (migration 0116)
   PROVIDER_NOT_FOUND: 400,
   PROVIDER_DISABLED: 403,
   MEGAPAY_NOT_CONFIGURED: 503,
   MEGAPAY_INITIATE_REJECTED: 502,
   MEGAPAY_VERIFY_PENDING: 409,   // callback arrived but status not yet final -> caller/retry + reconcile settles it
+  MPESA_B2C_NOT_CONFIGURED: 503, // withdrawal payout attempted but Daraja B2C initiator/credential unset
 };
 
 /** Run a domain call, translating known service errors to controlled ApiErrors. */
@@ -320,6 +322,20 @@ export function registerProtectedRoutes(router: Router, deps: ApiDeps): void {
   router.post(`${BASE}/admin/withdrawals/:id/reject`, auth, admin, async (ctx: Ctx) => {
     assertTargetSiteInScope(ctx, await deps.admin.siteOfTransaction(ctx.params.id!));
     return domain(() => deps.payments.rejectWithdrawal(ctx.params.id!, ctx.claims!.userId));
+  });
+
+  // Manual completion: mark a stuck (pending/processing) withdrawal PAID when the provider's B2C
+  // result callback never arrived (Mega Pay / Daraja failure). Same guards as approve — superadmin
+  // approval-password + brand scope — since it finalizes a real payout. No wallet change (the money
+  // was already debited at request); it records the terminal 'success' state so the client reflects
+  // the payout, with a manual receipt and an admin_actions audit row. Idempotent; refuses a
+  // failed/reversed row (that money was returned — paying again would double-pay).
+  router.post(`${BASE}/admin/withdrawals/:id/mark-paid`, auth, admin, async (ctx: Ctx) => {
+    await requireApprovalPassword(ctx, deps.verifyApprovalPassword);
+    assertTargetSiteInScope(ctx, await deps.admin.siteOfTransaction(ctx.params.id!));
+    const body = ctx.body && typeof ctx.body === "object" ? (ctx.body as Record<string, unknown>) : {};
+    const receipt = typeof body.receipt === "string" && body.receipt.trim() ? body.receipt.trim() : null;
+    return domain(() => deps.payments.markWithdrawalPaid(ctx.params.id!, ctx.claims!.userId, receipt));
   });
 
   // Bulk moderation: apply approve/reject to many withdrawals in one call. Each row is brand-guarded
