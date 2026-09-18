@@ -94,6 +94,23 @@ export interface PaymentProviderDto { code: string; displayName: string; enabled
 export interface PaymentProviderOverrideDto { siteId: string; providerCode: string; enabled: boolean }
 export interface PaymentProvidersDto { providers: PaymentProviderDto[]; overrides: PaymentProviderOverrideDto[] }
 
+// ── Gateway CONFIGURATION (migration 0130): credentials + settings, secrets masked to the browser ──
+export interface GatewayFieldDto {
+  key: string; label: string; kind: 'text' | 'secret' | 'select' | 'url' | 'email' | 'number';
+  secret: boolean; required: boolean; placeholder?: string; help?: string;
+  options?: { value: string; label: string }[]; default?: string; pattern?: string; group?: string;
+}
+export interface GatewaySchemaDto { code: string; displayName: string; docsUrl: string; blurb: string; playerAvailable: boolean; fields: GatewayFieldDto[] }
+export interface GatewayConfigDto {
+  providerCode: string; siteId: string | null;
+  settings: Record<string, string>;
+  secretMeta: Record<string, { set: boolean; last4: string }>;
+  hasSecret: boolean; encVersion: number; updatedAt: string | null; exists: boolean;
+}
+export interface GatewayConfigEntryDto { code: string; schema: GatewaySchemaDto; config: GatewayConfigDto }
+export interface GatewayConfigsDto { providers: GatewayConfigEntryDto[] }
+export interface ConnResultDto { ok: boolean; status: 'valid' | 'invalid' | 'unreachable' | 'not_configured'; detail: string }
+
 // Dynamic (demand-based) pool distribution (docs/25 §15)
 export interface PoolDemandRowDto {
   siteId: string; slug: string; targetRtp: number;
@@ -149,6 +166,13 @@ export const platformApi = {
     apiFetch<PaymentProvidersDto>(`/platform/payment-providers/${encodeURIComponent(code)}/global`, { method: 'POST', token: t, body: { enabled } }),
   setProviderSite: (t: string, code: string, siteId: string, enabled: boolean | null) =>
     apiFetch<PaymentProvidersDto>(`/platform/payment-providers/${encodeURIComponent(code)}/site`, { method: 'POST', token: t, body: { siteId, enabled } }),
+
+  // ── Gateway config (migration 0130) ──
+  gatewayConfigs: (t: string) => apiFetch<GatewayConfigsDto>('/platform/payment-providers/config', { token: t }),
+  saveGatewayConfig: (t: string, code: string, values: Record<string, string>) =>
+    apiFetch<{ config: GatewayConfigDto }>(`/platform/payment-providers/${encodeURIComponent(code)}/config`, { method: 'PUT', token: t, body: values }),
+  testGatewayConfig: (t: string, code: string, draft: Record<string, string>) =>
+    apiFetch<{ result: ConnResultDto }>(`/platform/payment-providers/${encodeURIComponent(code)}/config/test`, { method: 'POST', token: t, body: draft }),
   setGlobalConfig: (t: string, patch: Record<string, unknown>) =>
     apiFetch<{ config: GlobalConfigDto }>('/platform/global-config', { method: 'PATCH', token: t, body: patch }),
   distributePool: (t: string, body: { totalCents?: number; mode: string; overrides?: Record<string, number> }) =>

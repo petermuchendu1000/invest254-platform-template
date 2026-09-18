@@ -5,6 +5,7 @@ import {
   PushService, PgPushSubscriptionRepository,
   GameConfigStore, mapConfigRow, makePgPools, makeSystemLogPersister,
   makeMegaPayClient,
+  ConfiguredMegaPayClient,
   verifyPassword,
   type GameRepository, type EngagementRepository, type PaymentRepository,
   type Querier, type FairnessRecord, type ListenClient,
@@ -143,8 +144,22 @@ async function buildDeps(): Promise<ApiDeps> {
   // In sandbox/dev with no creds this is a deterministic offline stub; in production with incomplete
   // creds it fails loudly on use (never phantom-credits). The provider is only OFFERED to players when
   // the superadmin switches it on (payment_providers), so this client stays dormant until then.
-  const megapay = makeMegaPayClient();
-  log.info("mega pay client ready", { env: process.env.MEGAPAY_ENV ?? "sandbox", configured: Boolean(process.env.MEGAPAY_API_KEY && process.env.MEGAPAY_EMAIL) });
+  // Platform service (also drives the encrypted gateway-config store, migration 0130). Constructed
+  // here (not later) so the Mega Pay client can layer superadmin-saved DB config OVER env at deposit time.
+  const platform = new PlatformService(new PgPlatformRepository(q));
+  // Mega Pay client: prefers the DB-saved config (0130), falls back to env on absence/error so production
+  // behaviour is UNCHANGED until an admin saves config in the console (env stays the guaranteed fallback).
+  const megapay = new ConfiguredMegaPayClient(async () => {
+    const c = await platform.resolveDecryptedConfig("megapay", null);
+    if (!c) return null;
+    const over: { env?: "sandbox" | "production"; apiKey?: string; email?: string; baseUrl?: string } = {};
+    if (c.settings.env === "sandbox" || c.settings.env === "production") over.env = c.settings.env;
+    if (c.secrets.api_key) over.apiKey = c.secrets.api_key;
+    if (c.settings.email) over.email = c.settings.email;
+    if (c.settings.api_base) over.baseUrl = c.settings.api_base;
+    return over;
+  });
+  log.info("mega pay client ready", { env: process.env.MEGAPAY_ENV ?? "sandbox", configured: Boolean(process.env.MEGAPAY_API_KEY && process.env.MEGAPAY_EMAIL), dbConfigLayered: true });
 
   // Site-aware minimum withdrawal (multi-tenant). GET /game/config serves each brand its own
   // `site_game_config.min_withdrawal` (via gameConfigForSite below), so the browser validates
@@ -508,7 +523,7 @@ async function buildDeps(): Promise<ApiDeps> {
     : null;
   const affiliate = new AffiliateService(identity, daraja);
   const admin = new AdminService(new PgAdminRepository(q));
-  const platform = new PlatformService(new PgPlatformRepository(q));
+  // platform service constructed earlier (drives Mega Pay DB-config layering + gateway config store)
   const notifications = new NotificationService(new PgNotificationRepository(q));
   const support = makePgSupportDeps(q);
   if (support) console.log("[api] support chat enabled (RAG over migration 0057)");

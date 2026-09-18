@@ -11,8 +11,8 @@ import {
   usePoolDemand, useDistributePoolDynamic,
 } from '@/lib/platform/hooks';
 import type { GlobalConfigDto } from '@/lib/platform/endpoints';
+import Link from 'next/link';
 import { CohortEconomySection, PaymentsEconomySection } from '@/components/platform/GlobalEconomy';
-import { PaymentGatewaysSection } from '@/components/platform/PaymentGateways';
 
 const money = (cents: number, cur = 'KES') => `${cur} ${(cents / 100).toLocaleString()}`;
 
@@ -171,7 +171,16 @@ export default function GlobalConfigPage() {
       {/* ── Payments (min/max deposit + min withdrawal) ── */}
       <PaymentsEconomySection server={cfg.payments} activeCount={activeSites.length} setCfg={setCfg} />
 
-      <PaymentGatewaysSection />
+      {/* Payment gateways now live on their own dedicated pages (kept out of this page for clarity) */}
+      <Section title="Payment gateways">
+        <Link href="/platform/payments" className="flex items-center justify-between gap-3 rounded-2xl border border-border bg-surface-2 p-5 transition hover:border-accent/50 hover:bg-surface">
+          <div>
+            <div className="text-sm font-semibold text-fg">Configure payment gateways</div>
+            <div className="mt-1 text-sm text-muted">Mega Pay, Paystack, Binance Pay, PayHero — credentials, availability &amp; connection tests, each on its own page.</div>
+          </div>
+          <span className="shrink-0 text-sm font-semibold text-accent">Open Payments →</span>
+        </Link>
+      </Section>
 
       {/* ── Global withdrawal-pool distributor ── */}
       <Section title="Global withdrawal pool — distribute to all clients">

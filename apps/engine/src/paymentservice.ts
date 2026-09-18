@@ -2,6 +2,7 @@ import { normalizeMsisdn, MIN_DEPOSIT_CENTS, MIN_WITHDRAWAL_CENTS, type Cents } 
 import type { PaymentRepository, CompleteResult, CreateWithdrawalResult, WithdrawalOutcome, C2bPayment, ClaimResult, PaybillConfig, DepositProvider } from "./payments.js";
 import type { DarajaClient } from "./daraja.js";
 import type { MegaPayClient } from "./megapay.js";
+import { PLAYER_DEPOSIT_RAILS } from "./gatewayschema.js";
 
 /**
  * PaymentService orchestrates the deposit/withdrawal flows on top of the atomic RPCs
@@ -215,13 +216,16 @@ export class PaymentService {
 
   /**
    * The deposit gateways to show a player, resolved for their brand (global switch + per-site override,
-   * migration 0116). Fail-open: if the lookup throws we return the always-present M-Pesa rail so a
-   * config/DB glitch can never hide the working deposit path from players.
+   * migration 0116) and filtered to gateways with a REAL player deposit rail (PLAYER_DEPOSIT_RAILS).
+   * A config-only gateway (e.g. Paystack/Binance/PayHero) can never surface here, so the deposit page
+   * never offers a path the system can't serve. Fail-open: if the lookup throws we return the
+   * always-present M-Pesa rail so a config/DB glitch can't hide the working deposit path from players.
    */
   async listDepositProviders(siteId?: string): Promise<DepositProvider[]> {
     try {
       const list = await this.repo.listEffectiveProviders(siteId);
-      return list.length ? list : [{ code: "mpesa", displayName: "M-Pesa" }];
+      if (!list.length) return [{ code: "mpesa", displayName: "M-Pesa" }];
+      return list.filter((p) => PLAYER_DEPOSIT_RAILS.has(p.code));
     } catch (err) {
       console.warn(`[payments] listDepositProviders failed (${(err as Error).message}); falling back to M-Pesa only`);
       return [{ code: "mpesa", displayName: "M-Pesa" }];

@@ -4,6 +4,9 @@ import {
   type CohortEconomy, type PaymentsEconomy,
 } from "@invest254/shared";
 import type { Querier } from "./wallet.js";
+import { GATEWAY_SCHEMAS, getSchema, splitSubmission, validateConfig, PLAYER_DEPOSIT_RAILS, type GatewaySchema, type ValidationIssue } from "./gatewayschema.js";
+import { encryptSecrets, decryptSecrets, isEncryptionConfigured } from "./providercrypto.js";
+import { testConnection, type ConnResult } from "./gatewaytest.js";
 
 /**
  * Platform (cross-brand) operations for the platform-superadmin console (docs/22 Task H):
@@ -117,6 +120,20 @@ export interface PaymentProviderOverride { siteId: string; providerCode: string;
 /** The superadmin console view: the registry + every per-site override. */
 export interface PaymentProvidersView { providers: PaymentProviderRow[]; overrides: PaymentProviderOverride[]; }
 
+// ── Gateway CONFIG (migration 0130): credentials + settings, secrets encrypted at rest ──
+/** Masked config for the console: settings (plaintext) + per-secret-field hints (never the secret). */
+export interface ProviderConfigView {
+  providerCode: string; siteId: string | null;
+  settings: Record<string, string>;
+  secretMeta: Record<string, { set: boolean; last4: string }>;
+  hasSecret: boolean; encVersion: number; updatedAt: string | null; exists: boolean;
+}
+/** Service-role resolve: settings + ciphertext for the engine to decrypt at use-time. */
+export interface ProviderConfigResolved {
+  providerCode: string; siteId: string | null;
+  settings: Record<string, string>; secretCiphertext: string | null; encVersion: number; scope: string;
+}
+
 export interface PlatformRepository {
   listSites(): Promise<SiteWithConfig[]>;
   createSite(actorId: string, actorRole: string, input: CreateSiteInput): Promise<string>;
@@ -154,9 +171,29 @@ export interface PlatformRepository {
   setProviderSite(actorId: string, actorRole: string, siteId: string, code: string, enabled: boolean): Promise<void>;
   /** Clear a brand's override so it reverts to the global default. */
   clearProviderSite(actorId: string, actorRole: string, siteId: string, code: string): Promise<void>;
+  // ── Gateway config persistence (migration 0130) — dumb store; crypto/validation live in the service ──
+  /** Masked config read for the console (platform_superadmin-gated in the RPC). */
+  getProviderConfigRaw(actorRole: string, code: string, siteId: string | null): Promise<ProviderConfigView>;
+  /** Persist config. `secretCiphertext`: null=keep, ''=clear, '…'=replace. Audited in the RPC. */
+  setProviderConfigRaw(actorId: string, actorRole: string, code: string, siteId: string | null,
+    settings: Record<string, string> | null, secretCiphertext: string | null,
+    secretMeta: Record<string, { set: boolean; last4: string }>, encVersion: number): Promise<ProviderConfigView>;
+  /** Service-role resolve (settings + ciphertext) for building live clients. null when unconfigured. */
+  resolveProviderConfig(code: string, siteId: string | null): Promise<ProviderConfigResolved | null>;
 }
 
 const num = (v: unknown): number => (typeof v === "string" ? Number(v) : (v as number)) || 0;
+
+/** Map the jsonb returned by fn_admin_get/set_provider_config into the typed masked view. */
+function mapProviderConfig(v: Record<string, unknown>): ProviderConfigView {
+  return {
+    providerCode: String(v.provider_code ?? ""), siteId: (v.site_id as string) ?? null,
+    settings: (v.settings ?? {}) as Record<string, string>,
+    secretMeta: (v.secret_meta ?? {}) as Record<string, { set: boolean; last4: string }>,
+    hasSecret: Boolean(v.has_secret), encVersion: Number(v.enc_version ?? 1),
+    updatedAt: (v.updated_at as string) ?? null, exists: Boolean(v.exists),
+  };
+}
 
 function mapSiteRow(x: Record<string, unknown>): SiteRow {
   return {
@@ -354,6 +391,30 @@ export class PgPlatformRepository implements PlatformRepository {
   }
   async clearProviderSite(actorId: string, actorRole: string, siteId: string, code: string): Promise<void> {
     await this.q.query("select public.fn_platform_clear_provider_site($1,$2,$3,$4)", [actorId, actorRole, siteId, code]);
+  }
+  // ── Gateway config persistence (migration 0130) ──
+  async getProviderConfigRaw(actorRole: string, code: string, siteId: string | null): Promise<ProviderConfigView> {
+    const r = await this.q.query("select public.fn_admin_get_provider_config($1,$2,$3) as v", [actorRole, code, siteId]);
+    return mapProviderConfig(r.rows[0]?.v ?? {});
+  }
+  async setProviderConfigRaw(actorId: string, actorRole: string, code: string, siteId: string | null,
+    settings: Record<string, string> | null, secretCiphertext: string | null,
+    secretMeta: Record<string, { set: boolean; last4: string }>, encVersion: number): Promise<ProviderConfigView> {
+    const r = await this.q.query(
+      "select public.fn_platform_set_provider_config($1,$2,$3,$4,$5,$6,$7,$8) as v",
+      [actorId, actorRole, code, siteId, settings ? JSON.stringify(settings) : null,
+       secretCiphertext, JSON.stringify(secretMeta ?? {}), encVersion]);
+    return mapProviderConfig(r.rows[0]?.v ?? {});
+  }
+  async resolveProviderConfig(code: string, siteId: string | null): Promise<ProviderConfigResolved | null> {
+    const r = await this.q.query("select public.fn_provider_config_resolve($1,$2) as v", [code, siteId]);
+    const v = r.rows[0]?.v;
+    if (!v) return null;
+    return {
+      providerCode: String(v.provider_code), siteId: v.site_id ?? null,
+      settings: (v.settings ?? {}) as Record<string, string>,
+      secretCiphertext: v.secret_ciphertext ?? null, encVersion: Number(v.enc_version ?? 1), scope: String(v.scope ?? "global"),
+    };
   }
   async distributePool(actorId: string, actorRole: string, totalCents: number | null, mode: string, overrides?: Record<string, number> | null): Promise<DistributeResult> {
     const r = await this.q.query("select public.fn_platform_distribute_pool($1,$2,$3,$4,$5) as r",
@@ -625,8 +686,12 @@ export class InMemoryPlatformRepository implements PlatformRepository {
 
   // ── Payment-gateway provider switches (migration 0116) — in-memory double ──
   private providersReg: PaymentProviderRow[] = [
+    // Mirrors the DB registry seed (migrations 0116 + 0130): existing rails + the new configurable gateways.
     { code: "mpesa", displayName: "M-Pesa", enabledGlobal: true, sortOrder: 10 },
     { code: "megapay", displayName: "Mega Pay", enabledGlobal: false, sortOrder: 20 },
+    { code: "paystack", displayName: "Paystack", enabledGlobal: false, sortOrder: 30 },
+    { code: "binance", displayName: "Binance Pay", enabledGlobal: false, sortOrder: 40 },
+    { code: "payhero", displayName: "PayHero", enabledGlobal: false, sortOrder: 50 },
   ];
   private providerOverrides = new Map<string, boolean>(); // key `${siteId}:${code}`
   async listPaymentProviders(actorRole: string): Promise<PaymentProvidersView> {
@@ -652,6 +717,40 @@ export class InMemoryPlatformRepository implements PlatformRepository {
   async clearProviderSite(_actorId: string, actorRole: string, siteId: string, code: string): Promise<void> {
     this.gate(actorRole);
     this.providerOverrides.delete(`${siteId}:${code}`);
+  }
+
+  // ── Gateway config persistence (migration 0130) — in-memory double ──
+  private providerConfigs = new Map<string, { settings: Record<string, string>; ciphertext: string | null; meta: Record<string, { set: boolean; last4: string }>; encVersion: number; updatedAt: string }>();
+  private cfgKey(code: string, siteId: string | null) { return `${code}:${siteId ?? "__global__"}`; }
+  async getProviderConfigRaw(actorRole: string, code: string, siteId: string | null): Promise<ProviderConfigView> {
+    this.gate(actorRole);
+    if (!this.providersReg.find((x) => x.code === code)) throw new Error("PROVIDER_NOT_FOUND");
+    const row = this.providerConfigs.get(this.cfgKey(code, siteId));
+    if (!row) return { providerCode: code, siteId, settings: {}, secretMeta: {}, hasSecret: false, encVersion: 1, updatedAt: null, exists: false };
+    return { providerCode: code, siteId, settings: { ...row.settings }, secretMeta: { ...row.meta }, hasSecret: row.ciphertext != null, encVersion: row.encVersion, updatedAt: row.updatedAt, exists: true };
+  }
+  async setProviderConfigRaw(_actorId: string, actorRole: string, code: string, siteId: string | null,
+    settings: Record<string, string> | null, secretCiphertext: string | null,
+    secretMeta: Record<string, { set: boolean; last4: string }>, encVersion: number): Promise<ProviderConfigView> {
+    this.gate(actorRole);
+    if (!this.providersReg.find((x) => x.code === code)) throw new Error("PROVIDER_NOT_FOUND");
+    const k = this.cfgKey(code, siteId);
+    const prev = this.providerConfigs.get(k);
+    const next = {
+      settings: settings ?? prev?.settings ?? {},
+      ciphertext: secretCiphertext === null ? (prev?.ciphertext ?? null) : (secretCiphertext === "" ? null : secretCiphertext),
+      meta: secretCiphertext === null ? (prev?.meta ?? {}) : (secretCiphertext === "" ? {} : (secretMeta ?? {})),
+      encVersion: encVersion ?? prev?.encVersion ?? 1,
+      updatedAt: new Date().toISOString(),
+    };
+    this.providerConfigs.set(k, next);
+    return { providerCode: code, siteId, settings: { ...next.settings }, secretMeta: { ...next.meta }, hasSecret: next.ciphertext != null, encVersion: next.encVersion, updatedAt: next.updatedAt, exists: true };
+  }
+  async resolveProviderConfig(code: string, siteId: string | null): Promise<ProviderConfigResolved | null> {
+    const site = siteId ? this.providerConfigs.get(this.cfgKey(code, siteId)) : null;
+    const row = site ?? this.providerConfigs.get(this.cfgKey(code, null));
+    if (!row) return null;
+    return { providerCode: code, siteId: site ? siteId : null, settings: { ...row.settings }, secretCiphertext: row.ciphertext, encVersion: row.encVersion, scope: site ? "site" : "global" };
   }
 
   private gc: GlobalConfig = {
@@ -793,17 +892,104 @@ export class PlatformService {
   setProviderGlobal(actorId: string, actorRole: string, code: string, enabled: boolean): Promise<void> {
     if (!code || typeof code !== "string") throw new Error("INVALID_PROVIDER");
     if (typeof enabled !== "boolean") throw new Error("INVALID_ENABLED");
+    // A gateway with no player deposit rail (config-only) can never be switched live for players.
+    if (enabled && !PLAYER_DEPOSIT_RAILS.has(code)) throw new Error("PROVIDER_NOT_PLAYER_READY");
     return this.repo.setProviderGlobal(actorId, actorRole, code, enabled);
   }
   setProviderSite(actorId: string, actorRole: string, siteId: string, code: string, enabled: boolean): Promise<void> {
     if (!siteId || typeof siteId !== "string") throw new Error("INVALID_SITE");
     if (!code || typeof code !== "string") throw new Error("INVALID_PROVIDER");
     if (typeof enabled !== "boolean") throw new Error("INVALID_ENABLED");
+    if (enabled && !PLAYER_DEPOSIT_RAILS.has(code)) throw new Error("PROVIDER_NOT_PLAYER_READY");
     return this.repo.setProviderSite(actorId, actorRole, siteId, code, enabled);
   }
   clearProviderSite(actorId: string, actorRole: string, siteId: string, code: string): Promise<void> {
     if (!siteId || !code) throw new Error("INVALID_ARGS");
     return this.repo.clearProviderSite(actorId, actorRole, siteId, code);
+  }
+
+  // ── Gateway config (migration 0130): validation + AES-GCM encryption live here; the repo just stores ──
+  /** The field schema for every configurable gateway (serialised to the console so the form matches the backend). */
+  gatewaySchemas(): Record<string, GatewaySchema> { return GATEWAY_SCHEMAS; }
+
+  /** Masked config read for one provider/scope (settings + secret hints; never the secret itself). */
+  getProviderConfig(actorRole: string, code: string, siteId: string | null = null): Promise<ProviderConfigView> {
+    getSchema(code); // PROVIDER_NOT_CONFIGURABLE for unknown codes
+    return this.repo.getProviderConfigRaw(actorRole, code, siteId);
+  }
+
+  /**
+   * Validate + persist a config submission. Settings are MERGED over what's stored (a partial submit
+   * never nukes untouched fields); secret fields supplied now are MERGED over the existing decrypted
+   * secrets and the whole set re-encrypted (so updating one of two secrets never drops the other).
+   * Passing no secret fields leaves the stored secret untouched.
+   */
+  async setProviderConfig(actorId: string, actorRole: string, code: string, siteId: string | null,
+    values: Record<string, unknown>): Promise<ProviderConfigView> {
+    getSchema(code);
+    const split = splitSubmission(code, values);
+    // drop blank secret submissions (empty string = "leave as is", not "clear")
+    for (const k of Object.keys(split.secrets)) if (String(split.secrets[k]).trim() === "") delete split.secrets[k];
+
+    const current = await this.repo.getProviderConfigRaw(actorRole, code, siteId);
+    const existingSecretKeys = Object.keys(current.secretMeta ?? {}).filter((k) => current.secretMeta[k]?.set);
+    // Validate the EFFECTIVE state (stored settings + this submission), so a partial edit doesn't trip
+    // "required" on a field that's already on file. Secrets already stored are honoured via existingSecretKeys.
+    const mergedSettings = { ...current.settings, ...split.settings };
+    const issues = validateConfig(code, { settings: mergedSettings, secrets: split.secrets }, existingSecretKeys);
+    if (issues.length) { const e = new Error("VALIDATION") as Error & { issues: ValidationIssue[] }; e.issues = issues; throw e; }
+    let ciphertext: string | null = null; // null => keep existing secret untouched
+    let meta = current.secretMeta ?? {};
+    let encVersion = current.encVersion || 1;
+
+    const suppliedSecretKeys = Object.keys(split.secrets);
+    if (suppliedSecretKeys.length) {
+      if (!isEncryptionConfigured()) throw new Error("ENC_KEY_NOT_CONFIGURED");
+      // merge supplied secrets over the existing decrypted set (exact-scope only) so partial edits are safe
+      let mergedSecrets: Record<string, string> = { ...split.secrets };
+      const resolved = await this.repo.resolveProviderConfig(code, siteId);
+      const sameScope = !!resolved && ((siteId == null && resolved.siteId == null) || (siteId != null && resolved.siteId === siteId));
+      if (sameScope && resolved!.secretCiphertext) {
+        try { mergedSecrets = { ...decryptSecrets(resolved!.secretCiphertext), ...split.secrets }; } catch { /* corrupt/rotated: replace */ }
+      }
+      const enc = encryptSecrets(mergedSecrets);
+      ciphertext = enc.ciphertext; meta = enc.meta; encVersion = enc.encVersion;
+    }
+    return this.repo.setProviderConfigRaw(actorId, actorRole, code, siteId, mergedSettings, ciphertext, meta, encVersion);
+  }
+
+  /**
+   * SAFE read-only connectivity test. Builds the effective config (stored, decrypted) overlaid with any
+   * unsaved DRAFT values the admin typed, then hits each provider's non-mutating endpoint. Never moves money.
+   */
+  async testProviderConnection(actorRole: string, code: string, siteId: string | null,
+    draftValues: Record<string, unknown> = {}): Promise<ConnResult> {
+    if (actorRole !== "platform_superadmin") throw new Error("NOT_AUTHORIZED");
+    getSchema(code);
+    const draft = splitSubmission(code, draftValues);
+    for (const k of Object.keys(draft.secrets)) if (String(draft.secrets[k]).trim() === "") delete draft.secrets[k];
+    let cfg: Record<string, string> = {};
+    const resolved = await this.repo.resolveProviderConfig(code, siteId);
+    if (resolved) {
+      cfg = { ...resolved.settings };
+      if (resolved.secretCiphertext) { try { Object.assign(cfg, decryptSecrets(resolved.secretCiphertext)); } catch { /* ignore */ } }
+    }
+    cfg = { ...cfg, ...draft.settings, ...draft.secrets }; // draft overrides stored
+    return testConnection(code, cfg);
+  }
+
+  /**
+   * ENGINE-INTERNAL: resolve a provider's effective config with DECRYPTED secrets (site → global),
+   * for building a live client. Not role-gated (service-role/engine path). Returns null when there is
+   * no config row, and empty secrets when the ciphertext is missing/corrupt (caller falls back to env).
+   */
+  async resolveDecryptedConfig(code: string, siteId: string | null = null):
+    Promise<{ settings: Record<string, string>; secrets: Record<string, string> } | null> {
+    const r = await this.repo.resolveProviderConfig(code, siteId);
+    if (!r) return null;
+    let secrets: Record<string, string> = {};
+    if (r.secretCiphertext) { try { secrets = decryptSecrets(r.secretCiphertext); } catch { secrets = {}; } }
+    return { settings: r.settings ?? {}, secrets };
   }
 
   // ── Dynamic (demand-based) pool distribution (docs/25 §15) ──

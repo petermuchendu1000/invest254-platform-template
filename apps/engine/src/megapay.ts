@@ -183,3 +183,40 @@ export function makeMegaPayClientFromConfig(over: Partial<MegaPayConfig> = {}, e
 export function makeMegaPayClient(env: NodeJS.ProcessEnv = process.env): MegaPayClient {
   return makeMegaPayClientFromConfig({}, env);
 }
+
+/**
+ * Resolver returning a partial Mega Pay config from an external source (e.g. the encrypted DB config
+ * store, migration 0130). Return null (or throw) when there is no override — the wrapper then falls
+ * back to env, so behaviour is IDENTICAL to the env-only client until an admin saves DB config.
+ */
+export type MegaPayConfigResolver = () => Promise<Partial<MegaPayConfig> | null>;
+
+/**
+ * Mega Pay client that layers a per-call DB config override OVER env, with env as the guaranteed
+ * fallback. Money-safe by construction:
+ *   • no override (resolver → null/{})            → env config (unchanged production behaviour)
+ *   • resolver throws / DB unreachable / bad data → env config (a config outage never breaks deposits)
+ *   • complete override                           → the saved config drives the live rail
+ * The underlying Http/Stub/Unconfigured client is cached by a config fingerprint so a hot path does
+ * not rebuild it every call; only a genuine config change swaps it.
+ */
+export class ConfiguredMegaPayClient implements MegaPayClient {
+  private cache?: { fp: string; client: MegaPayClient };
+  constructor(private readonly resolver: MegaPayConfigResolver, private readonly env: NodeJS.ProcessEnv = process.env) {}
+  private async pick(): Promise<MegaPayClient> {
+    let over: Partial<MegaPayConfig> = {};
+    try { over = (await this.resolver()) ?? {}; } catch { over = {}; } // config outage → env only
+    // Keep only non-empty override fields so env fills any gap.
+    const clean: Partial<MegaPayConfig> = {};
+    if (over.env) clean.env = over.env;
+    if (over.apiKey) clean.apiKey = over.apiKey;
+    if (over.email) clean.email = over.email;
+    if (over.baseUrl) clean.baseUrl = over.baseUrl;
+    const cfg = resolveMegaPayConfig(clean, this.env);
+    const fp = `${cfg.env}|${cfg.apiKey}|${cfg.email}|${cfg.baseUrl}`;
+    if (!this.cache || this.cache.fp !== fp) this.cache = { fp, client: makeMegaPayClientFromConfig(clean, this.env) };
+    return this.cache.client;
+  }
+  async initiateStk(a: MegaStkArgs): Promise<MegaStkResult> { return (await this.pick()).initiateStk(a); }
+  async queryStatus(transactionRequestId: string): Promise<MegaStatusResult> { return (await this.pick()).queryStatus(transactionRequestId); }
+}

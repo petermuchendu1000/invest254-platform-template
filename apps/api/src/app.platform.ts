@@ -59,6 +59,13 @@ const PLATFORM_STATUS: Readonly<Record<string, number>> = {
   OWNER_NOT_FOUND: 404,
   OWNER_NOT_MARKETER: 422,
   OWNER_WRONG_SITE: 422,
+  // Gateway config (migration 0130)
+  VALIDATION: 400,
+  PROVIDER_NOT_FOUND: 404,
+  PROVIDER_NOT_CONFIGURABLE: 400,
+  PROVIDER_NOT_PLAYER_READY: 422,
+  ENC_KEY_NOT_CONFIGURED: 503,
+  INVALID_ARGS: 400,
 };
 
 async function domain<T>(fn: () => Promise<T>): Promise<T> {
@@ -310,6 +317,41 @@ export function registerPlatformRoutes(router: Router, deps: ApiDeps): void {
       throw new ApiError("VALIDATION", "enabled must be boolean or null", 400);
     }
     return domain(() => deps.platform.listPaymentProviders(ctx.claims!.role ?? "player"));
+  });
+
+  // ── Gateway CONFIGURATION (migration 0130): credentials + settings, secrets encrypted at rest ──
+  // GET the field schema + current MASKED config for every configurable gateway in one call.
+  router.get(`${BASE}/platform/payment-providers/config`, auth, platform, async (ctx: Ctx) => {
+    const role = ctx.claims!.role ?? "player";
+    const schemas = deps.platform.gatewaySchemas();
+    const codes = Object.keys(schemas);
+    const providers = await domain(() => Promise.all(codes.map(async (code) => ({
+      code, schema: schemas[code], config: await deps.platform.getProviderConfig(role, code, null),
+    }))));
+    return { providers };
+  });
+
+  // PUT saves one gateway's config (flat {field: value}). Secrets are encrypted; blanks leave them as-is.
+  router.put(`${BASE}/platform/payment-providers/:code/config`, auth, platform, async (ctx: Ctx) => {
+    const values = asObject(ctx.body);
+    const code = ctx.params.code!;
+    return domain(async () => {
+      try {
+        const config = await deps.platform.setProviderConfig(ctx.claims!.userId, ctx.claims!.role ?? "player", code, null, values);
+        return { config };
+      } catch (e) {
+        const issues = (e as { issues?: { field: string; message: string }[] }).issues;
+        if (Array.isArray(issues)) throw new ApiError("VALIDATION", issues.map((i) => `${i.field}: ${i.message}`).join("; "), 400);
+        throw e;
+      }
+    });
+  });
+
+  // POST runs a SAFE, read-only connectivity test using stored config overlaid with any draft values.
+  router.post(`${BASE}/platform/payment-providers/:code/config/test`, auth, platform, async (ctx: Ctx) => {
+    const values = ctx.body ? asObject(ctx.body) : {};
+    const code = ctx.params.code!;
+    return domain(async () => ({ result: await deps.platform.testProviderConnection(ctx.claims!.role ?? "player", code, null, values) }));
   });
 
   // Distribute a global withdrawal-pool total across every active brand's daily cap.

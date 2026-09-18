@@ -63,6 +63,25 @@ export function useSetProviderSite() {
   });
 }
 
+// ── Gateway CONFIGURATION (migration 0130) ──
+export function useGatewayConfigs() {
+  const t = useTok();
+  return useQuery({ queryKey: ['platform', 'gateway-configs'], queryFn: () => platformApi.gatewayConfigs(t), enabled: !!t });
+}
+export function useSaveGatewayConfig() {
+  const t = useTok(); const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { code: string; values: Record<string, string> }) => platformApi.saveGatewayConfig(t, v.code, v.values),
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: ['platform', 'gateway-configs'] }); },
+  });
+}
+export function useTestGatewayConfig() {
+  const t = useTok();
+  return useMutation({
+    mutationFn: (v: { code: string; draft: Record<string, string> }) => platformApi.testGatewayConfig(t, v.code, v.draft),
+  });
+}
+
 // Dynamic (demand-based) distribution (docs/25 §15)
 export function usePoolDemand(params: { lookbackDays?: number | undefined; totalCents?: number | undefined }, enabled = true) {
   const t = useTok();
