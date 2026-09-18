@@ -15,6 +15,56 @@ export function usePlatformOverview() {
   return useQuery({ queryKey: ['platform', 'overview'], queryFn: () => platformApi.overview(t), enabled: !!t });
 }
 
+// ── Platform tier governance (Issue 1) ──
+export function usePlatforms() {
+  const t = useTok();
+  return useQuery({ queryKey: ['platform', 'platforms'], queryFn: () => platformApi.platforms(t), enabled: !!t });
+}
+export function usePlatformsOverview() {
+  const t = useTok();
+  return useQuery({ queryKey: ['platform', 'platforms-overview'], queryFn: () => platformApi.platformsOverview(t), enabled: !!t });
+}
+function invalidatePlatformTier(qc: ReturnType<typeof useQueryClient>) {
+  void qc.invalidateQueries({ queryKey: ['platform', 'platforms'] });
+  void qc.invalidateQueries({ queryKey: ['platform', 'platforms-overview'] });
+  void qc.invalidateQueries({ queryKey: ['platform', 'sites'] });
+}
+export function useCreatePlatform() {
+  const t = useTok(); const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { slug: string; name: string; ownerUserId?: string }) => platformApi.createPlatform(t, body),
+    onSuccess: () => invalidatePlatformTier(qc),
+  });
+}
+export function useUpdatePlatform() {
+  const t = useTok(); const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { id: string; patch: Record<string, unknown> }) => platformApi.updatePlatform(t, v.id, v.patch),
+    onSuccess: () => invalidatePlatformTier(qc),
+  });
+}
+export function useAssignSiteToPlatform() {
+  const t = useTok(); const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { siteId: string; platformId: string }) => platformApi.assignSiteToPlatform(t, v.siteId, v.platformId),
+    onSuccess: () => invalidatePlatformTier(qc),
+  });
+}
+export function useAppointPlatformAdmin() {
+  const t = useTok(); const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { userId: string; platformId: string }) => platformApi.appointPlatformAdmin(t, body),
+    onSuccess: () => invalidatePlatformTier(qc),
+  });
+}
+export function useRevokePlatformAdmin() {
+  const t = useTok(); const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { userId: string; newRole: string }) => platformApi.revokePlatformAdmin(t, v.userId, v.newRole),
+    onSuccess: () => invalidatePlatformTier(qc),
+  });
+}
+
 // ── Global config console (migration 0092) ──
 export function useGlobalConfig() {
   const t = useTok();

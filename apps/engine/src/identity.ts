@@ -15,7 +15,7 @@ import { type Page, type PageQuery, clampLimit, decodeKeyset, pageFrom } from ".
 export interface RegisteredUser { userId: string; role: string; }
 
 /** Stored credential + account state for a login attempt. */
-export interface CredentialRecord { userId: string; role: string; status: string; passwordHash: string; siteId: string | null; }
+export interface CredentialRecord { userId: string; role: string; status: string; passwordHash: string; siteId: string | null; platformId: string | null; }
 
 /** Profile state for the `/me` view. */
 export interface ProfileRow {
@@ -354,24 +354,25 @@ export class PgIdentityRepository implements IdentityRepository, AffiliateReposi
   }
   async findByPhone(phone: string, siteId?: string): Promise<CredentialRecord | null> {
     const r = await this.q.query(
-      `select p.id, p.role, p.status, p.site_id, c.password_hash
+      `select p.id, p.role, p.status, p.site_id, p.platform_id, c.password_hash
          from profiles p join user_credentials c on c.user_id = p.id
         where p.phone = $1 and ($2::uuid is null or p.site_id = $2)`, [phone, siteId ?? null]);
     if (!r.rows.length) return null;
     const x = r.rows[0];
-    return { userId: String(x.id), role: String(x.role), status: String(x.status), siteId: x.site_id == null ? null : String(x.site_id), passwordHash: String(x.password_hash) };
+    return { userId: String(x.id), role: String(x.role), status: String(x.status), siteId: x.site_id == null ? null : String(x.site_id), platformId: x.platform_id == null ? null : String(x.platform_id), passwordHash: String(x.password_hash) };
   }
   async findAllByPhone(phone: string): Promise<CredentialRecord[]> {
     // Every brand's account on this phone. Ordered by created_at so the tie-break (should two
     // brands ever share BOTH phone AND password) is deterministic — oldest first.
     const r = await this.q.query(
-      `select p.id, p.role, p.status, p.site_id, c.password_hash
+      `select p.id, p.role, p.status, p.site_id, p.platform_id, c.password_hash
          from profiles p join user_credentials c on c.user_id = p.id
         where p.phone = $1
         order by p.created_at asc, p.id asc`, [phone]);
     return r.rows.map((x: Record<string, unknown>) => ({
       userId: String(x.id), role: String(x.role), status: String(x.status),
-      siteId: x.site_id == null ? null : String(x.site_id), passwordHash: String(x.password_hash),
+      siteId: x.site_id == null ? null : String(x.site_id),
+      platformId: x.platform_id == null ? null : String(x.platform_id), passwordHash: String(x.password_hash),
     }));
   }
   async getMfa(userId: string): Promise<MfaRecord | null> {
@@ -522,13 +523,13 @@ export class InMemoryIdentityRepository implements IdentityRepository, Affiliate
   }
   async findByPhone(phone: string, siteId?: string): Promise<CredentialRecord | null> {
     const u = this.byPhone.get(idKey(phone, siteId));
-    return u ? { userId: u.userId, role: u.role, status: u.status, siteId: u.siteId ?? null, passwordHash: u.passwordHash } : null;
+    return u ? { userId: u.userId, role: u.role, status: u.status, siteId: u.siteId ?? null, platformId: null, passwordHash: u.passwordHash } : null;
   }
   async findAllByPhone(phone: string): Promise<CredentialRecord[]> {
     return [...this.byId.values()]
       .filter((u) => u.phone === phone)
       .sort((a, b) => a.createdAtMs - b.createdAtMs)
-      .map((u) => ({ userId: u.userId, role: u.role, status: u.status, siteId: u.siteId ?? null, passwordHash: u.passwordHash }));
+      .map((u) => ({ userId: u.userId, role: u.role, status: u.status, siteId: u.siteId ?? null, platformId: null, passwordHash: u.passwordHash }));
   }
   async getMfa(userId: string): Promise<MfaRecord | null> {
     const m = this.mfa.get(userId);

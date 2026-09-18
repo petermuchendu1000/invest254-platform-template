@@ -55,10 +55,11 @@ interface Route { method: string; regex: RegExp; keys: string[]; chain: Array<Mi
 export const ROLE_RANK: Readonly<Record<string, number>> = {
   player: 1,
   marketer: 2,
-  admin: 3,
-  superadmin: 4,
-  // Cross-brand platform owner: outranks a per-brand superadmin and reaches the /platform console.
-  platform_superadmin: 5,
+  admin: 3,              // SITE ADMIN — one brand
+  superadmin: 4,         // per-brand full control (legacy tier; site-scoped)
+  platform_admin: 5,     // PLATFORM ADMIN — a set of sites in ONE platform (Issue 1)
+  // SYSTEM ADMIN / platform owner: outranks everyone; reaches the system /platform console.
+  platform_superadmin: 6,
 };
 
 const MAX_BODY_BYTES = 1_000_000; // 1 MB cap on request bodies
@@ -424,9 +425,45 @@ export function requireSite(defaultSiteId: string = DEFAULT_SITE_ID): Middleware
  */
 export function adminScopeSite(ctx: Ctx): string | null {
   if (!ctx.claims) throw new ApiError("AUTH_REQUIRED", "authentication required", 401);
+  const role = ctx.claims.role ?? "player";
   const platformRank = ROLE_RANK.platform_superadmin ?? Number.POSITIVE_INFINITY;
-  if ((ROLE_RANK[ctx.claims.role ?? "player"] ?? 0) >= platformRank) return null;
+  if ((ROLE_RANK[role] ?? 0) >= platformRank) return null;   // system owner -> every brand
+  // A PLATFORM admin is NOT bound to a single site (its scope is a whole platform of sites); its
+  // per-brand bound is a PLATFORM check (adminScopePlatform / assertTargetPlatformInScope), so it
+  // must not be treated as a single-site admin here.
+  if (role === "platform_admin") return null;
   return ctx.claims.site ?? null;
+}
+
+/**
+ * Platform-tier scope (Issue 1). Returns the platform a caller is bounded to when acting, or null
+ * for platform-unrestricted:
+ *   - platform_superadmin (system owner) -> null (never restricted; every platform);
+ *   - platform_admin                     -> its `platform` claim (the ONE platform it administers);
+ *   - any lower/other role               -> null (its restriction lives at the site level or below).
+ */
+export function adminScopePlatform(ctx: Ctx): string | null {
+  if (!ctx.claims) throw new ApiError("AUTH_REQUIRED", "authentication required", 401);
+  const role = ctx.claims.role ?? "player";
+  const systemRank = ROLE_RANK.platform_superadmin ?? Number.POSITIVE_INFINITY;
+  if ((ROLE_RANK[role] ?? 0) >= systemRank) return null;
+  if (role === "platform_admin") return ctx.claims.platform ?? null;
+  return null;
+}
+
+/**
+ * Reject a platform-scoped admin acting on a target in another platform. TOLERANT by design (matches
+ * assertTargetSiteInScope): an unrestricted caller (null scope) and an unresolved target (null
+ * platform) both pass — the platform-aware DB RPCs remain the ultimate guard. Only a KNOWN
+ * cross-platform target is refused (PLATFORM_SCOPE_FORBIDDEN, 403).
+ */
+export function assertTargetPlatformInScope(ctx: Ctx, targetPlatform: string | null | undefined): void {
+  const scope = adminScopePlatform(ctx);
+  if (scope === null) return;                 // system owner -> unrestricted
+  if (targetPlatform == null) return;         // unknown target -> defer to the RPC's own guard
+  if (targetPlatform !== scope) {
+    throw new ApiError("PLATFORM_SCOPE_FORBIDDEN", "PLATFORM_SCOPE_FORBIDDEN: target belongs to another platform", 403);
+  }
 }
 
 /**

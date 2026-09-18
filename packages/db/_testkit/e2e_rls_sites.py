@@ -37,8 +37,16 @@ def reset_and_migrate():
     conn = psycopg2.connect(**DSN); conn.autocommit = True
     with conn.cursor() as c:
         c.execute(open(SHIM, encoding="utf-8").read())
-        for f in sorted(glob.glob(os.path.join(BASE, "migrations", "00*.sql"))):
+        for f in sorted(glob.glob(os.path.join(BASE, "migrations", "[0-9][0-9][0-9][0-9]_*.sql"))):
             c.execute(open(f, encoding="utf-8").read())
+        c.execute("grant select on all tables in schema public to anon, authenticated")  # test-fix: RLS is the gate (mirror Supabase)
+        c.execute("""insert into public.site_game_config_versions
+          (site_id, version, house_edge, max_multiplier, min_stake, max_stake, min_withdrawal,
+           default_duration_s, tick_rate_ms, drift_bias, volatility, target_win_rate)
+          select site_id, 1, house_edge, max_multiplier, min_stake, max_stake, min_withdrawal,
+           default_duration_s, tick_rate_ms, drift_bias, volatility, target_win_rate
+          from public.site_game_config where site_id='00000000-0000-0000-0000-000000000001'
+          on conflict do nothing""")  # test-fix: default site historic v1 snapshot for FK 0089
     return conn
 
 def count_as(conn, sub, site, table):

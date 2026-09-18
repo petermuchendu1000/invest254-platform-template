@@ -3,6 +3,7 @@ import { DEFAULT_CONFIG, normalizeHost, type Cents } from "@invest254/shared";
 import {
   InMemoryEngagementRepository, InMemoryPaymentRepository, InMemoryGameRepository, StubDarajaClient, StubMegaPayClient, StubPayHeroClient,
   InMemoryIdentityRepository, PaymentService, AuthService, AffiliateService, AdminService, InMemoryAdminRepository, PlatformService, InMemoryPlatformRepository, maskHandle,
+  SubscriptionService, InMemorySubscriptionRepository, TicketService, InMemoryTicketRepository,
   NotificationService, InMemoryNotificationRepository,
   PushService, InMemoryPushSubscriptionRepository,
   type PushSubscriptionRow, type PushSendResult, type WithdrawalRequestedEvent,
@@ -354,11 +355,12 @@ export function makeSupportHarness(brandOf: (siteId: string) => SupportBrandInfo
 export function stubVerifier(): Verifier {
   return async (token: string): Promise<AuthClaims> => {
     if (!token) throw new Error("TOKEN_REQUIRED");
-    // `<userId>` | `<userId>:<role>` | `<userId>:<role>:<siteId>` — the optional 3rd segment
-    // lets tests exercise the JWT `site` claim that requireSite reads.
-    const [userId, role, site] = token.split(":");
+    // `<userId>` | `<userId>:<role>` | `<userId>:<role>:<siteId>` | `<userId>:<role>:<siteId>:<platformId>`
+    // — the optional 3rd/4th segments exercise the JWT `site` (requireSite) and `platform`
+    // (adminScopePlatform, Issue 1) claims.
+    const [userId, role, site, platform] = token.split(":");
     if (!userId) throw new Error("TOKEN_INVALID");
-    return { userId, role: role || "player", ...(site ? { site } : {}), raw: {} };
+    return { userId, role: role || "player", ...(site ? { site } : {}), ...(platform ? { platform } : {}), raw: {} };
   };
 }
 
@@ -414,6 +416,7 @@ export interface TestApi {
   referral: InMemoryReferralRepo;
   /** The in-memory platform repo, so tests can seed brands + marketer rollup rows (Task R). */
   platformRepo: InMemoryPlatformRepository;
+  ticketRepo: InMemoryTicketRepository;
   /** Support-chat fakes (seed KB, swap LLM, inspect recorded conversations/messages). */
   support: SupportHarness;
   /** Instant-onboarding fake: recorded inputs + the in-memory deps. */
@@ -490,6 +493,10 @@ export async function startTestApi(opts: TestApiOptions = {}): Promise<TestApi> 
   const admin = new AdminService(adminRepo);
   const platformRepo = new InMemoryPlatformRepository();
   const platform = new PlatformService(platformRepo);
+  const subscriptionRepo = new InMemorySubscriptionRepository();
+  const subscriptions = new SubscriptionService(subscriptionRepo);
+  const ticketRepo = new InMemoryTicketRepository();
+  const tickets = new TicketService(ticketRepo);
   const notifications = new NotificationService(new InMemoryNotificationRepository());
 
   // Support-chat harness: resolve brand facts from the seeded test brands (default fallback).
@@ -609,7 +616,8 @@ export async function startTestApi(opts: TestApiOptions = {}): Promise<TestApi> 
     affiliate,
     admin,
     platform,
-    notifications,
+    subscriptions,
+    tickets,    notifications,
     push,
     marketers: makeInMemoryMarketerRepo(),
     referral: referralRepo,
@@ -653,6 +661,7 @@ export async function startTestApi(opts: TestApiOptions = {}): Promise<TestApi> 
     marketers: deps.marketers,
     referral: referralRepo,
     platformRepo,
+    ticketRepo,
     support,
     onboard: { calls: onboardCalls, deps: onboardDeps },
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),

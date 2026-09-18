@@ -171,6 +171,7 @@ export function registerAuthRoutes(router: Router, deps: ApiDeps): void {
       role: s.role,
       ...(s.mfaEnrolmentRequired ? { mfaEnrolmentRequired: true } : {}),
       ...(s.site ? { site: s.site } : {}),
+      ...(s.platform ? { platform: s.platform } : {}),
     };
   });
 

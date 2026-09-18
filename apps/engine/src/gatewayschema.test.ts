@@ -59,6 +59,15 @@ test("validateConfig: an already-stored secret satisfies a required secret (sett
   assert.deepEqual(issues, []);
 });
 
+test("validateConfig: payhero REQUIRES channel_id (runtime needs it for every STK) — regression", () => {
+  // A token-only config (no channel_id) must be flagged invalid so the console cannot mark PayHero
+  // 'configured' while the deposit rail fails with PAYHERO_NOT_CONFIGURED (the bug this guards).
+  const issues = validateConfig("payhero", { settings: {}, secrets: {} }, ["basic_auth_token"]);
+  assert.ok(issues.some((i) => i.field === "channel_id"), "channel_id must be required");
+  // With channel_id supplied (+ token on file) it validates.
+  assert.deepEqual(validateConfig("payhero", { settings: { channel_id: "1487" }, secrets: {} }, ["basic_auth_token"]), []);
+});
+
 test("validateConfig: email, url, select and key-prefix patterns are checked", () => {
   const bad = validateConfig("megapay", { settings: { env: "nonsense", email: "not-an-email", api_base: "ftp://x" }, secrets: { api_key: "k12345678" } });
   const fields = bad.map((i) => i.field).sort();
@@ -72,8 +81,8 @@ test("validateConfig: email, url, select and key-prefix patterns are checked", (
   assert.deepEqual(paystackOk, []);
 });
 
-test("validateConfig: payhero requires the Basic Auth token", () => {
+test("validateConfig: payhero requires the Basic Auth token + channel_id", () => {
   const issues = validateConfig("payhero", { settings: {}, secrets: {} });
   const fields = issues.map((i) => i.field).sort();
-  assert.deepEqual(fields, ["basic_auth_token"]);
+  assert.deepEqual(fields, ["basic_auth_token", "channel_id"]);
 });

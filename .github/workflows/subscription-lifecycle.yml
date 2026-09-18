@@ -1,0 +1,31 @@
+name: Subscription Lifecycle
+
+# Advances platform subscriptions through Trial -> Past Due -> Grace -> Suspended based on
+# ops_config durations (fn_subscription_auto_advance, migrations 0136-0137). Runs daily. Requires
+# repo secret DATABASE_URL (Supabase session-pooler URL, :5432). Trigger manually via "Run workflow".
+on:
+  schedule:
+    - cron: "20 21 * * *"   # 21:20 UTC = 00:20 EAT (start of the EAT day)
+  workflow_dispatch: {}
+
+concurrency:
+  group: subscription-lifecycle
+  cancel-in-progress: false
+
+jobs:
+  advance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install
+        run: npm ci
+      - name: Advance subscription lifecycle
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          if [ -z "$DATABASE_URL" ]; then echo "No DATABASE_URL secret — skipping."; exit 0; fi
+          node --import tsx scripts/ops_subscription_advance.mts

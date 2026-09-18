@@ -34,7 +34,7 @@ def reset_and_migrate():
     conn = psycopg2.connect(**DSN); conn.set_client_encoding("UTF8"); conn.autocommit = True
     with conn.cursor() as c:
         c.execute(open(SHIM, encoding="utf-8").read())
-        for f in sorted(glob.glob(os.path.join(MIG_DIR, "00*.sql"))):
+        for f in sorted(glob.glob(os.path.join(MIG_DIR, "[0-9][0-9][0-9][0-9]_*.sql"))):
             c.execute(open(f, encoding="utf-8").read())
     return conn
 

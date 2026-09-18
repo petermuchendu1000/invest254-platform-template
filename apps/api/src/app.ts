@@ -7,6 +7,7 @@ import {
 import type { Logger } from "@invest254/shared/logger";
 import type {
   FairnessRecord, PaymentService, AuthService, AffiliateService, AdminService, NotificationService, PushService, Verifier, PlatformService,
+  SubscriptionService, TicketService,
   Page, PageQuery, LedgerEntry, PositionRecord, PositionDetail, PositionListQuery, DigitHistoryRow, TransactionRecord, TxListQuery,
 } from "@invest254/engine";
 import { Router, ApiError, serverFrom, type Ctx } from "./http.js";
@@ -25,6 +26,8 @@ import type { TelegramClient, PayoutAlert, PayoutDecisionRecord } from "./telegr
 import { registerMarketerRoutes, type MarketerRepo } from "./app.marketers.js";
 import { registerReferralRoutes, type ReferralRepo } from "./app.referral.js";
 import { registerSupportRoutes, type SupportDeps } from "./app.support.js";
+import { registerSubscriptionRoutes } from "./app.subscriptions.js";
+import { registerTicketRoutes } from "./app.tickets.js";
 import type { PlatformOnboardDeps } from "./app.platform.js";
 import type { Server } from "node:http";
 
@@ -149,7 +152,13 @@ export interface ApiDeps {
     | "getGlobalConfig" | "setGlobalConfig" | "distributePool" | "listPoolDistributions"
     | "poolDemand" | "distributePoolDynamic"
     | "listPaymentProviders" | "setProviderGlobal" | "setProviderSite" | "clearProviderSite"
-    | "gatewaySchemas" | "getProviderConfig" | "setProviderConfig" | "testProviderConnection">;
+    | "gatewaySchemas" | "getProviderConfig" | "setProviderConfig" | "testProviderConnection"
+    | "listPlatforms" | "platformsOverview" | "createPlatform" | "updatePlatform" | "assignSiteToPlatform"
+    | "appointPlatformAdmin" | "revokePlatformAdmin" | "platformOfSite">;
+  /** Subscription plans + per-platform billing/status (Issue 2). Absent -> /subscriptions routes off. */
+  subscriptions?: SubscriptionService | undefined;
+  /** Internal escalation ticketing (Issue 2). Absent -> /tickets routes off. */
+  tickets?: TicketService | undefined;
   /** Per-user sticky notifications: admin/system raise; player reads active + dismisses (J7). */
   notifications: Pick<NotificationService, "create" | "listActive" | "adminList" | "dismiss" | "resolve" | "resolveByCategory" | "listTemplates" | "audienceCount" | "broadcast" | "resolveCategory">;
   /** Admin Web Push subscriptions (Issue 1): opt-in real-time withdrawal-request alerts. Absent when
@@ -372,6 +381,8 @@ export function createRouter(deps: ApiDeps): Router {
   registerProtectedRoutes(router, deps);
   registerHistoryRoutes(router, deps);
   registerSupportRoutes(router, deps);
+  registerSubscriptionRoutes(router, deps);
+  registerTicketRoutes(router, deps);
   return router;
 }
 

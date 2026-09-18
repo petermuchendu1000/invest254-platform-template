@@ -82,7 +82,7 @@ export async function verifyPassword(password: string, stored: string): Promise<
 }
 
 /** A successful authentication: a signed token plus the verified identity. */
-export interface AuthSession { token: string; userId: string; role: string; site?: string; mfaEnrolmentRequired?: boolean;
+export interface AuthSession { token: string; userId: string; role: string; site?: string; platform?: string; mfaEnrolmentRequired?: boolean;
   /** Cents credited by the one-time sign-up welcome bonus (0094). Present on register only when > 0. */
   welcomeBonusCents?: number; }
 
@@ -138,9 +138,10 @@ export class AuthService {
   }
 
   /** Sign an HS256 JWT compatible with makeVerifier (sub = userId, `role` + optional `site` claims). */
-  async issueToken(userId: string, role: string, siteId?: string): Promise<string> {
+  async issueToken(userId: string, role: string, siteId?: string, platformId?: string): Promise<string> {
     const claims: Record<string, unknown> = { role };
     if (siteId) claims.site = siteId; // multi-tenant: binds the token to a brand
+    if (platformId) claims.platform = platformId; // platform tier: binds a platform_admin to its platform (Issue 1)
     let b = new SignJWT(claims).setProtectedHeader({ alg: "HS256" }).setSubject(userId)
       .setIssuedAt().setExpirationTime(`${this.ttl}s`);
     if (this.issuer) b = b.setIssuer(this.issuer);
@@ -233,12 +234,17 @@ export class AuthService {
     if (mfa?.enabled) await this.assertSecondFactor(rec.userId, mfa, input.totp, input.recoveryCode);
     // The brand is the matched account's own site (falling back to an explicit siteId for the web).
     const resolvedSite = input.siteId ?? rec.siteId ?? undefined;
-    const token = await this.issueToken(rec.userId, rec.role, resolvedSite);
+    // Platform tier (Issue 1): a platform_admin carries an explicit `platform` claim = the platform
+    // it administers (profiles.platform_id). Every other role derives its platform from its site, so
+    // no claim is minted for them (RLS current_platform() falls back to the site's platform).
+    const platformId = rec.platformId ?? undefined;
+    const token = await this.issueToken(rec.userId, rec.role, resolvedSite, platformId);
     const needsEnrolment = this.mfaRoles.has(rec.role) && !mfa?.enabled;
     const site = resolvedSite ? { site: resolvedSite } : {};
+    const platform = platformId ? { platform: platformId } : {};
     return needsEnrolment
-      ? { token, userId: rec.userId, role: rec.role, mfaEnrolmentRequired: true, ...site }
-      : { token, userId: rec.userId, role: rec.role, ...site };
+      ? { token, userId: rec.userId, role: rec.role, mfaEnrolmentRequired: true, ...site, ...platform }
+      : { token, userId: rec.userId, role: rec.role, ...site, ...platform };
   }
 
   /**

@@ -45,8 +45,9 @@ def reset_and_migrate():
     conn = psycopg2.connect(**DSN); conn.autocommit = True
     with conn.cursor() as c:
         c.execute(open(SHIM, encoding="utf-8").read())
-        for f in sorted(glob.glob(os.path.join(BASE, "migrations", "00*.sql"))):
+        for f in sorted(glob.glob(os.path.join(BASE, "migrations", "[0-9][0-9][0-9][0-9]_*.sql"))):
             c.execute(open(f, encoding="utf-8").read())
+        c.execute("grant select on all tables in schema public to anon, authenticated")  # test-fix: RLS is the gate (mirror Supabase)
     return conn
 
 def register(cur, phone, username, site):
@@ -97,8 +98,8 @@ def main():
     cur.execute("select fn_create_deposit(%s, 500000, '254700000003', %s)", [userB1, site_b])
 
     # Overrides on each brand (stamped with the target's brand by the RPC).
-    cur.execute("select fn_admin_set_user_overrides(%s,%s,%s,%s)", [ACTOR, PS, userA1, '{"win_rate":"0.9","house_edge":"0.05"}'])
-    cur.execute("select fn_admin_set_user_overrides(%s,%s,%s,%s)", [ACTOR, PS, userB1, '{"win_rate":"0.9","house_edge":"0.05"}'])
+    cur.execute("select fn_admin_set_user_overrides(%s,%s,%s,%s)", [ACTOR, PS, userA1, '{"house_edge":"0.80","max_win_multiplier":"2.0"}'])
+    cur.execute("select fn_admin_set_user_overrides(%s,%s,%s,%s)", [ACTOR, PS, userB1, '{"house_edge":"0.80","max_win_multiplier":"2.0"}'])
 
     # Brand truth (RLS-bypassed).
     A = {t: total(cur, t, SITE_A) for t in TABLES}

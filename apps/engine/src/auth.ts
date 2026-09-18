@@ -1,7 +1,7 @@
 import { jwtVerify, createRemoteJWKSet, type JWTPayload } from "jose";
 
 /** Verified identity extracted from a trusted JWT. */
-export interface AuthClaims { userId: string; role?: string; site?: string; raw: JWTPayload; }
+export interface AuthClaims { userId: string; role?: string; site?: string; platform?: string; raw: JWTPayload; }
 export type Verifier = (token: string) => Promise<AuthClaims>;
 
 type KeyInput = Uint8Array | ReturnType<typeof createRemoteJWKSet>;
@@ -23,6 +23,8 @@ export function verifierFromKey(getKey: KeyInput, algorithms: string[], opts: Ve
       role: typeof (payload as any).role === "string" ? (payload as any).role : undefined,
       // Multi-tenant: the brand this token was issued for (engine enforces socket↔token match).
       site: typeof (payload as any).site === "string" ? (payload as any).site : undefined,
+      // Platform tier (Issue 1): the platform a platform_admin is scoped to (minted only for that role).
+      platform: typeof (payload as any).platform === "string" ? (payload as any).platform : undefined,
       raw: payload,
     };
   };

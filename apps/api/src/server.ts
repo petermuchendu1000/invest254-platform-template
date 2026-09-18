@@ -1,6 +1,7 @@
 import {
   PgGameRepository, PgEngagementRepository, PgPaymentRepository, PgIdentityRepository,
   PaymentService, AuthService, AffiliateService, AdminService, PgAdminRepository, PlatformService, PgPlatformRepository, DarajaConfigStore, makeVerifier,
+  SubscriptionService, PgSubscriptionRepository, TicketService, PgTicketRepository,
   NotificationService, PgNotificationRepository,
   PushService, PgPushSubscriptionRepository,
   GameConfigStore, mapConfigRow, makePgPools, makeSystemLogPersister,
@@ -148,6 +149,8 @@ async function buildDeps(): Promise<ApiDeps> {
   // Platform service (also drives the encrypted gateway-config store, migration 0130). Constructed
   // here (not later) so the Mega Pay client can layer superadmin-saved DB config OVER env at deposit time.
   const platform = new PlatformService(new PgPlatformRepository(q));
+  const subscriptions = new SubscriptionService(new PgSubscriptionRepository(q));
+  const tickets = new TicketService(new PgTicketRepository(q));
   // Mega Pay client: prefers the DB-saved config (0130), falls back to env on absence/error so production
   // behaviour is UNCHANGED until an admin saves config in the console (env stays the guaranteed fallback).
   const megapay = new ConfiguredMegaPayClient(async () => {
@@ -655,6 +658,8 @@ async function buildDeps(): Promise<ApiDeps> {
     affiliate,
     admin,
     platform,
+    subscriptions,
+    tickets,
     notifications,
     push: pushService,
     actionSecret: process.env.SUPABASE_JWT_SECRET,

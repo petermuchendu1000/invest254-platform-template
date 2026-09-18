@@ -38,6 +38,11 @@ export interface SiteKpis {
   users: number; depositsCents: number; withdrawalsCents: number; ggrCents: number; openPositions: number; bets: number;
 }
 export interface CreateSiteInput { slug: string; name: string; currency?: string | undefined; primaryDomain?: string | null | undefined; }
+
+// ── Platform tier (Issue 1) — grouping entity above sites ────────────────────────────────────────
+export interface PlatformRow { platformId: string; slug: string; name: string; status: string; ownerUserId: string | null; notes: string | null; }
+export interface PlatformKpis { platformId: string; slug: string; name: string; status: string; sites: number; users: number; siteAdmins: number; platformAdmins: number; }
+export interface AppointResult { userId: string; role: string; platformId: string | null; }
 /** Per-brand performance over a [fromMs, toMs) window (docs/24 performance filters). Shared columns
  *  (deposits/withdrawals/ggr/bets) reconcile with `overview` when the window spans all time. */
 export interface SitePerformance {
@@ -135,11 +140,28 @@ export interface ProviderConfigResolved {
 }
 
 export interface PlatformRepository {
-  listSites(): Promise<SiteWithConfig[]>;
+  listSites(platformScope?: string | null): Promise<SiteWithConfig[]>;
   createSite(actorId: string, actorRole: string, input: CreateSiteInput): Promise<string>;
   updateSite(actorId: string, actorRole: string, siteId: string, patch: JsonPatch): Promise<SiteRow>;
   setSiteConfig(actorId: string, actorRole: string, siteId: string, patch: JsonPatch): Promise<SiteConfigRow>;
-  overview(actorRole: string): Promise<SiteKpis[]>;
+  overview(actorId: string, actorRole: string): Promise<SiteKpis[]>;
+  /** The platform a site belongs to (for API-layer platform-scope enforcement). null if unknown. */
+  platformOfSite(siteId: string): Promise<string | null>;
+  // ── Platform tier (Issue 1) — SYSTEM-only governance of platforms + platform admins ──
+  /** Every platform (leak-safe select; the route gates on platform_superadmin). */
+  listPlatforms(): Promise<PlatformRow[]>;
+  /** All-platforms overview: one row per platform with headline counts (platform_superadmin only). */
+  platformsOverview(actorRole: string): Promise<PlatformKpis[]>;
+  /** Create a platform. */
+  createPlatform(actorId: string, actorRole: string, slug: string, name: string, ownerUserId?: string | null): Promise<string>;
+  /** Edit a platform (name/status/owner_user_id/notes). */
+  updatePlatform(actorId: string, actorRole: string, platformId: string, patch: JsonPatch): Promise<PlatformRow>;
+  /** Move a site into a platform (re-parent a brand). */
+  assignSiteToPlatform(actorId: string, actorRole: string, siteId: string, platformId: string): Promise<{ siteId: string; platformId: string }>;
+  /** Appoint a user as platform_admin of a platform (sets role + platform_id atomically). */
+  appointPlatformAdmin(actorId: string, actorRole: string, targetUserId: string, platformId: string): Promise<AppointResult>;
+  /** Revoke a platform_admin back to a site-level role (clears platform_id). */
+  revokePlatformAdmin(actorId: string, actorRole: string, targetUserId: string, newRole: string): Promise<{ userId: string; role: string }>;
   /** Per-brand performance within a time window (read-only; the API route gates on platform_superadmin). */
   performance(fromMs: number, toMs: number): Promise<SitePerformance[]>;
   // Task R — cross-brand marketer rollup (reporting only; money stays per site).
@@ -240,12 +262,13 @@ function mapGlobalConfig(x: Record<string, unknown>): GlobalConfig {
 export class PgPlatformRepository implements PlatformRepository {
   constructor(private readonly q: Querier) {}
 
-  async listSites(): Promise<SiteWithConfig[]> {
+  async listSites(platformScope?: string | null): Promise<SiteWithConfig[]> {
     const r = await this.q.query(
       `select s.*, c.house_edge, c.max_multiplier, c.min_stake, c.max_stake, c.min_withdrawal, c.min_withdrawal_native,
               c.default_duration_s, c.tick_rate_ms, c.drift_bias, c.volatility, c.target_win_rate, c.version
          from sites s left join site_game_config c on c.site_id = s.id
-        order by s.created_at asc`, []);
+        where ($1::uuid is null or s.platform_id = $1)
+        order by s.created_at asc`, [platformScope ?? null]);
     return r.rows.map((x: Record<string, unknown>) => ({ ...mapSiteRow(x), config: mapConfigRow(x) }));
   }
 
@@ -267,13 +290,69 @@ export class PgPlatformRepository implements PlatformRepository {
     return mapConfigRow(r.rows[0] as Record<string, unknown>);
   }
 
-  async overview(actorRole: string): Promise<SiteKpis[]> {
-    const r = await this.q.query("select * from fn_platform_overview($1)", [actorRole]);
+  async overview(actorId: string, actorRole: string): Promise<SiteKpis[]> {
+    const r = await this.q.query("select * from fn_platform_overview($1,$2)", [actorId, actorRole]);
     return r.rows.map((x: Record<string, unknown>) => ({
       siteId: String(x.site_id), slug: String(x.slug), name: String(x.name), status: String(x.status),
       users: num(x.users), depositsCents: num(x.deposits_cents), withdrawalsCents: num(x.withdrawals_cents),
       ggrCents: num(x.ggr_cents), openPositions: num(x.open_positions), bets: num(x.bets),
     }));
+  }
+  async platformOfSite(siteId: string): Promise<string | null> {
+    const r = await this.q.query("select platform_id from sites where id = $1", [siteId]);
+    return r.rows.length ? String(r.rows[0].platform_id) : null;
+  }
+
+  async listPlatforms(): Promise<PlatformRow[]> {
+    const r = await this.q.query(
+      "select id, slug, name, status, owner_user_id, notes from platforms order by created_at asc", []);
+    return r.rows.map((x: Record<string, unknown>) => ({
+      platformId: String(x.id), slug: String(x.slug), name: String(x.name), status: String(x.status),
+      ownerUserId: x.owner_user_id == null ? null : String(x.owner_user_id), notes: x.notes == null ? null : String(x.notes),
+    }));
+  }
+
+  async platformsOverview(actorRole: string): Promise<PlatformKpis[]> {
+    const r = await this.q.query("select * from fn_platforms_overview($1)", [actorRole]);
+    return r.rows.map((x: Record<string, unknown>) => ({
+      platformId: String(x.platform_id), slug: String(x.slug), name: String(x.name), status: String(x.status),
+      sites: num(x.sites), users: num(x.users), siteAdmins: num(x.site_admins), platformAdmins: num(x.platform_admins),
+    }));
+  }
+
+  async createPlatform(actorId: string, actorRole: string, slug: string, name: string, ownerUserId?: string | null): Promise<string> {
+    const r = await this.q.query("select fn_platform_create_platform($1,$2,$3,$4,$5) as id",
+      [actorId, actorRole, slug, name, ownerUserId ?? null]);
+    return String(r.rows[0].id);
+  }
+
+  async updatePlatform(actorId: string, actorRole: string, platformId: string, patch: JsonPatch): Promise<PlatformRow> {
+    const r = await this.q.query("select * from fn_platform_update_platform($1,$2,$3,$4)",
+      [actorId, actorRole, platformId, JSON.stringify(patch)]);
+    const x = r.rows[0] as Record<string, unknown>;
+    return { platformId: String(x.id), slug: String(x.slug), name: String(x.name), status: String(x.status),
+      ownerUserId: x.owner_user_id == null ? null : String(x.owner_user_id), notes: x.notes == null ? null : String(x.notes) };
+  }
+
+  async assignSiteToPlatform(actorId: string, actorRole: string, siteId: string, platformId: string): Promise<{ siteId: string; platformId: string }> {
+    const r = await this.q.query("select id, platform_id from fn_platform_assign_site($1,$2,$3,$4)",
+      [actorId, actorRole, siteId, platformId]);
+    const x = r.rows[0] as Record<string, unknown>;
+    return { siteId: String(x.id), platformId: String(x.platform_id) };
+  }
+
+  async appointPlatformAdmin(actorId: string, actorRole: string, targetUserId: string, platformId: string): Promise<AppointResult> {
+    const r = await this.q.query("select * from fn_platform_appoint_platform_admin($1,$2,$3,$4)",
+      [actorId, actorRole, targetUserId, platformId]);
+    const x = r.rows[0] as Record<string, unknown>;
+    return { userId: String(x.user_id), role: String(x.role), platformId: x.platform_id == null ? null : String(x.platform_id) };
+  }
+
+  async revokePlatformAdmin(actorId: string, actorRole: string, targetUserId: string, newRole: string): Promise<{ userId: string; role: string }> {
+    const r = await this.q.query("select * from fn_platform_revoke_platform_admin($1,$2,$3,$4)",
+      [actorId, actorRole, targetUserId, newRole]);
+    const x = r.rows[0] as Record<string, unknown>;
+    return { userId: String(x.user_id), role: String(x.role) };
   }
 
   async performance(fromMs: number, toMs: number): Promise<SitePerformance[]> {
@@ -521,10 +600,15 @@ const DEFAULT_CONFIG: SiteConfigRow = {
   defaultDurationS: 10, tickRateMs: 150, driftBias: 0.3, volatility: 1, targetWinRate: 0.125, version: 1,
 };
 const DEFAULT_SITE_ID = "00000000-0000-0000-0000-000000000001";
+const DEFAULT_PLATFORM_ID = "10000000-0000-0000-0000-000000000001";
 
 /** In-memory platform repo for tests. Enforces the platform_superadmin gate; seeds the default brand. */
 export class InMemoryPlatformRepository implements PlatformRepository {
   private readonly sites = new Map<string, SiteWithConfig>();
+  // Platform tier (Issue 1) in-memory state.
+  private readonly platforms = new Map<string, PlatformRow>();
+  private readonly sitePlatform = new Map<string, string>();   // siteId -> platformId
+  private readonly platformAdmins = new Map<string, string>(); // userId -> platformId
   /** Optional KPI source so overview can return real numbers in tests. */
   kpis: (siteId: string) => Omit<SiteKpis, "siteId" | "slug" | "name" | "status"> = () => ({
     users: 0, depositsCents: 0, withdrawalsCents: 0, ggrCents: 0, openPositions: 0, bets: 0,
@@ -542,10 +626,23 @@ export class InMemoryPlatformRepository implements PlatformRepository {
       ownerUserId: null,
       config: { ...DEFAULT_CONFIG },
     });
+    this.platforms.set(DEFAULT_PLATFORM_ID, { platformId: DEFAULT_PLATFORM_ID, slug: "default", name: "Default Platform", status: "active", ownerUserId: null, notes: null });
+    this.sitePlatform.set(DEFAULT_SITE_ID, DEFAULT_PLATFORM_ID);
   }
   private gate(role: string) { if (role !== "platform_superadmin") throw new Error("NOT_AUTHORIZED"); }
+  // Site management is allowed for a platform_admin too (the API's scopeSiteParam already bounded the
+  // target site to the caller's platform; the Pg RPCs enforce it in-definer).
+  private gateManage(role: string) { if (!["platform_admin", "platform_superadmin"].includes(role)) throw new Error("NOT_AUTHORIZED"); }
 
-  async listSites(): Promise<SiteWithConfig[]> { return [...this.sites.values()]; }
+  async listSites(platformScope?: string | null): Promise<SiteWithConfig[]> {
+    const all = [...this.sites.values()];
+    if (platformScope == null) return all;
+    return all.filter((s) => (this.sitePlatform.get(s.siteId) ?? DEFAULT_PLATFORM_ID) === platformScope);
+  }
+  async platformOfSite(siteId: string): Promise<string | null> {
+    if (!this.sites.has(siteId)) return null;
+    return this.sitePlatform.get(siteId) ?? DEFAULT_PLATFORM_ID;
+  }
 
   async createSite(_actorId: string, actorRole: string, input: CreateSiteInput): Promise<string> {
     this.gate(actorRole);
@@ -569,7 +666,7 @@ export class InMemoryPlatformRepository implements PlatformRepository {
   }
 
   async updateSite(_actorId: string, actorRole: string, siteId: string, patch: JsonPatch): Promise<SiteRow> {
-    this.gate(actorRole);
+    this.gateManage(actorRole);
     const s = this.sites.get(siteId);
     if (!s) throw new Error("SITE_NOT_FOUND");
     const map: Record<string, keyof SiteRow> = {
@@ -584,7 +681,7 @@ export class InMemoryPlatformRepository implements PlatformRepository {
   }
 
   async setSiteConfig(_actorId: string, actorRole: string, siteId: string, patch: JsonPatch): Promise<SiteConfigRow> {
-    this.gate(actorRole);
+    this.gateManage(actorRole);
     const s = this.sites.get(siteId);
     if (!s) throw new Error("SITE_NOT_FOUND");
     const map: Record<string, keyof SiteConfigRow> = {
@@ -597,9 +694,63 @@ export class InMemoryPlatformRepository implements PlatformRepository {
     return { ...s.config };
   }
 
-  async overview(actorRole: string): Promise<SiteKpis[]> {
-    this.gate(actorRole);
+  async overview(_actorId: string, actorRole: string): Promise<SiteKpis[]> {
+    if (!["platform_admin", "platform_superadmin"].includes(actorRole)) throw new Error("NOT_AUTHORIZED");
     return [...this.sites.values()].map((s) => ({ siteId: s.siteId, slug: s.slug, name: s.name, status: s.status, ...this.kpis(s.siteId) }));
+  }
+
+  async listPlatforms(): Promise<PlatformRow[]> { return [...this.platforms.values()].map((p) => ({ ...p })); }
+
+  async platformsOverview(actorRole: string): Promise<PlatformKpis[]> {
+    this.gate(actorRole);
+    return [...this.platforms.values()].map((p) => {
+      const sites = [...this.sitePlatform.values()].filter((pid) => pid === p.platformId).length;
+      const platformAdmins = [...this.platformAdmins.values()].filter((pid) => pid === p.platformId).length;
+      return { platformId: p.platformId, slug: p.slug, name: p.name, status: p.status, sites, users: 0, siteAdmins: 0, platformAdmins };
+    });
+  }
+
+  async createPlatform(_actorId: string, actorRole: string, slug: string, name: string, ownerUserId?: string | null): Promise<string> {
+    this.gate(actorRole);
+    const s = (slug ?? "").trim().toLowerCase(); const n = (name ?? "").trim();
+    if (!s || !n) throw new Error("INVALID_PLATFORM");
+    if ([...this.platforms.values()].some((p) => p.slug === s)) throw new Error("SLUG_TAKEN");
+    const id = randomUUID();
+    this.platforms.set(id, { platformId: id, slug: s, name: n, status: "active", ownerUserId: ownerUserId ?? null, notes: null });
+    return id;
+  }
+
+  async updatePlatform(_actorId: string, actorRole: string, platformId: string, patch: JsonPatch): Promise<PlatformRow> {
+    this.gate(actorRole);
+    const p = this.platforms.get(platformId); if (!p) throw new Error("PLATFORM_NOT_FOUND");
+    if ("name" in patch) p.name = String(patch.name);
+    if ("status" in patch) p.status = String(patch.status);
+    if ("owner_user_id" in patch) p.ownerUserId = patch.owner_user_id ? String(patch.owner_user_id) : null;
+    if ("notes" in patch) p.notes = patch.notes ? String(patch.notes) : null;
+    return { ...p };
+  }
+
+  async assignSiteToPlatform(_actorId: string, actorRole: string, siteId: string, platformId: string): Promise<{ siteId: string; platformId: string }> {
+    this.gate(actorRole);
+    if (!this.platforms.has(platformId)) throw new Error("PLATFORM_NOT_FOUND");
+    if (!this.sites.has(siteId)) throw new Error("SITE_NOT_FOUND");
+    this.sitePlatform.set(siteId, platformId);
+    return { siteId, platformId };
+  }
+
+  async appointPlatformAdmin(_actorId: string, actorRole: string, targetUserId: string, platformId: string): Promise<AppointResult> {
+    this.gate(actorRole);
+    if (!this.platforms.has(platformId)) throw new Error("PLATFORM_NOT_FOUND");
+    this.platformAdmins.set(targetUserId, platformId);
+    return { userId: targetUserId, role: "platform_admin", platformId };
+  }
+
+  async revokePlatformAdmin(_actorId: string, actorRole: string, targetUserId: string, newRole: string): Promise<{ userId: string; role: string }> {
+    this.gate(actorRole);
+    if (!["player", "marketer", "admin"].includes(newRole)) throw new Error("INVALID_ROLE");
+    if (this.platformAdmins.get(targetUserId) === undefined) throw new Error("NOT_A_PLATFORM_ADMIN");
+    this.platformAdmins.delete(targetUserId);
+    return { userId: targetUserId, role: newRole };
   }
 
   async performance(_fromMs: number, _toMs: number): Promise<SitePerformance[]> {
@@ -829,8 +980,9 @@ export class InMemoryPlatformRepository implements PlatformRepository {
 /** Thin service over the repo: input validation + a stable surface for the API + console. */
 export class PlatformService {
   constructor(private readonly repo: PlatformRepository) {}
-  listSites(): Promise<SiteWithConfig[]> { return this.repo.listSites(); }
-  overview(actorRole: string): Promise<SiteKpis[]> { return this.repo.overview(actorRole); }
+  listSites(platformScope?: string | null): Promise<SiteWithConfig[]> { return this.repo.listSites(platformScope ?? null); }
+  overview(actorId: string, actorRole: string): Promise<SiteKpis[]> { return this.repo.overview(actorId, actorRole); }
+  platformOfSite(siteId: string): Promise<string | null> { return this.repo.platformOfSite(siteId); }
   performance(fromMs: number, toMs: number): Promise<SitePerformance[]> {
     const from = Number(fromMs), to = Number(toMs);
     if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from) throw new Error("INVALID_RANGE");
@@ -849,6 +1001,31 @@ export class PlatformService {
   setSiteConfig(actorId: string, actorRole: string, siteId: string, patch: JsonPatch): Promise<SiteConfigRow> {
     if (!patch || typeof patch !== "object") throw new Error("INVALID_PATCH");
     return this.repo.setSiteConfig(actorId, actorRole, siteId, patch);
+  }
+
+  // ── Platform tier (Issue 1) — SYSTEM-only platform governance (validated → repo → RPCs). ──
+  listPlatforms(): Promise<PlatformRow[]> { return this.repo.listPlatforms(); }
+  platformsOverview(actorRole: string): Promise<PlatformKpis[]> { return this.repo.platformsOverview(actorRole); }
+  createPlatform(actorId: string, actorRole: string, slug: string, name: string, ownerUserId?: string | null): Promise<string> {
+    if (typeof slug !== "string" || !slug.trim() || typeof name !== "string" || !name.trim()) throw new Error("INVALID_PLATFORM");
+    return this.repo.createPlatform(actorId, actorRole, slug.trim(), name.trim(), ownerUserId ?? null);
+  }
+  updatePlatform(actorId: string, actorRole: string, platformId: string, patch: JsonPatch): Promise<PlatformRow> {
+    if (!patch || typeof patch !== "object" || Array.isArray(patch)) throw new Error("INVALID_PATCH");
+    if (typeof platformId !== "string" || !platformId) throw new Error("INVALID_PLATFORM");
+    return this.repo.updatePlatform(actorId, actorRole, platformId, patch);
+  }
+  assignSiteToPlatform(actorId: string, actorRole: string, siteId: string, platformId: string): Promise<{ siteId: string; platformId: string }> {
+    if (typeof siteId !== "string" || !siteId || typeof platformId !== "string" || !platformId) throw new Error("INVALID_ARGS");
+    return this.repo.assignSiteToPlatform(actorId, actorRole, siteId, platformId);
+  }
+  appointPlatformAdmin(actorId: string, actorRole: string, targetUserId: string, platformId: string): Promise<AppointResult> {
+    if (typeof targetUserId !== "string" || !targetUserId || typeof platformId !== "string" || !platformId) throw new Error("INVALID_ARGS");
+    return this.repo.appointPlatformAdmin(actorId, actorRole, targetUserId, platformId);
+  }
+  revokePlatformAdmin(actorId: string, actorRole: string, targetUserId: string, newRole: string): Promise<{ userId: string; role: string }> {
+    if (typeof targetUserId !== "string" || !targetUserId) throw new Error("INVALID_ARGS");
+    return this.repo.revokePlatformAdmin(actorId, actorRole, targetUserId, newRole);
   }
 
   // ── Task R: cross-brand marketer rollup (reporting only) ──

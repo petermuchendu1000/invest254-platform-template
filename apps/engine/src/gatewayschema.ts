@@ -113,7 +113,7 @@ export const GATEWAY_SCHEMAS: Record<string, GatewaySchema> = {
       { key: "api_username", label: "API Username", kind: "secret", secret: true, required: false, placeholder: "e.g. XpiWHDe7Vy9OZqR8nUZs", help: "Shown once when the API key is created. Optional — used to regenerate the Basic token if needed." },
       { key: "api_password", label: "API Password", kind: "secret", secret: true, required: false, placeholder: "Shown once at key creation", help: "Combined with the API Username to form the Basic Auth token." },
       { key: "account_id", label: "Account ID", kind: "text", secret: false, required: false, placeholder: "e.g. 12038", help: "Your PayHero account ID." },
-      { key: "channel_id", label: "Payment channel ID", kind: "text", secret: false, required: false, placeholder: "e.g. 1487", help: "The channel STK pushes are routed through (Get Payment Channels). Needed to initiate deposits." },
+      { key: "channel_id", label: "Payment channel ID", kind: "text", secret: false, required: true, placeholder: "e.g. 1487", help: "The channel STK pushes are routed through (Get Payment Channels). REQUIRED — deposits fail with PAYHERO_NOT_CONFIGURED without it." },
       { key: "callback_url", label: "Callback URL", kind: "url", secret: false, required: false, placeholder: "https://your-api/…/payhero/callback", help: "Where PayHero posts the STK result." },
       { key: "base_url", label: "API base URL", kind: "url", secret: false, required: false, default: "https://backend.payhero.co.ke/api/v2", help: "PayHero API base. Override only if instructed." },
     ],

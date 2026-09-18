@@ -193,4 +193,23 @@ export const platformApi = {
   },
   distributePoolDynamic: (t: string, body: { totalCents?: number | undefined; lookbackDays?: number | undefined }) =>
     apiFetch<{ result: DistributeDynamicResultDto }>('/platform/pool/distribute-dynamic', { method: 'POST', token: t, body }),
+
+  // ── Platform tier governance (Issue 1) — System-admin only ──
+  platforms: (t: string) => apiFetch<{ platforms: PlatformDto[] }>('/platform/platforms', { token: t }),
+  platformsOverview: (t: string) => apiFetch<{ platforms: PlatformKpisDto[] }>('/platform/platforms/overview', { token: t }),
+  createPlatform: (t: string, body: { slug: string; name: string; ownerUserId?: string }) =>
+    apiFetch<{ platformId: string }>('/platform/platforms', { method: 'POST', token: t, body }),
+  updatePlatform: (t: string, id: string, patch: Record<string, unknown>) =>
+    apiFetch<PlatformDto>(`/platform/platforms/${id}`, { method: 'PATCH', token: t, body: patch }),
+  assignSiteToPlatform: (t: string, siteId: string, platformId: string) =>
+    apiFetch<{ siteId: string; platformId: string }>(`/platform/sites/${siteId}/assign`, { method: 'POST', token: t, body: { platformId } }),
+  appointPlatformAdmin: (t: string, body: { userId: string; platformId: string }) =>
+    apiFetch<AppointResultDto>('/platform/platform-admins', { method: 'POST', token: t, body }),
+  revokePlatformAdmin: (t: string, uid: string, newRole: string) =>
+    apiFetch<{ userId: string; role: string }>(`/platform/platform-admins/${uid}/revoke`, { method: 'POST', token: t, body: { newRole } }),
 };
+
+/** Platform tier (Issue 1). */
+export interface PlatformDto { platformId: string; slug: string; name: string; status: string; ownerUserId: string | null; notes: string | null }
+export interface PlatformKpisDto { platformId: string; slug: string; name: string; status: string; sites: number; users: number; siteAdmins: number; platformAdmins: number }
+export interface AppointResultDto { userId: string; role: string; platformId: string | null }

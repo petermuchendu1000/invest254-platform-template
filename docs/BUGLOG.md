@@ -5,6 +5,39 @@ entry: what, evidence, root cause, impact, and resolution.
 
 ---
 
+## #37 — DB e2e harness silently tested a 30-migration-STALE schema (+ 2 stale test fixtures) — FIXED (branch `issue1-platform-tier`)
+- **Surfaced while building Issue 1** (platform tier). Ran the whole `packages/db/_testkit/e2e_*.py`
+  suite to establish a regression baseline; 6 of 18 scripts crashed on setup.
+- **Root cause A (systemic):** every `reset_and_migrate()` applied migrations with
+  `glob("00*.sql")`. That pattern matches `0001`–`0099` but **NOT `0100`–`0130`** (they start with
+  `01`). So for a long time the DB e2e suite has been building its test DB from a schema **missing
+  the last 31 migrations** — every `v_real_*`/`v_demo_*` view (0101), `min_withdrawal_native` (0120),
+  payment-provider config (0130), etc. Any test touching a ≥0100 object crashed; tests that didn't
+  simply passed against a stale schema (false confidence). Fixed the glob to
+  `"[0-9][0-9][0-9][0-9]_*.sql"` in all 9 affected scripts (2 others had already fixed it locally with
+  a comment about this exact pitfall).
+- **Root cause B (fixture drift):** with the full schema now applied, two more pre-existing staleness
+  bugs surfaced:
+  - `fn_open_position(...)` calls hard-coded `config_version = 1`, but migration 0089 added the
+    composite FK `positions(site_id, config_version) → site_game_config_versions(site_id, version)`
+    and the default site's config is now at **version 3** (only the current snapshot is retained).
+    A brand-new deployment opening at v1 would hit the same FK. Test fix: seed the default site's
+    historic v1 snapshot in setup (test-created sites already get a v1 snapshot via the config
+    insert trigger). *Note for prod: a fresh single-tenant bootstrap should ensure a v1 snapshot
+    exists — tracked separately; not triggered on the live DB because its snapshots pre-date 0085.*
+  - `fn_admin_set_user_overrides` was called with `house_edge:0.05` / `win_rate:0.9`, both of which
+    migration 0074's `OVERRIDE_FAVORS_PLAYER` guard correctly rejects (better-than-house). Test fix:
+    use punitive/valid override values (`win_rate:0.1`), which is what the guard permits.
+  - The RLS tests (`e2e_rls_sites`, `e2e_rls_admin_sites`) `set role authenticated` but the shim
+    never `grant`s that role SELECT, so they errored on the grant before RLS was ever evaluated
+    (they had not run to completion in a long time). Test fix: `grant select on all tables in schema
+    public to anon, authenticated` in setup, mirroring Supabase's default-privilege posture so RLS
+    is the operative gate (matches the design intent of migrations 0051/0056).
+- **Impact:** the DB e2e safety net was effectively inert for 0100+ behaviour. No production impact
+  (harness-only), but it masked regressions.
+- **Resolution:** all fixes above; the full suite is now **18/18 green** (incl. the new
+  `e2e_platform_isolation.py`, 32 scenarios). See docs/38.
+
 ## #36 — Daraja B2C payouts failed SILENTLY when initiator/credential unset → withdrawals stranded in `processing` — FIXED (branch `fix/daraja-b2c-fail-loud`)
 - **Surfaced by log analysis (post-#34/#35):** the only recurring non-4xx warning was
   `[payments] Daraja credentials not configured … using StubDarajaClient`. That specific line is benign
