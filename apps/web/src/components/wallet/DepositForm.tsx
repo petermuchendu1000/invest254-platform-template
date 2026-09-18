@@ -8,7 +8,7 @@ import { useDisplayMoney, USD_LIMITS } from '@/lib/money';
 import { Input } from '@/components/ui/Input';
 import { Button } from '@/components/ui/Button';
 import { api } from '@/lib/api/endpoints';
-import { useDeposit, useDepositMegapay, useWallet } from '@/lib/wallet/hooks';
+import { useDeposit, useDepositMegapay, useDepositPayhero, useWallet } from '@/lib/wallet/hooks';
 import { useBrand } from '@/lib/brand/BrandProvider';
 import { useDepositUi } from '@/lib/wallet/depositUi';
 import { useAuthUi } from '@/lib/auth/ui';
@@ -28,7 +28,7 @@ const grouped = (s: string) => (s ? Number(s).toLocaleString('en-KE') : '');
  * The gateway is intentionally NOT surfaced to players — the flow is a simple amount + phone +
  * "Continue to Pay"; only the API mutation differs by provider.
  */
-export function DepositForm({ provider = 'mpesa' }: { provider?: 'mpesa' | 'megapay' } = {}) {
+export function DepositForm({ provider = 'mpesa' }: { provider?: 'mpesa' | 'megapay' | 'payhero' } = {}) {
   const close = useDepositUi((s) => s.close);
   const prefillAmountCents = useDepositUi((s) => s.prefillAmountCents);
   const pending = useDepositUi((s) => s.pending);
@@ -40,7 +40,8 @@ export function DepositForm({ provider = 'mpesa' }: { provider?: 'mpesa' | 'mega
   const { data: wallet } = useWallet();
   const mpesaDeposit = useDeposit();
   const megaDeposit = useDepositMegapay();
-  const deposit = provider === 'megapay' ? megaDeposit : mpesaDeposit;
+  const payheroDeposit = useDepositPayhero();
+  const deposit = provider === 'megapay' ? megaDeposit : provider === 'payhero' ? payheroDeposit : mpesaDeposit;
   // Live economy from the SAME endpoint the engine/PaymentService enforce, so the deposit floor/cap
   // the browser validates against is the effective global/brand economy — never a hardcoded constant.
   const brand = useBrand();

@@ -218,6 +218,20 @@ export function registerProtectedRoutes(router: Router, deps: ApiDeps): void {
     return { status: 202, body: { transactionId: out.txId, transactionRequestId: out.transactionRequestId, checkoutRequestId: out.checkoutRequestId } };
   });
 
+  // PayHero (Lipwa) STK deposit — the third rail. Same server-authoritative enable check + deposits
+  // master switch as the other rails; a client can't deposit through a gateway the superadmin switched off.
+  router.post(`${BASE}/deposits/payhero`, auth, site, depositLimit, async (ctx: Ctx) => {
+    if (deps.platformGate && !(await deps.platformGate.allows("deposits")))
+      throw new ApiError("SYSTEM_DISABLED", "Deposits are temporarily disabled by the platform.", 403);
+    const enabled = (await deps.payments.listDepositProviders(ctx.siteId)).some((p) => p.code === "payhero");
+    if (!enabled) throw new ApiError("PROVIDER_DISABLED", "PayHero is not available.", 403);
+    const body = asObject(ctx.body);
+    const amount = requireIntAmount(body);
+    const phone = requirePhone(body);
+    const out = await domain(() => deps.payments.initiatePayHeroDeposit(ctx.claims!.userId, amount, phone, ctx.siteId));
+    return { status: 202, body: { transactionId: out.txId, reference: out.reference, checkoutRequestId: out.checkoutRequestId } };
+  });
+
   router.post(`${BASE}/withdrawals`, auth, site, withdrawLimit, async (ctx: Ctx) => {
     if (deps.platformGate && !(await deps.platformGate.allows("withdrawals")))
       throw new ApiError("SYSTEM_DISABLED", "Withdrawals are temporarily disabled by the platform.", 403);
@@ -266,6 +280,18 @@ export function registerProtectedRoutes(router: Router, deps: ApiDeps): void {
   };
   router.post(`${BASE}/deposits/megapay/callback`, megapayOnly, megapayCallback);
   router.post(`${BASE}/s/:slug/deposits/megapay/callback`, megapayOnly, resolveSlug, megapayCallback);
+
+  // ── PayHero webhook ──
+  // PayHero POSTs here when a deposit settles. The body is NEVER trusted to credit — the handler runs the
+  // authoritative sweep that re-queries PayHero for each recent unsettled PayHero deposit by the reference
+  // WE stored, so a forged POST can't mint balance. Optionally lock to PayHero's IPs via PAYHERO_CALLBACK_ALLOWED_CIDRS.
+  const payheroOnly = restrictToCidrs("PAYHERO_CALLBACK_ALLOWED_CIDRS");
+  const payheroCallback = async (ctx: Ctx) => {
+    await domain(() => deps.payments.handlePayHeroCallback(ctx.body));
+    return { ok: true };
+  };
+  router.post(`${BASE}/deposits/payhero/callback`, payheroOnly, payheroCallback);
+  router.post(`${BASE}/s/:slug/deposits/payhero/callback`, payheroOnly, resolveSlug, payheroCallback);
 
   // ── Pay Bill (C2B) — auto-verified manual deposits (migration 0115) ──
   // Public C2B endpoints Safaricom calls for every payment to our Pay Bill. Network-allowlisted to

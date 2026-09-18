@@ -2,6 +2,7 @@ import { normalizeMsisdn, MIN_DEPOSIT_CENTS, MIN_WITHDRAWAL_CENTS, type Cents } 
 import type { PaymentRepository, CompleteResult, CreateWithdrawalResult, WithdrawalOutcome, C2bPayment, ClaimResult, PaybillConfig, DepositProvider } from "./payments.js";
 import type { DarajaClient } from "./daraja.js";
 import type { MegaPayClient } from "./megapay.js";
+import type { PayHeroClient } from "./payhero.js";
 import { PLAYER_DEPOSIT_RAILS } from "./gatewayschema.js";
 
 /**
@@ -89,6 +90,8 @@ export interface PaymentServiceOptions {
    * a deployment that never configured Mega Pay can't accidentally route deposits to a missing client.
    */
   megapay?: MegaPayClient;
+  /** PayHero (Lipwa) provider client — the third deposit rail. Absent => PayHero deposits refuse loudly. */
+  payhero?: PayHeroClient;
   events?: PaymentEvents;
   verifyStkCallbacks?: boolean;
 }
@@ -106,6 +109,7 @@ export class PaymentService {
   private readonly defaultAccountRef: string;
   private readonly darajaForSite?: (siteId: string | undefined) => DarajaClient | undefined | Promise<DarajaClient | undefined>;
   private readonly megapay?: MegaPayClient;
+  private readonly payhero?: PayHeroClient;
   private readonly events: PaymentEvents;
   private readonly verifyStk: boolean;
   constructor(private readonly repo: PaymentRepository, private readonly daraja: DarajaClient, opts: PaymentServiceOptions = {}) {
@@ -121,6 +125,7 @@ export class PaymentService {
     this.defaultAccountRef = opts.defaultAccountRef ?? "Invest254";
     if (opts.darajaForSite) this.darajaForSite = opts.darajaForSite;
     if (opts.megapay) this.megapay = opts.megapay;
+    if (opts.payhero) this.payhero = opts.payhero;
     this.events = opts.events ?? {};
     // Secure by default: a client can POST to the public STK callback URL, so a raw
     // resultCode=0 is NOT trusted — we re-check with Safaricom before crediting. Opt out only
@@ -214,12 +219,73 @@ export class PaymentService {
     return { scanned: rows.length, settled, stillPending, errors };
   }
 
+  // ── Deposit (PayHero / Lipwa STK Push) — the third rail ──
+  /**
+   * Initiate a PayHero STK-push deposit. Same validation/limits as Daraja/Mega Pay (min/max, integer
+   * cents, MSISDN normalization) so no rail bypasses the platform floors. Records a pending deposit
+   * tagged provider='payhero' with external_reference = our txId, calls PayHero's /payments, then stores
+   * PayHero's `reference` in checkout_request_id via the SHARED attachStk — so settlement flows through
+   * the SAME idempotent credit RPC as every other rail.
+   */
+  async initiatePayHeroDeposit(userId: string, amountCents: number, phoneRaw: string, siteId?: string): Promise<{ txId: string; reference: string; checkoutRequestId: string }> {
+    if (!this.payhero) throw new Error("PAYHERO_NOT_CONFIGURED");
+    if (!Number.isInteger(amountCents) || amountCents <= 0) throw new Error("INVALID_AMOUNT");
+    const minDep = await this.currentMinDeposit();
+    if (amountCents < minDep) throw new Error("BELOW_MIN");
+    const maxDep = await this.currentMaxDeposit();
+    if (maxDep !== null && amountCents > maxDep) throw new Error("ABOVE_MAX");
+    const msisdn = normalizeMsisdn(phoneRaw);
+    const txId = await this.repo.createDepositProvider(userId, amountCents, msisdn, "payhero", siteId);
+    const res = await this.payhero.initiateStk({ amountCents, msisdn, externalReference: txId });
+    // Store PayHero's `reference` in checkout_request_id (its status endpoint + reconcile query by it);
+    // keep the ws_CO CheckoutRequestID in merchant_request_id for reference.
+    await this.repo.attachStk(txId, res.checkoutRequestId, res.reference);
+    return { txId, reference: res.reference, checkoutRequestId: res.checkoutRequestId };
+  }
+
+  /**
+   * PayHero callback handler. Like the Mega Pay/Daraja model, the callback body is NEVER trusted to
+   * credit. We run the authoritative sweep, which re-queries PayHero server-to-server for each recent
+   * unsettled PayHero deposit — by the `reference` WE stored — and settles only the verified-paid ones
+   * via fn_complete_deposit. So a forged callback can't mint balance.
+   */
+  async handlePayHeroCallback(_raw: unknown): Promise<{ settled: number }> {
+    if (!this.payhero) throw new Error("PAYHERO_NOT_CONFIGURED");
+    const r = await this.reconcilePayHeroDeposits({ olderThanMs: 0 });
+    return { settled: r.settled };
+  }
+
+  /**
+   * Reconciliation sweep for the PayHero rail — mirrors the Mega Pay sweep, scoped to provider 'payhero'
+   * and using PayHero's authoritative transaction-status query. Settles deposits whose callback never
+   * arrived (or was inconclusive). Safe to run repeatedly; the credit RPC guards terminal states.
+   */
+  async reconcilePayHeroDeposits(opts: { olderThanMs?: number; limit?: number } = {}): Promise<{ scanned: number; settled: number; stillPending: number; errors: number }> {
+    if (!this.payhero) return { scanned: 0, settled: 0, stillPending: 0, errors: 0 };
+    const olderThanMs = opts.olderThanMs ?? 120_000;
+    const limit = opts.limit ?? 25;
+    const rows = await this.repo.listUnsettledDeposits(olderThanMs, limit, "payhero");
+    let settled = 0, stillPending = 0, errors = 0;
+    for (const d of rows) {
+      try {
+        const q = await this.payhero.queryStatus(d.checkoutRequestId);
+        if (q.processing || q.resultCode == null) { stillPending += 1; continue; }
+        const res = await this.repo.completeDeposit(d.checkoutRequestId, q.resultCode, `reconciled:payhero:${q.resultCode}`, q.receipt, { reconciled: true, provider: "payhero", at: new Date().toISOString() });
+        if (res.applied) settled += 1;
+      } catch (err) {
+        errors += 1;
+        console.warn(`[payments] PayHero reconcile failed for ${d.checkoutRequestId}: ${(err as Error).message}`);
+      }
+    }
+    return { scanned: rows.length, settled, stillPending, errors };
+  }
+
   /**
    * The deposit gateways to show a player, resolved for their brand (global switch + per-site override,
    * migration 0116) and filtered to gateways with a REAL player deposit rail (PLAYER_DEPOSIT_RAILS).
-   * A config-only gateway (e.g. Paystack/Binance/PayHero) can never surface here, so the deposit page
-   * never offers a path the system can't serve. Fail-open: if the lookup throws we return the
-   * always-present M-Pesa rail so a config/DB glitch can't hide the working deposit path from players.
+   * A config-only gateway (e.g. Paystack/Binance) can never surface here, so the deposit page never
+   * offers a path the system can't serve. Fail-open: if the lookup throws we return the always-present
+   * M-Pesa rail so a config/DB glitch can't hide the working deposit path from players.
    */
   async listDepositProviders(siteId?: string): Promise<DepositProvider[]> {
     try {

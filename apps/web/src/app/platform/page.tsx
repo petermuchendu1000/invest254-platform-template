@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { PageHeader, StatCard, Section, TableWrap, Th, Td, Toolbar, FilterSelect } from '@/components/admin/ui';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
-import { usePlatformOverview, usePlatformSites, usePlatformPerformance } from '@/lib/platform/hooks';
+import { usePlatformOverview, usePlatformSites, usePlatformPerformance, useDomainHealth } from '@/lib/platform/hooks';
 import { usePlatformLive } from '@/lib/platform/live';
 import type { SiteWithConfig, SiteKpis, SitePerformance } from '@/lib/platform/endpoints';
 import { downloadCsv } from '@/components/admin/BulkSelect';
@@ -36,6 +36,8 @@ export default function PlatformOverviewPage() {
   const overview = usePlatformOverview();
   const sites = usePlatformSites();
   const live = usePlatformLive();
+  const domainHealthQ = useDomainHealth();
+  const hmap = domainHealthQ.data?.statuses ?? {};
   const kpis: SiteKpis[] = overview.data?.sites ?? [];
   const siteList: SiteWithConfig[] = sites.data?.sites ?? [];
   const kpiById = useMemo(() => new Map(kpis.map((k) => [k.siteId, k])), [kpis]);
@@ -91,15 +93,20 @@ export default function PlatformOverviewPage() {
   // Per-brand launch readiness ("Needs setup" KPI + CSV export): live-ready once the domain is set
   // and both M-Pesa rails (pay-in creds + B2C pay-out) are configured.
   const readiness = (s: SiteWithConfig) => {
-    const domainOk = !!s.primaryDomain;
+    // TRUTHFUL domain state from Cloudflare Pages (not merely "a domain string is set").
+    const d = (s.primaryDomain ?? '').trim().toLowerCase();
+    const st = d ? (hmap[d] ?? hmap[`www.${d}`]) : undefined;
+    const domainState: 'live' | 'pending' | 'unprovisioned' | 'none' =
+      !d ? 'none' : st === 'active' ? 'live' : st ? 'pending' : 'unprovisioned';
+    const domainOk = domainState === 'live';
     const depOk = !!(s.hasMpesaConsumerKey && s.hasMpesaConsumerSecret && s.hasMpesaPasskey);
     const b2cOk = !!s.hasMpesaB2cCredential;
-    return { domainOk, depOk, b2cOk, score: [domainOk, depOk, b2cOk].filter(Boolean).length };
+    return { domainState, domainOk, depOk, b2cOk, score: [domainOk, depOk, b2cOk].filter(Boolean).length };
   };
   const enriched = useMemo(
     () => rows.map((s) => ({ s, k: kpiById.get(s.siteId), r: readiness(s), m: metric(s.siteId), online: live.onlineBySite[s.siteId] ?? 0 })),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [rows, kpiById, perfById, rangeActive, live.onlineBySite],
+    [rows, kpiById, perfById, rangeActive, live.onlineBySite, hmap],
   );
   const sorted = useMemo(() => {
     const dir = sort.dir === 'asc' ? 1 : -1;
@@ -325,18 +332,17 @@ function Sortable({ label, k, sort, setSort, align }: {
 
 /** Compact launch-readiness signal in the clients table: domain set. (Pay-in / Pay-out dots were
  *  removed from the table per product request; full readiness still drives the "Needs setup" KPI.) */
-function HealthPill({ r }: { r: { domainOk: boolean; depOk: boolean; b2cOk: boolean; score: number } }) {
-  const Item = ({ ok, label }: { ok: boolean; label: string }) => (
-    <span
-      className={`inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-medium ${ok ? 'bg-up/15 text-up' : 'bg-surface-2 text-muted'}`}
-      title={`${label}: ${ok ? 'configured' : 'not set'}`}
-    >
-      <span>{ok ? '✓' : '○'}</span>{label}
-    </span>
-  );
+function HealthPill({ r }: { r: { domainState: 'live' | 'pending' | 'unprovisioned' | 'none' } }) {
+  const map = {
+    live: { cls: 'bg-up/15 text-up', icon: '●', label: 'Domain live' },
+    pending: { cls: 'bg-warn/15 text-warn', icon: '◐', label: 'Domain pending' },
+    unprovisioned: { cls: 'bg-down/15 text-down', icon: '○', label: 'Not provisioned' },
+    none: { cls: 'bg-surface-2 text-muted', icon: '—', label: 'No domain' },
+  }[r.domainState];
   return (
-    <span className="flex flex-wrap gap-1">
-      <Item ok={r.domainOk} label="Domain" />
+    <span className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium ${map.cls}`}
+      title={`Domain: ${map.label} (Cloudflare status)`}>
+      <span>{map.icon}</span>{map.label}
     </span>
   );
 }

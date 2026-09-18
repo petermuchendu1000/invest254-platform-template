@@ -12,6 +12,22 @@
 
 const UA = "invest254-onboarding/1.0";
 
+/**
+ * Detect this server's public egress IP (cached). Used as the Namecheap ClientIp when NAMECHEAP_CLIENT_IP
+ * isn't pinned, so the ClientIp always matches the real source — the operator only manages the whitelist,
+ * and if the egress drifts the error names the exact IP to add.
+ */
+let cachedEgressIp: string | null = null;
+export async function detectEgressIp(): Promise<string | null> {
+  if (cachedEgressIp) return cachedEgressIp;
+  try {
+    const r = await fetch("https://api.ipify.org", { headers: { "user-agent": UA } });
+    const ip = (await r.text()).trim();
+    if (/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) cachedEgressIp = ip;
+  } catch { /* offline / blocked — caller falls back to the configured IP */ }
+  return cachedEgressIp;
+}
+
 // ── Ports ────────────────────────────────────────────────────────────────────────────────
 export interface ZoneInfo { zoneId: string; nameServers: string[]; status: string }
 export interface DnsRecord { type: "CNAME" | "A"; name: string; content: string; proxied: boolean }
@@ -26,9 +42,14 @@ export interface CdnClient {
   pagesDomains(project: string): Promise<PagesDomainInfo[]>;
 }
 
+/** A domain as reported by the registrar (Namecheap) account. */
+export interface RegistrarDomain { domain: string; expires: string | null; usingRegistrarDns: boolean }
+
 export interface RegistrarClient {
   /** Set the domain's authoritative nameservers (moves DNS to the CDN). */
   setNameservers(domain: string, nameservers: string[]): Promise<boolean>;
+  /** List every domain in the registrar account (paginated internally). */
+  listDomains(): Promise<RegistrarDomain[]>;
 }
 
 // ── Domain <-> SLD/TLD ─────────────────────────────────────────────────────────────────────
@@ -61,14 +82,18 @@ export interface ProvisionResult {
  */
 export async function provisionDomain(
   cdn: CdnClient,
-  registrar: RegistrarClient,
+  registrar: RegistrarClient | null,
   opts: { domain: string; pagesProject: string; pagesTarget?: string },
 ): Promise<ProvisionResult> {
   const domain = opts.domain.trim().toLowerCase().replace(/^www\./, "");
   const target = opts.pagesTarget ?? `${opts.pagesProject}.pages.dev`;
 
   const zone = await cdn.ensureZone(domain);
-  const nsUpdated = await registrar.setNameservers(domain, zone.nameServers);
+  // Registrar (nameserver) step is OPTIONAL. With a registrar we auto-point the domain's nameservers at
+  // Cloudflare; without one (or on failure) we degrade gracefully — Cloudflare zone + DNS + Pages are
+  // still set up, and the result returns exactly which nameservers the operator must set at the registrar.
+  let nsUpdated = false;
+  if (registrar) { try { nsUpdated = await registrar.setNameservers(domain, zone.nameServers); } catch { nsUpdated = false; } }
 
   // apex + www -> the Pages project (proxied so Cloudflare terminates TLS and routes to Pages).
   for (const name of [domain, `www.${domain}`]) {
@@ -81,6 +106,13 @@ export async function provisionDomain(
     catch { pages.push({ name, status: "exists_or_pending" }); }
   }
 
+  const nsList = zone.nameServers.join(" and ");
+  const note = zone.status === "active"
+    ? "Zone active; Pages custom domains validate and SSL issues shortly."
+    : nsUpdated
+      ? "Nameservers pointed at Cloudflare automatically; the zone activates once they propagate (minutes–few hours), then SSL auto-issues."
+      : `Action needed: at the domain's registrar, set its nameservers to ${nsList || "the Cloudflare nameservers shown"}. The zone activates once they propagate, then SSL auto-issues.`;
+
   return {
     domain,
     zoneId: zone.zoneId,
@@ -88,9 +120,7 @@ export async function provisionDomain(
     zoneStatus: zone.status,
     nameserversUpdated: nsUpdated,
     pages,
-    note: zone.status === "active"
-      ? "Zone active; Pages will validate and SSL will issue shortly."
-      : "Nameservers set; the zone activates once they propagate, then SSL auto-issues.",
+    note,
   };
 }
 
@@ -154,18 +184,45 @@ export function makeCloudflareCdn(cfg: { token: string; accountId: string }): Cd
 }
 
 export function makeNamecheapRegistrar(cfg: { apiUser: string; userName: string; apiKey: string; clientIp: string }): RegistrarClient {
+  // ClientIp: prefer the pinned value, else auto-detect the egress IP so it always matches the source.
+  const resolveClientIp = async () => cfg.clientIp || (await detectEgressIp()) || cfg.clientIp || "";
+  const call = async (params: Record<string, string>): Promise<string> => {
+    const clientIp = await resolveClientIp();
+    const url = new URL("https://api.namecheap.com/xml.response");
+    url.search = new URLSearchParams({ ApiUser: cfg.apiUser, ApiKey: cfg.apiKey, UserName: cfg.userName, ClientIp: clientIp, ...params }).toString();
+    const res = await fetch(url, { headers: { "user-agent": UA } });
+    const xml = await res.text();
+    if (/ApiResponse\s+Status="ERROR"/.test(xml)) {
+      const ipErr = xml.match(/Invalid request IP:\s*([0-9.]+)/i);
+      if (ipErr) throw new Error(`NAMECHEAP_IP_NOT_WHITELISTED: ${ipErr[1]} — add this IP in Namecheap → Profile → Tools → API Access → Whitelisted IPs, then update NAMECHEAP_CLIENT_IP.`);
+      throw new Error(`Namecheap error: ${(xml.match(/<Error[^>]*>([^<]+)</)?.[1] ?? "unknown").slice(0, 160)}`);
+    }
+    return xml;
+  };
   return {
     async setNameservers(domain, nameservers) {
       const { sld, tld } = splitDomain(domain);
-      const url = new URL("https://api.namecheap.com/xml.response");
-      url.search = new URLSearchParams({
-        ApiUser: cfg.apiUser, ApiKey: cfg.apiKey, UserName: cfg.userName, ClientIp: cfg.clientIp,
-        Command: "namecheap.domains.dns.setCustom", SLD: sld, TLD: tld, Nameservers: nameservers.join(","),
-      }).toString();
-      const res = await fetch(url, { headers: { "user-agent": UA } });
-      const xml = await res.text();
-      if (/ApiResponse\s+Status="ERROR"/.test(xml)) throw new Error(`Namecheap error: ${(xml.match(/<Error[^>]*>([^<]+)</)?.[1] ?? "unknown").slice(0, 160)}`);
+      const xml = await call({ Command: "namecheap.domains.dns.setCustom", SLD: sld, TLD: tld, Nameservers: nameservers.join(",") });
       return /Updated="true"/i.test(xml);
+    },
+    async listDomains() {
+      const out: RegistrarDomain[] = [];
+      for (let page = 1; page <= 50; page++) { // safety cap: 5000 domains
+        const xml = await call({ Command: "namecheap.domains.getList", PageSize: "100", Page: String(page), SortBy: "NAME" });
+        const tags = xml.match(/<Domain\b[^>]*>/g) ?? [];
+        for (const tag of tags) {
+          const name = tag.match(/\bName="([^"]+)"/)?.[1];
+          if (!name) continue;
+          out.push({
+            domain: name.trim().toLowerCase(),
+            expires: tag.match(/\bExpires="([^"]+)"/)?.[1] ?? null,
+            usingRegistrarDns: /\bIsOurDNS="true"/i.test(tag),
+          });
+        }
+        const total = Number(xml.match(/TotalItems>(\d+)</)?.[1] ?? out.length);
+        if (tags.length === 0 || out.length >= total) break;
+      }
+      return out;
     },
   };
 }
@@ -178,21 +235,34 @@ export interface DomainProvisioner {
   provision(domain: string): Promise<ProvisionResult>;
   status(domain: string): Promise<DomainStatus>;
   readonly pagesProject: string;
+  /** True when a registrar API (Namecheap) is configured to auto-set nameservers; false => manual NS. */
+  readonly registrarConfigured: boolean;
+  /** List all domains in the registrar account (empty when no registrar is configured). */
+  listRegistrarDomains(): Promise<RegistrarDomain[]>;
+  /** The Pages custom-domain list (real domain health: active vs pending), one CF call. */
+  pagesDomains(): Promise<PagesDomainInfo[]>;
 }
 export function makeDomainProvisioner(): DomainProvisioner | null {
   const token = process.env.CF_DNS_API_TOKEN ?? process.env.CF_API_TOKEN;
   const accountId = process.env.CF_ACCOUNT_ID;
   const pagesProject = process.env.CF_PAGES_PROJECT ?? "invest254";
+  // Cloudflare is the ESSENTIAL requirement (zone + DNS + Pages custom domain). Without it there's no
+  // provisioning at all; with it, provisioning works standalone and returns the nameservers to set.
+  if (!token || !accountId) return null;
+  const cdn = makeCloudflareCdn({ token, accountId });
+  // Namecheap is OPTIONAL — used to auto-point nameservers AND to import the account's domain list.
   const apiUser = process.env.NAMECHEAP_API_USER;
   const userName = process.env.NAMECHEAP_USERNAME ?? apiUser;
   const apiKey = process.env.NAMECHEAP_API_KEY;
   const clientIp = process.env.NAMECHEAP_CLIENT_IP;
-  if (!token || !accountId || !apiUser || !userName || !apiKey || !clientIp) return null;
-  const cdn = makeCloudflareCdn({ token, accountId });
-  const registrar = makeNamecheapRegistrar({ apiUser, userName, apiKey, clientIp });
+  const registrar = (apiUser && userName && apiKey && clientIp)
+    ? makeNamecheapRegistrar({ apiUser, userName, apiKey, clientIp }) : null;
   return {
     pagesProject,
+    registrarConfigured: registrar != null,
     provision: (domain) => provisionDomain(cdn, registrar, { domain, pagesProject }),
     status: (domain) => getDomainStatus(cdn, { domain, pagesProject }),
+    listRegistrarDomains: () => (registrar ? registrar.listDomains() : Promise.resolve([])),
+    pagesDomains: () => cdn.pagesDomains(pagesProject),
   };
 }

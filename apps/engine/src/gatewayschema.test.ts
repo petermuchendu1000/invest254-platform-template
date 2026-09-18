@@ -4,14 +4,15 @@ import {
   GATEWAY_SCHEMAS, GATEWAY_CODES, getSchema, fieldKinds, splitSubmission, validateConfig, PLAYER_DEPOSIT_RAILS,
 } from "./gatewayschema.js";
 
-test("playerAvailable: only megapay has a live player rail among configurable gateways", () => {
+test("playerAvailable: mpesa/megapay/payhero have live rails; paystack/binance are config-only", () => {
   assert.equal(GATEWAY_SCHEMAS.megapay!.playerAvailable, true);
+  assert.equal(GATEWAY_SCHEMAS.payhero!.playerAvailable, true);
   assert.equal(GATEWAY_SCHEMAS.paystack!.playerAvailable, false);
   assert.equal(GATEWAY_SCHEMAS.binance!.playerAvailable, false);
-  assert.equal(GATEWAY_SCHEMAS.payhero!.playerAvailable, false);
   assert.equal(PLAYER_DEPOSIT_RAILS.has("mpesa"), true);
   assert.equal(PLAYER_DEPOSIT_RAILS.has("megapay"), true);
-  assert.equal(PLAYER_DEPOSIT_RAILS.has("payhero"), false);
+  assert.equal(PLAYER_DEPOSIT_RAILS.has("payhero"), true);
+  assert.equal(PLAYER_DEPOSIT_RAILS.has("paystack"), false);
 });
 
 test("all four gateways are registered with a stable shape", () => {

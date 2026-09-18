@@ -20,11 +20,28 @@ export interface OnboardBrand {
   status: string; resolvesByHost: boolean;
 }
 export interface OnboardResult { siteId: string; brand: OnboardBrand; domain: ProvisionResult | null }
+
+/** One domain from the registrar account, annotated with whether it's already a client + suggestions. */
+export interface RegistrarDomainRow {
+  domain: string; expires: string | null; usingRegistrarDns: boolean;
+  alreadyClient: boolean; suggestedSlug: string; suggestedName: string;
+}
+export interface RegistrarDomainsView { registrarConfigured: boolean; domains: RegistrarDomainRow[] }
+
+/** Real per-domain health from Cloudflare Pages: { "<domain>": "active" | "pending" | ... }. */
+export interface DomainHealthView { configured: boolean; statuses: Record<string, string> }
+
 export interface PlatformOnboardDeps {
   /** True when the Cloudflare + Namecheap secrets are present so a domain can be auto-provisioned. */
   domainConfigured: boolean;
+  /** True when a registrar API (Namecheap) is configured to auto-set nameservers; false => manual NS. */
+  registrarConfigured: boolean;
   onboard(input: OnboardInput): Promise<OnboardResult>;
   domainStatus(domain: string): Promise<DomainStatus>;
+  /** List the registrar account's domains, annotated with which are already clients. */
+  listRegistrarDomains(): Promise<RegistrarDomainsView>;
+  /** Real domain health (Cloudflare Pages custom-domain statuses) so the console never fakes "live". */
+  domainHealth(): Promise<DomainHealthView>;
 }
 
 /**
@@ -166,6 +183,28 @@ export function registerPlatformRoutes(router: Router, deps: ApiDeps): void {
     const d = ctx.query.get("domain");
     if (!d || !d.trim()) throw new ApiError("VALIDATION", "domain is required", 400);
     return domain(() => deps.platformOnboard!.domainStatus(d.trim()));
+  });
+
+  // Onboarding capabilities so the console can be HONEST up-front about what will happen:
+  //   domainConfigured   — Cloudflare is set up (zone + DNS + Pages custom domain run automatically)
+  //   registrarConfigured — a registrar API is set up to auto-point nameservers (else the operator sets them)
+  router.get(`${BASE}/platform/onboard/capabilities`, auth, platform, async () => ({
+    domainConfigured: Boolean(deps.platformOnboard?.domainConfigured),
+    registrarConfigured: Boolean(deps.platformOnboard?.registrarConfigured),
+  }));
+
+  // Import: list the registrar (Namecheap) account's domains, annotated with which are already clients,
+  // so the console can offer bulk onboarding of the not-yet-used domains.
+  router.get(`${BASE}/platform/domains/registrar`, auth, platform, async () => {
+    if (!deps.platformOnboard) throw new ApiError("NOT_CONFIGURED", "onboarding is not configured on this deployment", 503);
+    return domain(() => deps.platformOnboard!.listRegistrarDomains());
+  });
+
+  // Real per-domain health (Cloudflare Pages custom-domain status), so the Clients table shows the TRUE
+  // state (Live / Pending / Not provisioned) instead of a fake "✓ Domain" just because a string is set.
+  router.get(`${BASE}/platform/domains/health`, auth, platform, async () => {
+    if (!deps.platformOnboard) return { configured: false, statuses: {} };
+    return domain(() => deps.platformOnboard!.domainHealth());
   });
 
   router.get(`${BASE}/platform/overview`, auth, platform, async (ctx: Ctx) =>

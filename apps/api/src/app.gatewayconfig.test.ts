@@ -120,16 +120,18 @@ test("gateway config: test-connection is gated + returns not_configured with no 
 test("gateway availability: a config-only gateway CANNOT be switched live for players", async () => {
   const api = await startTestApi();
   try {
-    // payhero has no player deposit rail -> enabling it must be refused (no misleading 'Live' state)
-    const on = await req(api, "POST", "/api/v1/platform/payment-providers/payhero/global", { token: PLATFORM, body: { enabled: true } });
+    // paystack has no player deposit rail -> enabling it must be refused (no misleading 'Live' state)
+    const on = await req(api, "POST", "/api/v1/platform/payment-providers/paystack/global", { token: PLATFORM, body: { enabled: true } });
     assert.equal(on.status, 422);
     assert.equal((await json(on)).error.code, "PROVIDER_NOT_PLAYER_READY");
     // disabling is always allowed (idempotent safety)
-    assert.equal((await req(api, "POST", "/api/v1/platform/payment-providers/payhero/global", { token: PLATFORM, body: { enabled: false } })).status, 200);
+    assert.equal((await req(api, "POST", "/api/v1/platform/payment-providers/paystack/global", { token: PLATFORM, body: { enabled: false } })).status, 200);
     // a rail-ready gateway (megapay) can still be enabled
     assert.equal((await req(api, "POST", "/api/v1/platform/payment-providers/megapay/global", { token: PLATFORM, body: { enabled: true } })).status, 200);
+    // PayHero now HAS a rail -> it can be enabled too
+    assert.equal((await req(api, "POST", "/api/v1/platform/payment-providers/payhero/global", { token: PLATFORM, body: { enabled: true } })).status, 200);
     // and a config-only gateway can't be force-enabled per-brand either
     const SITE = "00000000-0000-0000-0000-000000000001";
-    assert.equal((await req(api, "POST", "/api/v1/platform/payment-providers/payhero/site", { token: PLATFORM, body: { siteId: SITE, enabled: true } })).status, 422);
+    assert.equal((await req(api, "POST", "/api/v1/platform/payment-providers/paystack/site", { token: PLATFORM, body: { siteId: SITE, enabled: true } })).status, 422);
   } finally { await api.close(); }
 });

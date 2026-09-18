@@ -66,6 +66,8 @@ export interface OnboardBrand {
 }
 export interface OnboardResult { siteId: string; brand: OnboardBrand; domain: ProvisionResult | null }
 export interface DomainStatus { domain: string; zoneStatus: string | null; pages: { name: string; status: string }[]; active: boolean }
+export interface RegistrarDomainRow { domain: string; expires: string | null; usingRegistrarDns: boolean; alreadyClient: boolean; suggestedSlug: string; suggestedName: string }
+export interface RegistrarDomainsDto { registrarConfigured: boolean; domains: RegistrarDomainRow[] }
 
 /** Phase 2 (docs/24) — per-brand player management + audit. */
 export interface Page<T> { items: T[]; nextCursor?: string | null }
@@ -144,6 +146,9 @@ export const platformApi = {
   marketerRollup: (t: string) => apiFetch<{ marketers: MarketerRollupGroup[] }>('/platform/marketers/rollup', { token: t }),
   // Instant client onboarding (brand + economy + optional domain provisioning).
   onboard: (t: string, body: OnboardBody) => apiFetch<OnboardResult>('/platform/onboard', { method: 'POST', token: t, body }),
+  onboardCapabilities: (t: string) => apiFetch<{ domainConfigured: boolean; registrarConfigured: boolean }>('/platform/onboard/capabilities', { token: t }),
+  registrarDomains: (t: string) => apiFetch<RegistrarDomainsDto>('/platform/domains/registrar', { token: t }),
+  domainHealth: (t: string) => apiFetch<{ configured: boolean; statuses: Record<string, string> }>('/platform/domains/health', { token: t }),
   domainStatus: (t: string, domain: string) => apiFetch<DomainStatus>('/platform/onboard/domain-status', { token: t, query: { domain } }),
   // Phase 2 — per-brand players + audit (cross-brand via explicit site id).
   siteUsers: (t: string, id: string, params?: Record<string, string | undefined>) => {

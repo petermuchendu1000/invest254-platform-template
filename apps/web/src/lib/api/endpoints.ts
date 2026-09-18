@@ -135,6 +135,9 @@ export const api = {
     apiFetch<{ providers: DepositProviderDto[] }>('/deposits/providers', { token }),
   createMegapayDeposit: (token: string, body: { amount: number; phone: string }) =>
     apiFetch<MegaPayDepositResult>('/deposits/megapay', { method: 'POST', token, body }),
+  // PayHero (Lipwa) STK deposit — the third rail.
+  createPayheroDeposit: (token: string, body: { amount: number; phone: string }) =>
+    apiFetch<{ transactionId: string; reference: string; checkoutRequestId: string }>('/deposits/payhero', { method: 'POST', token, body }),
   // Pay Bill (manual C2B) deposit: public display config + authed claim-by-code.
   paybillInfo: () => apiFetch<PaybillInfoDto>('/deposits/paybill/info'),
   claimPaybill: (token: string, body: { code: string }) =>

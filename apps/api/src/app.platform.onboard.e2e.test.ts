@@ -84,3 +84,33 @@ test("onboard: 503 when onboarding is not configured on the deployment", async (
     assert.equal((await req(api, "POST", "/api/v1/platform/onboard", { token: SUPER, body: { slug: "x", name: "X" } })).status, 503);
   } finally { await api.close(); }
 });
+
+test("GET /platform/domains/registrar: superadmin-only; lists domains flagged already-client vs available", async () => {
+  const api = await startTestApi();
+  try {
+    assert.equal((await req(api, "GET", "/api/v1/platform/domains/registrar", { token: TEST_USER })).status, 403);
+    assert.equal((await req(api, "GET", "/api/v1/platform/domains/registrar", { token: `${TEST_ADMIN}:admin` })).status, 403);
+    const res = await req(api, "GET", "/api/v1/platform/domains/registrar", { token: SUPER });
+    assert.equal(res.status, 200);
+    const body = await res.json() as { registrarConfigured: boolean; domains: Array<{ domain: string; alreadyClient: boolean; suggestedSlug: string }> };
+    assert.equal(body.registrarConfigured, true);
+    const avail = body.domains.find((d) => d.domain === "newbrand.com");
+    const taken = body.domains.find((d) => d.domain === "tamutraders.com");
+    assert.equal(avail?.alreadyClient, false);
+    assert.equal(avail?.suggestedSlug, "newbrand");
+    assert.equal(taken?.alreadyClient, true);
+  } finally { await api.close(); }
+});
+
+test("GET /platform/domains/health: superadmin-only; returns real per-domain Cloudflare status", async () => {
+  const api = await startTestApi();
+  try {
+    assert.equal((await req(api, "GET", "/api/v1/platform/domains/health", { token: `${TEST_ADMIN}:admin` })).status, 403);
+    const res = await req(api, "GET", "/api/v1/platform/domains/health", { token: SUPER });
+    assert.equal(res.status, 200);
+    const body = await res.json() as { configured: boolean; statuses: Record<string, string> };
+    assert.equal(body.configured, true);
+    assert.equal(body.statuses["tamutraders.com"], "active");   // truly live
+    assert.equal(body.statuses["shikafx.com"], "pending");       // NOT "active" — no fake ✓ Domain
+  } finally { await api.close(); }
+});

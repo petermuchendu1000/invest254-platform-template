@@ -53,7 +53,7 @@ export interface GatewaySchema {
  * may be enabled for players or returned by GET /deposits/providers. `mpesa` (Daraja) + `megapay` ship
  * today; paystack/binance/payhero are config-only until their rails land.
  */
-export const PLAYER_DEPOSIT_RAILS = new Set<string>(["mpesa", "megapay"]);
+export const PLAYER_DEPOSIT_RAILS = new Set<string>(["mpesa", "megapay", "payhero"]);
 
 const ENV_SANDBOX_PROD: GatewayField["options"] = [
   { value: "sandbox", label: "Sandbox (test)" },
@@ -106,7 +106,7 @@ export const GATEWAY_SCHEMAS: Record<string, GatewaySchema> = {
     code: "payhero",
     displayName: "PayHero",
     docsUrl: "https://docs.payhero.co.ke/docs/authorization",
-    playerAvailable: false,
+    playerAvailable: true,
     blurb: "M-Pesa STK / bank / paybill routing via PayHero (the Lipwa API). Requests use Basic Auth — a token generated from your API Username + API Password (docs.payhero.co.ke/docs/authorization).",
     fields: [
       { key: "basic_auth_token", label: "Basic Auth token", kind: "secret", secret: true, required: true, placeholder: "Basic WHBpV0hE…", help: "PayHero dashboard → API Keys → Add new API Key → copy the Basic Authorization token. Sent verbatim as 'Authorization: Basic <token>'." },

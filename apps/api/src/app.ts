@@ -228,7 +228,8 @@ export interface ApiDeps {
   payments: Pick<PaymentService,
     "initiateDeposit" | "requestWithdrawal" | "handleStkCallback" | "handleB2cResult" | "approveWithdrawal" | "rejectWithdrawal" | "markWithdrawalPaid" | "reconcileDeposits"
     | "ingestC2b" | "claimPaybillDeposit" | "paybillConfig"
-    | "initiateMegaPayDeposit" | "handleMegaPayCallback" | "reconcileMegaPayDeposits" | "listDepositProviders">;
+    | "initiateMegaPayDeposit" | "handleMegaPayCallback" | "reconcileMegaPayDeposits"
+    | "initiatePayHeroDeposit" | "handlePayHeroCallback" | "reconcilePayHeroDeposits" | "listDepositProviders">;
   /** Resolve a player's display handle (falls back to a guest handle). */
   resolveHandle(userId: string): Promise<string>;
   /** Wallet balances (real + bonus) for the authenticated player, scoped to their brand. */

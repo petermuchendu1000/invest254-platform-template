@@ -42,3 +42,4 @@ export * from "./pgpools.js";
 export * from "./daraja.js";
 export * from "./darajastore.js";
 export * from "./megapay.js";
+export * from "./payhero.js";

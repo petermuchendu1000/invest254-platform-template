@@ -6,7 +6,7 @@ import { DepositForm } from '@/components/wallet/DepositForm';
 import { PayBillDeposit } from '@/components/wallet/PayBillDeposit';
 import { useDepositProviders } from '@/lib/wallet/hooks';
 
-type Method = 'stk' | 'megapay' | 'paybill';
+type Method = 'stk' | 'megapay' | 'payhero' | 'paybill';
 interface MethodDef { id: Method; label: string }
 
 /**
@@ -21,10 +21,15 @@ export function DepositPanel() {
   const { data: providers, isLoading } = useDepositProviders();
   const mpesaOn = (providers ?? []).some((p) => p.code === 'mpesa');
   const megapayOn = (providers ?? []).some((p) => p.code === 'megapay');
+  const payheroOn = (providers ?? []).some((p) => p.code === 'payhero');
 
+  // Gateway brand is hidden from players — every M-Pesa STK rail shows as "M-Pesa" (numbered only when
+  // more than one is enabled at once, which is the rare multi-gateway case).
+  const priorStk = (mpesaOn ? 1 : 0) + (megapayOn ? 1 : 0);
   const methods: MethodDef[] = [
     ...(mpesaOn ? [{ id: 'stk' as Method, label: 'M-Pesa' }] : []),
     ...(megapayOn ? [{ id: 'megapay' as Method, label: mpesaOn ? 'M-Pesa (2)' : 'M-Pesa' }] : []),
+    ...(payheroOn ? [{ id: 'payhero' as Method, label: priorStk > 0 ? `M-Pesa (${priorStk + 1})` : 'M-Pesa' }] : []),
     ...(mpesaOn ? [{ id: 'paybill' as Method, label: 'Pay Bill' }] : []),
   ];
 
@@ -72,6 +77,7 @@ export function DepositPanel() {
       ) : null}
       {active === 'stk' ? <DepositForm key="stk" provider="mpesa" /> : null}
       {active === 'megapay' ? <DepositForm key="megapay" provider="megapay" /> : null}
+      {active === 'payhero' ? <DepositForm key="payhero" provider="payhero" /> : null}
       {active === 'paybill' ? <PayBillDeposit key="paybill" /> : null}
     </div>
   );

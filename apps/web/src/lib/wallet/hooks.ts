@@ -80,6 +80,20 @@ export function useDepositMegapay() {
   });
 }
 
+/** PayHero (Lipwa) STK deposit — same settle-by-poll UX as the other rails. */
+export function useDepositPayhero() {
+  const token = useSession((s) => s.token);
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { amount: number; phone: string }) => api.createPayheroDeposit(token as string, vars),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['wallet'] });
+      void qc.invalidateQueries({ queryKey: ['transactions'] });
+      pollSettlement(qc);
+    },
+  });
+}
+
 /** Deposit gateways effective-enabled for this player's brand (superadmin switch + per-site override). */
 export function useDepositProviders() {
   const token = useSession((s) => s.token);

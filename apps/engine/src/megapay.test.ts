@@ -120,14 +120,18 @@ test("PaymentService.listDepositProviders: fail-open to M-Pesa when the lookup t
 
 test("PaymentService.listDepositProviders: config-only gateways NEVER reach players (filtered)", async () => {
   const repo = new InMemoryPaymentRepository();
-  // Even if a rail-less gateway is 'effective-enabled', players must not be offered it.
+  // Even if a rail-less gateway is 'effective-enabled', players must not be offered it. PayHero HAS a
+  // rail now (kept); Paystack is config-only (filtered out).
   (repo as any).listEffectiveProviders = async () => ([
     { code: "megapay", displayName: "Mega Pay" },
     { code: "payhero", displayName: "PayHero" },
     { code: "paystack", displayName: "Paystack" },
   ]);
   const svc = new PaymentService(repo, new StubDarajaClient(), { megapay: new StubMegaPayClient() });
-  assert.deepEqual(await svc.listDepositProviders("site"), [{ code: "megapay", displayName: "Mega Pay" }]);
+  assert.deepEqual(await svc.listDepositProviders("site"), [
+    { code: "megapay", displayName: "Mega Pay" },
+    { code: "payhero", displayName: "PayHero" },
+  ]);
 });
 
 test("PaymentService: Mega Pay methods refuse when no client is configured", async () => {

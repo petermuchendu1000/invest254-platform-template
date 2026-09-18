@@ -1,7 +1,7 @@
 import type { AddressInfo } from "node:net";
 import { DEFAULT_CONFIG, normalizeHost, type Cents } from "@invest254/shared";
 import {
-  InMemoryEngagementRepository, InMemoryPaymentRepository, InMemoryGameRepository, StubDarajaClient, StubMegaPayClient,
+  InMemoryEngagementRepository, InMemoryPaymentRepository, InMemoryGameRepository, StubDarajaClient, StubMegaPayClient, StubPayHeroClient,
   InMemoryIdentityRepository, PaymentService, AuthService, AffiliateService, AdminService, InMemoryAdminRepository, PlatformService, InMemoryPlatformRepository, maskHandle,
   NotificationService, InMemoryNotificationRepository,
   PushService, InMemoryPushSubscriptionRepository,
@@ -461,6 +461,7 @@ export async function startTestApi(opts: TestApiOptions = {}): Promise<TestApi> 
 
   const payments = new PaymentService(payRepo, daraja, {
     megapay: new StubMegaPayClient(), // Mega Pay rail (0116): deterministic offline client for route tests
+    payhero: new StubPayHeroClient(), // PayHero rail: deterministic offline client for route tests
     withdrawalsEnabledForSite: async (siteId) =>
       adminRepoRef ? adminRepoRef.getWithdrawalsEnabled(siteId ?? TU_DEFAULT_SITE_ID) : true,
     events: {
@@ -502,6 +503,7 @@ export async function startTestApi(opts: TestApiOptions = {}): Promise<TestApi> 
   const onboardCalls: OnboardInput[] = [];
   const onboardDeps: PlatformOnboardDeps = {
     domainConfigured: true,
+    registrarConfigured: true,
     async onboard(input: OnboardInput): Promise<OnboardResult> {
       onboardCalls.push(input);
       const host = input.primaryDomain ? input.primaryDomain.trim().toLowerCase() : null;
@@ -516,6 +518,19 @@ export async function startTestApi(opts: TestApiOptions = {}): Promise<TestApi> 
     },
     async domainStatus(d: string) {
       return { domain: d, zoneStatus: "pending", pages: [{ name: d, status: "initializing" }], active: false };
+    },
+    async listRegistrarDomains() {
+      return {
+        registrarConfigured: true,
+        domains: [
+          { domain: "newbrand.com", expires: "01/01/2027", usingRegistrarDns: true, alreadyClient: false, suggestedSlug: "newbrand", suggestedName: "Newbrand" },
+          { domain: "tamutraders.com", expires: "01/01/2027", usingRegistrarDns: false, alreadyClient: true, suggestedSlug: "tamutraders", suggestedName: "Tamutraders" },
+        ],
+      };
+    },
+    async domainHealth() {
+      // tamutraders live; shikafx pending (zone not yet active) — mirrors real, truthful states.
+      return { configured: true, statuses: { "tamutraders.com": "active", "www.tamutraders.com": "active", "shikafx.com": "pending" } };
     },
   };
 
