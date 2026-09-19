@@ -11,6 +11,7 @@ import { PageHeader, StatCard, Section, TableWrap, Th, Td } from '@/components/a
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
+import { Select } from '@/components/ui/Select';
 import { Modal } from '@/components/ui/Modal';
 import { useToast } from '@/lib/toast/ToastProvider';
 import { useTickets, useTicket, useCreateTicket, useCommentTicket, useSetTicketStatus, useEscalateTicket } from '@/lib/ops/hooks';
@@ -101,17 +102,35 @@ export function TicketsView({ title, subtitle }: { title: string; subtitle: stri
           </TableWrap>)}
       </Section>
 
-      <Modal open={createOpen} onClose={() => setCreateOpen(false)} title="Raise a ticket">
+      <Modal
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        title="Raise a ticket"
+        description="Assigned to your platform admin; auto-escalates to the System admin if the SLA lapses."
+        footer={
+          <>
+            <Button variant="outline" onClick={() => setCreateOpen(false)}>Cancel</Button>
+            <Button onClick={submit} disabled={create.isPending}>Raise ticket</Button>
+          </>
+        }
+      >
         <div className="flex flex-col gap-4">
           <Input label="Subject" placeholder="Short summary of the issue" value={subject} onChange={(e) => setSubject(e.target.value)} />
-          <label className="flex flex-col gap-1 text-sm"><span className="text-muted">Urgency</span>
-            <select className="rounded-brand border border-border bg-surface px-3 py-2" value={urg} onChange={(e) => setUrg(e.target.value)}>
-              <option value="critical">Critical — 1h SLA</option><option value="high">High — 4h SLA</option><option value="medium">Medium — 24h SLA</option><option value="low">Low — 72h SLA</option>
-            </select></label>
-          <label className="flex flex-col gap-1 text-sm"><span className="text-muted">Reason / details</span>
-            <textarea className="min-h-24 rounded-brand border border-border bg-surface px-3 py-2" value={body} onChange={(e) => setBody(e.target.value)} placeholder="What's wrong, what you've tried, impact…" /></label>
-          <p className="text-xs text-muted">Assigned to your platform admin. If it isn't resolved within the SLA, it auto-escalates to the System admin.</p>
-          <div className="flex justify-end gap-2"><Button variant="outline" onClick={() => setCreateOpen(false)}>Cancel</Button><Button onClick={submit} disabled={create.isPending}>Raise ticket</Button></div>
+          <Select label="Urgency" value={urg} onChange={(e) => setUrg(e.target.value)}>
+            <option value="critical">Critical — 1h SLA</option>
+            <option value="high">High — 4h SLA</option>
+            <option value="medium">Medium — 24h SLA</option>
+            <option value="low">Low — 72h SLA</option>
+          </Select>
+          <label className="flex flex-col gap-1.5 text-sm">
+            <span className="font-medium text-fg">Reason / details</span>
+            <textarea
+              className="min-h-28 w-full rounded-xl border border-border bg-surface-2 px-3.5 py-2.5 text-fg outline-none transition placeholder:text-muted focus:border-accent focus:ring-2 focus:ring-accent/40"
+              value={body}
+              onChange={(e) => setBody(e.target.value)}
+              placeholder="What's wrong, what you've tried, impact…"
+            />
+          </label>
         </div>
       </Modal>
 

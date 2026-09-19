@@ -21,7 +21,7 @@ export function PositionDetailModal({ id, onClose }: { id: string | null; onClos
   const { data, isLoading, isError } = usePositionDetail(id);
 
   return (
-    <Modal open={!!id} onClose={onClose} title="Position detail">
+    <Modal open={!!id} onClose={onClose} title="Position detail" chrome={false}>
       <div className="flex items-center justify-between border-b border-border p-4">
         <h2 className="text-base font-semibold">Position detail</h2>
         <button type="button" onClick={onClose} className="text-sm text-muted hover:text-fg">

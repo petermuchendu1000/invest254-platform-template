@@ -14,7 +14,7 @@ import { useHydrated } from '@/lib/useHydrated';
 import { useSidebarCollapsed } from '@/lib/useSidebarCollapsed';
 import { getImpersonatingBrand } from '@/lib/platform/impersonate';
 
-type NavItem = { href: string; label: string; icon: React.ReactNode };
+type NavItem = { href: string; label: string; icon: React.ReactNode; ownerOnly?: boolean };
 type NavSection = { title: string; items: NavItem[]; superadmin?: boolean; platform?: boolean };
 
 function Icon({ d }: { d: string }) {
@@ -39,7 +39,7 @@ const SECTIONS: NavSection[] = [
       { href: '/admin/support', label: 'Support', icon: <Icon d="M21 11.5a8.38 8.38 0 01-.9 3.8 8.5 8.5 0 01-7.6 4.7 8.38 8.38 0 01-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 01-.9-3.8 8.5 8.5 0 014.7-7.6 8.38 8.38 0 013.8-.9h.5a8.48 8.48 0 018 8v.5z" /> },
       { href: '/admin/tickets', label: 'Tickets', icon: <Icon d="M4 5h16v6a2 2 0 000 2v6H4v-6a2 2 0 000-2zM9 5v14" /> },
       { href: '/admin/reports', label: 'Reports', icon: <Icon d="M9 17v-6m4 6V7m4 10v-4M5 21h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v14a2 2 0 002 2z" /> },
-      { href: '/admin/audit', label: 'Audit log', icon: <Icon d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /> },
+      { href: '/admin/audit', label: 'Audit log', ownerOnly: true, icon: <Icon d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /> },
       { href: '/admin/announcements', label: 'Announcements', icon: <Icon d="M15 17h5l-1.4-1.4A2 2 0 0118 14.2V11a6 6 0 00-4-5.6V5a2 2 0 10-4 0v.4A6 6 0 006 11v3.2a2 2 0 01-.6 1.4L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" /> },
     ],
   },
@@ -116,6 +116,9 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
   // The cross-brand "All brands" (platform) nav would 403 against a brand-scoped impersonation token,
   // so hide it while impersonating; return via the banner's "Exit to platform".
   const showPlatformNav = isPlatform && !impersonating;
+  // Audit log is System-owner-only. Gate on the ACTOR's real identity (/me role) so it stays hidden
+  // even while the actor impersonates a brand — a platform admin never sees it, the System owner always does.
+  const isOwner = user?.role === 'platform_superadmin';
   const sections = SECTIONS.filter((s) => (!s.superadmin || isSuper) && (!s.platform || showPlatformNav));
   const active = (href: string) => (href === '/admin' ? pathname === '/admin' : pathname?.startsWith(href));
 
@@ -170,7 +173,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
                 {section.title}
                 {section.superadmin ? ' · owner' : ''}
               </span>
-              {section.items.map((n) => (
+              {section.items.filter((n) => !n.ownerOnly || isOwner).map((n) => (
                 <Link
                   key={n.href}
                   href={n.href}

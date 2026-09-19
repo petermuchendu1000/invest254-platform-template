@@ -109,7 +109,7 @@ function whoLabel(c: SupportConversationDto): string {
 function ThreadModal({ id, onClose }: { id: string | null; onClose: () => void }) {
   const q = useSupportThread(id);
   return (
-    <Modal open={!!id} onClose={onClose} title="Conversation transcript">
+    <Modal open={!!id} onClose={onClose} title="Conversation transcript" chrome={false}>
       <div className="flex items-center justify-between border-b border-border px-4 py-3">
         <h2 className="text-sm font-semibold text-fg">Conversation</h2>
         <button type="button" onClick={onClose} className="rounded-lg p-1 text-muted transition hover:bg-border hover:text-fg" aria-label="Close">

@@ -32,7 +32,7 @@ export function WalletModal() {
   if (!open) return null;
 
   return (
-    <Modal open={open} onClose={close} title={mode === 'deposit' ? 'Deposit' : 'Withdraw'}>
+    <Modal open={open} onClose={close} title={mode === 'deposit' ? 'Deposit' : 'Withdraw'} chrome={false}>
       {/* Header */}
       <div className="flex items-center justify-between border-b border-border p-4">
         <h2 className="text-lg font-semibold">M-Pesa wallet</h2>

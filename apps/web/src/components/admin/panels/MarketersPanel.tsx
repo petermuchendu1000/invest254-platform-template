@@ -232,8 +232,7 @@ function CreateMarketerModal({ open, onClose }: { open: boolean; onClose: () => 
 
   return (
     <Modal open={open} onClose={onClose} title="New marketer">
-      <div className="flex flex-col gap-4 p-5">
-        <h2 className="text-lg font-semibold tracking-tight">New marketer</h2>
+      <div className="flex flex-col gap-4">
         <p className="text-xs text-muted">If this phone already belongs to a marketer, their name is updated (wallet is preserved).</p>
         <Input label="Full name" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Peter Muchendu" required />
         <Input label="Phone" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="e.g. 0722000001" required />
@@ -255,7 +254,7 @@ function ManageMarketerModal({ id, onClose }: { id: string | null; onClose: () =
   const m = q.data;
   return (
     <Modal open={!!id} onClose={onClose} title="Manage marketer">
-      <div className="flex flex-col gap-5 p-5">
+      <div className="flex flex-col gap-5">
         {q.isLoading || !m ? (
           <Skeleton className="h-60 w-full" />
         ) : (
@@ -617,7 +616,7 @@ function BulkCreditModal({ open, marketerIds, onClose, onDone }: { open: boolean
 
   return (
     <Modal open={open} onClose={onClose} title="Bulk credit">
-      <div className="flex flex-col gap-4 p-5">
+      <div className="flex flex-col gap-4">
         <h2 className="text-lg font-semibold tracking-tight">Credit {marketerIds.length} marketer{marketerIds.length === 1 ? '' : 's'}</h2>
         <p className="text-xs text-muted">Each selected marketer is credited the SAME amount. A reference makes it idempotent (safe to retry) — each marketer gets a distinct <span className="font-mono">{'{ref}:{id}'}</span> key.</p>
         <Input label="Amount each (KES)" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.00" required />

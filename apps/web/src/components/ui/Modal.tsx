@@ -27,7 +27,7 @@ export function Modal({
   description,
   footer,
   size = 'md',
-  chrome = false,
+  chrome = true,
   children,
 }: {
   open: boolean;
@@ -39,7 +39,8 @@ export function Modal({
   footer?: React.ReactNode;
   /** Panel max width on >= sm. */
   size?: 'sm' | 'md' | 'lg';
-  /** Render the professional header/body/footer chrome. Off by default for bespoke modals. */
+  /** Professional header/body/footer chrome. ON by default; set false for bespoke modals that draw
+   *  their own header (AuthModal, WalletModal, transcript/detail views). */
   chrome?: boolean;
   children: React.ReactNode;
 }) {

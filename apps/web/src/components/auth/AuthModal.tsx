@@ -303,7 +303,7 @@ export function AuthModal() {
   /* ── password updated confirmation ─────────────────────────────────────────── */
   if (isReset && resetDone) {
     return (
-      <Modal open={open} onClose={close} title="Password updated">
+      <Modal open={open} onClose={close} title="Password updated" chrome={false}>
         <Header onClose={close} />
         <div className="flex flex-col items-center gap-3 px-6 pb-8 pt-2 text-center">
           <CheckIcon />
@@ -320,7 +320,7 @@ export function AuthModal() {
   }
 
   return (
-    <Modal open={open} onClose={close} title={copy.title}>
+    <Modal open={open} onClose={close} title={copy.title} chrome={false}>
       <Header onClose={close} />
 
       {/* Title block — left aligned, tight hierarchy */}
