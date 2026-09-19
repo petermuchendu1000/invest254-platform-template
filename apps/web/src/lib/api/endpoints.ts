@@ -73,6 +73,14 @@ export const api = {
   register: (body: RegisterInput) => apiFetch<AuthResult>('/auth/register', { method: 'POST', body }),
   login: (body: { phone: string; password: string; site?: string }) =>
     apiFetch<AuthResult>('/auth/login', { method: 'POST', body }),
+  /**
+   * Unified operator sign-in (Issue 1). Identity-based (NOT brand-scoped): resolves the account
+   * across every brand by phone+password so any admin — including a platform_admin pinned to one
+   * brand — can sign in at the shared console on the admin domain. The session binds to the
+   * account's own site/platform. `totp`/`recovery_code` cover MFA-enabled operator accounts.
+   */
+  adminLogin: (body: { phone: string; password: string; totp?: string; recovery_code?: string }) =>
+    apiFetch<AuthResult>('/auth/admin/login', { method: 'POST', body }),
   me: (token: string) => apiFetch<MeDto>('/auth/me', { token }),
   refreshToken: (token: string) => apiFetch<AuthResult>('/auth/refresh', { method: 'POST', token }),
   /**

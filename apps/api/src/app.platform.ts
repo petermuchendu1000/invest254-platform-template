@@ -288,24 +288,30 @@ export function registerPlatformRoutes(router: Router, deps: ApiDeps): void {
   router.get(`${BASE}/platform/sites`, auth, platformAdmin, async (ctx: Ctx) =>
     ({ sites: await deps.platform.listSites(adminScopePlatform(ctx)) }));
 
-  // Impersonation (docs/24 §370): the platform owner "logs into" any client's admin console AS its
-  // superadmin — no signup, no per-brand credential. We mint a superadmin JWT whose SUBJECT stays the
-  // platform admin (so every admin_actions row is audited to the real actor) but whose `role` is
-  // 'superadmin' and `site` claim is the TARGET brand — so requireSite + adminScopeSite scope every
-  // read and write to that brand only (a superadmin, rank 4, is site-restricted; the platform owner,
-  // rank 5, is not — minting 'superadmin' deliberately fences the session to one brand). The action
-  // itself is platform_superadmin-gated and audited.
-  router.post(`${BASE}/platform/sites/:id/impersonate`, auth, platform, async (ctx: Ctx) => {
+  // Impersonation (docs/24 §370): an operator "logs into" a client brand's admin console, fenced to
+  // that ONE brand. The SUBJECT stays the operator (every admin_actions row audits the real actor);
+  // the `site` claim is the TARGET brand, so requireSite + adminScopeSite fence every read/write to it.
+  //
+  // The minted ROLE matches the operator's TIER — this fixes the leak where a platform_admin was
+  // offered (and, if the gate were widened, granted) a 'superadmin' session:
+  //   - platform_superadmin (system owner) -> 'superadmin' (full site governance; they own everything);
+  //   - platform_admin                     -> 'admin'      (site Operations only, fenced to the brand —
+  //                                                         NEVER superadmin governance, so a platform
+  //                                                         admin can never escalate on a client).
+  // Gated to platform_admin+ (admin/superadmin are refused by the rank gate); `scopeSiteParam` refuses
+  // any site outside a platform_admin's own platform (403 PLATFORM_SCOPE_FORBIDDEN). Audited either way.
+  router.post(`${BASE}/platform/sites/:id/impersonate`, auth, platformAdmin, scopeSiteParam, async (ctx: Ctx) => {
     const siteId = ctx.params.id!;
-    const brand = (await deps.platform.listSites()).find((s) => s.siteId === siteId);
+    const brand = (await deps.platform.listSites(adminScopePlatform(ctx))).find((s) => s.siteId === siteId);
     if (!brand) throw new ApiError("SITE_NOT_FOUND", "brand not found", 404);
-    const token = await deps.auth.issueToken(ctx.claims!.userId, "superadmin", siteId);
+    const impersonatedRole = ctx.claims!.role === "platform_superadmin" ? "superadmin" : "admin";
+    const token = await deps.auth.issueToken(ctx.claims!.userId, impersonatedRole, siteId);
     await deps.admin.recordAction(
       ctx.claims!.userId, ctx.claims!.role ?? "player",
-      "platform.impersonate", "site", siteId, { slug: brand.slug, name: brand.name },
+      "platform.impersonate", "site", siteId, { slug: brand.slug, name: brand.name, as: impersonatedRole },
     );
     return {
-      token, role: "superadmin", site: siteId,
+      token, role: impersonatedRole, site: siteId,
       brand: { siteId: brand.siteId, slug: brand.slug, name: brand.name, primaryDomain: brand.primaryDomain },
     };
   });
@@ -343,7 +349,9 @@ export function registerPlatformRoutes(router: Router, deps: ApiDeps): void {
   });
 
   // Persist a brand's full design-token palette (from the console's seed-hue → derived palette).
-  router.patch(`${BASE}/platform/sites/:id/theme`, auth, platform, async (ctx: Ctx) => {
+  // A platform admin may theme brands in ITS OWN platform (scopeSiteParam + fn_platform_site_in_scope);
+  // brand OWNERSHIP above stays system-only.
+  router.patch(`${BASE}/platform/sites/:id/theme`, auth, platformAdmin, scopeSiteParam, async (ctx: Ctx) => {
     const body = asObject(ctx.body);
     const tokens = body.tokens ?? body;
     if (!tokens || typeof tokens !== "object" || Array.isArray(tokens)) throw new ApiError("VALIDATION", "tokens object is required", 400);

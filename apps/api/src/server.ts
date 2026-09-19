@@ -525,6 +525,10 @@ async function buildDeps(): Promise<ApiDeps> {
   const identity = new PgIdentityRepository(q);
   const auth = new AuthService(identity, {
     jwtSecret,
+    // MFA is mandatory for EVERY privileged tier — including the platform tier (platform_admin and the
+    // system owner platform_superadmin), which are the highest-value accounts. Enrolment is flagged at
+    // login and enforced on the next sign-in; it can never lock an operator out of their own console.
+    mfaRequiredRoles: ["admin", "superadmin", "platform_admin", "platform_superadmin"],
     // No-OTP password reset is account takeover unless verified — opt in deliberately.
     allowUnverifiedPasswordReset: process.env.ALLOW_UNVERIFIED_PASSWORD_RESET === "true",
     ...(process.env.SUPABASE_JWT_ISSUER ? { issuer: process.env.SUPABASE_JWT_ISSUER } : {}),

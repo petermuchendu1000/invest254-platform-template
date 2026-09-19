@@ -2,15 +2,19 @@
 
 import { useEffect, useState } from 'react';
 import { getImpersonatingBrand, endImpersonation, type ImpersonatedBrand } from '@/lib/platform/impersonate';
+import { useSession } from '@/lib/auth/session';
+import { roleFromToken } from '@/lib/auth/token';
 
 /**
- * Sticky banner shown in the admin console while the platform owner is impersonating a brand's
- * superadmin (docs/24). Makes the impersonation obvious (so an operator never mistakes it for their
- * own account) and offers a one-click return to the platform console, restoring the platform token.
- * Renders nothing when not impersonating. Mount it high in the admin layout.
+ * Sticky banner shown in the admin console while an operator is impersonating a brand (docs/24).
+ * Makes the impersonation obvious (so it is never mistaken for the operator's own account) and offers
+ * a one-click return to the platform console. The role shown reflects the ACTIVE session's minted
+ * role — 'superadmin' for the system owner, 'admin' for a platform admin (scoped) — so it never
+ * mislabels a platform admin as a superadmin. Renders nothing when not impersonating.
  */
 export function ImpersonationBanner() {
   const [brand, setBrand] = useState<ImpersonatedBrand | null>(null);
+  const roleLabel = roleFromToken(useSession((s) => s.token)) === 'superadmin' ? 'superadmin' : 'admin';
 
   // sessionStorage is client-only — read after mount to avoid an SSR/CSR hydration mismatch.
   useEffect(() => { setBrand(getImpersonatingBrand()); }, []);
@@ -21,7 +25,7 @@ export function ImpersonationBanner() {
       <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-fg">
         <span className="inline-block h-2 w-2 shrink-0 rounded-full bg-warn animate-pulse" />
         <span>
-          Logged in as <strong className="font-semibold">superadmin</strong> · accessing{' '}
+          Logged in as <strong className="font-semibold">{roleLabel}</strong> · accessing{' '}
           <strong className="font-semibold">{brand.name}</strong>
         </span>
         <span className="font-mono text-xs text-muted">{brand.primaryDomain ?? brand.slug}</span>

@@ -23,7 +23,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   // The admin console + platform console provide their own chrome (sidebar). Suppress the player
   // top bar / bottom nav / footer there, but keep session bootstrap + SW.
-  if (pathname?.startsWith('/admin') || pathname?.startsWith('/platform')) {
+  if (pathname?.startsWith('/admin') || pathname?.startsWith('/platform') || pathname?.startsWith('/console')) {
     return (
       <>
         {children}

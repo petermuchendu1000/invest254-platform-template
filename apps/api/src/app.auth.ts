@@ -175,6 +175,40 @@ export function registerAuthRoutes(router: Router, deps: ApiDeps): void {
     };
   });
 
+  // ── Unified ADMIN / OPERATOR sign-in (Issue 1 — one entry point for every admin) ─────────────
+  // The player login above is per-brand: it scopes to the host's brand (`site`) so two brands can
+  // reuse a phone without colliding. The operator console is the OPPOSITE — a SINGLE entry point
+  // (served on a dedicated admin domain, not tied to any one brand). So resolution here is
+  // IDENTITY-based (anyBrand): the phone+password identify the account across EVERY brand, and the
+  // session binds to that account's OWN site + platform. This is what lets a platform_admin (bound
+  // to one brand) OR any site admin sign in at the shared console no matter which host serves it —
+  // fixing "a platform_admin can only authenticate at the one brand its site_id happens to point
+  // to". Authorization is unchanged: it stays at the console gates (role checks) and the RLS/RPC
+  // layer. A non-admin who signs in here simply gets their normal token and no console access.
+  // Same throttle + error mapping as the player login; MFA/second-factor handled identically.
+  router.post(`${BASE}/auth/admin/login`, authLimit, async (ctx: Ctx) => {
+    const body = asObject(ctx.body);
+    const phone = requireString(body, "phone");
+    const password = requireString(body, "password");
+    const totp = optionalString(body, "totp");
+    const recoveryCode = optionalString(body, "recovery_code");
+    const s = await domain(() => deps.auth.login({
+      phone,
+      password,
+      anyBrand: true, // identity-based: resolve across all brands, session = account's own site/platform
+      ...(totp !== undefined ? { totp } : {}),
+      ...(recoveryCode !== undefined ? { recoveryCode } : {}),
+    }));
+    return {
+      token: s.token,
+      userId: s.userId,
+      role: s.role,
+      ...(s.mfaEnrolmentRequired ? { mfaEnrolmentRequired: true } : {}),
+      ...(s.site ? { site: s.site } : {}),
+      ...(s.platform ? { platform: s.platform } : {}),
+    };
+  });
+
   // ── MFA (TOTP) — privileged accounts. Enrolment is self-service; enforcement is in AuthService.
   const mfaLimit = rateLimit({ name: "mfa", by: "user", limit: Number(process.env.RATE_LIMIT_MFA_PER_MIN) || 10, windowMs: 60_000 });
 

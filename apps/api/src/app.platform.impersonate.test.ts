@@ -31,6 +31,11 @@ const OWNER = TEST_ADMIN;
 const PLATFORM = `${OWNER}:platform_superadmin`;              // the owner's own session (no site claim)
 const ADMIN = `${OWNER}:admin`;
 const SUPERADMIN = `${OWNER}:superadmin`;
+// A platform admin of SITE_A's platform (harness default platform owns SITE_A), and one of a DIFFERENT
+// platform — used to prove scope + the leak fix (platform admin must never be minted a superadmin).
+const DEFAULT_PLATFORM = "10000000-0000-0000-0000-000000000001";
+const PLATFORM_ADMIN = `${OWNER}:platform_admin:${SITE_A}:${DEFAULT_PLATFORM}`;
+const PLATFORM_ADMIN_OTHER = `${OWNER}:platform_admin:${SITE_A}:99999999-9999-9999-9999-999999999999`;
 
 /** A user on each of the two brands, so cross-brand writes have a concrete, resolvable target. */
 async function seedTwoBrandUsers(api: TestApi) {
@@ -40,13 +45,35 @@ async function seedTwoBrandUsers(api: TestApi) {
 }
 
 // ── 2. GATE ──────────────────────────────────────────────────────────────────────────────────────
-test("impersonate route is platform_superadmin-only (per-brand admin/superadmin refused; needs auth)", async () => {
+test("impersonate is platform_admin+ (per-brand admin/superadmin refused; needs auth)", async () => {
   const api = await startTestApi();
   try {
     const path = `/api/v1/platform/sites/${SITE_A}/impersonate`;
-    assert.equal((await req(api, "POST", path, { token: ADMIN })).status, 403, "admin refused");
-    assert.equal((await req(api, "POST", path, { token: SUPERADMIN })).status, 403, "superadmin refused");
+    assert.equal((await req(api, "POST", path, { token: ADMIN })).status, 403, "site admin refused");
+    assert.equal((await req(api, "POST", path, { token: SUPERADMIN })).status, 403, "site superadmin refused");
     assert.equal((await req(api, "POST", path)).status, 401, "anonymous refused");
+  } finally { await api.close(); }
+});
+
+// ── LEAK FIX — a platform_admin never receives a superadmin session ────────────────────────────────
+test("platform_admin impersonation mints an 'admin' session (NEVER superadmin), fenced to the brand", async () => {
+  const api = await startTestApi();
+  try {
+    const res = await req(api, "POST", `/api/v1/platform/sites/${SITE_A}/impersonate`, { token: PLATFORM_ADMIN });
+    assert.equal(res.status, 200, "a platform admin may impersonate a brand in its own platform");
+    const b = await json(res);
+    assert.equal(b.role, "admin", "platform admin gets a site-admin session — NOT superadmin (no escalation/leak)");
+    assert.notEqual(b.role, "superadmin", "must never mint superadmin for a platform admin");
+    assert.equal(b.site, SITE_A, "fenced to the target brand");
+  } finally { await api.close(); }
+});
+
+test("platform_admin cannot impersonate a brand outside its own platform (403 PLATFORM_SCOPE_FORBIDDEN)", async () => {
+  const api = await startTestApi();
+  try {
+    const res = await req(api, "POST", `/api/v1/platform/sites/${SITE_A}/impersonate`, { token: PLATFORM_ADMIN_OTHER });
+    assert.equal(res.status, 403);
+    assert.equal((await json(res)).error.code, "PLATFORM_SCOPE_FORBIDDEN");
   } finally { await api.close(); }
 });
 

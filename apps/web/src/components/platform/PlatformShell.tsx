@@ -7,10 +7,9 @@ import { cn } from '@/lib/cn';
 import { Button } from '@/components/ui/Button';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { useSession } from '@/lib/auth/session';
-import { useAuthUi } from '@/lib/auth/ui';
+import { AdminSignIn } from '@/components/auth/AdminSignIn';
 import { useAuthActions } from '@/lib/auth/useAuthActions';
 import { useHydrated } from '@/lib/useHydrated';
-import { LogoMark } from '@/components/layout/Logo';
 import { useSidebarCollapsed } from '@/lib/useSidebarCollapsed';
 import { CommandPalette } from '@/components/platform/CommandPalette';
 
@@ -43,7 +42,6 @@ export function PlatformShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const token = useSession((s) => s.token);
   const user = useSession((s) => s.user);
-  const openAuth = useAuthUi((s) => s.openAuth);
   const { logout } = useAuthActions();
   const [paletteOpen, setPaletteOpen] = React.useState(false);
   const { collapsed, toggle } = useSidebarCollapsed('platform-sidebar-collapsed');
@@ -62,19 +60,24 @@ export function PlatformShell({ children }: { children: React.ReactNode }) {
     return <div className="mx-auto w-full max-w-app p-4"><Skeleton className="h-64 w-full" /></div>;
   }
   if (!token) {
-    return (
-      <Gate title="Platform sign-in required" body="Log in with the platform owner account to access the operator console."
-        action={<Button onClick={() => openAuth('login')}>Log in</Button>} />
-    );
+    // Unified operator sign-in (Issue 1): identity-based, brand-agnostic, so a platform_admin can
+    // sign in here regardless of which host serves the console.
+    return <AdminSignIn />;
   }
   if (user && user.role !== 'platform_superadmin' && user.role !== 'platform_admin') {
-    return (
-      <Gate title="Platform console" body="This console is for the System owner and Platform admins."
-        action={<Link href="/admin"><Button variant="outline">Back to admin</Button></Link>} />
-    );
+    // Wrong role: reveal nothing — no hint that an operator console exists here.
+    return <Gate title="404" body="This page could not be found." action={null} />;
   }
   // Platform admins see a SCOPED console (their platform's sites only); system-only tools are hidden.
   const isSystem = user?.role === 'platform_superadmin';
+
+  // Defense-in-depth: hide-from-nav is not enough. A platform admin typing a System-only URL must get
+  // a plain 404 (reveal nothing), not a broken page that 403s every call. The API + RPCs already gate
+  // these, this is the matching client guard.
+  const SYSTEM_ONLY_PREFIXES = ['/platform/platforms', '/platform/onboard', '/platform/payments', '/platform/config'];
+  if (!isSystem && SYSTEM_ONLY_PREFIXES.some((p) => pathname?.startsWith(p))) {
+    return <Gate title="404" body="This page could not be found." action={null} />;
+  }
 
   const active = (href: string, exact?: boolean) => (exact ? pathname === href : pathname?.startsWith(href));
 
@@ -83,9 +86,12 @@ export function PlatformShell({ children }: { children: React.ReactNode }) {
       <aside className={cn('flex shrink-0 flex-col border-b border-border bg-surface transition-[width] duration-200 md:h-dvh md:border-b-0 md:border-r md:sticky md:top-0', collapsed ? 'md:w-16' : 'md:w-60')}>
         <div className={cn('flex items-center gap-2 py-3', collapsed ? 'justify-between px-4 md:justify-center md:px-2' : 'px-4')}>
           <span className={cn('flex items-center gap-2', collapsed && 'md:hidden')}>
-            <LogoMark className="h-7 w-7 shrink-0" />
+            <span className="flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-white ring-1 ring-black/5">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src="/triocodes-mark.png" alt="TrioCodes" className="h-6 w-6 object-contain" />
+            </span>
             <span className="flex flex-col leading-tight">
-              <span className="text-sm font-semibold tracking-tight">invest254 Platform</span>
+              <span className="text-sm font-semibold tracking-tight">TrioCodes</span>
               <span className="text-[10px] font-medium uppercase tracking-wide text-accent">Operator console</span>
             </span>
           </span>
@@ -146,7 +152,7 @@ export function PlatformShell({ children }: { children: React.ReactNode }) {
             <>
               <div className="flex flex-col gap-1">
                 <span className="truncate text-sm font-medium">@{user?.username}</span>
-                <span className="inline-flex w-fit items-center gap-1 rounded-full bg-accent/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent">◆ Platform owner</span>
+                <span className="inline-flex w-fit items-center gap-1 rounded-full bg-accent/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent">{isSystem ? '◆ System owner' : '◆ Platform admin'}</span>
               </div>
               <Link href="/admin" className="text-xs text-muted hover:text-fg">← Admin back office</Link>
               <Button variant="secondary" size="sm" onClick={logout}>Log out</Button>

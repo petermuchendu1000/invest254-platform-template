@@ -7,12 +7,12 @@ import { cn } from '@/lib/cn';
 import { Button } from '@/components/ui/Button';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { useSession } from '@/lib/auth/session';
-import { useAuthUi } from '@/lib/auth/ui';
+import { roleFromToken } from '@/lib/auth/token';
+import { AdminSignIn } from '@/components/auth/AdminSignIn';
 import { useAuthActions } from '@/lib/auth/useAuthActions';
 import { useHydrated } from '@/lib/useHydrated';
-import { LogoMark } from '@/components/layout/Logo';
 import { useSidebarCollapsed } from '@/lib/useSidebarCollapsed';
-import { getImpersonatingBrand, type ImpersonatedBrand } from '@/lib/platform/impersonate';
+import { getImpersonatingBrand } from '@/lib/platform/impersonate';
 
 type NavItem = { href: string; label: string; icon: React.ReactNode };
 type NavSection = { title: string; items: NavItem[]; superadmin?: boolean; platform?: boolean };
@@ -67,15 +67,8 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const token = useSession((s) => s.token);
   const user = useSession((s) => s.user);
-  const openAuth = useAuthUi((s) => s.openAuth);
   const { logout } = useAuthActions();
   const { collapsed, toggle } = useSidebarCollapsed('admin-sidebar-collapsed');
-  // Impersonation fence (sessionStorage — client-only; read after mount to avoid an SSR/CSR
-  // hydration mismatch). While set, this session is a brand-scoped superadmin, NOT the platform
-  // owner's own account, so the chrome below must say so and drop the cross-brand nav.
-  const [impersonating, setImpersonating] = React.useState<ImpersonatedBrand | null>(null);
-  React.useEffect(() => { setImpersonating(getImpersonatingBrand()); }, []);
-
   if (!hydrated) {
     return (
       <div className="mx-auto w-full max-w-app p-4">
@@ -85,33 +78,43 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
   }
 
   if (!token) {
-    return (
-      <Gate
-        title="Admin sign-in required"
-        body="Log in with an administrator account to access the back office."
-        action={<Button onClick={() => openAuth('login')}>Log in</Button>}
-      />
-    );
-  }
-  if (user && user.role !== 'admin' && user.role !== 'superadmin' && user.role !== 'platform_superadmin') {
-    return (
-      <Gate
-        title="Not authorised"
-        body="This area is for administrators only."
-        action={
-          <Link href="/">
-            <Button variant="outline">Back to app</Button>
-          </Link>
-        }
-      />
-    );
+    // Unified operator sign-in (Issue 1): identity-based, brand-agnostic.
+    return <AdminSignIn />;
   }
 
-  const isPlatform = user?.role === 'platform_superadmin';
-  const isSuper = user?.role === 'superadmin' || isPlatform;
-  // While impersonating a brand the active token is only a brand-scoped superadmin — the cross-brand
-  // "All brands" (platform) nav would 403 against it, so hide it and route back via the banner's
-  // "Exit to platform". Superadmin (brand-scoped) sections remain valid for the impersonated brand.
+  // Impersonation fence — safe to read synchronously now we're past hydration (client-only, no SSR
+  // mismatch, and no useEffect race that could briefly authorise off the wrong role).
+  const impersonating = getImpersonatingBrand();
+
+  // EFFECTIVE session role. During impersonation the ACTIVE TOKEN's role (admin/superadmin) is what
+  // the API authorises against; /auth/me instead returns the ACTOR's own role (e.g. platform_admin,
+  // because the impersonation token's SUBJECT stays the actor for audit). Authorising off /me would
+  // wrongly 404 an impersonating platform admin (the reported bug) — so use the token role while
+  // impersonating, and the live /me role otherwise.
+  const tokenRole = roleFromToken(token);
+  const effectiveRole = impersonating ? (tokenRole ?? '') : (user?.role ?? '');
+
+  // When NOT impersonating, wait for /auth/me before deciding (prevents a wrong-role flash).
+  if (!impersonating && !user) {
+    return (
+      <div className="mx-auto w-full max-w-app p-4">
+        <Skeleton className="h-64 w-full" />
+      </div>
+    );
+  }
+  const ADMIN_ROLES = ['admin', 'superadmin', 'platform_superadmin'];
+  if (!ADMIN_ROLES.includes(effectiveRole)) {
+    // Wrong role: reveal nothing.
+    return <Gate title="404" body="This page could not be found." action={null} />;
+  }
+
+  const isPlatform = effectiveRole === 'platform_superadmin';
+  const isSuper = effectiveRole === 'superadmin' || isPlatform;
+  // Label the impersonation by the ACTIVE token role: 'superadmin' for the system owner, 'admin' for
+  // a platform admin (scoped) — never mislabel a platform admin as superadmin.
+  const impRoleLabel = tokenRole === 'superadmin' ? 'superadmin' : 'admin';
+  // The cross-brand "All brands" (platform) nav would 403 against a brand-scoped impersonation token,
+  // so hide it while impersonating; return via the banner's "Exit to platform".
   const showPlatformNav = isPlatform && !impersonating;
   const sections = SECTIONS.filter((s) => (!s.superadmin || isSuper) && (!s.platform || showPlatformNav));
   const active = (href: string) => (href === '/admin' ? pathname === '/admin' : pathname?.startsWith(href));
@@ -128,13 +131,16 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
       >
         <div className={cn('flex items-center gap-2 py-3', collapsed ? 'justify-between px-4 md:justify-center md:px-2' : 'justify-between px-4')}>
           <Link href="/admin" className={cn('flex min-w-0 items-center gap-2', collapsed && 'md:hidden')}>
-            <LogoMark className="h-7 w-7 shrink-0" />
+            <span className="flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-white ring-1 ring-black/5">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src="/triocodes-mark.png" alt="TrioCodes" className="h-6 w-6 object-contain" />
+            </span>
             <span className="flex flex-col leading-tight">
               <span className="text-sm font-semibold tracking-tight">
-                {impersonating ? impersonating.name : 'invest254'} {isSuper ? 'Console' : 'Admin'}
+                {impersonating ? impersonating.name : 'TrioCodes'} {isSuper ? 'Console' : 'Admin'}
               </span>
               <span className={cn('text-[10px] font-medium uppercase tracking-wide', isSuper ? 'text-warn' : 'text-muted')}>
-                {impersonating ? 'Logged in as superadmin' : isSuper ? 'Owner · full authority' : 'Operations'}
+                {impersonating ? `Logged in as ${impRoleLabel}` : isSuper ? 'Owner · full authority' : 'Operations'}
               </span>
             </span>
           </Link>
@@ -208,7 +214,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
                     'inline-flex w-fit items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide',
                     impersonating ? 'bg-warn/20 text-warn' : isSuper ? 'bg-warn/15 text-warn' : 'bg-surface-2 text-muted',
                   )}
-                  title={impersonating ? `Logged in as superadmin, accessing ${impersonating.name}` : undefined}
+                  title={impersonating ? `Logged in as ${impRoleLabel}, accessing ${impersonating.name}` : undefined}
                 >
                   {impersonating ? `Accessing ${impersonating.slug}` : isSuper ? '★ System owner' : 'Operator'}
                 </span>

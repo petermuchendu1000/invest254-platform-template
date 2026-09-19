@@ -26,6 +26,19 @@ export function useAuthActions() {
     return res;
   }
 
+  /**
+   * Operator sign-in for the unified admin entry point (Issue 1). Unlike `login`, it does NOT send a
+   * brand — the operator console is one entry point for every brand, so the server resolves the
+   * account by identity and binds the session to the account's own site/platform. `totp` is passed
+   * only when the account has MFA enabled (the form reveals it after an MFA_REQUIRED response).
+   */
+  async function adminLogin(phone: string, password: string, totp?: string) {
+    const res = await api.adminLogin({ phone, password, ...(totp ? { totp } : {}) });
+    setToken(res.token);
+    setUser(await api.me(res.token));
+    return res;
+  }
+
   async function register(input: RegisterInput) {
     // Respect an explicit site if a caller ever sets one; otherwise bind to the resolved brand.
     const res = await api.register({ ...input, site: input.site ?? brand.slug });
@@ -66,5 +79,5 @@ export function useAuthActions() {
     reset();
   }
 
-  return { login, register, refresh, logout };
+  return { login, adminLogin, register, refresh, logout };
 }

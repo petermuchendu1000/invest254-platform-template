@@ -1,4 +1,8 @@
 /** @type {import('next').NextConfig} */
+
+// NOTE: admin-domain root routing (triocodes.com/ -> /console) is handled in src/middleware.ts via a
+// REDIRECT (not a rewrite), so the URL becomes /console and the player chrome never renders there.
+
 const nextConfig = {
   reactStrictMode: true,
   // @invest254/shared ships raw TypeScript (ESM with .js specifiers); let Next

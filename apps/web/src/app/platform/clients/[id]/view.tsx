@@ -7,20 +7,33 @@ import { Button } from '@/components/ui/Button';
 import { usePlatformSites, useImpersonate } from '@/lib/platform/hooks';
 import { startImpersonation } from '@/lib/platform/impersonate';
 import { ClientDetail } from '@/components/platform/ClientDetail';
+import { useSession } from '@/lib/auth/session';
 import type { SiteWithConfig } from '@/lib/platform/endpoints';
 
-/** "Log in as superadmin" — mint a brand-scoped superadmin token and enter this brand's admin console. */
+/**
+ * Enter this brand's admin console, fenced to the brand. The label + minted session match the
+ * OPERATOR'S tier (server-enforced in /platform/sites/:id/impersonate):
+ *   - System owner (platform_superadmin) -> a brand-scoped SUPERADMIN session (full governance).
+ *   - Platform admin                     -> a brand-scoped ADMIN session (Operations, scoped to their
+ *                                            platform). A platform admin is NEVER offered or granted a
+ *                                            superadmin session (was a leak/escalation).
+ */
 function ImpersonateButton({ siteId, brandName }: { siteId: string; brandName: string }) {
   const impersonate = useImpersonate();
+  const isSystemOwner = useSession((s) => s.user?.role) === 'platform_superadmin';
+  const label = isSystemOwner ? 'Log in as superadmin ↗' : 'Log in as platform admin ↗';
+  const title = isSystemOwner
+    ? `Open ${brandName}'s admin console as its superadmin`
+    : `Open ${brandName}'s admin console as platform admin (scoped to your platform)`;
   return (
     <Button
       size="sm"
       variant="outline"
       disabled={impersonate.isPending}
       onClick={() => impersonate.mutate(siteId, { onSuccess: (res) => startImpersonation(res) })}
-      title={`Open ${brandName}'s admin console as its superadmin`}
+      title={title}
     >
-      {impersonate.isPending ? 'Signing in…' : 'Log in as superadmin ↗'}
+      {impersonate.isPending ? 'Signing in…' : label}
     </Button>
   );
 }
