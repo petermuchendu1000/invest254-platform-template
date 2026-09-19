@@ -346,8 +346,9 @@ function writeResult(res: ServerResponse, result: unknown): number {
 
 function writeError(res: ServerResponse, err: unknown): number {
   if (err instanceof ApiError) { sendJson(res, err.status, { error: { code: err.code, message: err.message } }); return err.status; }
-  const message = err instanceof Error ? err.message : String(err);
-  sendJson(res, 500, { error: { code: "INTERNAL", message } });
+  // NEVER leak internal/technical detail (stack traces, provider payloads, SQL, etc.) to a client.
+  // The real error is captured server-side by the router's request logger (system_logs → operators).
+  sendJson(res, 500, { error: { code: "INTERNAL", message: "Something went wrong on our end. Please try again shortly." } });
   return 500;
 }
 

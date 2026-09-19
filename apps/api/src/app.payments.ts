@@ -42,17 +42,46 @@ const DOMAIN_STATUS: Readonly<Record<string, number>> = {
   MPESA_B2C_NOT_CONFIGURED: 503, // withdrawal payout attempted but Daraja B2C initiator/credential unset
 };
 
-/** Run a domain call, translating known service errors to controlled ApiErrors. */
-async function domain<T>(fn: () => Promise<T>): Promise<T> {
+/** Technical/provider faults that must NEVER reach a client verbatim — they carry gateway payloads
+ *  (e.g. "merchant has insufficient balance"), account state, stack detail, etc. These are sanitized
+ *  to friendly copy for the player; the FULL detail is logged for operators (system_logs → the
+ *  superadmin-only /admin/logs). */
+const TECH_ERROR_RE = /_REJECTED|NOT_CONFIGURED|^PAYHERO_|^DARAJA_/;
+
+/** Run a domain call, translating service errors to controlled, CLIENT-SAFE ApiErrors.
+ *  Pass `ctx` on client-facing money routes so provider detail is logged for operators. */
+async function domain<T>(fn: () => Promise<T>, ctx?: Ctx): Promise<T> {
   try {
     return await fn();
   } catch (err) {
     if (err instanceof ApiError) throw err;
     const message = err instanceof Error ? err.message : String(err);
     const code = message.split(":")[0]!.trim();
+    // 1) Technical/provider fault → always log the full detail for operators. Players get sanitized,
+    //    friendly copy; privileged callers (admins/superadmins) get the technical detail to act on.
+    if (TECH_ERROR_RE.test(code)) {
+      ctx?.log?.error("payment provider error", {
+        code, detail: message,
+        ...(ctx.claims?.userId ? { userId: ctx.claims.userId } : {}),
+        ...(ctx.claims?.role ? { role: ctx.claims.role } : {}),
+        ...(ctx.siteId ? { siteId: ctx.siteId } : {}),
+      });
+      const notConfigured = /NOT_CONFIGURED/.test(code);
+      const privileged = ["admin", "superadmin", "platform_admin", "platform_superadmin"].includes(ctx?.claims?.role ?? "");
+      if (privileged) throw new ApiError(code, message, notConfigured ? 503 : 502); // operators see the detail
+      throw new ApiError(
+        notConfigured ? "PROVIDER_UNAVAILABLE" : "PROVIDER_ERROR",
+        notConfigured
+          ? "This payment method is temporarily unavailable. Please try another option or try again later."
+          : "We couldn't complete that right now. Please try again in a few minutes or use another payment method.",
+        notConfigured ? 503 : 502,
+      );
+    }
+    // 2) Known, client-safe business error → pass through with its status.
     const status = DOMAIN_STATUS[code];
     if (status) throw new ApiError(code, message, status);
-    throw err; // unknown → router maps to 500
+    // 3) Unknown → router maps to a generic 500 (detail logged by the router, never leaked).
+    throw err;
   }
 }
 
@@ -191,7 +220,7 @@ export function registerProtectedRoutes(router: Router, deps: ApiDeps): void {
     const body = asObject(ctx.body);
     const amount = requireIntAmount(body);
     const phone = requirePhone(body);
-    const out = await domain(() => deps.payments.initiateDeposit(ctx.claims!.userId, amount, phone, ctx.siteId));
+    const out = await domain(() => deps.payments.initiateDeposit(ctx.claims!.userId, amount, phone, ctx.siteId), ctx);
     return { status: 202, body: { transactionId: out.txId, checkoutRequestId: out.checkoutRequestId } };
   });
 
@@ -214,7 +243,7 @@ export function registerProtectedRoutes(router: Router, deps: ApiDeps): void {
     const body = asObject(ctx.body);
     const amount = requireIntAmount(body);
     const phone = requirePhone(body);
-    const out = await domain(() => deps.payments.initiateMegaPayDeposit(ctx.claims!.userId, amount, phone, ctx.siteId));
+    const out = await domain(() => deps.payments.initiateMegaPayDeposit(ctx.claims!.userId, amount, phone, ctx.siteId), ctx);
     return { status: 202, body: { transactionId: out.txId, transactionRequestId: out.transactionRequestId, checkoutRequestId: out.checkoutRequestId } };
   });
 
@@ -228,7 +257,7 @@ export function registerProtectedRoutes(router: Router, deps: ApiDeps): void {
     const body = asObject(ctx.body);
     const amount = requireIntAmount(body);
     const phone = requirePhone(body);
-    const out = await domain(() => deps.payments.initiatePayHeroDeposit(ctx.claims!.userId, amount, phone, ctx.siteId));
+    const out = await domain(() => deps.payments.initiatePayHeroDeposit(ctx.claims!.userId, amount, phone, ctx.siteId), ctx);
     return { status: 202, body: { transactionId: out.txId, reference: out.reference, checkoutRequestId: out.checkoutRequestId } };
   });
 
@@ -238,7 +267,7 @@ export function registerProtectedRoutes(router: Router, deps: ApiDeps): void {
     const body = asObject(ctx.body);
     const amount = requireIntAmount(body);
     const phone = requirePhone(body);
-    const out = await domain(() => deps.payments.requestWithdrawal(ctx.claims!.userId, amount, phone, ctx.siteId));
+    const out = await domain(() => deps.payments.requestWithdrawal(ctx.claims!.userId, amount, phone, ctx.siteId), ctx);
     // Marketer instant transfer -> paid to the mpesa app wallet (200). Normal player -> pending (202).
     if (out.mode === "marketer") {
       return { status: 200, body: { paid: true, transactionId: out.txId, newBalance: out.newBalance, mpesaBalance: out.mpesaBalanceCents } };
@@ -319,7 +348,7 @@ export function registerProtectedRoutes(router: Router, deps: ApiDeps): void {
     const body = asObject(ctx.body);
     const code = body.code;
     if (typeof code !== "string" || code.trim() === "") throw new ApiError("VALIDATION", "code is required", 400);
-    return domain(() => deps.payments.claimPaybillDeposit(ctx.claims!.userId, code, ctx.siteId));
+    return domain(() => deps.payments.claimPaybillDeposit(ctx.claims!.userId, code, ctx.siteId), ctx);
   });
 
   // Public: the Pay Bill display config (non-secret) for the deposit sheet's copy-paste card.
@@ -342,12 +371,12 @@ export function registerProtectedRoutes(router: Router, deps: ApiDeps): void {
   router.post(`${BASE}/admin/withdrawals/:id/approve`, auth, admin, async (ctx: Ctx) => {
     await requireApprovalPassword(ctx, deps.verifyApprovalPassword); // superadmin password gate (Issue 1)
     assertTargetSiteInScope(ctx, await deps.admin.siteOfTransaction(ctx.params.id!));
-    return domain(() => deps.payments.approveWithdrawal(ctx.params.id!, ctx.claims!.userId));
+    return domain(() => deps.payments.approveWithdrawal(ctx.params.id!, ctx.claims!.userId), ctx);
   });
 
   router.post(`${BASE}/admin/withdrawals/:id/reject`, auth, admin, async (ctx: Ctx) => {
     assertTargetSiteInScope(ctx, await deps.admin.siteOfTransaction(ctx.params.id!));
-    return domain(() => deps.payments.rejectWithdrawal(ctx.params.id!, ctx.claims!.userId));
+    return domain(() => deps.payments.rejectWithdrawal(ctx.params.id!, ctx.claims!.userId), ctx);
   });
 
   // Manual completion: mark a stuck (pending/processing) withdrawal PAID when the provider's B2C
@@ -361,7 +390,7 @@ export function registerProtectedRoutes(router: Router, deps: ApiDeps): void {
     assertTargetSiteInScope(ctx, await deps.admin.siteOfTransaction(ctx.params.id!));
     const body = ctx.body && typeof ctx.body === "object" ? (ctx.body as Record<string, unknown>) : {};
     const receipt = typeof body.receipt === "string" && body.receipt.trim() ? body.receipt.trim() : null;
-    return domain(() => deps.payments.markWithdrawalPaid(ctx.params.id!, ctx.claims!.userId, receipt));
+    return domain(() => deps.payments.markWithdrawalPaid(ctx.params.id!, ctx.claims!.userId, receipt), ctx);
   });
 
   // Bulk moderation: apply approve/reject to many withdrawals in one call. Each row is brand-guarded

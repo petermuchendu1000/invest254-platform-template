@@ -13,7 +13,7 @@ import { useBrand } from '@/lib/brand/BrandProvider';
 import { useDepositUi } from '@/lib/wallet/depositUi';
 import { useAuthUi } from '@/lib/auth/ui';
 import { useSession } from '@/lib/auth/session';
-import { authErrorMessage } from '@/lib/auth/errors';
+import { paymentErrorMessage } from '@/lib/wallet/errors';
 import { maskMsisdn } from '@/lib/wallet/format';
 import { MpesaIcon } from '@/components/wallet/MpesaIcon';
 
@@ -149,7 +149,7 @@ export function DepositForm({ provider = 'mpesa' }: { provider?: 'mpesa' | 'mega
       setTxId(res.transactionId);
       setDone(true);
     } catch (err) {
-      setServerError(authErrorMessage(err));
+      setServerError(paymentErrorMessage(err));
     }
   }
 

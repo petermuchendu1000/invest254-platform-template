@@ -10,7 +10,7 @@ import { api } from '@/lib/api/endpoints';
 import { useWithdraw, useWallet } from '@/lib/wallet/hooks';
 import { useDepositUi } from '@/lib/wallet/depositUi';
 import { useSession } from '@/lib/auth/session';
-import { authErrorMessage } from '@/lib/auth/errors';
+import { paymentErrorMessage } from '@/lib/wallet/errors';
 import { maskMsisdn } from '@/lib/wallet/format';
 import { useBrand } from '@/lib/brand/BrandProvider';
 import { useDisplayMoney, USD_LIMITS } from '@/lib/money';
@@ -118,7 +118,7 @@ export function WithdrawForm() {
       setPaidAmountKes(amountCents);
       setDone(true);
     } catch (err) {
-      setServerError(authErrorMessage(err));
+      setServerError(paymentErrorMessage(err));
     }
   }
 
