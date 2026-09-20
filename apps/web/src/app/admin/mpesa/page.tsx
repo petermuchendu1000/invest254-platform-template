@@ -16,10 +16,12 @@ import { env as appEnv } from '@/lib/env';
 import { defaultMpesaEndpoints, DEFAULT_MPESA_ENV } from '@/lib/admin/mpesaDefaults';
 
 // Plain (non-secret) editable string fields and their labels/hints.
-type PlainKey = 'shortcode' | 'stkCallbackUrl' | 'b2cInitiator' | 'b2cResultUrl' | 'b2cTimeoutUrl';
+type PlainKey = 'shortcode' | 'stkCallbackUrl' | 'b2cInitiator' | 'b2cResultUrl' | 'b2cTimeoutUrl' | 'tillNumber' | 'b2cShortcode';
 const PLAIN: { key: PlainKey; label: string; hint: string }[] = [
   { key: 'shortcode', label: 'Paybill / shortcode', hint: 'From Safaricom. Business shortcode that receives STK pushes and sends B2C' },
   { key: 'stkCallbackUrl', label: 'STK callback URL', hint: 'Auto-filled for this deployment. Edit only if your paybill posts elsewhere' },
+  { key: 'tillNumber', label: 'Till / store number', hint: 'Only for Buy Goods (Till). Used as STK PartyB. Leave blank for Paybill' },
+  { key: 'b2cShortcode', label: 'B2C shortcode (PartyA)', hint: 'Only if your B2C shortcode differs from the paybill above; else leave blank' },
   { key: 'b2cInitiator', label: 'B2C initiator name', hint: 'From Safaricom. API operator username for withdrawals' },
   { key: 'b2cResultUrl', label: 'B2C result URL', hint: 'Auto-filled for this deployment. Edit only if different' },
   { key: 'b2cTimeoutUrl', label: 'B2C timeout URL', hint: 'Auto-filled for this deployment. Edit only if different' },
@@ -52,6 +54,8 @@ function MpesaBody() {
   const [env, setEnv] = useState(DEFAULT_MPESA_ENV);
   const [plain, setPlain] = useState<Record<string, string>>({});
   const [secrets, setSecrets] = useState<Record<string, string>>({});
+  const [txnType, setTxnType] = useState<'paybill' | 'till'>('paybill');
+  const [b2cCmd, setB2cCmd] = useState<'BusinessPayment' | 'SalaryPayment' | 'PromotionPayment'>('BusinessPayment');
 
   // Hydrate plain fields + environment when config arrives. Secrets always start blank (write-only).
   // OUR own callback endpoints and the production environment are auto-filled whenever unset, so the
@@ -67,7 +71,11 @@ function MpesaBody() {
       b2cInitiator: cfg.b2cInitiator,
       b2cResultUrl: cfg.b2cResultUrl || d.b2cResultUrl,
       b2cTimeoutUrl: cfg.b2cTimeoutUrl || d.b2cTimeoutUrl,
+      tillNumber: cfg.tillNumber ?? '',
+      b2cShortcode: cfg.b2cShortcode ?? '',
     });
+    setTxnType(cfg.transactionType || 'paybill');
+    setB2cCmd(cfg.b2cCommandId || 'BusinessPayment');
   }, [cfg]);
 
   // Build a patch of only changed plain fields, env change, and any non-empty secrets.
@@ -83,8 +91,10 @@ function MpesaBody() {
       const v = (secrets[sct.key] ?? '').trim();
       if (v !== '') out[sct.key] = v;
     }
+    if (txnType !== (cfg.transactionType || 'paybill')) out.transactionType = txnType;
+    if (b2cCmd !== (cfg.b2cCommandId || 'BusinessPayment')) out.b2cCommandId = b2cCmd;
     return out as MpesaConfigPatch;
-  }, [cfg, env, plain, secrets]);
+  }, [cfg, env, plain, secrets, txnType, b2cCmd]);
 
   const dirtyCount = Object.keys(patch).length;
 
@@ -135,6 +145,17 @@ function MpesaBody() {
 
               <div className="w-48">
                 <FilterSelect label="Environment" value={env} onChange={setEnv} options={ENV_OPTIONS} />
+              </div>
+
+              <div className="flex flex-wrap gap-3">
+                <div className="w-56">
+                  <FilterSelect label="STK type" value={txnType} onChange={(v) => setTxnType(v as 'paybill' | 'till')}
+                    options={[{ value: 'paybill', label: 'Paybill (Pay Bill)' }, { value: 'till', label: 'Till (Buy Goods)' }]} />
+                </div>
+                <div className="w-56">
+                  <FilterSelect label="B2C command" value={b2cCmd} onChange={(v) => setB2cCmd(v as 'BusinessPayment' | 'SalaryPayment' | 'PromotionPayment')}
+                    options={[{ value: 'BusinessPayment', label: 'Business Payment' }, { value: 'SalaryPayment', label: 'Salary Payment' }, { value: 'PromotionPayment', label: 'Promotion Payment' }]} />
+                </div>
               </div>
 
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">

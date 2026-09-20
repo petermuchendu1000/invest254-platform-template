@@ -391,6 +391,10 @@ export interface MpesaConfigRow {
   hasConsumerSecret: boolean;
   hasPasskey: boolean;
   hasSecurityCredential: boolean;
+  transactionType: 'paybill' | 'till';
+  tillNumber: string;
+  b2cShortcode: string;
+  b2cCommandId: 'BusinessPayment' | 'SalaryPayment' | 'PromotionPayment';
   updatedBy: string | null;
   updatedAtMs: number;
 }
@@ -405,6 +409,10 @@ export interface MpesaConfigPatch {
   consumerSecret?: string;
   passkey?: string;
   securityCredential?: string;
+  transactionType?: 'paybill' | 'till';
+  tillNumber?: string;
+  b2cShortcode?: string;
+  b2cCommandId?: 'BusinessPayment' | 'SalaryPayment' | 'PromotionPayment';
 }
 
 // ── User notifications (J7) ──

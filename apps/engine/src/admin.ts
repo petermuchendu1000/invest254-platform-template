@@ -245,6 +245,10 @@ export interface MpesaConfigRow {
   hasConsumerSecret: boolean;
   hasPasskey: boolean;
   hasSecurityCredential: boolean;
+  transactionType: "paybill" | "till";
+  tillNumber: string;
+  b2cShortcode: string;
+  b2cCommandId: "BusinessPayment" | "SalaryPayment" | "PromotionPayment";
   updatedBy: string | null;
   updatedAtMs: number;
 }
@@ -260,6 +264,10 @@ export interface MpesaConfigPatch {
   consumerSecret?: string;
   passkey?: string;
   securityCredential?: string;
+  transactionType?: "paybill" | "till";
+  tillNumber?: string;
+  b2cShortcode?: string;
+  b2cCommandId?: "BusinessPayment" | "SalaryPayment" | "PromotionPayment";
 }
 
 // ── J6: affiliate payout queue + chat moderation ───────────────────────────────────────────────
@@ -473,6 +481,7 @@ function maskMpesaInternal(m: MpesaInternal): MpesaConfigRow {
     b2cInitiator: m.b2cInitiator, b2cResultUrl: m.b2cResultUrl, b2cTimeoutUrl: m.b2cTimeoutUrl,
     hasConsumerKey: m.consumerKey !== "", hasConsumerSecret: m.consumerSecret !== "",
     hasPasskey: m.passkey !== "", hasSecurityCredential: m.b2cSecurityCredential !== "",
+    transactionType: "paybill", tillNumber: "", b2cShortcode: "", b2cCommandId: "BusinessPayment",
     updatedBy: m.updatedBy, updatedAtMs: m.updatedAtMs,
   };
 }
@@ -489,6 +498,10 @@ function mapMpesaConfigRow(x: any): MpesaConfigRow {
     hasConsumerSecret: Boolean(x.has_consumer_secret),
     hasPasskey: Boolean(x.has_passkey),
     hasSecurityCredential: Boolean(x.has_security_credential),
+    transactionType: x.transaction_type === "till" ? "till" : "paybill",
+    tillNumber: String(x.till_number ?? ""),
+    b2cShortcode: String(x.b2c_shortcode ?? ""),
+    b2cCommandId: (["BusinessPayment", "SalaryPayment", "PromotionPayment"].includes(x.b2c_command_id) ? x.b2c_command_id : "BusinessPayment"),
     updatedBy: x.updated_by == null ? null : String(x.updated_by),
     updatedAtMs: ms(x.updated_at),
   };
@@ -501,7 +514,8 @@ export async function loadDarajaConfigFromDb(q: Querier): Promise<Partial<Daraja
   try {
     const r = await q.query(
       `select environment, shortcode, consumer_key, consumer_secret, passkey, stk_callback_url,
-              b2c_initiator, b2c_security_credential, b2c_result_url, b2c_timeout_url
+              b2c_initiator, b2c_security_credential, b2c_result_url, b2c_timeout_url,
+              transaction_type, till_number, b2c_shortcode, b2c_command_id
          from mpesa_config where id = 1`, []);
     if (!r.rows.length) return {};
     const x = r.rows[0] as Record<string, string | null>;
@@ -512,6 +526,9 @@ export async function loadDarajaConfigFromDb(q: Querier): Promise<Partial<Daraja
     put("passkey", x.passkey); put("stkCallbackUrl", x.stk_callback_url); put("b2cInitiator", x.b2c_initiator);
     put("b2cSecurityCredential", x.b2c_security_credential); put("b2cResultUrl", x.b2c_result_url);
     put("b2cTimeoutUrl", x.b2c_timeout_url);
+    if (x.transaction_type === "till" || x.transaction_type === "paybill") out.transactionType = x.transaction_type;
+    put("tillNumber", x.till_number); put("b2cShortcode", x.b2c_shortcode);
+    if (x.b2c_command_id) (out as Record<string, unknown>).b2cCommandId = x.b2c_command_id;
     return out;
   } catch (e) {
     console.warn("[payments] loadDarajaConfigFromDb failed; using env only:", (e as Error).message);
@@ -1234,6 +1251,7 @@ export class PgAdminRepository implements AdminRepository {
       `select environment, shortcode, stk_callback_url, b2c_initiator, b2c_result_url, b2c_timeout_url,
               (consumer_key <> '') as has_consumer_key, (consumer_secret <> '') as has_consumer_secret,
               (passkey <> '') as has_passkey, (b2c_security_credential <> '') as has_security_credential,
+              transaction_type, till_number, b2c_shortcode, b2c_command_id,
               updated_by, updated_at from mpesa_config where id = 1`, []);
     if (!r.rows.length) throw new Error("NOT_FOUND");
     return mapMpesaConfigRow(r.rows[0]);
@@ -1243,7 +1261,8 @@ export class PgAdminRepository implements AdminRepository {
     try {
       const r = await this.q.query(
         `select environment, shortcode, stk_callback_url, b2c_initiator, b2c_result_url, b2c_timeout_url,
-                has_consumer_key, has_consumer_secret, has_passkey, has_security_credential, updated_by, updated_at
+                has_consumer_key, has_consumer_secret, has_passkey, has_security_credential,
+                transaction_type, till_number, b2c_shortcode, b2c_command_id, updated_by, updated_at
            from fn_admin_update_mpesa_config($1,$2,$3::jsonb)`,
         [actorId, actorRole, JSON.stringify(patch)]);
       return mapMpesaConfigRow(r.rows[0]);

@@ -49,6 +49,14 @@ export interface DarajaConfig {
   consumerKey: string; consumerSecret: string;
   shortcode: string; passkey: string; stkCallbackUrl: string;
   b2cInitiator: string; b2cSecurityCredential: string; b2cResultUrl: string; b2cTimeoutUrl: string;
+  /** STK rail: 'paybill' (CustomerPayBillOnline, default) or 'till'/Buy Goods (CustomerBuyGoodsOnline). */
+  transactionType?: "paybill" | "till";
+  /** Till/store number used as STK PartyB when transactionType='till' (defaults to shortcode). */
+  tillNumber?: string;
+  /** B2C PartyA shortcode when different from the STK shortcode (defaults to shortcode). */
+  b2cShortcode?: string;
+  /** B2C CommandID: BusinessPayment (default), SalaryPayment, or PromotionPayment. */
+  b2cCommandId?: "BusinessPayment" | "SalaryPayment" | "PromotionPayment";
 }
 
 const BASES = { sandbox: "https://sandbox.safaricom.co.ke", production: "https://api.safaricom.co.ke" } as const;
@@ -89,10 +97,11 @@ export class HttpDarajaClient implements DarajaClient {
     const t = ts();
     const e164 = msisdnToE164(a.msisdn); // Safaricom requires 254XXXXXXXXX
     const password = Buffer.from(`${this.cfg.shortcode}${this.cfg.passkey}${t}`).toString("base64");
+    const isTill = this.cfg.transactionType === "till";
     const j = await this.post("/mpesa/stkpush/v1/processrequest", {
       BusinessShortCode: this.cfg.shortcode, Password: password, Timestamp: t,
-      TransactionType: "CustomerPayBillOnline", Amount: centsToKes(a.amountCents),
-      PartyA: e164, PartyB: this.cfg.shortcode, PhoneNumber: e164,
+      TransactionType: isTill ? "CustomerBuyGoodsOnline" : "CustomerPayBillOnline", Amount: centsToKes(a.amountCents),
+      PartyA: e164, PartyB: isTill ? (this.cfg.tillNumber || this.cfg.shortcode) : this.cfg.shortcode, PhoneNumber: e164,
       CallBackURL: this.cfg.stkCallbackUrl, AccountReference: a.accountRef, TransactionDesc: a.desc,
     });
     return { merchantRequestId: String(j.MerchantRequestID), checkoutRequestId: String(j.CheckoutRequestID) };
@@ -129,8 +138,8 @@ export class HttpDarajaClient implements DarajaClient {
     const resultUrl = a.resultId ? `${base}/${encodeURIComponent(a.resultId)}` : this.cfg.b2cResultUrl;
     const j = await this.post("/mpesa/b2c/v1/paymentrequest", {
       InitiatorName: this.cfg.b2cInitiator, SecurityCredential: this.cfg.b2cSecurityCredential,
-      CommandID: "BusinessPayment", Amount: centsToKes(a.amountCents),
-      PartyA: this.cfg.shortcode, PartyB: msisdnToE164(a.msisdn), Remarks: a.remarks,
+      CommandID: this.cfg.b2cCommandId || "BusinessPayment", Amount: centsToKes(a.amountCents),
+      PartyA: this.cfg.b2cShortcode || this.cfg.shortcode, PartyB: msisdnToE164(a.msisdn), Remarks: a.remarks,
       QueueTimeOutURL: this.cfg.b2cTimeoutUrl, ResultURL: resultUrl, Occasion: "Withdrawal",
     });
     return { conversationId: String(j.ConversationID) };
