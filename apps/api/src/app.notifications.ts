@@ -101,7 +101,8 @@ export function registerNotificationRoutes(router: Router, deps: ApiDeps): void 
 
   // Live recipient count for a proposed audience — powers the preview before sending.
   router.post(`${BASE}/admin/notifications/audience-count`, auth, admin, async (ctx: Ctx) => {
-    const count = await deps.notifications.audienceCount((parseAudience(ctx) ?? {}) as never);
+    const count = await deps.notifications.audienceCount(
+      ctx.claims!.userId, ctx.claims!.role ?? "player", (parseAudience(ctx) ?? {}) as never);
     return { count };
   });
 

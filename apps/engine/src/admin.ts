@@ -333,7 +333,7 @@ export interface AdminRepository {
   getUserOverrides(userId: string): Promise<UserOverrideRow | null>;
   setUserOverrides(actorId: string, actorRole: string, targetId: string, patch: UserOverridePatch): Promise<UserOverrideRow>;
   listDeposits(q: AdminDepositListQuery): Promise<Page<AdminDepositRow>>;
-  depositsReconcile(staleMinutes: number): Promise<AdminDepositsReconcile>;
+  depositsReconcile(staleMinutes: number, siteId?: string): Promise<AdminDepositsReconcile>;
   reportDaily(range: ReportRange, siteId?: string): Promise<DailyReportRow[]>;
   reportByUser(range: ReportRange, siteId?: string): Promise<UserReportRow[]>;
   reportDay(date: string, siteId?: string): Promise<AdminDayReport>;
@@ -987,20 +987,24 @@ export class PgAdminRepository implements AdminRepository {
     return pageFrom(rows, limit, (d) => `${d.createdAtMs}:${d.txId}`);
   }
 
-  async depositsReconcile(staleMinutes: number): Promise<AdminDepositsReconcile> {
+  async depositsReconcile(staleMinutes: number, siteId?: string): Promise<AdminDepositsReconcile> {
+    // Site-scoped (Issue 1 leak fix): a site admin must only see its OWN brand's deposits. siteId is
+    // null for the system owner (all brands), matching reportDaily/reportByUser/listDeposits.
     const s = await this.q.query(
       `select status, count(*)::bigint as n, coalesce(sum(amount),0)::bigint as amt
-         from transactions where kind = 'deposit' and user_id not in (select user_id from marketer_account_ids) group by status order by status`, []);
+         from transactions where kind = 'deposit' and user_id not in (select user_id from marketer_account_ids)
+          and ($1::uuid is null or site_id = $1) group by status order by status`, [siteId ?? null]);
     const summary: AdminDepositStatusBucket[] = s.rows.map((x) => ({ status: String(x.status), count: num(x.n), amountCents: num(x.amt) }));
     const r = await this.q.query(
       `select t.id, t.user_id, t.amount, t.status, t.phone, t.mpesa_receipt, t.checkout_request_id, t.created_at, p.username
          from transactions t left join profiles p on p.id = t.user_id
         where t.kind = 'deposit' and t.status in ('pending', 'processing')
           and t.user_id not in (select user_id from marketer_account_ids)
+          and ($2::uuid is null or t.site_id = $2)
           and t.created_at < now() - ($1::int * interval '1 minute')
         order by t.created_at desc, t.id desc
         limit 100`,
-      [Math.max(0, Math.round(staleMinutes))]);
+      [Math.max(0, Math.round(staleMinutes)), siteId ?? null]);
     return { summary, staleMinutes, stale: r.rows.map(mapDepositRow) };
   }
 
@@ -1847,8 +1851,8 @@ export class InMemoryAdminRepository implements AdminRepository {
     return memKeyset(rows, q);
   }
 
-  async depositsReconcile(staleMinutes: number): Promise<AdminDepositsReconcile> {
-    const deposits = this.payments.adminTransactions().filter((t) => t.kind === "deposit");
+  async depositsReconcile(staleMinutes: number, siteId?: string): Promise<AdminDepositsReconcile> {
+    const deposits = this.payments.adminTransactions().filter((t) => t.kind === "deposit" && siteMatches(t.siteId, siteId));
     const buckets = new Map<string, { count: number; amountCents: number }>();
     for (const d of deposits) {
       const b = buckets.get(d.status) ?? { count: 0, amountCents: 0 };

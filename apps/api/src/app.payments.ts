@@ -1,5 +1,5 @@
 import type { Cents } from "@invest254/shared";
-import { Router, ApiError, requireAuth, requireRole, requireSite, rateLimit, restrictToCidrs, assertTargetSiteInScope, type Ctx, type Middleware } from "./http.js";
+import { Router, ApiError, requireAuth, requireRole, requireSiteAdmin, requireSite, rateLimit, restrictToCidrs, assertTargetSiteInScope, type Ctx, type Middleware } from "./http.js";
 import type { ApiDeps } from "./app.js";
 import { requireApprovalPassword } from "./approvalgate.js";
 
@@ -367,7 +367,7 @@ export function registerProtectedRoutes(router: Router, deps: ApiDeps): void {
   // A site-scoped finance admin may only decide its own brand's withdrawals (docs/22 Task H); a
   // platform admin / platform_superadmin is unrestricted. The target is a transaction id, so its
   // brand is resolved via the AdminService (tolerant of an unknown tx — the RPC stays the guard).
-  const admin = requireRole("admin");
+  const admin = requireSiteAdmin("admin");
   router.post(`${BASE}/admin/withdrawals/:id/approve`, auth, admin, async (ctx: Ctx) => {
     await requireApprovalPassword(ctx, deps.verifyApprovalPassword); // superadmin password gate (Issue 1)
     assertTargetSiteInScope(ctx, await deps.admin.siteOfTransaction(ctx.params.id!));

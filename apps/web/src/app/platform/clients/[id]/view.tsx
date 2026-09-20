@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/Button';
 import { usePlatformSites, useImpersonate } from '@/lib/platform/hooks';
 import { startImpersonation } from '@/lib/platform/impersonate';
 import { ClientDetail } from '@/components/platform/ClientDetail';
+import { BrandAddons } from '@/components/addons/BrandAddons';
 import { useSession } from '@/lib/auth/session';
 import type { SiteWithConfig } from '@/lib/platform/endpoints';
 
@@ -76,6 +77,11 @@ export default function ClientDetailView({ params }: { params: { id: string } })
           </div>
 
           <ClientDetail key={site.siteId} site={site} />
+
+          <div className="mt-6">
+            <h2 className="mb-3 text-sm font-semibold tracking-tight">Systems &amp; gateways</h2>
+            <BrandAddons siteId={site.siteId} />
+          </div>
         </>
       )}
     </>

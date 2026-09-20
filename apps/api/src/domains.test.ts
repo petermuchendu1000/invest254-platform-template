@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { provisionDomain, getDomainStatus, splitDomain, makeNamecheapRegistrar, type CdnClient, type RegistrarClient, type PagesDomainInfo } from "./domains.js";
+import { provisionDomain, getDomainStatus, splitDomain, makeNamecheapRegistrar, makeDomainProvisioner, type CdnClient, type RegistrarClient, type PagesDomainInfo } from "./domains.js";
 
 function fakes() {
   const calls: string[] = [];
@@ -114,4 +114,27 @@ test("makeNamecheapRegistrar.listDomains: surfaces a Namecheap API error (e.g. I
     const reg = makeNamecheapRegistrar({ apiUser: "u", userName: "u", apiKey: "k", clientIp: "1.2.3.4" });
     await assert.rejects(() => reg.listDomains(), /NAMECHEAP_IP_NOT_WHITELISTED: 1\.2\.3\.4/);
   } finally { globalThis.fetch = orig; }
+});
+
+// A platform admin without its own registrar must NEVER borrow the system owner's env Namecheap
+// (bug fix): makeDomainProvisioner(null) is Cloudflare-only, even when env NAMECHEAP_* is set; only an
+// omitted (undefined) override uses the env registrar (the system owner's own default-platform path).
+test("makeDomainProvisioner: explicit null override suppresses the env registrar (no owner fallback)", () => {
+  const KEYS = ["CF_API_TOKEN", "CF_DNS_API_TOKEN", "CF_ACCOUNT_ID", "CF_PAGES_PROJECT",
+    "NAMECHEAP_API_USER", "NAMECHEAP_USERNAME", "NAMECHEAP_API_KEY", "NAMECHEAP_CLIENT_IP"];
+  const prev = Object.fromEntries(KEYS.map((k) => [k, process.env[k]]));
+  try {
+    process.env.CF_API_TOKEN = "cf-token"; process.env.CF_ACCOUNT_ID = "cf-acct"; delete process.env.CF_DNS_API_TOKEN;
+    process.env.NAMECHEAP_API_USER = "owner"; process.env.NAMECHEAP_USERNAME = "owner";
+    process.env.NAMECHEAP_API_KEY = "owner-key"; process.env.NAMECHEAP_CLIENT_IP = "1.2.3.4";
+    // Omitted override => the system owner's env registrar IS configured.
+    assert.equal(makeDomainProvisioner()?.registrarConfigured, true, "env path keeps the owner registrar");
+    // Explicit null => NO registrar, despite the owner's env creds being present.
+    assert.equal(makeDomainProvisioner(null)?.registrarConfigured, false, "null override never borrows the owner registrar");
+    // A supplied per-platform registrar is used as-is.
+    const own: RegistrarClient = { async setNameservers() { return true; }, async listDomains() { return []; } };
+    assert.equal(makeDomainProvisioner(own)?.registrarConfigured, true, "own registrar is used");
+  } finally {
+    for (const k of KEYS) { if (prev[k] === undefined) delete process.env[k]; else process.env[k] = prev[k]; }
+  }
 });

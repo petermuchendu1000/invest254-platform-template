@@ -85,6 +85,12 @@ export interface PaymentServiceOptions {
    */
   darajaForSite?: (siteId: string | undefined) => DarajaClient | undefined | Promise<DarajaClient | undefined>;
   /**
+   * Per-brand entitled deposit gateways (Issue 2). Returns the gateway codes a brand OWNS (always incl.
+   * 'mpesa'); listDepositProviders intersects the effective providers with this set, so a brand only
+   * surfaces gateways it is entitled to. Returns null / throws => no entitlement filter (fail-open).
+   */
+  entitledGatewaysForSite?: (siteId: string | undefined) => Promise<string[] | null>;
+  /**
    * Mega Pay provider client (migration 0116 — the second deposit rail). When present, the Mega Pay
    * deposit/callback/reconcile methods are live; when absent they refuse with MEGAPAY_NOT_CONFIGURED so
    * a deployment that never configured Mega Pay can't accidentally route deposits to a missing client.
@@ -108,6 +114,7 @@ export class PaymentService {
   private readonly accountRefForSite?: (siteId: string | undefined) => string | Promise<string>;
   private readonly defaultAccountRef: string;
   private readonly darajaForSite?: (siteId: string | undefined) => DarajaClient | undefined | Promise<DarajaClient | undefined>;
+  private readonly entitledGatewaysForSite?: (siteId: string | undefined) => Promise<string[] | null>;
   private readonly megapay?: MegaPayClient;
   private readonly payhero?: PayHeroClient;
   private readonly events: PaymentEvents;
@@ -124,6 +131,7 @@ export class PaymentService {
     if (opts.accountRefForSite) this.accountRefForSite = opts.accountRefForSite;
     this.defaultAccountRef = opts.defaultAccountRef ?? "Invest254";
     if (opts.darajaForSite) this.darajaForSite = opts.darajaForSite;
+    if (opts.entitledGatewaysForSite) this.entitledGatewaysForSite = opts.entitledGatewaysForSite;
     if (opts.megapay) this.megapay = opts.megapay;
     if (opts.payhero) this.payhero = opts.payhero;
     this.events = opts.events ?? {};
@@ -290,8 +298,17 @@ export class PaymentService {
   async listDepositProviders(siteId?: string): Promise<DepositProvider[]> {
     try {
       const list = await this.repo.listEffectiveProviders(siteId);
-      if (!list.length) return [{ code: "mpesa", displayName: "M-Pesa" }];
-      return list.filter((p) => PLAYER_DEPOSIT_RAILS.has(p.code));
+      let rails = (list.length ? list : [{ code: "mpesa", displayName: "M-Pesa" }]).filter((p) => PLAYER_DEPOSIT_RAILS.has(p.code));
+      // Entitlement gate (Issue 2): a brand only ever surfaces gateways it OWNS (mpesa always entitled).
+      // Fail-open: a null/throwing lookup (or no brand context) leaves the effective list untouched.
+      if (this.entitledGatewaysForSite) {
+        try {
+          const ent = await this.entitledGatewaysForSite(siteId);
+          if (ent && ent.length) { const allow = new Set(ent); rails = rails.filter((p) => allow.has(p.code)); }
+        } catch { /* fail-open */ }
+      }
+      if (!rails.length) return [{ code: "mpesa", displayName: "M-Pesa" }];
+      return rails;
     } catch (err) {
       console.warn(`[payments] listDepositProviders failed (${(err as Error).message}); falling back to M-Pesa only`);
       return [{ code: "mpesa", displayName: "M-Pesa" }];

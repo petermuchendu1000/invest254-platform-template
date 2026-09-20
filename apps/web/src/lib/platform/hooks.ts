@@ -1,7 +1,7 @@
 'use client';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { platformApi, type CreateSiteBody, type OnboardBody } from '@/lib/platform/endpoints';
+import { platformApi, type CreateSiteBody, type OnboardBody, type RegistrarConfigBody } from '@/lib/platform/endpoints';
 import { useSession } from '@/lib/auth/session';
 import type { SiteTheme } from '@/lib/brand/siteThemes';
 import { faviconDataUri } from '@/lib/brand/mark';
@@ -220,6 +220,23 @@ export function useOnboardClient() {
   const t = useTok();
   const invalidate = useInvalidate();
   return useMutation({ mutationFn: (body: OnboardBody) => platformApi.onboard(t, body), onSuccess: invalidate });
+}
+
+// ── Per-platform registrar (Namecheap) config (Issue 1 #3) ──────────────────────────────────────
+export function useRegistrarConfig() {
+  const t = useTok();
+  return useQuery({ queryKey: ['platform', 'registrar-config'], queryFn: () => platformApi.registrarConfig(t), enabled: !!t });
+}
+export function useSetRegistrarConfig() {
+  const t = useTok(); const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: RegistrarConfigBody) => platformApi.setRegistrarConfig(t, body),
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: ['platform', 'registrar-config'] }); },
+  });
+}
+export function useTestRegistrarConfig() {
+  const t = useTok();
+  return useMutation({ mutationFn: (body: RegistrarConfigBody) => platformApi.testRegistrarConfig(t, body) });
 }
 
 /** Poll a domain's provisioning status (zone active + Pages custom domains validated). */

@@ -1,4 +1,4 @@
-import { Router, ApiError, requireAuth, requireRole, adminScopeSite, assertTargetSiteInScope, type Ctx } from "./http.js";
+import { Router, ApiError, requireAuth, requireRole, requireSiteAdmin, adminScopeSite, assertTargetSiteInScope, type Ctx } from "./http.js";
 import type { ApiDeps } from "./app.js";
 import { requireApprovalPassword } from "./approvalgate.js";
 
@@ -76,7 +76,7 @@ function limitOf(ctx: Ctx, def = 50): number {
 
 export function registerReferralRoutes(router: Router, deps: ApiDeps): void {
   const auth = requireAuth(deps.verifier);
-  const admin = requireRole("admin");
+  const admin = requireSiteAdmin("admin");
 
   // ── Every authenticated user: their referral code, link, and commission summary ────────────────
   router.get(`${BASE}/me/referral`, auth, async (ctx: Ctx) =>

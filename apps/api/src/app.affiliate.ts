@@ -1,4 +1,4 @@
-import { Router, ApiError, requireAuth, requireRole, requireSite, adminScopeSite, assertTargetSiteInScope, rateLimit, DEFAULT_SITE_ID, type Ctx } from "./http.js";
+import { Router, ApiError, requireAuth, requireRole, requireSiteAdmin, requireSite, adminScopeSite, assertTargetSiteInScope, rateLimit, DEFAULT_SITE_ID, type Ctx } from "./http.js";
 import type { PageQuery } from "@invest254/engine";
 import type { ApiDeps } from "./app.js";
 import { parseB2cResult } from "./app.payments.js";
@@ -57,7 +57,7 @@ async function domain<T>(fn: () => Promise<T>): Promise<T> {
 /** Register the affiliate routes (enrollment + dashboard require a bearer token; accrual is admin). */
 export function registerAffiliateRoutes(router: Router, deps: ApiDeps): void {
   const auth = requireAuth(deps.verifier);
-  const admin = requireRole("admin");
+  const admin = requireSiteAdmin("admin");
   const marketer = requireRole("marketer");
   // Marketer-facing routes run under requireSite: a marketer's identity is brand-bound, so this
   // both makes ctx.siteId available and rejects a token that names a different brand (?site=).

@@ -55,7 +55,7 @@ export interface MarketerRollupGroup {
 export interface OnboardColors { primary?: string; bg?: string; accent?: string }
 export interface OnboardBody {
   slug: string; name: string; primaryDomain?: string; currency?: string; supportEmail?: string;
-  colors?: OnboardColors; provisionDomain?: boolean;
+  colors?: OnboardColors; provisionDomain?: boolean; platformId?: string;
 }
 export interface ProvisionResult {
   domain: string; zoneId: string; nameServers: string[]; zoneStatus: string;
@@ -68,6 +68,17 @@ export interface OnboardResult { siteId: string; brand: OnboardBrand; domain: Pr
 export interface DomainStatus { domain: string; zoneStatus: string | null; pages: { name: string; status: string }[]; active: boolean }
 export interface RegistrarDomainRow { domain: string; expires: string | null; usingRegistrarDns: boolean; alreadyClient: boolean; suggestedSlug: string; suggestedName: string }
 export interface RegistrarDomainsDto { registrarConfigured: boolean; domains: RegistrarDomainRow[] }
+
+/** Per-platform registrar (Namecheap) config (Issue 1 #3). The API key is never returned — only masked. */
+export interface RegistrarConfigDto {
+  platformId: string; providerCode: string; settings: Record<string, string>;
+  secretMeta: Record<string, { set: boolean; last4: string }>; hasSecret: boolean;
+  encVersion: number; updatedAt: string | null; exists: boolean;
+  egressIp: string | null; encryptionConfigured: boolean;
+}
+export interface RegistrarConfigSaveDto { platformId: string; hasSecret: boolean; settings: Record<string, string>; exists: boolean }
+export interface RegistrarTestDto { ok: boolean; detail: string; egressIp: string | null }
+export interface RegistrarConfigBody { apiUser?: string; userName?: string; clientIp?: string; apiKey?: string }
 
 /** Phase 2 (docs/24) — per-brand player management + audit. */
 export interface Page<T> { items: T[]; nextCursor?: string | null }
@@ -150,6 +161,10 @@ export const platformApi = {
   registrarDomains: (t: string) => apiFetch<RegistrarDomainsDto>('/platform/domains/registrar', { token: t }),
   domainHealth: (t: string) => apiFetch<{ configured: boolean; statuses: Record<string, string> }>('/platform/domains/health', { token: t }),
   domainStatus: (t: string, domain: string) => apiFetch<DomainStatus>('/platform/onboard/domain-status', { token: t, query: { domain } }),
+  // Per-platform registrar (Namecheap) configuration (Issue 1 #3).
+  registrarConfig: (t: string) => apiFetch<RegistrarConfigDto>('/platform/registrar/config', { token: t }),
+  setRegistrarConfig: (t: string, body: RegistrarConfigBody) => apiFetch<RegistrarConfigSaveDto>('/platform/registrar/config', { method: 'PUT', token: t, body }),
+  testRegistrarConfig: (t: string, body: RegistrarConfigBody) => apiFetch<RegistrarTestDto>('/platform/registrar/config/test', { method: 'POST', token: t, body }),
   // Phase 2 — per-brand players + audit (cross-brand via explicit site id).
   siteUsers: (t: string, id: string, params?: Record<string, string | undefined>) => {
     const query: Record<string, string> = {};

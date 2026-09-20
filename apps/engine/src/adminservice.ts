@@ -98,7 +98,7 @@ export class AdminService {
 
   listDeposits(q: AdminDepositListQuery): Promise<Page<AdminDepositRow>> { return this.repo.listDeposits(q); }
 
-  depositsReconcile(staleMinutes: number): Promise<AdminDepositsReconcile> { return this.repo.depositsReconcile(staleMinutes); }
+  depositsReconcile(staleMinutes: number, siteId?: string): Promise<AdminDepositsReconcile> { return this.repo.depositsReconcile(staleMinutes, siteId); }
 
   /** Per-day operator finance report (J4) — deposits/withdrawals + turnover/GGR, oldest day first. */
   reportDaily(range: ReportRange, siteId?: string): Promise<DailyReportRow[]> { return this.repo.reportDaily(range, siteId); }

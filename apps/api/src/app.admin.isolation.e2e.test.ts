@@ -38,6 +38,8 @@ const PLAYER_B = `${TEST_USER}:player:${SITE_B}`;    // brand-B scoped player
 const ADMIN_A = `${TEST_ADMIN}:admin:${SITE_A}`;
 const ADMIN_B = `${TEST_ADMIN}:admin:${SITE_B}`;
 const ADMIN_PLATFORM = `${TEST_ADMIN}:platform_superadmin`;
+// A RAW platform admin (platform claim, NO site claim) — must be kept OUT of the site back office.
+const ADMIN_RAW_PLATFORM = `${TEST_ADMIN}:platform_admin`;
 
 const stkOk = (checkoutRequestId: string, receipt: string) => ({
   Body: { stkCallback: {
@@ -119,5 +121,55 @@ test("E2E isolation: a brand-A admin's aggregate payloads never contain brand-B'
     // Brand-B's unique deposit amount (25_000) must not surface anywhere in brand A's dashboard.
     assert.ok(!JSON.stringify(ovA.finance).includes("25000"), "no brand-B deposit leaks into brand-A overview finance");
     assert.equal(ovA.finance.depositsCents, 40_000);
+  } finally { await api.close(); }
+});
+
+// ───────────────────────────── deposit reconciliation isolation (Issue 1 leak fix) ─────────────
+// The bug: GET /admin/deposits/reconcile aggregated deposits across EVERY brand (no site filter),
+// so a brand-scoped admin saw other brands' deposit summary + stale list. Now site-scoped.
+
+test("E2E isolation: /admin/deposits/reconcile is brand-scoped; platform sees the rollup", async () => {
+  const api = await startTestApi({ startingBalanceCents: 1_000_000 });
+  try {
+    await deposit(api, PLAYER_A, "invest254", 40_000, "RA-DEP");
+    await deposit(api, PLAYER_B, "brandb",     25_000, "RB-DEP");
+
+    const sumAmt = (r: any) => (r.summary as any[]).reduce((s, b) => s + b.amountCents, 0);
+    const recA = await json(await get(api, "/api/v1/admin/deposits/reconcile", ADMIN_A));
+    const recB = await json(await get(api, "/api/v1/admin/deposits/reconcile", ADMIN_B));
+    const recP = await json(await get(api, "/api/v1/admin/deposits/reconcile", ADMIN_PLATFORM));
+
+    assert.equal(sumAmt(recA), 40_000, "reconcile summary: brand A only");
+    assert.equal(sumAmt(recB), 25_000, "reconcile summary: brand B only");
+    assert.equal(sumAmt(recP), 65_000, "reconcile summary: platform rollup");
+    // Brand-B's unique amount must never appear anywhere in brand-A's reconcile payload.
+    assert.ok(!JSON.stringify(recA).includes("25000"), "no brand-B deposit leaks into brand-A reconcile");
+  } finally { await api.close(); }
+});
+
+// ───────── residual hardening: a RAW platform_admin has no site back office (Issue 1) ───────────
+// adminScopeSite() is null (unrestricted) for a platform_admin and assertTargetSiteInScope() is
+// null-tolerant, so admitting a raw platform_admin token to the /admin finance/aggregate surface
+// would expose (and let them act on) EVERY platform. They must use the console + impersonation
+// (which mints an `admin`+site token). requireSiteAdmin refuses the raw token with 403.
+
+test("E2E hardening: a raw platform_admin is denied the /admin finance surface; site admin + owner pass", async () => {
+  const api = await startTestApi({ startingBalanceCents: 1_000_000 });
+  try {
+    const guarded = [
+      "/api/v1/admin/overview",            // app.admin.ts
+      "/api/v1/admin/deposits/reconcile",  // app.admin.ts (the reconcile leak)
+      "/api/v1/admin/reports/daily",       // app.admin.ts
+      "/api/v1/admin/affiliate/payouts",   // app.affiliate.ts
+    ];
+    for (const path of guarded) {
+      const r = await get(api, path, ADMIN_RAW_PLATFORM);
+      assert.equal(r.status, 403, `raw platform_admin must be blocked on ${path}`);
+      const body = await json(r);
+      assert.equal(body.error?.code, "PLATFORM_ADMIN_NO_SITE_BACKOFFICE", `correct denial code on ${path}`);
+    }
+    // The legitimate operators still get in (impersonation issues an `admin`+site token like ADMIN_A).
+    assert.equal((await get(api, "/api/v1/admin/overview", ADMIN_A)).status, 200, "site admin still admitted");
+    assert.equal((await get(api, "/api/v1/admin/overview", ADMIN_PLATFORM)).status, 200, "system owner still admitted");
   } finally { await api.close(); }
 });

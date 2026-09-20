@@ -9,7 +9,7 @@ import {
   type SupportHistoryTurn,
 } from "@invest254/shared";
 import {
-  Router, ApiError, requireAuth, requireRole, requireSite, rateLimit, DEFAULT_SITE_ID,
+  Router, ApiError, requireAuth, requireRole, requireSiteAdmin, requireSite, rateLimit, DEFAULT_SITE_ID,
   adminScopeSite, type Ctx, type Middleware,
 } from "./http.js";
 import type { ApiDeps } from "./app.js";
@@ -216,7 +216,7 @@ export function registerSupportRoutes(router: Router, deps: ApiDeps): void {
   // ── Operator reads (admin+; brand-scoped; platform_superadmin sees all) ──
   const auth = requireAuth(deps.verifier);
   const site = requireSite();
-  const admin = requireRole("admin");
+  const admin = requireSiteAdmin("admin");
 
   router.get(`${BASE}/support/conversations`, auth, site, admin, async (ctx: Ctx) => {
     const scope = adminScopeSite(ctx); // null for platform_superadmin, else the caller's brand

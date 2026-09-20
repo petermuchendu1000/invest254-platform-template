@@ -25,20 +25,28 @@ export const CURRENT_ENC_VERSION = 1;
 export interface SecretMeta { set: boolean; last4: string }
 export interface EncryptResult { ciphertext: string; meta: Record<string, SecretMeta>; encVersion: number }
 
-/** Parse the env key (base64 or hex) into exactly 32 bytes, or null when unset/malformed. */
-export function loadEncKey(env: NodeJS.ProcessEnv = process.env): Buffer | null {
-  const raw = (env.PAYMENTS_CONFIG_ENC_KEY ?? "").trim();
-  if (!raw) return null;
-  let buf: Buffer | null = null;
-  if (/^[0-9a-fA-F]{64}$/.test(raw)) buf = Buffer.from(raw, "hex");
-  else {
-    try { const b = Buffer.from(raw, "base64"); if (b.length === KEY_BYTES) buf = b; } catch { /* fallthrough */ }
+/** Default key source (payments). Registrar config passes its own preference list (see registrarconfig). */
+export const DEFAULT_ENC_KEY_VARS: readonly string[] = ["PAYMENTS_CONFIG_ENC_KEY"];
+
+/** Parse the env key (base64 or hex) into exactly 32 bytes, or null when unset/malformed. Tries each
+ *  name in `varNames` in order (first configured, valid key wins) — lets a feature use a dedicated key
+ *  (e.g. REGISTRAR_CONFIG_ENC_KEY) while falling back to the shared PAYMENTS_CONFIG_ENC_KEY. */
+export function loadEncKey(env: NodeJS.ProcessEnv = process.env, varNames: readonly string[] = DEFAULT_ENC_KEY_VARS): Buffer | null {
+  for (const name of varNames) {
+    const raw = (env[name] ?? "").trim();
+    if (!raw) continue;
+    let buf: Buffer | null = null;
+    if (/^[0-9a-fA-F]{64}$/.test(raw)) buf = Buffer.from(raw, "hex");
+    else {
+      try { const b = Buffer.from(raw, "base64"); if (b.length === KEY_BYTES) buf = b; } catch { /* fallthrough */ }
+    }
+    if (buf && buf.length === KEY_BYTES) return buf;
   }
-  return buf && buf.length === KEY_BYTES ? buf : null;
+  return null;
 }
 
-export function isEncryptionConfigured(env: NodeJS.ProcessEnv = process.env): boolean {
-  return loadEncKey(env) !== null;
+export function isEncryptionConfigured(env: NodeJS.ProcessEnv = process.env, varNames: readonly string[] = DEFAULT_ENC_KEY_VARS): boolean {
+  return loadEncKey(env, varNames) !== null;
 }
 
 /** Last 4 chars of a secret for masked display; short secrets are fully masked (no partial leak of tiny keys). */
@@ -55,8 +63,9 @@ export function last4(value: string): string {
 export function encryptSecrets(
   secrets: Record<string, string>,
   env: NodeJS.ProcessEnv = process.env,
+  varNames: readonly string[] = DEFAULT_ENC_KEY_VARS,
 ): EncryptResult {
-  const key = loadEncKey(env);
+  const key = loadEncKey(env, varNames);
   if (!key) throw new Error("ENC_KEY_NOT_CONFIGURED");
   const clean: Record<string, string> = {};
   const meta: Record<string, SecretMeta> = {};
@@ -79,9 +88,10 @@ export function encryptSecrets(
 export function decryptSecrets(
   ciphertext: string | null | undefined,
   env: NodeJS.ProcessEnv = process.env,
+  varNames: readonly string[] = DEFAULT_ENC_KEY_VARS,
 ): Record<string, string> {
   if (!ciphertext) return {};
-  const key = loadEncKey(env);
+  const key = loadEncKey(env, varNames);
   if (!key) throw new Error("ENC_KEY_NOT_CONFIGURED");
   const raw = Buffer.from(ciphertext, "base64");
   if (raw.length < IV_BYTES + TAG_BYTES + 1) throw new Error("ENC_CIPHERTEXT_MALFORMED");

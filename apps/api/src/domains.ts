@@ -242,7 +242,7 @@ export interface DomainProvisioner {
   /** The Pages custom-domain list (real domain health: active vs pending), one CF call. */
   pagesDomains(): Promise<PagesDomainInfo[]>;
 }
-export function makeDomainProvisioner(): DomainProvisioner | null {
+export function makeDomainProvisioner(registrarOverride?: RegistrarClient | null): DomainProvisioner | null {
   const token = process.env.CF_DNS_API_TOKEN ?? process.env.CF_API_TOKEN;
   const accountId = process.env.CF_ACCOUNT_ID;
   const pagesProject = process.env.CF_PAGES_PROJECT ?? "invest254";
@@ -251,12 +251,16 @@ export function makeDomainProvisioner(): DomainProvisioner | null {
   if (!token || !accountId) return null;
   const cdn = makeCloudflareCdn({ token, accountId });
   // Namecheap is OPTIONAL — used to auto-point nameservers AND to import the account's domain list.
+  // A per-platform registrar (registrarOverride) takes precedence over the global env registrar so a
+  // platform admin uses THEIR OWN Namecheap account (Issue 1 #3). `undefined` => fall back to env;
+  // an explicit `null` => no registrar (manual NS). Cloudflare/Pages stays the shared platform CDN.
   const apiUser = process.env.NAMECHEAP_API_USER;
   const userName = process.env.NAMECHEAP_USERNAME ?? apiUser;
   const apiKey = process.env.NAMECHEAP_API_KEY;
   const clientIp = process.env.NAMECHEAP_CLIENT_IP;
-  const registrar = (apiUser && userName && apiKey && clientIp)
+  const envRegistrar = (apiUser && userName && apiKey && clientIp)
     ? makeNamecheapRegistrar({ apiUser, userName, apiKey, clientIp }) : null;
+  const registrar = registrarOverride !== undefined ? registrarOverride : envRegistrar;
   return {
     pagesProject,
     registrarConfigured: registrar != null,

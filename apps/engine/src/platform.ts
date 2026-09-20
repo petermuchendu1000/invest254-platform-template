@@ -178,12 +178,12 @@ export interface PlatformRepository {
   // ── Global config console (migration 0092): master switches + global pool distribution ──
   getGlobalConfig(): Promise<GlobalConfig>;
   setGlobalConfig(actorId: string, actorRole: string, patch: JsonPatch): Promise<GlobalConfig>;
-  distributePool(actorId: string, actorRole: string, totalCents: number | null, mode: string, overrides?: Record<string, number> | null): Promise<DistributeResult>;
-  listPoolDistributions(limit?: number): Promise<PoolDistribution[]>;
+  distributePool(actorId: string, actorRole: string, totalCents: number | null, mode: string, overrides?: Record<string, number> | null, platformId?: string | null): Promise<DistributeResult>;
+  listPoolDistributions(limit?: number, platformId?: string | null): Promise<PoolDistribution[]>;
   /** Preview demand-based allocation (read-only; does NOT apply). */
-  poolDemand(opts: PoolDemandOpts): Promise<PoolDemandPreview>;
+  poolDemand(opts: PoolDemandOpts, platformId?: string | null): Promise<PoolDemandPreview>;
   /** Compute the demand-based allocation and APPLY it via the audited per-site distributor. */
-  distributePoolDynamic(actorId: string, actorRole: string, opts: PoolDemandOpts): Promise<DistributeDynamicResult>;
+  distributePoolDynamic(actorId: string, actorRole: string, opts: PoolDemandOpts, platformId?: string | null): Promise<DistributeDynamicResult>;
   // ── Payment-gateway provider switches (migration 0116) ──
   /** The registry + per-site overrides for the superadmin console (platform_superadmin-gated). */
   listPaymentProviders(actorRole: string): Promise<PaymentProvidersView>;
@@ -495,15 +495,19 @@ export class PgPlatformRepository implements PlatformRepository {
       secretCiphertext: v.secret_ciphertext ?? null, encVersion: Number(v.enc_version ?? 1), scope: String(v.scope ?? "global"),
     };
   }
-  async distributePool(actorId: string, actorRole: string, totalCents: number | null, mode: string, overrides?: Record<string, number> | null): Promise<DistributeResult> {
-    const r = await this.q.query("select public.fn_platform_distribute_pool($1,$2,$3,$4,$5) as r",
-      [actorId, actorRole, totalCents, mode, overrides ? JSON.stringify(overrides) : null]);
+  async distributePool(actorId: string, actorRole: string, totalCents: number | null, mode: string, overrides?: Record<string, number> | null, platformId?: string | null): Promise<DistributeResult> {
+    // platformId set => platform-scoped distributor (0143): only that platform's active brands.
+    const r = platformId
+      ? await this.q.query("select public.fn_platform_distribute_pool_scoped($1,$2,$3,$4,$5,$6) as r",
+          [actorId, actorRole, platformId, totalCents, mode, overrides ? JSON.stringify(overrides) : null])
+      : await this.q.query("select public.fn_platform_distribute_pool($1,$2,$3,$4,$5) as r",
+          [actorId, actorRole, totalCents, mode, overrides ? JSON.stringify(overrides) : null]);
     const x = r.rows[0].r as Record<string, unknown>;
     return { totalCents: num(x.total_cents), mode: String(x.mode), perSite: (x.per_site as Record<string, number>) ?? {} };
   }
-  async listPoolDistributions(limit = 20): Promise<PoolDistribution[]> {
+  async listPoolDistributions(limit = 20, platformId?: string | null): Promise<PoolDistribution[]> {
     const r = await this.q.query(
-      "select id, total_cents, mode, site_count, per_site, created_at from public.platform_pool_distributions order by created_at desc limit $1", [limit]);
+      "select id, total_cents, mode, site_count, per_site, created_at from public.platform_pool_distributions where ($2::uuid is null or platform_id = $2) order by created_at desc limit $1", [limit, platformId ?? null]);
     return r.rows.map((x: Record<string, unknown>) => ({
       id: num(x.id), totalCents: num(x.total_cents), mode: String(x.mode), siteCount: num(x.site_count),
       perSite: (x.per_site as Record<string, number>) ?? {}, createdAt: String(x.created_at),
@@ -516,7 +520,7 @@ export class PgPlatformRepository implements PlatformRepository {
    * construction — marketers never produce pool decisions), then runs the shared water-fill allocator.
    * Read-only: computes but does not apply.
    */
-  async poolDemand(opts: PoolDemandOpts): Promise<PoolDemandPreview> {
+  async poolDemand(opts: PoolDemandOpts, platformId?: string | null): Promise<PoolDemandPreview> {
     const lookbackDays = Math.min(90, Math.max(3, Math.floor(opts.lookbackDays ?? 14)));
     const baselineDays = Math.min(90, Math.max(lookbackDays, Math.floor(opts.baselineDays ?? 45)));
     const alpha = opts.alpha ?? 0.4, floorFrac = opts.floorFrac ?? 0.015, capMult = opts.capMult ?? 2.5;
@@ -524,8 +528,8 @@ export class PgPlatformRepository implements PlatformRepository {
     const sitesR = await this.q.query(
       `select s.id, s.slug, s.default_daily_pool_cents, coalesce(g.house_edge, 0.05) as house_edge
          from public.sites s left join public.site_game_config g on g.site_id = s.id
-        where s.status = 'active' and s.pool_mode = true
-        order by s.created_at`, []);
+        where s.status = 'active' and s.pool_mode = true and ($1::uuid is null or s.platform_id = $1)
+        order by s.created_at`, [platformId ?? null]);
     // One query over the wider baseline window; the reactive forecast uses only its recent tail.
     const turnR = await this.q.query(
       `select d.site_id::text as site_id, (d.pool_day)::text as day, coalesce(sum(p.stake), 0)::bigint as turnover
@@ -584,13 +588,13 @@ export class PgPlatformRepository implements PlatformRepository {
       reserveCents: totalCents - suggestedTotalCents, baselineDays, configuredFloorCents };
   }
 
-  async distributePoolDynamic(actorId: string, actorRole: string, opts: PoolDemandOpts): Promise<DistributeDynamicResult> {
-    const preview = await this.poolDemand(opts);
+  async distributePoolDynamic(actorId: string, actorRole: string, opts: PoolDemandOpts, platformId?: string | null): Promise<DistributeDynamicResult> {
+    const preview = await this.poolDemand(opts, platformId);
     if (!preview.rows.length) throw new Error("NO_ACTIVE_SITES");
     const overrides: Record<string, number> = {};
     for (const r of preview.rows) overrides[r.siteId] = r.suggestedCents; // includes 0 for idle brands (explicit)
-    // Reuse the audited per-site distributor (0092): sets each brand's recurring default_daily_pool_cents.
-    const result = await this.distributePool(actorId, actorRole, preview.totalCents, "per_site", overrides);
+    // Reuse the audited per-site distributor (0092/0143): sets each brand's recurring default_daily_pool_cents.
+    const result = await this.distributePool(actorId, actorRole, preview.totalCents, "per_site", overrides, platformId);
     return { ...result, preview };
   }
 }
@@ -925,7 +929,7 @@ export class InMemoryPlatformRepository implements PlatformRepository {
     this.gc.version += 1; this.gc.updatedAt = new Date().toISOString();
     return { ...this.gc };
   }
-  async distributePool(_actorId: string, actorRole: string, totalCents: number | null, mode: string, overrides?: Record<string, number> | null): Promise<DistributeResult> {
+  async distributePool(_actorId: string, actorRole: string, totalCents: number | null, mode: string, overrides?: Record<string, number> | null, _platformId?: string | null): Promise<DistributeResult> {
     this.gate(actorRole);
     if (mode !== "equal" && mode !== "per_site") throw new Error("INVALID_MODE");
     const active = [...this.sites.values()].filter((s) => s.status === "active");
@@ -943,10 +947,10 @@ export class InMemoryPlatformRepository implements PlatformRepository {
     this.dists.unshift({ id: this.dists.length + 1, totalCents: totalCents ?? applied, mode, siteCount: Object.keys(perSite).length, perSite, createdAt: new Date().toISOString() });
     return { totalCents: totalCents ?? applied, mode, perSite };
   }
-  async listPoolDistributions(limit = 20): Promise<PoolDistribution[]> { return this.dists.slice(0, limit); }
+  async listPoolDistributions(limit = 20, _platformId?: string | null): Promise<PoolDistribution[]> { return this.dists.slice(0, limit); }
 
   /** Test/dev demand preview: no turnover history is tracked in-memory, so forecasts are 0 (all idle). */
-  async poolDemand(opts: PoolDemandOpts): Promise<PoolDemandPreview> {
+  async poolDemand(opts: PoolDemandOpts, _platformId?: string | null): Promise<PoolDemandPreview> {
     const alpha = opts.alpha ?? 0.4, floorFrac = opts.floorFrac ?? 0.015, capMult = opts.capMult ?? 2.5;
     const baselineDays = Math.min(90, Math.max(Math.floor(opts.lookbackDays ?? 14), Math.floor(opts.baselineDays ?? 45)));
     const configuredFloorCents = Math.max(0, Math.floor(opts.configuredFloorCents ?? 0));
@@ -968,11 +972,11 @@ export class InMemoryPlatformRepository implements PlatformRepository {
       baselineDays, configuredFloorCents };
   }
 
-  async distributePoolDynamic(actorId: string, actorRole: string, opts: PoolDemandOpts): Promise<DistributeDynamicResult> {
-    const preview = await this.poolDemand(opts);
+  async distributePoolDynamic(actorId: string, actorRole: string, opts: PoolDemandOpts, platformId?: string | null): Promise<DistributeDynamicResult> {
+    const preview = await this.poolDemand(opts, platformId);
     const overrides: Record<string, number> = {};
     for (const r of preview.rows) overrides[r.siteId] = r.suggestedCents;
-    const result = await this.distributePool(actorId, actorRole, preview.totalCents, "per_site", overrides);
+    const result = await this.distributePool(actorId, actorRole, preview.totalCents, "per_site", overrides, platformId);
     return { ...result, preview };
   }
 }
@@ -1056,13 +1060,13 @@ export class PlatformService {
     if (!patch || typeof patch !== "object" || Array.isArray(patch)) throw new Error("INVALID_PATCH");
     return this.repo.setGlobalConfig(actorId, actorRole, patch);
   }
-  distributePool(actorId: string, actorRole: string, totalCents: number | null, mode: string, overrides?: Record<string, number> | null): Promise<DistributeResult> {
+  distributePool(actorId: string, actorRole: string, totalCents: number | null, mode: string, overrides?: Record<string, number> | null, platformId?: string | null): Promise<DistributeResult> {
     if (mode !== "equal" && mode !== "per_site") throw new Error("INVALID_MODE");
     if (mode === "equal" && (totalCents == null || !Number.isInteger(totalCents) || totalCents < 0)) throw new Error("INVALID_AMOUNT");
     if (mode === "per_site" && (!overrides || Object.keys(overrides).length === 0)) throw new Error("INVALID_OVERRIDES");
-    return this.repo.distributePool(actorId, actorRole, totalCents, mode, overrides ?? null);
+    return this.repo.distributePool(actorId, actorRole, totalCents, mode, overrides ?? null, platformId ?? null);
   }
-  listPoolDistributions(limit?: number): Promise<PoolDistribution[]> { return this.repo.listPoolDistributions(limit); }
+  listPoolDistributions(limit?: number, platformId?: string | null): Promise<PoolDistribution[]> { return this.repo.listPoolDistributions(limit, platformId ?? null); }
 
   // ── Payment-gateway provider switches (migration 0116) ──
   listPaymentProviders(actorRole: string): Promise<PaymentProvidersView> { return this.repo.listPaymentProviders(actorRole); }
@@ -1170,8 +1174,8 @@ export class PlatformService {
   }
 
   // ── Dynamic (demand-based) pool distribution (docs/25 §15) ──
-  poolDemand(opts: PoolDemandOpts): Promise<PoolDemandPreview> { return this.repo.poolDemand(opts ?? {}); }
-  distributePoolDynamic(actorId: string, actorRole: string, opts: PoolDemandOpts): Promise<DistributeDynamicResult> {
-    return this.repo.distributePoolDynamic(actorId, actorRole, opts ?? {});
+  poolDemand(opts: PoolDemandOpts, platformId?: string | null): Promise<PoolDemandPreview> { return this.repo.poolDemand(opts ?? {}, platformId ?? null); }
+  distributePoolDynamic(actorId: string, actorRole: string, opts: PoolDemandOpts, platformId?: string | null): Promise<DistributeDynamicResult> {
+    return this.repo.distributePoolDynamic(actorId, actorRole, opts ?? {}, platformId ?? null);
   }
 }

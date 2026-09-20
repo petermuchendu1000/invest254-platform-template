@@ -1,10 +1,12 @@
 'use client';
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
+import Link from 'next/link';
 import { PageHeader, Section } from '@/components/admin/ui';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
-import { useOnboardClient, useDomainStatus, useOnboardCapabilities } from '@/lib/platform/hooks';
+import { useOnboardClient, useDomainStatus, useOnboardCapabilities, usePlatforms } from '@/lib/platform/hooks';
+import { useSession } from '@/lib/auth/session';
 import { DomainImport } from '@/components/platform/DomainImport';
 import type { OnboardResult } from '@/lib/platform/endpoints';
 
@@ -26,6 +28,12 @@ export default function OnboardPage() {
   const [result, setResult] = useState<OnboardResult | null>(null);
   const provisionedDomain = result?.domain?.domain ?? null;
   const domainStatus = useDomainStatus(provisionedDomain);
+
+  // System owner may onboard directly into a chosen platform; a platform admin auto-scopes to its own.
+  const isSystem = useSession((s) => s.user?.role) === 'platform_superadmin';
+  const platformsQ = usePlatforms();
+  const platforms = useMemo(() => (platformsQ.data?.platforms ?? []) as Array<{ platformId: string; slug: string; name: string }>, [platformsQ.data]);
+  const [platformId, setPlatformId] = useState('');
 
   const domainConfigured = caps.data?.domainConfigured ?? true;
   const registrarConfigured = caps.data?.registrarConfigured ?? false;
@@ -51,6 +59,10 @@ export default function OnboardPage() {
         </div>
       ) : null}
 
+      {caps.data && !registrarConfigured ? (
+        <p className="text-xs text-muted">To auto-point domains, <Link href="/platform/registrar" className="font-medium text-accent hover:underline">configure your Namecheap registrar</Link>. Until then, set nameservers manually after creating (or ask the system owner to register &amp; assign the domain).</p>
+      ) : null}
+
       {registrarConfigured ? <DomainImport /> : null}
 
       <Section title="Add one brand manually">
@@ -68,6 +80,7 @@ export default function OnboardPage() {
                 ...(email ? { supportEmail: email } : {}),
                 colors: { primary: colorPrimary },
                 provisionDomain: domainConfigured && provision && Boolean(dom),
+                ...(isSystem && platformId ? { platformId } : {}),
               },
               { onSuccess: (r) => setResult(r) },
             );
@@ -77,6 +90,15 @@ export default function OnboardPage() {
           <Input label="Slug" name="slug" value={slug} onChange={(e) => setSlug(e.target.value)} placeholder="shikafx" required />
           <Input label="Primary domain" name="primaryDomain" value={primaryDomain} onChange={(e) => setDomain(e.target.value)} placeholder="shikafx.com" optional />
           <Input label="Currency" name="currency" value={currency} onChange={(e) => setCurrency(e.target.value)} />
+          {isSystem ? (
+            <label className="flex flex-col gap-1.5 text-sm">
+              <span className="font-medium text-fg">Platform</span>
+              <select value={platformId} onChange={(e) => setPlatformId(e.target.value)} className="h-11 w-full rounded-brand border border-border bg-surface-2 px-3 text-fg">
+                <option value="">Default platform</option>
+                {platforms.map((p) => <option key={p.platformId} value={p.platformId}>{p.name} ({p.slug})</option>)}
+              </select>
+            </label>
+          ) : null}
           <Input label="Support email" name="supportEmail" type="email" value={supportEmail} onChange={(e) => setSupportEmail(e.target.value)} placeholder="support@shikafx.com" optional />
           <label className="flex flex-col gap-1.5 text-sm">
             <span className="font-medium text-fg">Seed colour</span>
@@ -137,6 +159,18 @@ export default function OnboardPage() {
               </p>
             </div>
           )}
+        </Section>
+      ) : null}
+      {result ? (
+        <Section title="Next steps">
+          <div className="flex flex-col gap-2 rounded-2xl border border-border bg-surface p-4 text-sm text-fg">
+            <p>Brand created. It ships with the <b>Line chart</b>, <b>Classic</b> interface and <b>M-Pesa</b> deposits.</p>
+            <ul className="list-disc pl-5 text-muted">
+              <li>Create the brand&rsquo;s admin: have them register on the domain, then promote them under the client&rsquo;s Users.</li>
+              <li>Other charts, interfaces and gateways are paid add-ons &mdash; request them from the client&rsquo;s <b>Systems &amp; gateways</b>.</li>
+              <li>To auto-point domains, <Link href="/platform/registrar" className="text-accent hover:underline">configure your Namecheap</Link> (else set the nameservers manually above).</li>
+            </ul>
+          </div>
         </Section>
       ) : null}
     </>

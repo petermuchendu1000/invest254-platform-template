@@ -1,4 +1,4 @@
-import { Router, ApiError, requireAuth, requireRole, rateLimit, adminScopeSite, type Ctx } from "./http.js";
+import { Router, ApiError, requireAuth, requireRole, requireSiteAdmin, rateLimit, adminScopeSite, type Ctx } from "./http.js";
 import type { ApiDeps } from "./app.js";
 import { mpesaCode, mpesaReceivedMessage, mpesaSentMessage, ksh } from "./mpesa.js";
 
@@ -252,7 +252,7 @@ function requireMarketer(deps: ApiDeps) {
 // ── Routes ───────────────────────────────────────────────────────────────────
 export function registerMarketerRoutes(router: Router, deps: ApiDeps): void {
   const auth = requireAuth(deps.verifier);
-  const admin = requireRole("admin");
+  const admin = requireSiteAdmin("admin");
   const marketer = requireMarketer(deps);
   const loginLimit = rateLimit({ name: "marketer-login", by: "ip", limit: Number(process.env.RATE_LIMIT_AUTH_PER_MIN) || 40, windowMs: 60_000 });
   // Self-service demo top-up: modest abuse guard (the RPC is idempotent + capped, so this is belt-and-braces).

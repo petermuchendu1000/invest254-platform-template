@@ -393,6 +393,33 @@ export function requireRole(minRole: keyof typeof ROLE_RANK): Middleware {
   };
 }
 
+/**
+ * Site back-office guard (Issue 1 — residual data-leak hardening). Admits admin / superadmin /
+ * platform_superadmin AND, during impersonation, a platform admin's site-scoped `admin` token — but
+ * REFUSES a RAW `platform_admin` token (role='platform_admin', which carries a `platform` claim and
+ * NO `site` claim).
+ *
+ * WHY: the /admin site back-office reads scope by adminScopeSite(), which is null (i.e. UNRESTRICTED)
+ * for a platform_admin — and the mutation guard assertTargetSiteInScope() is likewise tolerant of a
+ * null scope. Admitting a raw platform_admin therefore leaks (and lets them act on) EVERY platform's
+ * data. A platform admin has no single-brand back office; they manage brands from the platform
+ * console and drill into one via impersonation, which mints a proper `admin` + `site` token that this
+ * guard admits and that scopes correctly. System owner (platform_superadmin) is always admitted.
+ */
+export function requireSiteAdmin(minRole: "admin" | "superadmin" = "admin"): Middleware {
+  const rank = requireRole(minRole);
+  return async (ctx) => {
+    await rank(ctx);
+    if ((ctx.claims?.role ?? "") === "platform_admin") {
+      throw new ApiError(
+        "PLATFORM_ADMIN_NO_SITE_BACKOFFICE",
+        "platform admins manage brands from the platform console; open a brand via impersonation",
+        403,
+      );
+    }
+  };
+}
+
 /** The default (single-tenant) brand, seeded by migration 0044. */
 export const DEFAULT_SITE_ID = "00000000-0000-0000-0000-000000000001";
 
