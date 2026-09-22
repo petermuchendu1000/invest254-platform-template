@@ -299,8 +299,13 @@ export class PgPlatformRepository implements PlatformRepository {
     }));
   }
   async platformOfSite(siteId: string): Promise<string | null> {
+    // FAIL CLOSED (Issue 1): an empty/absent siteId is UNRESOLVED (null), not a DB error from an
+    // invalid uuid cast; and a site row whose platform_id IS NULL must resolve to null, not the
+    // string "null" (String(null)) — the caller's scope guard refuses an unresolved target.
+    if (!siteId) return null;
     const r = await this.q.query("select platform_id from sites where id = $1", [siteId]);
-    return r.rows.length ? String(r.rows[0].platform_id) : null;
+    const v = r.rows.length ? r.rows[0].platform_id : null;
+    return v == null ? null : String(v);
   }
 
   async listPlatforms(): Promise<PlatformRow[]> {

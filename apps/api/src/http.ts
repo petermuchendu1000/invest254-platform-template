@@ -474,21 +474,36 @@ export function adminScopePlatform(ctx: Ctx): string | null {
   if (!ctx.claims) throw new ApiError("AUTH_REQUIRED", "authentication required", 401);
   const role = ctx.claims.role ?? "player";
   const systemRank = ROLE_RANK.platform_superadmin ?? Number.POSITIVE_INFINITY;
-  if ((ROLE_RANK[role] ?? 0) >= systemRank) return null;
-  if (role === "platform_admin") return ctx.claims.platform ?? null;
+  if ((ROLE_RANK[role] ?? 0) >= systemRank) return null;   // system owner -> unrestricted
+  if (role === "platform_admin") {
+    // FAIL CLOSED (Issue 1 / BUGLOG-0001): a platform_admin's authority is EXACTLY its one platform.
+    // A MISSING `platform` claim is NOT "unrestricted" — reading it that way is the cross-tenant hole
+    // that handed every brand to a single-platform admin. Refuse rather than widen scope to system-wide.
+    const claim = ctx.claims.platform;
+    if (!claim) {
+      throw new ApiError("PLATFORM_CLAIM_MISSING", "platform admin token carries no platform scope; re-authenticate", 403);
+    }
+    return claim;
+  }
   return null;
 }
 
 /**
- * Reject a platform-scoped admin acting on a target in another platform. TOLERANT by design (matches
- * assertTargetSiteInScope): an unrestricted caller (null scope) and an unresolved target (null
- * platform) both pass — the platform-aware DB RPCs remain the ultimate guard. Only a KNOWN
- * cross-platform target is refused (PLATFORM_SCOPE_FORBIDDEN, 403).
+ * Reject a platform-scoped admin acting on a target in another platform. FAIL CLOSED (Issue 1 /
+ * BUGLOG-0001): only the system owner (null scope) is unrestricted. A bounded platform_admin is
+ * refused BOTH a known cross-platform target AND an unresolved target (null) — an unresolvable
+ * target must never be assumed in-scope. A claimless platform_admin is rejected earlier by
+ * adminScopePlatform (PLATFORM_CLAIM_MISSING). Refusals use PLATFORM_SCOPE_FORBIDDEN, 403.
  */
 export function assertTargetPlatformInScope(ctx: Ctx, targetPlatform: string | null | undefined): void {
-  const scope = adminScopePlatform(ctx);
+  const scope = adminScopePlatform(ctx);      // throws PLATFORM_CLAIM_MISSING for a claimless platform_admin
   if (scope === null) return;                 // system owner -> unrestricted
-  if (targetPlatform == null) return;         // unknown target -> defer to the RPC's own guard
+  // FAIL CLOSED (Issue 1 / BUGLOG-0001): a bounded caller acting on an UNRESOLVED target is refused.
+  // Deferring "to the RPC's own guard" is exactly what let a cross-platform target slip through when
+  // its platform could not be resolved. An unbounded/system caller already returned above.
+  if (targetPlatform == null) {
+    throw new ApiError("PLATFORM_SCOPE_FORBIDDEN", "PLATFORM_SCOPE_FORBIDDEN: target platform could not be resolved", 403);
+  }
   if (targetPlatform !== scope) {
     throw new ApiError("PLATFORM_SCOPE_FORBIDDEN", "PLATFORM_SCOPE_FORBIDDEN: target belongs to another platform", 403);
   }

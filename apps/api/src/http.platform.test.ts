@@ -46,8 +46,24 @@ test("assertTargetPlatformInScope: a platform_admin may act only inside its own 
   assert.ok(caught instanceof ApiError, "threw an ApiError");
   assert.equal(caught!.code, "PLATFORM_SCOPE_FORBIDDEN");
   assert.equal(caught!.status, 403);
-  // unknown target platform (null) defers to the DB RPC guard -> tolerant, no throw
-  assert.doesNotThrow(() => assertTargetPlatformInScope(pa, null));
+  // FAIL CLOSED (Issue 1 / BUGLOG-0001): an UNRESOLVED target platform (null) is now REFUSED for a
+  // bounded platform_admin — never deferred. Deferring is what let cross-platform targets through.
+  let nullCaught: ApiError | undefined;
+  try { assertTargetPlatformInScope(pa, null); } catch (e) { nullCaught = e as ApiError; }
+  assert.ok(nullCaught instanceof ApiError, "unresolved target throws");
+  assert.equal(nullCaught!.code, "PLATFORM_SCOPE_FORBIDDEN");
+  assert.equal(nullCaught!.status, 403);
+});
+
+test("adminScopePlatform / assertTargetPlatformInScope: a platform_admin with NO platform claim is refused (fail closed)", () => {
+  const claimless = ctx({ userId: "u", role: "platform_admin" }); // no `platform` claim
+  let c1: ApiError | undefined;
+  try { adminScopePlatform(claimless); } catch (e) { c1 = e as ApiError; }
+  assert.ok(c1 instanceof ApiError, "claimless platform_admin scope throws");
+  assert.equal(c1!.code, "PLATFORM_CLAIM_MISSING");
+  assert.equal(c1!.status, 403);
+  // the target guard also refuses (it calls adminScopePlatform first)
+  assert.throws(() => assertTargetPlatformInScope(claimless, P1), ApiError);
 });
 
 test("assertTargetPlatformInScope: the system owner is never platform-restricted", () => {
