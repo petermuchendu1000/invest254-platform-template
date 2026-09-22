@@ -9,12 +9,12 @@ import { roleFromToken } from '@/lib/auth/token';
  * Sticky banner shown in the admin console while an operator is impersonating a brand (docs/24).
  * Makes the impersonation obvious (so it is never mistaken for the operator's own account) and offers
  * a one-click return to the platform console. The role shown reflects the ACTIVE session's minted
- * role — 'superadmin' for the system owner, 'admin' for a platform admin (scoped) — so it never
+ * role — always 'admin' (Issue 1 / F1: impersonation mints a day-to-day admin session) — so it never
  * mislabels a platform admin as a superadmin. Renders nothing when not impersonating.
  */
 export function ImpersonationBanner() {
   const [brand, setBrand] = useState<ImpersonatedBrand | null>(null);
-  const roleLabel = roleFromToken(useSession((s) => s.token)) === 'superadmin' ? 'superadmin' : 'admin';
+  const roleLabel = 'admin';  // impersonation always mints a day-to-day admin session (Issue 1 / F1)
 
   // sessionStorage is client-only — read after mount to avoid an SSR/CSR hydration mismatch.
   useEffect(() => { setBrand(getImpersonatingBrand()); }, []);

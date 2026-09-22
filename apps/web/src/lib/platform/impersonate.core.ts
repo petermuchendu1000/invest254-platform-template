@@ -3,7 +3,7 @@
  *
  * The platform owner "logs into" a client brand's admin console AS that brand's superadmin via a
  * token minted by POST /platform/sites/:id/impersonate (subject stays the platform admin for audit;
- * role='superadmin'; `site` = the target brand). The active session token is swapped to it and the
+ * role='admin'; `site` = the target brand). The active session token is swapped to it and the
  * platform (return) token is stashed so "Exit to platform" restores it.
  *
  * This module owns ONLY the reversible storage transitions + strict validation, so the exact same

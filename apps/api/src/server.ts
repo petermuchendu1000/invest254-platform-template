@@ -282,7 +282,7 @@ async function buildDeps(): Promise<ApiDeps> {
     const override = process.env.WITHDRAWAL_ACTION_ADMIN_ID?.trim();
     if (override) return override;
     try {
-      const r = await q.query("select id from profiles where role in ('admin','superadmin') and status = 'active' order by (role = 'superadmin') desc, created_at asc limit 1", []);
+      const r = await q.query("select id from profiles where role in ('admin','platform_admin','platform_superadmin') and status = 'active' order by case role when 'platform_superadmin' then 0 when 'platform_admin' then 1 else 2 end, created_at asc limit 1", []);
       return r.rows[0] ? String(r.rows[0].id) : null;
     } catch { return null; }
   };
@@ -432,10 +432,10 @@ async function buildDeps(): Promise<ApiDeps> {
   const resolveActorName = async (): Promise<string> => {
     try {
       const actor = await resolveActionActor();
-      if (!actor) return "superadmin";
+      if (!actor) return "system";
       const r = await q.query("select username from profiles where id = $1::uuid", [actor]);
-      return (r.rows[0] as Record<string, unknown> | undefined)?.username as string ?? "superadmin";
-    } catch { return "superadmin"; }
+      return (r.rows[0] as Record<string, unknown> | undefined)?.username as string ?? "system";
+    } catch { return "system"; }
   };
 
   // Telegram Approve/Reject for real-money marketer commission payouts. Approve = approve + mark-paid
@@ -537,7 +537,7 @@ async function buildDeps(): Promise<ApiDeps> {
     // MFA is mandatory for EVERY privileged tier — including the platform tier (platform_admin and the
     // system owner platform_superadmin), which are the highest-value accounts. Enrolment is flagged at
     // login and enforced on the next sign-in; it can never lock an operator out of their own console.
-    mfaRequiredRoles: ["admin", "superadmin", "platform_admin", "platform_superadmin"],
+    mfaRequiredRoles: ["admin", "platform_admin", "platform_superadmin"],
     // No-OTP password reset is account takeover unless verified — opt in deliberately.
     allowUnverifiedPasswordReset: process.env.ALLOW_UNVERIFIED_PASSWORD_RESET === "true",
     ...(process.env.SUPABASE_JWT_ISSUER ? { issuer: process.env.SUPABASE_JWT_ISSUER } : {}),

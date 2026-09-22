@@ -4,7 +4,7 @@ import { nextOnline, seedOnline, isStaffRole, ONLINE_MIN, ONLINE_MAX } from './o
 
 test('isStaffRole: only admin/superadmin are staff', () => {
   assert.equal(isStaffRole('admin'), true);
-  assert.equal(isStaffRole('superadmin'), true);
+  assert.equal(isStaffRole('platform_superadmin'), true);
   assert.equal(isStaffRole('player'), false);
   assert.equal(isStaffRole('marketer'), false);
   assert.equal(isStaffRole(undefined), false);

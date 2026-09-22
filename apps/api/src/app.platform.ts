@@ -356,7 +356,12 @@ export function registerPlatformRoutes(router: Router, deps: ApiDeps): void {
     const siteId = ctx.params.id!;
     const brand = (await deps.platform.listSites(adminScopePlatform(ctx))).find((s) => s.siteId === siteId);
     if (!brand) throw new ApiError("SITE_NOT_FOUND", "brand not found", 404);
-    const impersonatedRole = ctx.claims!.role === "platform_superadmin" ? "superadmin" : "admin";
+    // Issue 1 / F1 (Option B): impersonation ALWAYS mints a day-to-day `admin` + `site` token — for
+    // BOTH the system owner and a platform admin. Owner-tier brand config no longer lives in the site
+    // back-office; it is reached from the platform/system console (docs/38). This removes the legacy
+    // site-fenced `superadmin` token entirely. The site claim scopes the impersonated session to the
+    // one brand; the action is audited with the caller's REAL role below.
+    const impersonatedRole = "admin";
     const token = await deps.auth.issueToken(ctx.claims!.userId, impersonatedRole, siteId);
     await deps.admin.recordAction(
       ctx.claims!.userId, ctx.claims!.role ?? "player",

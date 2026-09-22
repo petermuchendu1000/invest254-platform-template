@@ -164,3 +164,52 @@ verifier (`auth.ts`) surfaces `AuthClaims.platform`. `/auth/login` returns `plat
   the existing operator design system (React Query hooks + shared UI). `next build` clean.
   UX/psychology: scope framing to prevent mode-errors, pre-attentive status colour, consequence-salient
   confirmation copy on appoint/revoke/suspend, single-CTA empty states.
+
+---
+
+## 13. Issue 1 / F1 — the legacy `superadmin` tier removed (Option B, branch `issue1-remove-superadmin`)
+
+The authoritative model is now exactly **five** tiers — the 6th, out-of-hierarchy `superadmin` role is
+gone (migration `0152_remove_superadmin_role.sql`):
+
+```
+SYSTEM ADMIN   platform_superadmin   global — every platform
+  └─ PLATFORM  platform_admin        one platform (a group of brands)
+       └─ SITE admin                 one brand — DAY-TO-DAY ops only
+            └─ marketer / player     per brand
+```
+
+### What changed
+- **DB (`0152`):** fail-closed guard (0 `superadmin` rows), `profiles_role_check` drops `superadmin`,
+  and `is_site_admin` is simplified to `{platform_superadmin → true; platform_admin → same-platform;
+  admin → same-site}` (the redundant `superadmin` branch and the unreachable `finance_admin`/`support`
+  branches — F2 — are removed).
+- **Impersonation (Option B):** `/platform/sites/:id/impersonate` now ALWAYS mints a **day-to-day
+  `admin` + `site`** token — for BOTH the system owner and a platform admin. There is no longer a
+  site-fenced owner-tier session.
+- **Owner-tier brand config is System-tier.** Game/economy config, seed rotation, M-Pesa config, the
+  per-brand withdrawal-pool budget, Fly ops, and per-user statistical overrides are gated
+  `requireRole("platform_superadmin")` — reachable only from the platform/system console (the system
+  owner targets a specific brand via `?site=`), never from the site back-office or an `admin`
+  impersonation token. The web "Governance" section is System-owner-only.
+- **Site admin = day-to-day only.** A site `admin` manages its brand's users (status/role/balance),
+  support and reports — but CANNOT touch owner-tier levers (they moved up, not down).
+
+### Why (least privilege, evidence-backed)
+`superadmin` had **0 live holders**, yet duplicated the site tier in RLS and concentrated owner-tier
+powers behind a role no one held — and, worse, was minted at runtime as the owner's impersonation
+token. Collapsing to five tiers makes "who can do what" unambiguous and keeps owner-tier economy
+levers at the system tier, where they belong for a 10k-platform operator.
+
+### Scope preserved / no regression
+0 users held `superadmin`; the owner-tier `/admin/*` routes were only ever reachable by the system
+owner in practice, so no live user loses (or gains) access. Verified: **DB e2e 25/25, TS 1035/1035,
+typechecks clean.**
+
+### Deliberately deferred (tracked in BUGLOG #40)
+- **F1b** — let a `platform_admin` manage its OWN brands' owner-tier economy (needs the economy RPCs
+  widened with platform scope + tests).
+- **F1c** — sweep the inert `superadmin` allow-list/protected-target literals from the 29 remaining
+  `fn_*` bodies (harmless dead code today; the CHECK forbids the role).
+- **F1d** — a brand selector on the System-console owner-tier pages (so the owner picks the target
+  brand instead of relying on `?site=`).

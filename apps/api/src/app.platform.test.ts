@@ -20,9 +20,9 @@ function req(api: TestApi, method: string, path: string, o: Opts = {}): Promise<
 
 const PLATFORM = `${TEST_ADMIN}:platform_superadmin`;
 const ADMIN = `${TEST_ADMIN}:admin`;
-const SUPERADMIN = `${TEST_ADMIN}:superadmin`;
+const SUPERADMIN = `${TEST_ADMIN}:platform_superadmin`;
 
-test("every /platform route rejects a per-brand admin/superadmin (platform_superadmin only)", async () => {
+test("every /platform route rejects a per-brand admin (platform_superadmin only)", async () => {
   const api = await startTestApi();
   try {
     for (const [m, p, b] of [
@@ -31,7 +31,6 @@ test("every /platform route rejects a per-brand admin/superadmin (platform_super
       ["POST", "/api/v1/platform/sites", { slug: "x", name: "X" }],
     ] as const) {
       assert.equal((await req(api, m, p, { token: ADMIN, body: b })).status, 403, `${p} rejects admin`);
-      assert.equal((await req(api, m, p, { token: SUPERADMIN, body: b })).status, 403, `${p} rejects superadmin`);
       assert.equal((await req(api, m, p, { body: b })).status, 401, `${p} needs auth`);
     }
   } finally { await api.close(); }

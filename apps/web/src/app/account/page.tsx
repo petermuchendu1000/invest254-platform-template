@@ -9,6 +9,7 @@ import { useAuthUi } from '@/lib/auth/ui';
 import { useAuthActions } from '@/lib/auth/useAuthActions';
 import { useHydrated } from '@/lib/useHydrated';
 import { ReferralInviteCard } from '@/components/account/ReferralInviteCard';
+import { SecurityCard } from '@/components/account/SecurityCard';
 
 export default function AccountPage() {
   const hydrated = useHydrated();
@@ -46,6 +47,9 @@ export default function AccountPage() {
 
       {/* Referral link + code, right under the username (item 3) */}
       <ReferralInviteCard />
+
+      {/* Admin/operator security controls (2FA management) — hidden for players. */}
+      <SecurityCard />
     </section>
   );
 }

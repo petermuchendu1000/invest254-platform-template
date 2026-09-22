@@ -105,8 +105,8 @@ export default function WithdrawalsPage() {
           },
         );
       } else {
-        // Approve releases money and requires the superadmin password — cannot auto-run from a link.
-        toast.push({ tone: 'info', title: 'Password required to approve', description: 'Use the Approve button on the highlighted row and enter your superadmin password.' });
+        // Approve releases money and requires the system owner password — cannot auto-run from a link.
+        toast.push({ tone: 'info', title: 'Password required to approve', description: 'Use the Approve button on the highlighted row and enter your system owner password.' });
       }
       params.delete('do');
       const qs = params.toString();

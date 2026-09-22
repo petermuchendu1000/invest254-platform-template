@@ -17,7 +17,7 @@ import { useHydrated } from '@/lib/useHydrated';
  */
 function destinationFor(role: string | undefined | null): string | null {
   if (role === 'platform_superadmin' || role === 'platform_admin') return '/platform';
-  if (role === 'admin' || role === 'superadmin') return '/admin';
+  if (role === 'admin') return '/admin';
   return null;
 }
 

@@ -297,12 +297,19 @@ export function registerAuthRoutes(router: Router, deps: ApiDeps): void {
     // its answers. The client uses this to force the mandatory setup screen; the reset endpoint
     // enforces the same server-side (fail-closed), so a bypassed client cannot skip it.
     const securitySetupRequired = await deps.auth.securitySetupRequired(userId).catch(() => false);
+    // 2FA setup gate: true only for a privileged account whose role REQUIRES TOTP but has not yet
+    // enabled it. The client forces a non-dismissible enrolment screen; login/refresh also surface
+    // `mfaEnrolmentRequired`, and TOTP is verified server-side at sign-in, so a bypassed client cannot
+    // skip protection once enrolled. (Fail-open to false so a transient DB blip never locks a console.)
+    const mfaState = await deps.auth.mfaStatus(userId).catch(() => ({ enabled: false, required: false, recoveryCodesLeft: 0 }));
+    const mfaSetupRequired = mfaState.required && !mfaState.enabled;
     return {
       userId,
       role: profile?.role ?? ctx.claims!.role ?? "player",
       username,
       phone: profile?.phone ?? null,
       securitySetupRequired,
+      mfaSetupRequired,
     };
   });
 

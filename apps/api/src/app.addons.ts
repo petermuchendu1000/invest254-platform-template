@@ -45,7 +45,7 @@ export function registerAddonRoutes(router: Router, deps: ApiDeps): void {
   if (!deps.addons) return;
   const addons = deps.addons;
   const auth = requireAuth(deps.verifier);
-  const admin = requireRole("admin");                    // admin / superadmin / platform_admin / system
+  const admin = requireRole("admin");                    // admin / platform_admin / system
   const system = requireRole("platform_superadmin");     // system owner only
 
   // The brand a request/view targets: a site admin uses its own site claim; a platform admin / system

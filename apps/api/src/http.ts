@@ -49,17 +49,19 @@ export type Middleware = (ctx: Ctx) => Promise<void> | void;
 interface Route { method: string; regex: RegExp; keys: string[]; chain: Array<Middleware | Handler>; }
 
 /**
- * Role hierarchy — higher rank satisfies any lower minimum (see docs/05 §7). Four tiers:
- * player < marketer (also a player) < admin (day-to-day ops) < superadmin (full control).
+ * Role hierarchy — higher rank satisfies any lower minimum (see docs/05 §7, docs/38). Five tiers:
+ *   player < marketer (also a player) < admin (SITE, day-to-day ops)
+ *         < platform_admin (PLATFORM — a set of brands) < platform_superadmin (SYSTEM — global).
+ * The legacy per-brand `superadmin` tier was removed in Issue 1 / F1 (migration 0152): owner-tier
+ * brand config lives in the platform/system console, not the site back-office (docs/38 §Option B).
  */
 export const ROLE_RANK: Readonly<Record<string, number>> = {
   player: 1,
   marketer: 2,
-  admin: 3,              // SITE ADMIN — one brand
-  superadmin: 4,         // per-brand full control (legacy tier; site-scoped)
-  platform_admin: 5,     // PLATFORM ADMIN — a set of sites in ONE platform (Issue 1)
+  admin: 3,              // SITE ADMIN — one brand, day-to-day ops
+  platform_admin: 4,     // PLATFORM ADMIN — a set of sites in ONE platform (Issue 1)
   // SYSTEM ADMIN / platform owner: outranks everyone; reaches the system /platform console.
-  platform_superadmin: 6,
+  platform_superadmin: 5,
 };
 
 const MAX_BODY_BYTES = 1_000_000; // 1 MB cap on request bodies
@@ -394,7 +396,7 @@ export function requireRole(minRole: keyof typeof ROLE_RANK): Middleware {
 }
 
 /**
- * Site back-office guard (Issue 1 — residual data-leak hardening). Admits admin / superadmin /
+ * Site back-office guard (Issue 1 — residual data-leak hardening). Admits admin /
  * platform_superadmin AND, during impersonation, a platform admin's site-scoped `admin` token — but
  * REFUSES a RAW `platform_admin` token (role='platform_admin', which carries a `platform` claim and
  * NO `site` claim).
@@ -406,7 +408,7 @@ export function requireRole(minRole: keyof typeof ROLE_RANK): Middleware {
  * console and drill into one via impersonation, which mints a proper `admin` + `site` token that this
  * guard admits and that scopes correctly. System owner (platform_superadmin) is always admitted.
  */
-export function requireSiteAdmin(minRole: "admin" | "superadmin" = "admin"): Middleware {
+export function requireSiteAdmin(minRole: "admin" = "admin"): Middleware {
   const rank = requireRole(minRole);
   return async (ctx) => {
     await rank(ctx);

@@ -53,21 +53,25 @@ test("game-config is per-brand and isolated (editing site A never touches site B
   } finally { await api.close(); }
 });
 
-test("a site-scoped superadmin is pinned to their brand and cannot cross-edit via ?site=", async () => {
+test("owner-tier game-config is System-only: a site admin is forbidden; the owner targets any brand via ?site=", async () => {
   const api = await startTestApi();
   try {
-    // Token is scoped to SITE_B; even though it names SITE_A in the query, the write must land on B.
-    const scopedB = `boss:superadmin:${SITE_B}`;
-    const up = await req(api, "PATCH", `/api/v1/admin/game-config?site=${SITE_A}`,
-      { token: scopedB, body: { houseEdge: 0.55, targetWinRate: 0.09 } });
-    assert.equal(up.status, 200);
+    // Issue 1 / F1: owner-tier brand config moved out of the site back-office. A site admin (even a
+    // brand-scoped one) can NEVER edit game config — it is reachable only by the platform owner.
+    const adminB = `boss:admin:${SITE_B}`;
+    const forbidden = await req(api, "PATCH", `/api/v1/admin/game-config`,
+      { token: adminB, body: { houseEdge: 0.55 } });
+    assert.equal(forbidden.status, 403, "a site admin cannot edit owner-tier game config");
 
-    // Brand A must be untouched by the scoped-B operator's attempt.
+    // The system owner is unrestricted and targets a specific brand via ?site=.
+    const up = await req(api, "PATCH", `/api/v1/admin/game-config?site=${SITE_A}`,
+      { token: OWNER, body: { houseEdge: 0.55, targetWinRate: 0.09 } });
+    assert.equal(up.status, 200);
     const a = await json(await req(api, "GET", `/api/v1/admin/game-config?site=${SITE_A}`, { token: OWNER }));
-    assert.notEqual(a.houseEdge, 0.55, "scoped-B admin could NOT edit brand A");
-    // Brand B received the edit (its own brand).
-    const b = await json(await req(api, "GET", `/api/v1/admin/game-config`, { token: scopedB }));
-    assert.equal(b.houseEdge, 0.55, "scoped-B admin edited its own brand");
+    assert.equal(a.houseEdge, 0.55, "system owner edited brand A via ?site=");
+    // Brand B is untouched (the owner named A, not B).
+    const b = await json(await req(api, "GET", `/api/v1/admin/game-config?site=${SITE_B}`, { token: OWNER }));
+    assert.notEqual(b.houseEdge, 0.55, "brand B untouched");
   } finally { await api.close(); }
 });
 

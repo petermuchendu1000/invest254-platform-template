@@ -82,7 +82,7 @@ export function buildPayoutEmail(
   ];
   if (links) {
     textLines.push(``, `Approve: ${links.approveUrl}`, `Reject:  ${links.rejectUrl}`,
-      ``, `Approving requires the superadmin password. Links expire in 72h.`);
+      ``, `Approving requires the system owner password. Links expire in 72h.`);
   } else {
     textLines.push(``, `Review and action this payout in the admin dashboard or the Telegram channel.`);
   }
@@ -92,10 +92,10 @@ export function buildPayoutEmail(
     ? `<tr><td style="padding-top:8px;">
          <a href="${esc(links.approveUrl)}" style="display:block;text-align:center;background:#166534;color:#ffffff;text-decoration:none;font-weight:600;padding:13px;border-radius:9px;margin-bottom:10px;">Approve payout</a>
          <a href="${esc(links.rejectUrl)}" style="display:block;text-align:center;background:#ffffff;color:#991b1b;border:1px solid #e5e7eb;text-decoration:none;font-weight:600;padding:13px;border-radius:9px;">Reject and return funds</a>
-         <p style="color:#6b7280;font-size:11px;margin:14px 0 0;">Approving opens a secure page that requires the superadmin password. Links expire in 72 hours. No login required.</p>
+         <p style="color:#6b7280;font-size:11px;margin:14px 0 0;">Approving opens a secure page that requires the system owner password. Links expire in 72 hours. No login required.</p>
        </td></tr>`
     : `<tr><td style="padding-top:6px;">
-         <p style="color:#374151;font-size:13px;margin:0;">Review and action this payout in the admin dashboard or the Telegram approval channel. Approval requires the superadmin password.</p>
+         <p style="color:#374151;font-size:13px;margin:0;">Review and action this payout in the admin dashboard or the Telegram approval channel. Approval requires the system owner password.</p>
        </td></tr>`;
 
   const html = `<!doctype html><html><body style="margin:0;background:#f3f4f6;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;">

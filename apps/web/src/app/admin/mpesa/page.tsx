@@ -46,9 +46,9 @@ function MpesaBody() {
   const update = useUpdateMpesaConfig();
   const toast = useToast();
   const role = useSession((s) => s.user?.role);
-  // Owner-tier edit: per-brand superadmin OR the higher cross-brand platform_superadmin (which the
-  // API's requireRole("superadmin") also admits by rank). Strict === locks the owner out of edits.
-  const canEdit = role === 'superadmin' || role === 'platform_superadmin';
+  // Owner-tier edit is SYSTEM-only (Issue 1 / F1): only the platform owner (platform_superadmin)
+  // may edit M-Pesa config; it moved out of the site back-office into the system console.
+  const canEdit = role === 'platform_superadmin';
 
   const cfg = cfgQ.data;
   const [env, setEnv] = useState(DEFAULT_MPESA_ENV);
@@ -123,7 +123,7 @@ function MpesaBody() {
         <>
           {!canEdit ? (
             <div className="rounded-2xl border border-border bg-surface px-4 py-3 text-sm text-muted">
-              You have read-only access. Only a <span className="font-medium text-fg">superadmin</span> can change M-Pesa settings.
+              You have read-only access. Only the <span className="font-medium text-fg">system owner</span> can change M-Pesa settings.
             </div>
           ) : (
             <div className="rounded-2xl border border-warn px-4 py-3 text-sm text-warn">

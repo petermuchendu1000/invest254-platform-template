@@ -174,7 +174,7 @@ export function ConfirmButton({
 }
 
 /**
- * Approve action gated by the superadmin password (Issue 1). Clicking reveals a password field; the
+ * Approve action gated by the system owner password (Issue 1). Clicking reveals a password field; the
  * action only fires once the operator enters a value. The password is passed to `onConfirm`, which
  * forwards it to the API (the server verifies it against the superadmin credential).
  */

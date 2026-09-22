@@ -73,7 +73,7 @@ test("admin cannot suspend another admin; a superadmin can", async () => {
     api.identity.adminSetRole(uid, "admin"); // target is now an admin
     const denied = await req(api, "POST", `/api/v1/admin/users/${uid}/suspend`, { token: "admin-2:admin" });
     assert.equal(denied.status, 403);
-    const allowed = await req(api, "POST", `/api/v1/admin/users/${uid}/suspend`, { token: "root-1:superadmin" });
+    const allowed = await req(api, "POST", `/api/v1/admin/users/${uid}/suspend`, { token: "root-1:platform_superadmin" });
     assert.equal(allowed.status, 200);
   } finally { await api.close(); }
 });
@@ -341,7 +341,7 @@ test("J5 game config: admin reads; only superadmin edits; validates; audited", a
     assert.equal((await req(api, "PATCH", "/api/v1/admin/game-config", { token: "admin-1:admin", body: { houseEdge: 0.7 } })).status, 403);
 
     // superadmin edits a partial patch; rtpTarget is recomputed from house_edge
-    const upd = await req(api, "PATCH", "/api/v1/admin/game-config", { token: "root:superadmin", body: { houseEdge: 0.7, maxStakeCents: 6_000_000 } });
+    const upd = await req(api, "PATCH", "/api/v1/admin/game-config", { token: "root:platform_superadmin", body: { houseEdge: 0.7, maxStakeCents: 6_000_000 } });
     assert.equal(upd.status, 200);
     const u = await json(upd);
     assert.equal(u.houseEdge, 0.7);
@@ -353,35 +353,35 @@ test("J5 game config: admin reads; only superadmin edits; validates; audited", a
     // and persist. Previously `minWithdrawalCents` was missing from the API's CONFIG_FIELDS
     // allowlist, so this patch was stripped to empty and rejected with "provide at least one
     // config field to update" — the value could never be saved from the admin panel.
-    const mw = await req(api, "PATCH", "/api/v1/admin/game-config", { token: "root:superadmin", body: { minWithdrawalCents: 50000 } });
+    const mw = await req(api, "PATCH", "/api/v1/admin/game-config", { token: "root:platform_superadmin", body: { minWithdrawalCents: 50000 } });
     assert.equal(mw.status, 200, "editing only min withdrawal must be accepted");
     assert.equal((await json(mw)).minWithdrawalCents, 50000);
     const reread = await json(await req(api, "GET", "/api/v1/admin/game-config", { token: "admin-1:admin" }));
     assert.equal(reread.minWithdrawalCents, 50000, "min withdrawal persisted and reads back");
     // a non-integer cents value for the floor is still rejected
-    assert.equal((await req(api, "PATCH", "/api/v1/admin/game-config", { token: "root:superadmin", body: { minWithdrawalCents: 250.5 } })).status, 400);
+    assert.equal((await req(api, "PATCH", "/api/v1/admin/game-config", { token: "root:platform_superadmin", body: { minWithdrawalCents: 250.5 } })).status, 400);
 
     // out-of-range value -> 400; non-integer cents -> 400; empty patch -> 400
-    assert.equal((await req(api, "PATCH", "/api/v1/admin/game-config", { token: "root:superadmin", body: { houseEdge: 1.5 } })).status, 400);
-    assert.equal((await req(api, "PATCH", "/api/v1/admin/game-config", { token: "root:superadmin", body: { minStakeCents: 50.5 } })).status, 400);
-    assert.equal((await req(api, "PATCH", "/api/v1/admin/game-config", { token: "root:superadmin", body: {} })).status, 400);
+    assert.equal((await req(api, "PATCH", "/api/v1/admin/game-config", { token: "root:platform_superadmin", body: { houseEdge: 1.5 } })).status, 400);
+    assert.equal((await req(api, "PATCH", "/api/v1/admin/game-config", { token: "root:platform_superadmin", body: { minStakeCents: 50.5 } })).status, 400);
+    assert.equal((await req(api, "PATCH", "/api/v1/admin/game-config", { token: "root:platform_superadmin", body: {} })).status, 400);
 
     // 0095 pool-mode toggle: superadmin flips the brand's brain; boolean-only validation;
     // a poolMode-only patch is valid; combined with economy knobs in one PATCH works too.
-    const pmOff = await req(api, "PATCH", "/api/v1/admin/game-config", { token: "root:superadmin", body: { poolMode: false } });
+    const pmOff = await req(api, "PATCH", "/api/v1/admin/game-config", { token: "root:platform_superadmin", body: { poolMode: false } });
     assert.equal(pmOff.status, 200, "poolMode-only patch accepted");
     assert.equal((await json(pmOff)).poolMode, false);
-    const pmOn = await req(api, "PATCH", "/api/v1/admin/game-config", { token: "root:superadmin", body: { poolMode: true, houseEdge: 0.7 } });
+    const pmOn = await req(api, "PATCH", "/api/v1/admin/game-config", { token: "root:platform_superadmin", body: { poolMode: true, houseEdge: 0.7 } });
     assert.equal(pmOn.status, 200);
     const pmOnBody = await json(pmOn);
     assert.equal(pmOnBody.poolMode, true);
     assert.equal(pmOnBody.houseEdge, 0.7, "economy knob applied alongside the toggle");
     const pmRead = await json(await req(api, "GET", "/api/v1/admin/game-config", { token: "admin-1:admin" }));
     assert.equal(pmRead.poolMode, true, "pool_mode persisted and reads back");
-    assert.equal((await req(api, "PATCH", "/api/v1/admin/game-config", { token: "root:superadmin", body: { poolMode: "yes" } })).status, 400, "non-boolean poolMode rejected");
+    assert.equal((await req(api, "PATCH", "/api/v1/admin/game-config", { token: "root:platform_superadmin", body: { poolMode: "yes" } })).status, 400, "non-boolean poolMode rejected");
     assert.equal((await req(api, "PATCH", "/api/v1/admin/game-config", { token: "admin-1:admin", body: { poolMode: false } })).status, 403, "day-to-day admin cannot toggle pool mode");
 
-    const audit = await json(await req(api, "GET", "/api/v1/admin/audit", { token: "root:superadmin" }));
+    const audit = await json(await req(api, "GET", "/api/v1/admin/audit", { token: "root:platform_superadmin" }));
     assert.ok(audit.items.some((a: any) => a.action === "game.config"));
   } finally { await api.close(); }
 });
@@ -401,7 +401,7 @@ test("M-Pesa config: admin reads masked; only superadmin edits; secrets write-on
 
     // superadmin sets plain fields + a secret; response stays masked, secret reflected as has_*=true
     const upd = await req(api, "PATCH", "/api/v1/admin/mpesa-config", {
-      token: "root:superadmin",
+      token: "root:platform_superadmin",
       body: { environment: "production", shortcode: "174379", consumerKey: "ck_live_abc", stkCallbackUrl: "https://x/cb" },
     });
     assert.equal(upd.status, 200);
@@ -413,13 +413,13 @@ test("M-Pesa config: admin reads masked; only superadmin edits; secrets write-on
     assert.equal(u.consumerKey, undefined);
 
     // omitting/empty a secret keeps the existing one; bad environment + empty patch -> 400
-    const keep = await json(await req(api, "PATCH", "/api/v1/admin/mpesa-config", { token: "root:superadmin", body: { consumerSecret: "" , shortcode: "600000" } }));
+    const keep = await json(await req(api, "PATCH", "/api/v1/admin/mpesa-config", { token: "root:platform_superadmin", body: { consumerSecret: "" , shortcode: "600000" } }));
     assert.equal(keep.hasConsumerKey, true); // unchanged
     assert.equal(keep.shortcode, "600000");
-    assert.equal((await req(api, "PATCH", "/api/v1/admin/mpesa-config", { token: "root:superadmin", body: { environment: "nope" } })).status, 400);
-    assert.equal((await req(api, "PATCH", "/api/v1/admin/mpesa-config", { token: "root:superadmin", body: {} })).status, 400);
+    assert.equal((await req(api, "PATCH", "/api/v1/admin/mpesa-config", { token: "root:platform_superadmin", body: { environment: "nope" } })).status, 400);
+    assert.equal((await req(api, "PATCH", "/api/v1/admin/mpesa-config", { token: "root:platform_superadmin", body: {} })).status, 400);
 
-    const audit = await json(await req(api, "GET", "/api/v1/admin/audit", { token: "root:superadmin" }));
+    const audit = await json(await req(api, "GET", "/api/v1/admin/audit", { token: "root:platform_superadmin" }));
     assert.ok(audit.items.some((a: any) => a.action === "mpesa.config"));
   } finally { await api.close(); }
 });
@@ -435,37 +435,38 @@ test("user role: admin promotes player<->marketer; superadmin full power; valida
     assert.equal(adminUp.status, 200);
     assert.equal((await json(adminUp)).role, "marketer");
     // demote back to player (superadmin) so the flow below is meaningful
-    assert.equal((await req(api, "POST", `/api/v1/admin/users/${uid}/role`, { token: "root-1:superadmin", body: { role: "player" } })).status, 200);
+    assert.equal((await req(api, "POST", `/api/v1/admin/users/${uid}/role`, { token: "root-1:platform_superadmin", body: { role: "player" } })).status, 200);
 
     // superadmin promotes player -> marketer
-    const up = await req(api, "POST", `/api/v1/admin/users/${uid}/role`, { token: "root-1:superadmin", body: { role: "marketer" } });
+    const up = await req(api, "POST", `/api/v1/admin/users/${uid}/role`, { token: "root-1:platform_superadmin", body: { role: "marketer" } });
     assert.equal(up.status, 200);
     assert.equal((await json(up)).role, "marketer");
 
     // invalid role -> 400; self-action -> 409
-    assert.equal((await req(api, "POST", `/api/v1/admin/users/${uid}/role`, { token: "root-1:superadmin", body: { role: "wizard" } })).status, 400);
-    assert.equal((await req(api, "POST", `/api/v1/admin/users/root-1/role`, { token: "root-1:superadmin", body: { role: "admin" } })).status, 409);
+    assert.equal((await req(api, "POST", `/api/v1/admin/users/${uid}/role`, { token: "root-1:platform_superadmin", body: { role: "wizard" } })).status, 400);
+    assert.equal((await req(api, "POST", `/api/v1/admin/users/root-1/role`, { token: "root-1:platform_superadmin", body: { role: "admin" } })).status, 409);
 
-    const audit = await json(await req(api, "GET", "/api/v1/admin/audit", { token: "root-1:superadmin" }));
+    const audit = await json(await req(api, "GET", "/api/v1/admin/audit", { token: "root-1:platform_superadmin" }));
     assert.ok(audit.items.some((a: any) => a.action === "user.role" && a.targetId === uid));
   } finally { await api.close(); }
 });
 
-test("superadmin is a protected singleton owner: cannot be created, demoted, banned, or debited", async () => {
+test("the system owner (platform_superadmin) is a protected singleton: not assignable via /role, cannot be demoted, banned, or debited", async () => {
   const api = await startTestApi();
   try {
     const owner = await register(api, "0712000077", "owner_acct");
-    api.identity.adminSetRole(owner, "superadmin"); // this account is now the owner
+    api.identity.adminSetRole(owner, "platform_superadmin"); // this account is now the owner
 
-    // (a) no one can mint a second superadmin
+    // (a) the owner tier is NOT an assignable role via the site back-office /role route (only
+    //     player|marketer|admin are) — so no one can mint a second owner here (400 INVALID_ROLE).
     const other = await register(api, "0712000078", "wannabe");
-    assert.equal((await req(api, "POST", `/api/v1/admin/users/${other}/role`, { token: "root-1:superadmin", body: { role: "superadmin" } })).status, 403);
+    assert.equal((await req(api, "POST", `/api/v1/admin/users/${other}/role`, { token: "root-1:platform_superadmin", body: { role: "platform_superadmin" } })).status, 400);
     // (b) the owner cannot be demoted
-    assert.equal((await req(api, "POST", `/api/v1/admin/users/${owner}/role`, { token: "root-1:superadmin", body: { role: "admin" } })).status, 403);
+    assert.equal((await req(api, "POST", `/api/v1/admin/users/${owner}/role`, { token: "root-1:platform_superadmin", body: { role: "admin" } })).status, 403);
     // (c) the owner cannot be suspended/banned
-    assert.equal((await req(api, "POST", `/api/v1/admin/users/${owner}/ban`, { token: "root-1:superadmin" })).status, 403);
+    assert.equal((await req(api, "POST", `/api/v1/admin/users/${owner}/ban`, { token: "root-1:platform_superadmin" })).status, 403);
     // (d) the owner's wallet cannot be adjusted
-    assert.equal((await req(api, "POST", `/api/v1/admin/wallets/${owner}/adjust`, { token: "root-1:superadmin", body: { amountCents: 1000, reason: "x" } })).status, 403);
+    assert.equal((await req(api, "POST", `/api/v1/admin/wallets/${owner}/adjust`, { token: "root-1:platform_superadmin", body: { amountCents: 1000, reason: "x" } })).status, 403);
   } finally { await api.close(); }
 });
 
@@ -490,19 +491,19 @@ test("J5 seed rotation: superadmin-only, future-day-only, bumps version, listed 
     // day-to-day admin cannot rotate
     assert.equal((await req(api, "POST", "/api/v1/admin/seeds/rotate", { token: "admin-1:admin", body: { tradeDate: "2999-01-01" } })).status, 403);
     // malformed date -> 400; past date -> 409
-    assert.equal((await req(api, "POST", "/api/v1/admin/seeds/rotate", { token: "root:superadmin", body: { tradeDate: "nope" } })).status, 400);
-    assert.equal((await req(api, "POST", "/api/v1/admin/seeds/rotate", { token: "root:superadmin", body: { tradeDate: "2000-01-01" } })).status, 409);
+    assert.equal((await req(api, "POST", "/api/v1/admin/seeds/rotate", { token: "root:platform_superadmin", body: { tradeDate: "nope" } })).status, 400);
+    assert.equal((await req(api, "POST", "/api/v1/admin/seeds/rotate", { token: "root:platform_superadmin", body: { tradeDate: "2000-01-01" } })).status, 409);
 
     // future day rotates: version 1 then 2
-    const r1 = await json(await req(api, "POST", "/api/v1/admin/seeds/rotate", { token: "root:superadmin", body: { tradeDate: "2999-01-01" } }));
+    const r1 = await json(await req(api, "POST", "/api/v1/admin/seeds/rotate", { token: "root:platform_superadmin", body: { tradeDate: "2999-01-01" } }));
     assert.equal(r1.seedVersion, 1);
-    const r2 = await json(await req(api, "POST", "/api/v1/admin/seeds/rotate", { token: "root:superadmin", body: { tradeDate: "2999-01-01" } }));
+    const r2 = await json(await req(api, "POST", "/api/v1/admin/seeds/rotate", { token: "root:platform_superadmin", body: { tradeDate: "2999-01-01" } }));
     assert.equal(r2.seedVersion, 2);
 
     const seeds = await json(await req(api, "GET", "/api/v1/admin/seeds", { token: "admin-1:admin" }));
     assert.ok(seeds.items.some((s: any) => s.tradeDate === "2999-01-01" && s.seedVersion === 2));
 
-    const audit = await json(await req(api, "GET", "/api/v1/admin/audit", { token: "root:superadmin" }));
+    const audit = await json(await req(api, "GET", "/api/v1/admin/audit", { token: "root:platform_superadmin" }));
     assert.ok(audit.items.some((a: any) => a.action === "game.seed_rotate" && a.targetId === "2999-01-01"));
   } finally { await api.close(); }
 });
@@ -623,7 +624,7 @@ test("fly restart: restarts engine, skips the serving (self) machine + stopped o
     assert.equal((await req(api, "POST", "/api/v1/admin/fly/restart", { token: "p:player" })).status, 403);
     assert.equal((await req(api, "POST", "/api/v1/admin/fly/restart", { token: "a:admin" })).status, 403);
 
-    const res = await req(api, "POST", "/api/v1/admin/fly/restart", { token: "owner:superadmin" });
+    const res = await req(api, "POST", "/api/v1/admin/fly/restart", { token: "owner:platform_superadmin" });
     assert.equal(res.status, 200);
     const body = await json(res);
 
@@ -638,7 +639,7 @@ test("fly restart: restarts engine, skips the serving (self) machine + stopped o
     assert.equal(apiApp.skippedStopped, 1);
 
     // status endpoint reflects both target apps + configured
-    const st = await json(await req(api, "GET", "/api/v1/admin/fly/status", { token: "owner:superadmin" }));
+    const st = await json(await req(api, "GET", "/api/v1/admin/fly/status", { token: "owner:platform_superadmin" }));
     assert.equal(st.configured, true);
     assert.deepEqual(st.apps, ["invest254-engine-pm", "invest254-api"]);
   } finally {
@@ -665,7 +666,7 @@ test("fly restart: surfaces a per-app error when a machine restart call fails", 
   }) as typeof fetch;
   const api = await startTestApi();
   try {
-    const body = await json(await req(api, "POST", "/api/v1/admin/fly/restart", { token: "owner:superadmin" }));
+    const body = await json(await req(api, "POST", "/api/v1/admin/fly/restart", { token: "owner:platform_superadmin" }));
     assert.equal(body.ok, false);
     assert.equal(body.machinesRestarted, 0);
     assert.equal(body.apps[0].failed, 1);
@@ -833,11 +834,10 @@ test("admin bulk: mass suspend / notify / reset-balance with per-user partial re
   } finally { await api.close(); }
 });
 
-test("system logs (/admin/logs) are owner-only: admin/superadmin refused, platform_superadmin allowed (BUGLOG #33)", async () => {
+test("system logs (/admin/logs) are owner-only: a site admin is refused, the system owner allowed (BUGLOG #33)", async () => {
   const api = await startTestApi();
   try {
     assert.equal((await req(api, "GET", "/api/v1/admin/logs", { token: "admin-1:admin" })).status, 403, "admin refused");
-    assert.equal((await req(api, "GET", "/api/v1/admin/logs", { token: "root-1:superadmin" })).status, 403, "superadmin refused");
     assert.equal((await req(api, "GET", "/api/v1/admin/logs")).status, 401, "anonymous refused");
     const ok = await req(api, "GET", "/api/v1/admin/logs?level=error&limit=10", { token: "root-1:platform_superadmin" });
     assert.equal(ok.status, 200, "platform_superadmin allowed");

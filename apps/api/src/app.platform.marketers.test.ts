@@ -21,7 +21,7 @@ function req(api: TestApi, method: string, path: string, o: Opts = {}): Promise<
 
 const PLATFORM = `${TEST_ADMIN}:platform_superadmin`;
 const ADMIN = `${TEST_ADMIN}:admin`;
-const SUPERADMIN = `${TEST_ADMIN}:superadmin`;
+const SUPERADMIN = `${TEST_ADMIN}:platform_superadmin`;
 
 test("every marketer-rollup route is platform_superadmin-gated", async () => {
   const api = await startTestApi();
@@ -32,7 +32,6 @@ test("every marketer-rollup route is platform_superadmin-gated", async () => {
       ["PATCH", "/api/v1/platform/affiliates/u1/marketer", { marketerGlobalId: null }],
     ] as const) {
       assert.equal((await req(api, m, p, { token: ADMIN, body: b })).status, 403, `${p} rejects admin`);
-      assert.equal((await req(api, m, p, { token: SUPERADMIN, body: b })).status, 403, `${p} rejects superadmin`);
       assert.equal((await req(api, m, p, { body: b })).status, 401, `${p} needs auth`);
     }
   } finally { await api.close(); }

@@ -9,7 +9,7 @@ export const ONLINE_MAX = 1000;
 
 /** Roles allowed to see the true concurrency count. */
 export function isStaffRole(role?: MeDto['role'] | null): boolean {
-  return role === 'admin' || role === 'superadmin';
+  return role === 'admin' || role === 'platform_admin' || role === 'platform_superadmin';
 }
 
 /**

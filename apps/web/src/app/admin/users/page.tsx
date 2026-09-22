@@ -18,7 +18,6 @@ const ROLE_OPTS = [
   { value: 'player', label: 'Players' },
   { value: 'marketer', label: 'Marketers' },
   { value: 'admin', label: 'Admins' },
-  { value: 'superadmin', label: 'Superadmins' },
 ];
 const STATUS_OPTS = [
   { value: '', label: 'All statuses' },

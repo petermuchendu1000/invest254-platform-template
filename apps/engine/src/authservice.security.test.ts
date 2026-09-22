@@ -26,8 +26,9 @@ const GOOD_ANSWERS = [
 ];
 
 // ── pure helpers ────────────────────────────────────────────────────────────────────────────────
-test("isPrivilegedRole covers admin/superadmin/platform_superadmin, not player/marketer", () => {
-  for (const r of ["admin", "superadmin", "platform_admin", "platform_superadmin"]) assert.equal(isPrivilegedRole(r), true);
+test("isPrivilegedRole covers admin/platform_admin/platform_superadmin, not player/marketer", () => {
+  for (const r of ["admin", "platform_admin", "platform_superadmin"]) assert.equal(isPrivilegedRole(r), true);
+  assert.equal(isPrivilegedRole("superadmin"), false, "the legacy superadmin role is gone (Issue 1 / F1)");
   for (const r of ["player", "marketer", "", undefined, null]) assert.equal(isPrivilegedRole(r as string), false);
 });
 

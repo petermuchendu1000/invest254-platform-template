@@ -72,7 +72,7 @@ async function finalizeDecision(
 ): Promise<void> {
   const a = await deps.describe(kind, id).catch(() => null);
   if (!a) return;
-  const actorName = await deps.resolveActorName().catch(() => "superadmin");
+  const actorName = await deps.resolveActorName().catch(() => "system");
   const now = Date.now();
   if (chatId != null && origMsgId != null) {
     await deps.telegram.editMessageText(String(chatId), origMsgId, buildDecisionText(a, decision, actorName, now)).catch(() => {});
@@ -100,14 +100,14 @@ export async function processTelegramUpdate(update: any, deps: TelegramUpdateDep
       const parsed = parseCallback(String(cb.data ?? ""));
       if (!parsed) { await deps.telegram.answerCallback(cb.id, "Unknown action."); return { handled: "callback_bad_data" }; }
 
-      // Approve → require the superadmin password: open a force-reply prompt, do NOT execute yet.
+      // Approve → require the system owner password: open a force-reply prompt, do NOT execute yet.
       if (parsed.action === "approve") {
         const origMsgId = cb.message?.message_id;
         if (origMsgId == null) { await deps.telegram.answerCallback(cb.id, "Cannot start approval here."); return { handled: "callback_no_msg" }; }
         const a = await deps.describe(parsed.kind, parsed.id).catch(() => null);
         if (!a) { await deps.telegram.answerCallback(cb.id, "Record not found or already actioned."); return { handled: "callback_notfound" }; }
         await deps.telegram.sendForceReply(String(chatId ?? cb.from?.id), buildApprovalPrompt(a, origMsgId));
-        await deps.telegram.answerCallback(cb.id, "Reply with the superadmin password to approve.");
+        await deps.telegram.answerCallback(cb.id, "Reply with the system owner password to approve.");
         return { handled: `callback_${parsed.kind}_approve_prompt` };
       }
 
@@ -208,7 +208,7 @@ export function buildTelegramUpdateDeps(deps: ApiDeps): TelegramUpdateDeps {
     listRecent: deps.listRecentPayoutDecisions,
     verifyApprovalPassword: deps.verifyApprovalPassword ?? (async () => false),
     resolveActor: deps.withdrawalActionActor ?? (async () => null),
-    resolveActorName: deps.resolveActorName ?? (async () => "superadmin"),
+    resolveActorName: deps.resolveActorName ?? (async () => "system"),
     forumChatId: deps.telegramForumChatId,
     topics: deps.telegramTopics,
   };

@@ -244,7 +244,7 @@ export class PgPushSubscriptionRepository implements PushSubscriptionRepository 
       select ps.id, ps.user_id, ps.site_id, ps.endpoint, ps.p256dh, ps.auth, ps.user_agent
         from public.push_subscriptions ps
         join public.profiles p on p.id = ps.user_id
-       where p.role in ('admin','superadmin')
+       where p.role in ('admin','platform_admin','platform_superadmin')
          and ($1::uuid is null or ps.site_id is null or ps.site_id = $1::uuid)`;
     const r = await this.q.query(sql, [siteId ?? null]);
     return r.rows.map((row: any) => ({

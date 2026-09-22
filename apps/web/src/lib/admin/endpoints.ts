@@ -126,7 +126,7 @@ export const adminApi = {
   // Soft-delete a user/admin (status='deleted'; server-guarded). History preserved.
   deleteUser: (t: string, id: string) =>
     apiFetch<{ userId: string; status: string }>(`/admin/users/${id}/delete`, { method: 'POST', token: t }),
-  // Approve is gated by the superadmin password (Issue 1); the server verifies it before paying out.
+  // Approve is gated by the system owner password (Issue 1); the server verifies it before paying out.
   approveWithdrawal: (t: string, id: string, password: string) =>
     apiFetch<unknown>(`/admin/withdrawals/${id}/approve`, { method: 'POST', token: t, body: { password } }),
   rejectWithdrawal: (t: string, id: string) =>
@@ -136,7 +136,7 @@ export const adminApi = {
   markWithdrawalPaid: (t: string, id: string, password: string) =>
     apiFetch<unknown>(`/admin/withdrawals/${id}/mark-paid`, { method: 'POST', token: t, body: { password } }),
   // Bulk withdrawal moderation (partial success per row; approve dispatches M-Pesa B2C each).
-  // A single superadmin password authorizes the whole approve batch.
+  // A single system owner password authorizes the whole approve batch.
   bulkWithdrawals: (t: string, body: { action: 'approve' | 'reject'; txIds: string[]; password?: string }) =>
     apiFetch<AdminBulkResult>('/admin/withdrawals/bulk', { method: 'POST', token: t, body }),
   // 0067 — per-brand withdrawal kill switch (owner/admin override).

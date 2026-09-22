@@ -369,7 +369,7 @@ export function registerProtectedRoutes(router: Router, deps: ApiDeps): void {
   // brand is resolved via the AdminService (tolerant of an unknown tx — the RPC stays the guard).
   const admin = requireSiteAdmin("admin");
   router.post(`${BASE}/admin/withdrawals/:id/approve`, auth, admin, async (ctx: Ctx) => {
-    await requireApprovalPassword(ctx, deps.verifyApprovalPassword); // superadmin password gate (Issue 1)
+    await requireApprovalPassword(ctx, deps.verifyApprovalPassword); // system owner password gate (Issue 1)
     assertTargetSiteInScope(ctx, await deps.admin.siteOfTransaction(ctx.params.id!));
     return domain(() => deps.payments.approveWithdrawal(ctx.params.id!, ctx.claims!.userId), ctx);
   });

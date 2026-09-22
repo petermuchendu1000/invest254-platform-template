@@ -27,6 +27,26 @@ export interface MeDto {
    * reset is protected (0097). The web forces a mandatory, non-dismissible setup gate when true.
    */
   securitySetupRequired?: boolean;
+  /**
+   * True when this (privileged) account's role REQUIRES TOTP 2FA but it is not yet enabled. The web
+   * forces a mandatory, non-dismissible 2FA enrolment gate when true (mirrors securitySetupRequired).
+   */
+  mfaSetupRequired?: boolean;
+}
+
+/** GET /auth/mfa — current 2FA state for the signed-in account. */
+export interface MfaStatusDto {
+  enabled: boolean;
+  recoveryCodesLeft: number;
+  /** True when the account's role requires 2FA (admin / platform_admin / platform_superadmin). */
+  required: boolean;
+}
+
+/** POST /auth/mfa/enroll — returned ONCE; 2FA stays inactive until confirmed with a TOTP code. */
+export interface MfaEnrollDto {
+  secret: string;
+  otpauthUrl: string;
+  recoveryCodes: string[];
 }
 
 /** One selectable security question (0097): stable key + human label. */

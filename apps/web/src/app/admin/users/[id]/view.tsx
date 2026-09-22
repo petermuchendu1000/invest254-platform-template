@@ -83,12 +83,12 @@ export default function UserDetailPage({ params }: { params: { id: string } }) {
 
           <ActivityTimeline id={id} />
 
-          {q.data.role === 'superadmin' ? (
+          {q.data.role === 'platform_superadmin' ? (
             <Section title="System owner">
               <Card className="flex flex-col gap-1">
                 <span className="text-sm font-medium text-fg">Protected account</span>
                 <span className="text-sm text-muted">
-                  This is the system owner (superadmin). Their role and status are locked and their wallet can&apos;t be adjusted — no
+                  This is the system owner. Their role and status are locked and their wallet can&apos;t be adjusted — no
                   account can demote, suspend, ban, or modify the owner.
                 </span>
               </Card>
@@ -366,14 +366,14 @@ function RoleManage({ id, current }: { id: string; current: string }) {
           label="Change role"
           confirmLabel="Confirm role change"
           size="md"
-          variant={role === 'admin' || role === 'superadmin' ? 'down' : 'primary'}
+          variant={role === 'admin' ? 'down' : 'primary'}
           busy={m.isPending}
           disabled={role === current}
           onConfirm={run}
         />
       </Card>
       <p className="text-xs text-muted">
-        Promoting to admin or superadmin grants back-office access. Changes are audited and apply on the user’s next login.
+        Promoting to admin grants back-office access. Changes are audited and apply on the user’s next login.
       </p>
     </Section>
   );

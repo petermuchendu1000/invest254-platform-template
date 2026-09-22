@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { startTestApi, type TestApi } from "./testutil.js";
+import { totpCode } from "@invest254/shared";
 
 /*
  * API-level coverage for the security-questions second factor (0097). The harness uses a REAL
@@ -139,5 +140,45 @@ test("reset-questions returns empty for a player phone (no enumeration of privil
     await req(api, "POST", "/api/v1/auth/register", { body: { phone: "0700000000", username: "player1", password: "Password1" } });
     const q = await json(await req(api, "POST", "/api/v1/auth/password/reset-questions", { body: { phone: "0700000000" } }));
     assert.deepEqual(q.keys, []);
+  } finally { await api.close(); }
+});
+
+test("/auth/me flags mfaSetupRequired for an admin, false after 2FA is enabled (enroll + confirm)", async () => {
+  const api = await startTestApi();
+  try {
+    const { token } = await makeAdmin(api);
+    let me = await json(await req(api, "GET", "/api/v1/auth/me", { token }));
+    assert.equal(me.role, "admin");
+    assert.equal(me.mfaSetupRequired, true, "a fresh admin must be forced to enrol 2FA");
+
+    // Begin enrolment → secret + otpauth URI + one-time recovery codes.
+    const enrollRes = await req(api, "POST", "/api/v1/auth/mfa/enroll", { token });
+    assert.equal(enrollRes.status, 200);
+    const enroll = await json(enrollRes);
+    assert.ok(typeof enroll.secret === "string" && enroll.secret.length > 0, "enroll returns a secret");
+    assert.ok(typeof enroll.otpauthUrl === "string" && enroll.otpauthUrl.startsWith("otpauth://"), "enroll returns an otpauth URI");
+    assert.ok(Array.isArray(enroll.recoveryCodes) && enroll.recoveryCodes.length > 0, "enroll returns recovery codes");
+
+    // Still required until CONFIRMED with a valid TOTP code.
+    me = await json(await req(api, "GET", "/api/v1/auth/me", { token }));
+    assert.equal(me.mfaSetupRequired, true, "2FA is inactive until confirmed");
+
+    // Confirm with a code derived from the secret → 2FA active.
+    const confirmRes = await req(api, "POST", "/api/v1/auth/mfa/confirm", { token, body: { code: totpCode(enroll.secret) } });
+    assert.equal(confirmRes.status, 200);
+    assert.equal((await json(confirmRes)).enabled, true);
+
+    me = await json(await req(api, "GET", "/api/v1/auth/me", { token }));
+    assert.equal(me.mfaSetupRequired, false, "gate clears once 2FA is enabled");
+  } finally { await api.close(); }
+});
+
+test("a player account never gets mfaSetupRequired", async () => {
+  const api = await startTestApi();
+  try {
+    const res = await req(api, "POST", "/api/v1/auth/register", { body: { phone: "0700000001", username: "player2", password: "Password1" } });
+    const { userId } = await json(res);
+    const me = await json(await req(api, "GET", "/api/v1/auth/me", { token: `${userId}:player` }));
+    assert.equal(me.mfaSetupRequired, false);
   } finally { await api.close(); }
 });

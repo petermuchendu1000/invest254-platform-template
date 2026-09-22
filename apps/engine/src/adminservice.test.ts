@@ -19,7 +19,7 @@ function stack() {
 test("overview: deterministic aggregates over users, finance, affiliate and game", async () => {
   const { identity, payRepo, admin, affiliate } = stack();
   const adminId = (await identity.register("254700000001", "ops", HASH)).userId; identity.adminSetRole(adminId, "admin");
-  const superId = (await identity.register("254700000002", "root", HASH)).userId; identity.adminSetRole(superId, "superadmin");
+  const superId = (await identity.register("254700000002", "root", HASH)).userId; identity.adminSetRole(superId, "platform_superadmin");
   const p1 = (await identity.register("254700000003", "p_one", HASH)).userId;
   await identity.register("254700000004", "p_two", HASH);
   const mk = (await identity.register("254700000005", "mk_one", HASH)).userId;
@@ -89,7 +89,7 @@ test("setUserStatus: hierarchy guards, self-action, validation, and audit", asyn
   await assert.rejects(admin.setUserStatus(actor, "admin", actor, "banned", null), /NO_SELF_ACTION/);
   await assert.rejects(admin.setUserStatus(actor, "admin", staff, "suspended", null), /INSUFFICIENT_PRIVILEGE/);
   // a superadmin may act on an admin
-  assert.equal((await admin.setUserStatus("super", "superadmin", staff, "suspended", null)).status, "suspended");
+  assert.equal((await admin.setUserStatus("super", "platform_superadmin", staff, "suspended", null)).status, "suspended");
 
   const audit = await admin.listAudit({});
   assert.equal(audit.items.length, 2); // the two successful mutations, newest first
@@ -134,7 +134,7 @@ test("adjustBalance: credit/debit with mandatory reason, guards, overdraw and au
   assert.deepEqual(credit, { userId: p, amountCents: 5_000, newBalanceCents: 15_000, direction: "credit" });
   assert.equal(await payRepo.getBalance(p), 15_000);
 
-  const debit = await admin.adjustBalance("actor", "superadmin", p, -3_000, "correction");
+  const debit = await admin.adjustBalance("actor", "platform_superadmin", p, -3_000, "correction");
   assert.deepEqual(debit, { userId: p, amountCents: -3_000, newBalanceCents: 12_000, direction: "debit" });
 
   await assert.rejects(admin.adjustBalance("actor", "admin", p, -1_000_000, "too much"), /INSUFFICIENT_FUNDS/);
@@ -412,6 +412,6 @@ test("resetBalanceToLastFunded: guards (no funding, reason, role, superadmin)", 
   await assert.rejects(admin.resetBalanceToLastFunded("actor", "admin", u, "   "), /REASON_REQUIRED/);
   await assert.rejects(admin.resetBalanceToLastFunded("actor", "player", u, "x"), /NOT_AUTHORIZED/);
 
-  const sup = (await identity.register("254700000212", "root2", HASH)).userId; identity.adminSetRole(sup, "superadmin");
+  const sup = (await identity.register("254700000212", "root2", HASH)).userId; identity.adminSetRole(sup, "platform_superadmin");
   await assert.rejects(admin.resetBalanceToLastFunded("actor", "admin", sup, "x"), /SUPERADMIN_PROTECTED/);
 });

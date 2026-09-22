@@ -23,7 +23,7 @@ const post = (api: TestApi, path: string, token: string, body?: unknown) =>
 const PLATFORM_ADMIN = `${TEST_ADMIN}:admin`;                 // no site claim -> all brands
 const ADMIN_A = `${TEST_ADMIN}:admin:${SITE_A}`;              // scoped to brand A (the default brand)
 const ADMIN_B = `${TEST_ADMIN}:admin:${SITE_B}`;             // scoped to brand B
-const SUPERADMIN_B = `${TEST_ADMIN}:superadmin:${SITE_B}`;   // site-scoped superadmin (brand B)
+const SUPERADMIN_B = `${TEST_ADMIN}:platform_superadmin:${SITE_B}`;   // site-scoped superadmin (brand B)
 
 async function seedTwoBrandUsers(api: TestApi) {
   const uA = (await api.identity.register("254790000001", "wpUserA", "hash_" + "a".repeat(24), undefined, SITE_A)).userId;
@@ -71,23 +71,24 @@ test("wallet adjust is brand-scoped for a site admin", async () => {
   } finally { await api.close(); }
 });
 
-test("superadmin write paths (role, overrides) are still brand-scoped for a site superadmin", async () => {
+test("day-to-day write paths are brand-scoped for a site admin; owner-tier overrides are System-only", async () => {
   const api = await startTestApi();
   try {
     const { uA, uB } = await seedTwoBrandUsers(api);
 
-    // Role mutation (superadmin-gated) — a site superadmin still can't reach across brands.
-    const roleCross = await post(api, `/api/v1/admin/users/${uA}/role`, SUPERADMIN_B, { role: "marketer" });
+    // Role mutation (day-to-day, admin-gated) — a brand-B site admin cannot reach a brand-A user.
+    const roleCross = await post(api, `/api/v1/admin/users/${uA}/role`, ADMIN_B, { role: "marketer" });
     assert.equal(roleCross.status, 403);
     assert.equal((await json(roleCross)).error.code, "SITE_SCOPE_FORBIDDEN");
 
-    // Override write (superadmin-gated) — cross-brand refused, same-brand allowed.
-    const ovCross = await post(api, `/api/v1/admin/users/${uA}/overrides`, SUPERADMIN_B, { winRate: 0.5 });
-    assert.equal(ovCross.status, 403);
-    assert.equal((await json(ovCross)).error.code, "SITE_SCOPE_FORBIDDEN");
+    // Same-brand role mutation is allowed.
+    const roleSame = await post(api, `/api/v1/admin/users/${uB}/role`, ADMIN_B, { role: "marketer" });
+    assert.notEqual(roleSame.status, 403, "site admin can mutate its own brand's user");
 
-    const ovSame = await post(api, `/api/v1/admin/users/${uB}/overrides`, SUPERADMIN_B, { winRate: 0.5 });
-    assert.notEqual(ovSame.status, 403, "site superadmin can override its own brand's user");
+    // Per-user overrides are now an OWNER-TIER lever (System-only, Issue 1 / F1): a site admin is
+    // refused outright — regardless of brand — because the route requires platform_superadmin.
+    const ovForbidden = await post(api, `/api/v1/admin/users/${uB}/overrides`, ADMIN_B, { winRate: 0.5 });
+    assert.equal(ovForbidden.status, 403, "a site admin cannot write owner-tier overrides");
   } finally { await api.close(); }
 });
 

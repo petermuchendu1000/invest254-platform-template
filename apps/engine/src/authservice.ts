@@ -9,12 +9,11 @@ import type { IdentityRepository, MfaRecord, CredentialRecord, SecurityAnswerHas
 /**
  * Roles for which a password reset is a knowledge-second-factor gate (0097). These accounts run the
  * back office (approve withdrawals, adjust balances, change RTP), so a phone-only reset is account
- * takeover. NOTE the production role set is player/marketer/admin/platform_superadmin — there is no
- * literal "superadmin" row today, but it is included for forward-compatibility with ROLE_RANK, and
- * platform_superadmin (the real top role) MUST be here or the actual superadmin goes unprotected.
+ * takeover. The role set is player/marketer/admin/platform_admin/platform_superadmin — the legacy
+ * per-brand `superadmin` tier was removed in Issue 1 / F1 (migration 0152).
  */
 export const PRIVILEGED_ROLES: ReadonlySet<string> = new Set([
-  "admin", "superadmin", "platform_admin", "platform_superadmin",
+  "admin", "platform_admin", "platform_superadmin",
 ]);
 
 /** True when `role` is an administrative role gated by the security-question second factor. */
@@ -99,7 +98,7 @@ export interface AuthServiceOptions {
   /** Optional issuer/audience; set them to match the engine's verifier options. */
   issuer?: string;
   audience?: string;
-  /** Roles that must use TOTP MFA (default: admin + superadmin). */
+  /** Roles that must use TOTP MFA (default: admin + platform_admin + platform_superadmin). */
   mfaRequiredRoles?: readonly string[];
   /** Issuer label shown in the operator's authenticator app. */
   mfaIssuer?: string;
@@ -132,7 +131,7 @@ export class AuthService {
     this.ttl = opts.jwtTtlSeconds ?? DEFAULT_TTL_SECONDS;
     this.issuer = opts.issuer;
     this.audience = opts.audience;
-    this.mfaRoles = new Set(opts.mfaRequiredRoles ?? ["admin", "superadmin"]);
+    this.mfaRoles = new Set(opts.mfaRequiredRoles ?? ["admin", "platform_admin", "platform_superadmin"]);
     this.mfaIssuer = opts.mfaIssuer ?? "Invest254";
     this.allowUnverifiedReset = opts.allowUnverifiedPasswordReset ?? false;
   }

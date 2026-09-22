@@ -15,8 +15,8 @@ const ctx = (claims: Record<string, unknown> | undefined): Ctx => ({ claims } as
 
 test("ROLE_RANK: platform_admin sits ABOVE site admin and BELOW the system owner", () => {
   const rank = (r: string): number => ROLE_RANK[r] ?? 0;
+  assert.ok(rank("marketer") < rank("admin"), "marketer < site admin");
   assert.ok(rank("admin") < rank("platform_admin"), "site admin < platform admin");
-  assert.ok(rank("superadmin") < rank("platform_admin"), "per-brand superadmin < platform admin");
   assert.ok(rank("platform_admin") < rank("platform_superadmin"), "platform admin < system owner");
 });
 

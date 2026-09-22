@@ -24,6 +24,8 @@ import type {
   PositionDto,
   ReferralRecord,
   SecurityQuestionDto,
+  MfaStatusDto,
+  MfaEnrollDto,
   TransactionDto,
   TransactionKind,
   WalletDto,
@@ -106,6 +108,20 @@ export const api = {
   /** Change your own password; requires the current one. Always available when logged in. */
   changePassword: (token: string, body: { current_password: string; new_password: string }) =>
     apiFetch<{ changed: boolean }>('/auth/password/change', { method: 'POST', token, body }),
+
+  // ── MFA / 2FA (TOTP) — privileged accounts; enforced by the mandatory enrolment gate ──
+  /** Current 2FA state for the signed-in account. */
+  mfaStatus: (token: string) =>
+    apiFetch<MfaStatusDto>('/auth/mfa', { token }),
+  /** Begin enrolment: returns the secret, otpauth:// URI (for the QR) and one-time recovery codes. */
+  mfaEnroll: (token: string) =>
+    apiFetch<MfaEnrollDto>('/auth/mfa/enroll', { method: 'POST', token }),
+  /** Confirm enrolment with a 6-digit TOTP code — activates 2FA. */
+  mfaConfirm: (token: string, code: string) =>
+    apiFetch<{ enabled: boolean }>('/auth/mfa/confirm', { method: 'POST', token, body: { code } }),
+  /** Disable 2FA — requires a current TOTP or recovery code as possession proof. */
+  mfaDisable: (token: string, code: string) =>
+    apiFetch<{ enabled: boolean }>('/auth/mfa/disable', { method: 'POST', token, body: { code } }),
 
   // Wallet & history
   wallet: (token: string) => apiFetch<WalletDto>('/wallet', { token }),

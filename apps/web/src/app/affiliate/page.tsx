@@ -47,7 +47,7 @@ export default function AffiliatePage() {
   }
   if (!user) return <Skeleton className="h-48 w-full" />;
 
-  const isMarketer = user.role === 'marketer' || user.role === 'admin' || user.role === 'superadmin';
+  const isMarketer = user.role === 'marketer' || user.role === 'admin';
 
   return (
     <section className="flex flex-col gap-4">

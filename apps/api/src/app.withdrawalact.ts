@@ -56,7 +56,7 @@ export function registerWithdrawalActionRoutes(router: Router, deps: ApiDeps): v
       <script>
         var b=document.getElementById('go'),m=document.getElementById('msg'),pw=document.getElementById('pw');
         b.onclick=async function(){
-          if(pw&&!pw.value){m.style.color='#b91c1c';m.textContent='Enter the superadmin password.';return;}
+          if(pw&&!pw.value){m.style.color='#b91c1c';m.textContent='Enter the system owner password.';return;}
           b.disabled=true;b.textContent='Working\\u2026';
           try{
             var payload={token:${JSON.stringify(token)}};if(pw){payload.password=pw.value;}
@@ -81,7 +81,7 @@ export function registerWithdrawalActionRoutes(router: Router, deps: ApiDeps): v
       // Superadmin password gate (Issue 1): approving releases the payout, so it requires the password.
       const password = typeof body.password === "string" ? body.password : "";
       if (deps.verifyApprovalPassword && !(await deps.verifyApprovalPassword(password))) {
-        return { status: 403, body: { ok: false, status: "incorrect superadmin password" } };
+        return { status: 403, body: { ok: false, status: "incorrect system owner password" } };
       }
       const r = await deps.payments.approveWithdrawal(v.txId, actor);
       return { body: r.approved ? { ok: true, status: "approved" } : { ok: false, status: "not actionable (already approved/rejected or paid)" } };

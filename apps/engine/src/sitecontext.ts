@@ -32,7 +32,7 @@ export interface BuildSiteContextArgs {
   siteId: string;
   dateKey: string;         // UTC "YYYY-MM-DD"
   cfg: VersionedGameConfig;
-  seedVersion?: number;    // >0 after a superadmin-forced rotation for this brand+day
+  seedVersion?: number;    // >0 after a system-owner-forced rotation for this brand+day
   /** Calibration sample count (smaller in tests for speed; engine default is 200k). */
   calibrationSamples?: number;
 }

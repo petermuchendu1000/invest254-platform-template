@@ -15,7 +15,7 @@ import { useSidebarCollapsed } from '@/lib/useSidebarCollapsed';
 import { getImpersonatingBrand } from '@/lib/platform/impersonate';
 
 type NavItem = { href: string; label: string; icon: React.ReactNode; ownerOnly?: boolean };
-type NavSection = { title: string; items: NavItem[]; superadmin?: boolean; platform?: boolean };
+type NavSection = { title: string; items: NavItem[]; systemOnly?: boolean; platform?: boolean };
 
 function Icon({ d }: { d: string }) {
   return (
@@ -25,8 +25,8 @@ function Icon({ d }: { d: string }) {
   );
 }
 
-// Two tiers: Operations (any admin) and Governance (superadmin/owner only — the powers a plain
-// admin does not have: roles, game economy, payment rails, fairness seeds).
+// Two tiers: Operations (any site admin) and Governance (SYSTEM owner only — the owner-tier powers
+// a site admin does not have: game economy, payment rails, fairness seeds). Issue 1 / F1.
 const SECTIONS: NavSection[] = [
   {
     title: 'Operations',
@@ -46,7 +46,7 @@ const SECTIONS: NavSection[] = [
   },
   {
     title: 'Governance',
-    superadmin: true,
+    systemOnly: true,
     items: [
       { href: '/admin/game', label: 'Game config', icon: <Icon d="M12 15a3 3 0 100-6 3 3 0 000 6zM19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-2.82 1.17V21a2 2 0 11-4 0v-.09A1.65 1.65 0 007 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06A1.65 1.65 0 004.6 14H4a2 2 0 110-4h.09A1.65 1.65 0 006 7.6l-.06-.06a2 2 0 112.83-2.83l.06.06A1.65 1.65 0 0011 4.6V4a2 2 0 114 0v.09a1.65 1.65 0 002.82 1.17l.06-.06a2 2 0 112.83 2.83l-.06.06A1.65 1.65 0 0019.4 10H21a2 2 0 110 4h-.09a1.65 1.65 0 00-1.51 1z" /> },
       { href: '/admin/mpesa', label: 'M-Pesa', icon: <Icon d="M5 7h14M5 7a2 2 0 00-2 2v6a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2M5 7V5a2 2 0 012-2h10a2 2 0 012 2v2M12 14a2 2 0 100-4 2 2 0 000 4z" /> },
@@ -87,7 +87,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
   // mismatch, and no useEffect race that could briefly authorise off the wrong role).
   const impersonating = getImpersonatingBrand();
 
-  // EFFECTIVE session role. During impersonation the ACTIVE TOKEN's role (admin/superadmin) is what
+  // EFFECTIVE session role. During impersonation the ACTIVE TOKEN's role (admin) is what
   // the API authorises against; /auth/me instead returns the ACTOR's own role (e.g. platform_admin,
   // because the impersonation token's SUBJECT stays the actor for audit). Authorising off /me would
   // wrongly 404 an impersonating platform admin (the reported bug) — so use the token role while
@@ -103,24 +103,24 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
       </div>
     );
   }
-  const ADMIN_ROLES = ['admin', 'superadmin', 'platform_superadmin'];
+  const ADMIN_ROLES = ['admin', 'platform_superadmin'];
   if (!ADMIN_ROLES.includes(effectiveRole)) {
     // Wrong role: reveal nothing.
     return <Gate title="404" body="This page could not be found." action={null} />;
   }
 
   const isPlatform = effectiveRole === 'platform_superadmin';
-  const isSuper = effectiveRole === 'superadmin' || isPlatform;
-  // Label the impersonation by the ACTIVE token role: 'superadmin' for the system owner, 'admin' for
-  // a platform admin (scoped) — never mislabel a platform admin as superadmin.
-  const impRoleLabel = tokenRole === 'superadmin' ? 'superadmin' : 'admin';
+  const isSuper = isPlatform;  // owner-tier Governance = the SYSTEM owner only (Issue 1 / F1)
+  // Impersonation always mints a day-to-day `admin` session (Issue 1 / F1), for both the system
+  // owner and a platform admin — so the impersonation is always labelled 'admin'.
+  const impRoleLabel = 'admin';
   // The cross-brand "All brands" (platform) nav would 403 against a brand-scoped impersonation token,
   // so hide it while impersonating; return via the banner's "Exit to platform".
   const showPlatformNav = isPlatform && !impersonating;
   // Audit log is System-owner-only. Gate on the ACTOR's real identity (/me role) so it stays hidden
   // even while the actor impersonates a brand — a platform admin never sees it, the System owner always does.
   const isOwner = user?.role === 'platform_superadmin';
-  const sections = SECTIONS.filter((s) => (!s.superadmin || isSuper) && (!s.platform || showPlatformNav));
+  const sections = SECTIONS.filter((s) => (!s.systemOnly || isSuper) && (!s.platform || showPlatformNav));
   const active = (href: string) => (href === '/admin' ? pathname === '/admin' : pathname?.startsWith(href));
 
   return (
@@ -167,12 +167,12 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
               <span
                 className={cn(
                   'mt-2 hidden px-3 pb-1 text-[10px] font-semibold uppercase tracking-wider md:block',
-                  section.superadmin ? 'text-warn' : 'text-muted',
+                  section.systemOnly ? 'text-warn' : 'text-muted',
                   collapsed && 'md:hidden',
                 )}
               >
                 {section.title}
-                {section.superadmin ? ' · owner' : ''}
+                {section.systemOnly ? ' · owner' : ''}
               </span>
               {section.items.filter((n) => !n.ownerOnly || isOwner).map((n) => (
                 <Link
@@ -184,7 +184,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
                     'flex shrink-0 items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition',
                     collapsed && 'md:justify-center md:px-2',
                     active(n.href)
-                      ? section.superadmin
+                      ? section.systemOnly
                         ? 'bg-warn text-bg'
                         : 'bg-accent text-accent-fg'
                       : 'text-muted hover:bg-surface-2 hover:text-fg',

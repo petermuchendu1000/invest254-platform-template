@@ -22,9 +22,9 @@ import type { SiteWithConfig } from '@/lib/platform/endpoints';
 function ImpersonateButton({ siteId, brandName }: { siteId: string; brandName: string }) {
   const impersonate = useImpersonate();
   const isSystemOwner = useSession((s) => s.user?.role) === 'platform_superadmin';
-  const label = isSystemOwner ? 'Log in as superadmin ↗' : 'Log in as platform admin ↗';
+  const label = isSystemOwner ? 'Log in as brand admin ↗' : 'Log in as platform admin ↗';
   const title = isSystemOwner
-    ? `Open ${brandName}'s admin console as its superadmin`
+    ? `Open ${brandName}'s admin console as a brand admin`
     : `Open ${brandName}'s admin console as platform admin (scoped to your platform)`;
   return (
     <Button

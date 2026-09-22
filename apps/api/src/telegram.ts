@@ -60,7 +60,7 @@ export interface PayoutAlert {
 export interface TelegramClient {
   /** Send a fresh AWAITING-APPROVAL payout card (optionally into a forum topic thread). */
   sendPayoutAlert(chatId: string, a: PayoutAlert, threadId?: number): Promise<TelegramSendResult>;
-  /** Send a force-reply prompt (used to collect the superadmin password on Approve). */
+  /** Send a force-reply prompt (used to collect the system owner password on Approve). */
   sendForceReply(chatId: string, text: string): Promise<TelegramSendResult>;
   /** Plain message (optionally into a forum topic thread). */
   sendMessage(chatId: string, text: string, threadId?: number): Promise<TelegramSendResult>;
@@ -119,7 +119,7 @@ export function buildPayoutText(a: PayoutAlert): string {
     `${rule}\n` +
     `${bodyRows(a)}\n` +
     `${rule}\n` +
-    `Approve requires the superadmin password. Reject returns the funds.`
+    `Approve requires the system owner password. Reject returns the funds.`
   );
 }
 
@@ -180,7 +180,7 @@ export function buildApprovalPrompt(a: PayoutAlert, origMsgId: number): string {
   const what = a.kind === "commission" ? "commission payout" : "withdrawal";
   return (
     `<b>Authorization required</b>\n` +
-    `Reply to this message with the superadmin password to approve the ${what} of ` +
+    `Reply to this message with the system owner password to approve the ${what} of ` +
     `<b>${escHtml(fmtKes(a.amountCents))}</b> for ${escHtml(a.who)} (${escHtml(a.client)}).\n` +
     `Authorization reference: <code>${token}</code>`
   );
@@ -222,7 +222,7 @@ export interface PayoutDecisionRecord {
 /** Header shown before the live pending queue (`/pending`). */
 export function buildQueueHeader(count: number): string {
   if (count === 0) return "<b>PENDING APPROVALS</b>\nYou're all caught up — no real-money requests are waiting.";
-  return `<b>PENDING APPROVALS — ${count} waiting</b>\n${rule}\nEach card below is live. Approve requires the superadmin password; Reject returns the funds.`;
+  return `<b>PENDING APPROVALS — ${count} waiting</b>\n${rule}\nEach card below is live. Approve requires the system owner password; Reject returns the funds.`;
 }
 
 /** The `/history` view — recent decisions grouped Approved / Rejected (read live from the DB). */
@@ -251,7 +251,7 @@ export function buildHelpText(authorized: boolean, chatId: unknown): string {
     `<b>/pending</b> — the live queue of real-money requests awaiting approval (with Approve/Reject).\n` +
     `<b>/history</b> — recent approved &amp; rejected decisions (who and when).\n` +
     `<b>/help</b> — this message.\n${rule}\n` +
-    `Approve requires the superadmin password; Reject is immediate.\n` +
+    `Approve requires the system owner password; Reject is immediate.\n` +
     `Your chat ID is <code>${escHtml(String(chatId))}</code>. ` +
     (authorized ? "This chat is authorized." : "\u26a0 This chat is NOT authorized — send this ID to your platform admin.")
   );

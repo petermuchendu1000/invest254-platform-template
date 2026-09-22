@@ -145,31 +145,30 @@ def main():
     expect_ok(cur, "select fn_admin_set_site_owner(%s,%s,%s,false)", [ps_actor, "platform_superadmin", M3], "platform_superadmin clears cross-brand default")
     check("A.owner == NULL after platform clear", owner_of(cur, SITE_A) is None)
 
-    print("\n== IMPERSONATION (BUGLOG #28): platform owner acts on a brand via a superadmin token ==")
-    # The platform owner's HOME brand is SITE_A but they impersonate SITE_B: the minted token is
-    # role='superadmin', site=SITE_B, SUBJECT = the owner. Before 0125 the RPC home-fenced the owner
-    # (home=SITE_A) and raised SITE_SCOPE_FORBIDDEN on a SITE_B marketer. Now it must succeed.
+    print("\n== CROSS-BRAND (Issue 1/F1): the system owner is unrestricted; a real site admin is home-fenced ==")
+    # Issue 1 / F1 (Option B): the legacy site-fenced `superadmin` impersonation role is gone.
+    # The system owner acts across brands via their OWN platform_superadmin authority (unrestricted);
+    # impersonation now mints only a day-to-day `admin` for brand CONTEXT, not cross-brand power.
     owner = register(cur, "254790000020", "plat_owner", SITE_A)
     cur.execute("update profiles set role='platform_superadmin' where id=%s", [owner])
     Mb = register(cur, "254790000021", "mktB", SITE_B); enroll(cur, Mb)
-    # actor_role='superadmin' mirrors exactly what /platform/.../impersonate mints.
-    expect_ok(cur, "select fn_admin_set_site_owner(%s,'superadmin',%s,true)", [owner, Mb],
-              "owner impersonating SITE_B can MAKE a SITE_B marketer the default (was SITE_SCOPE_FORBIDDEN)")
-    check("B.owner == Mb after impersonated make-default", str(owner_of(cur, SITE_B)) == str(Mb))
-    expect_ok(cur, "select fn_admin_set_site_owner(%s,'superadmin',%s,false)", [owner, Mb],
-              "owner impersonating SITE_B can CLEAR the SITE_B default")
-    check("B.owner == NULL after impersonated clear", owner_of(cur, SITE_B) is None)
+    expect_ok(cur, "select fn_admin_set_site_owner(%s,'platform_superadmin',%s,true)", [owner, Mb],
+              "system owner can MAKE a SITE_B marketer the default (unrestricted)")
+    check("B.owner == Mb after owner make-default", str(owner_of(cur, SITE_B)) == str(Mb))
+    expect_ok(cur, "select fn_admin_set_site_owner(%s,'platform_superadmin',%s,false)", [owner, Mb],
+              "system owner can CLEAR the SITE_B default")
+    check("B.owner == NULL after owner clear", owner_of(cur, SITE_B) is None)
 
-    # Defence in depth preserved: a REAL per-brand superadmin (home SITE_A) still cannot reach SITE_B.
-    real_super = register(cur, "254790000022", "real_super_a", SITE_A)
-    cur.execute("update profiles set role='superadmin' where id=%s", [real_super])
+    # Defence in depth: a REAL per-brand admin (home SITE_A) still cannot reach SITE_B.
+    real_admin = register(cur, "254790000022", "real_admin_a", SITE_A)
+    cur.execute("update profiles set role='admin' where id=%s", [real_admin])
     Mb2 = register(cur, "254790000023", "mktB2", SITE_B); enroll(cur, Mb2)
-    expect_error(cur, "select fn_admin_set_site_owner(%s,'superadmin',%s,true)", [real_super, Mb2],
-                 "SITE_SCOPE_FORBIDDEN", "a REAL SITE_A superadmin still cannot make a SITE_B default (home-fenced)")
-    # And the owner impersonating their OWN home brand still works.
+    expect_error(cur, "select fn_admin_set_site_owner(%s,'admin',%s,true)", [real_admin, Mb2],
+                 "SITE_SCOPE_FORBIDDEN", "a REAL SITE_A admin cannot make a SITE_B default (home-fenced)")
+    # And a SITE_A admin acting on their OWN brand still works.
     Ma = register(cur, "254790000024", "mktA2", SITE_A); enroll(cur, Ma)
-    expect_ok(cur, "select fn_admin_set_site_owner(%s,'superadmin',%s,true)", [owner, Ma],
-              "owner impersonating SITE_A can make a SITE_A marketer the default")
+    expect_ok(cur, "select fn_admin_set_site_owner(%s,'admin',%s,true)", [real_admin, Ma],
+              "a SITE_A admin can make a SITE_A marketer the default")
     check("A.owner == Ma", str(owner_of(cur, SITE_A)) == str(Ma))
 
     # ── Result ──────────────────────────────────────────────────────────────────────────────────

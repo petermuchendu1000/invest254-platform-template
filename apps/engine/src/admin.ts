@@ -383,8 +383,11 @@ export interface AdminRepository {
 }
 
 const VALID_STATUS = ["active", "suspended", "banned"];
-const ADMIN_ROLES = ["admin", "superadmin"];
-const VALID_ROLES = ["player", "marketer", "admin", "superadmin"];
+// Actor allow-list for admin operations in the in-memory mirror: a site admin plus the platform
+// tiers (the Pg repo delegates to the fn_* RPCs, which additionally enforce platform SCOPE). The
+// per-target "acting on an admin-tier account" check is separate (u.role === "admin" branches).
+const ADMIN_ROLES = ["admin", "platform_admin", "platform_superadmin"];
+const VALID_ROLES = ["player", "marketer", "admin"];
 
 /** In-memory admin site filter (docs/22 Task E): rows with a null/legacy site read as the default
  *  brand, so a default-scoped admin still sees them; undefined filter = platform-wide (all brands). */
@@ -620,7 +623,7 @@ export class PgAdminRepository implements AdminRepository {
          (select count(*) from profiles where status = 'banned' and ($1::uuid is null or site_id = $1)) as u_banned,
          (select count(*) from profiles where role = 'player' and ($1::uuid is null or site_id = $1)) as u_players,
          (select count(*) from profiles where role = 'marketer' and ($1::uuid is null or site_id = $1)) as u_marketers,
-         (select count(*) from profiles where role in ('admin','superadmin') and ($1::uuid is null or site_id = $1)) as u_admins,
+         (select count(*) from profiles where role in ('admin','platform_admin','platform_superadmin') and ($1::uuid is null or site_id = $1)) as u_admins,
          (select coalesce(sum(amount),0) from transactions where kind='deposit' and status='success' and user_id not in (select user_id from marketer_account_ids) and ($1::uuid is null or site_id = $1)) as f_dep,
          (select coalesce(sum(amount),0) from transactions where kind='withdrawal' and status='success' and provider is distinct from 'internal' and user_id not in (select user_id from marketer_account_ids) and ($1::uuid is null or site_id = $1)) as f_wd,
          (select coalesce(sum(amount),0) from transactions where kind='withdrawal' and status='success' and provider = 'internal' and ($1::uuid is null or site_id = $1)) as f_internal,
@@ -1512,7 +1515,7 @@ export class InMemoryAdminRepository implements AdminRepository {
         banned: users.filter((u) => u.status === "banned").length,
         players: users.filter((u) => u.role === "player").length,
         marketers: users.filter((u) => u.role === "marketer").length,
-        admins: users.filter((u) => u.role === "admin" || u.role === "superadmin").length,
+        admins: users.filter((u) => ["admin", "platform_admin", "platform_superadmin"].includes(u.role)).length,
       },
       finance: {
         depositsCents: txs.filter((t) => t.kind === "deposit" && t.status === "success").reduce((s, t) => s + t.amountCents, 0),
@@ -1633,8 +1636,8 @@ export class InMemoryAdminRepository implements AdminRepository {
     if (actorId === targetId) throw new Error("NO_SELF_ACTION");
     const u = this.identity.adminUser(targetId);
     if (!u) throw new Error("USER_NOT_FOUND");
-    if (u.role === "superadmin") throw new Error("SUPERADMIN_PROTECTED");
-    if (ADMIN_ROLES.includes(u.role) && actorRole !== "superadmin") throw new Error("INSUFFICIENT_PRIVILEGE");
+    if (u.role === "platform_admin" || u.role === "platform_superadmin") throw new Error("SUPERADMIN_PROTECTED");
+    if (u.role === "admin" && !["platform_admin", "platform_superadmin"].includes(actorRole)) throw new Error("INSUFFICIENT_PRIVILEGE");
     const from = u.status;
     this.identity.adminSetStatus(targetId, status);
     this.record(actorId, actorRole, "user.status", "user", targetId, { from, to: status, reason });
@@ -1642,13 +1645,12 @@ export class InMemoryAdminRepository implements AdminRepository {
   }
 
   async setUserRole(actorId: string, actorRole: string, targetId: string, role: string): Promise<SetUserRoleResult> {
-    if (!["admin", "superadmin", "platform_superadmin"].includes(actorRole)) throw new Error("NOT_AUTHORIZED");
+    if (!["admin", "platform_admin", "platform_superadmin"].includes(actorRole)) throw new Error("NOT_AUTHORIZED");
     if (!VALID_ROLES.includes(role)) throw new Error("INVALID_ROLE");
-    if (role === "superadmin") throw new Error("SUPERADMIN_PROTECTED");
     if (actorId === targetId) throw new Error("NO_SELF_ACTION");
     const u = this.identity.adminUser(targetId);
     if (!u) throw new Error("USER_NOT_FOUND");
-    if (u.role === "superadmin" || u.role === "platform_superadmin") throw new Error("SUPERADMIN_PROTECTED");
+    if (u.role === "platform_admin" || u.role === "platform_superadmin") throw new Error("SUPERADMIN_PROTECTED");
     // A plain admin is confined to the player<->marketer transition.
     if (actorRole === "admin" && (!["player", "marketer"].includes(role) || !["player", "marketer"].includes(u.role))) {
       throw new Error("NOT_AUTHORIZED");
@@ -1660,13 +1662,13 @@ export class InMemoryAdminRepository implements AdminRepository {
   }
 
   async deleteUser(actorId: string, actorRole: string, targetId: string): Promise<SetUserStatusResult> {
-    if (!["admin", "superadmin", "platform_superadmin"].includes(actorRole)) throw new Error("NOT_AUTHORIZED");
+    if (!["admin", "platform_admin", "platform_superadmin"].includes(actorRole)) throw new Error("NOT_AUTHORIZED");
     if (actorId === targetId) throw new Error("NO_SELF_ACTION");
     const u = this.identity.adminUser(targetId);
     if (!u) throw new Error("USER_NOT_FOUND");
     if (u.status === "deleted") return { userId: targetId, status: "deleted" }; // idempotent
-    if (u.role === "superadmin" || u.role === "platform_superadmin") throw new Error("SUPERADMIN_PROTECTED");
-    if (u.role === "admin" && !["superadmin", "platform_superadmin"].includes(actorRole)) throw new Error("INSUFFICIENT_PRIVILEGE");
+    if (u.role === "platform_admin" || u.role === "platform_superadmin") throw new Error("SUPERADMIN_PROTECTED");
+    if (u.role === "admin" && !["platform_admin", "platform_superadmin"].includes(actorRole)) throw new Error("INSUFFICIENT_PRIVILEGE");
     const from = u.status;
     this.identity.adminSetStatus(targetId, "deleted");
     this.record(actorId, actorRole, "user.delete", "user", targetId, { from, to: "deleted" });
@@ -1674,10 +1676,10 @@ export class InMemoryAdminRepository implements AdminRepository {
   }
 
   async updateUserDetails(actorId: string, actorRole: string, targetId: string, phone: string | null, username: string | null): Promise<UpdateUserDetailsResult> {
-    if (!["admin", "superadmin", "platform_superadmin"].includes(actorRole)) throw new Error("NOT_AUTHORIZED");
+    if (!["admin", "platform_admin", "platform_superadmin"].includes(actorRole)) throw new Error("NOT_AUTHORIZED");
     const u = this.identity.adminUser(targetId);
     if (!u) throw new Error("USER_NOT_FOUND");
-    if (actorRole === "admin" && ["admin", "superadmin", "platform_superadmin"].includes(u.role)) throw new Error("NOT_AUTHORIZED");
+    if (actorRole === "admin" && ["admin", "platform_admin", "platform_superadmin"].includes(u.role)) throw new Error("NOT_AUTHORIZED");
     const site = u.siteId ?? ADMIN_DEFAULT_SITE;
     const newPhone = phone && phone.trim() ? phone.replace(/^\+?254/, "0").trim() : null;
     const newName = username && username.trim() ? username.trim() : null;
@@ -1773,7 +1775,7 @@ export class InMemoryAdminRepository implements AdminRepository {
     if (!reason || reason.trim() === "") throw new Error("REASON_REQUIRED");
     const tgt = this.identity.adminUser(targetId);
     if (!tgt) throw new Error("USER_NOT_FOUND");
-    if (tgt.role === "superadmin") throw new Error("SUPERADMIN_PROTECTED");
+    if (tgt.role === "platform_admin" || tgt.role === "platform_superadmin") throw new Error("SUPERADMIN_PROTECTED");
     const before = await this.payments.getBalance(targetId);
     if (before + amountCents < 0) throw new Error("INSUFFICIENT_FUNDS");
     const after = this.payments.adminApplyAdjustment(targetId, amountCents);
@@ -1786,7 +1788,7 @@ export class InMemoryAdminRepository implements AdminRepository {
     if (!reason || reason.trim() === "") throw new Error("REASON_REQUIRED");
     const tgt = this.identity.adminUser(targetId);
     if (!tgt) throw new Error("USER_NOT_FOUND");
-    if (tgt.role === "superadmin") throw new Error("SUPERADMIN_PROTECTED");
+    if (tgt.role === "platform_admin" || tgt.role === "platform_superadmin") throw new Error("SUPERADMIN_PROTECTED");
     const lastFunded = this.payments.adminTransactions()
       .filter((t) => t.userId === targetId && t.kind === "deposit" && t.status === "success")
       .sort((a, b) => (b.createdAtMs - a.createdAtMs) || (a.txId < b.txId ? 1 : -1))[0];
@@ -1804,7 +1806,7 @@ export class InMemoryAdminRepository implements AdminRepository {
     if (!reason || reason.trim() === "") throw new Error("REASON_REQUIRED");
     const tgt = this.identity.adminUser(targetId);
     if (!tgt) throw new Error("USER_NOT_FOUND");
-    if (tgt.role === "superadmin") throw new Error("SUPERADMIN_PROTECTED");
+    if (tgt.role === "platform_admin" || tgt.role === "platform_superadmin") throw new Error("SUPERADMIN_PROTECTED");
     let after: number;
     if (kind === "real") {
       const before = await this.payments.getBalance(targetId);
@@ -1826,7 +1828,7 @@ export class InMemoryAdminRepository implements AdminRepository {
     if (!reason || reason.trim() === "") throw new Error("REASON_REQUIRED");
     const tgt = this.identity.adminUser(targetId);
     if (!tgt) throw new Error("USER_NOT_FOUND");
-    if (tgt.role === "superadmin") throw new Error("SUPERADMIN_PROTECTED");
+    if (tgt.role === "platform_admin" || tgt.role === "platform_superadmin") throw new Error("SUPERADMIN_PROTECTED");
     if (kind === "real" || kind === "both") {
       const real = await this.payments.getBalance(targetId);
       if (real !== 0) this.payments.adminApplyAdjustment(targetId, -real);
@@ -1992,7 +1994,7 @@ export class InMemoryAdminRepository implements AdminRepository {
   async getGameConfig(siteId: string = ADMIN_DEFAULT_SITE): Promise<GameConfigRow> { return { ...this.siteConfig(siteId) }; }
 
   async updateGameConfig(actorId: string, actorRole: string, patch: GameConfigPatch, siteId: string = ADMIN_DEFAULT_SITE): Promise<GameConfigRow> {
-    if (actorRole !== "superadmin" && actorRole !== "platform_superadmin") throw new Error("INSUFFICIENT_PRIVILEGE");
+    if (actorRole !== "platform_superadmin") throw new Error("INSUFFICIENT_PRIVILEGE");
     const current = this.siteConfig(siteId);
     const before = { ...current };
     const next: GameConfigRow = { ...current };
@@ -2027,7 +2029,7 @@ export class InMemoryAdminRepository implements AdminRepository {
   }
 
   async setWithdrawalPool(actorId: string, actorRole: string, siteId: string, tradeDay: string, amountCents: Cents): Promise<WithdrawalPoolRow> {
-    if (actorRole !== "superadmin" && actorRole !== "platform_superadmin") throw new Error("NOT_AUTHORIZED");
+    if (actorRole !== "platform_superadmin") throw new Error("NOT_AUTHORIZED");
     if (!Number.isInteger(amountCents) || amountCents < 0) throw new Error("INVALID_AMOUNT");
     const cur = await this.getWithdrawalPool(siteId, tradeDay);
     if (amountCents < cur.paidCents + cur.reservedCents) throw new Error("AMOUNT_BELOW_COMMITTED");
@@ -2041,7 +2043,7 @@ export class InMemoryAdminRepository implements AdminRepository {
   }
 
   async setDefaultPool(actorId: string, actorRole: string, siteId: string, tradeDay: string, amountCents: Cents): Promise<WithdrawalPoolRow> {
-    if (actorRole !== "superadmin" && actorRole !== "platform_superadmin") throw new Error("NOT_AUTHORIZED");
+    if (actorRole !== "platform_superadmin") throw new Error("NOT_AUTHORIZED");
     if (!Number.isInteger(amountCents) || amountCents < 0) throw new Error("INVALID_AMOUNT");
     this.poolDefaults.set(siteId, amountCents);
     this.record(actorId, actorRole, "pool.default.set", "site", siteId, { defaultDailyPoolCents: amountCents });
@@ -2052,7 +2054,7 @@ export class InMemoryAdminRepository implements AdminRepository {
     return this.withdrawalsEnabledBySite.get(siteId) !== false; // absent => enabled (matches DB default)
   }
   async setWithdrawalsEnabled(actorId: string, actorRole: string, siteId: string, enabled: boolean): Promise<boolean> {
-    if (!["admin", "superadmin", "platform_admin", "platform_superadmin"].includes(actorRole)) throw new Error("NOT_AUTHORIZED");
+    if (!["admin", "platform_admin", "platform_superadmin"].includes(actorRole)) throw new Error("NOT_AUTHORIZED");
     this.withdrawalsEnabledBySite.set(siteId, enabled);
     this.record(actorId, actorRole, "withdrawals.toggle", "site", siteId, { withdrawals_enabled: enabled });
     return enabled;
@@ -2061,7 +2063,7 @@ export class InMemoryAdminRepository implements AdminRepository {
   async getMpesaConfig(): Promise<MpesaConfigRow> { return maskMpesaInternal(this.mpesa); }
 
   async updateMpesaConfig(actorId: string, actorRole: string, patch: MpesaConfigPatch): Promise<MpesaConfigRow> {
-    if (actorRole !== "superadmin") throw new Error("NOT_AUTHORIZED");
+    if (actorRole !== "platform_superadmin") throw new Error("NOT_AUTHORIZED");
     if (patch.environment !== undefined && patch.environment !== "sandbox" && patch.environment !== "production") {
       throw new Error("INVALID_CONFIG");
     }
@@ -2114,7 +2116,7 @@ export class InMemoryAdminRepository implements AdminRepository {
   }
 
   async rotateSeed(actorId: string, actorRole: string, tradeDate: string): Promise<SeedRotateResult> {
-    if (actorRole !== "superadmin") throw new Error("INSUFFICIENT_PRIVILEGE");
+    if (actorRole !== "platform_superadmin") throw new Error("INSUFFICIENT_PRIVILEGE");
     if (!DATE_KEY_RE.test(tradeDate)) throw new Error("INVALID_DATE");
     if (tradeDate < new Date().toISOString().slice(0, 10)) throw new Error("PAST_DATE");
     const existing = this.seedRows.get(tradeDate);

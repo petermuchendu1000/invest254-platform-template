@@ -67,15 +67,17 @@ test("withdrawal-pool: rejects negative / non-integer amounts", async () => {
   } finally { await api.close(); }
 });
 
-test("withdrawal-pool: a site-scoped superadmin is pinned to their brand", async () => {
+test("owner-tier withdrawal-pool is System-only: a site admin is forbidden; the owner targets any brand via ?site=", async () => {
   const api = await startTestApi();
   try {
-    const scopedB = `boss:superadmin:${SITE_B}`;
-    await req(api, "PUT", `/api/v1/admin/withdrawal-pool?site=${SITE_A}`, { token: scopedB, body: { amountCents: 777000, day: DAY } });
+    // Issue 1 / F1: setting a brand's daily withdrawal-pool budget is an owner-tier lever — System only.
+    const adminB = `boss:admin:${SITE_B}`;
+    const forbidden = await req(api, "PUT", `/api/v1/admin/withdrawal-pool?site=${SITE_B}`, { token: adminB, body: { amountCents: 777000, day: DAY } });
+    assert.equal(forbidden.status, 403, "a site admin cannot set the owner-tier withdrawal pool");
+
+    await req(api, "PUT", `/api/v1/admin/withdrawal-pool?site=${SITE_A}`, { token: OWNER, body: { amountCents: 777000, day: DAY } });
     const a = await json(await req(api, "GET", `/api/v1/admin/withdrawal-pool?site=${SITE_A}&day=${DAY}`, { token: OWNER }));
-    assert.notEqual(a.amountCents, 777000, "scoped-B superadmin could not set brand A");
-    const b = await json(await req(api, "GET", `/api/v1/admin/withdrawal-pool?day=${DAY}`, { token: scopedB }));
-    assert.equal(b.amountCents, 777000, "it landed on their own brand B");
+    assert.equal(a.amountCents, 777000, "system owner set brand A via ?site=");
   } finally { await api.close(); }
 });
 

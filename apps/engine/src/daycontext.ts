@@ -22,7 +22,7 @@ export interface DayContext {
   gameDayId: number | null;   // null until the DB row is ensured
   dateKey: string;            // "YYYY-MM-DD" (UTC)
   dayStartMs: number;         // epoch ms of UTC midnight
-  seedVersion: number;        // 0 = base seed; >0 after a superadmin-forced rotation (J5)
+  seedVersion: number;        // 0 = base seed; >0 after a system-owner-forced rotation (J5)
   seed: string;               // recomputable day seed (hex) — never persisted as plaintext pre-reveal
   seedHash: string;           // SHA-256(seed) — the public commitment
   configVersion: number;      // game_config_versions.version that priced this context
@@ -110,7 +110,7 @@ export class SeedManager {
    * now"; recovery passes the version stored on the position instead.
    *
    * The active seed version is read from the durable `seed_overrides` (0 if none), so a
-   * superadmin-forced rotation (J5) is honored for any day this process has not yet built.
+   * system-owner-forced rotation (J5) is honored for any day this process has not yet built.
    * A (day, config) pair already cached/committed is never silently re-seeded under live
    * positions — the cache is authoritative for this process.
    */

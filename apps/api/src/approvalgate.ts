@@ -18,6 +18,6 @@ export async function requireApprovalPassword(
   const b = ctx.body && typeof ctx.body === "object" ? (ctx.body as Record<string, unknown>) : {};
   const password = typeof b.password === "string" ? b.password : "";
   if (!(await verify(password))) {
-    throw new ApiError("PASSWORD_REQUIRED", "superadmin password required to approve", 403);
+    throw new ApiError("PASSWORD_REQUIRED", "system owner password required to approve", 403);
   }
 }

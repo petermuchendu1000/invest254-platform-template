@@ -246,7 +246,13 @@ function intParam(ctx: Ctx, name: string): number {
 export function registerAdminRoutes(router: Router, deps: ApiDeps): void {
   const auth = requireAuth(deps.verifier);
   const admin = requireSiteAdmin("admin");
-  const superadmin = requireSiteAdmin("superadmin");
+  // Issue 1 / F1 (Option B): the legacy site-fenced `superadmin` tier is gone. Owner-tier brand
+  // levers (game/economy config, seed rotation, M-Pesa config, per-brand withdrawal-pool, Fly ops,
+  // per-user statistical overrides) are now SYSTEM-gated — reachable only by the platform owner
+  // (platform_superadmin), from the platform/system console (targeting a brand via `?site=`), never
+  // from the site back-office or a day-to-day `admin` impersonation token. A platform_admin manages
+  // its own brands' operations through the /platform/* console routes.
+  const ownerTier = requireRole("platform_superadmin");
 
   router.get(`${BASE}/admin/overview`, auth, admin, async (ctx: Ctx) => deps.admin.overview(adminScopeSite(ctx) ?? undefined));
 
@@ -340,8 +346,8 @@ export function registerAdminRoutes(router: Router, deps: ApiDeps): void {
   router.post(`${BASE}/admin/users/:id/role`, auth, admin, async (ctx: Ctx) => {
     const body = ctx.body && typeof ctx.body === "object" ? (ctx.body as Record<string, unknown>) : {};
     const role = typeof body.role === "string" ? body.role : "";
-    if (!["player", "marketer", "admin", "superadmin"].includes(role)) {
-      throw new ApiError("VALIDATION", "role must be player|marketer|admin|superadmin", 400);
+    if (!["player", "marketer", "admin"].includes(role)) {
+      throw new ApiError("VALIDATION", "role must be player|marketer|admin", 400);
     }
     await ensureUserInScope(deps, ctx, ctx.params.id!);
     return domain(() => deps.admin.setUserRole(ctx.claims!.userId, ctx.claims!.role ?? "player", ctx.params.id!, role));
@@ -525,7 +531,7 @@ export function registerAdminRoutes(router: Router, deps: ApiDeps): void {
   // Writing a per-user override is a powerful statistical lever → superadmin-gated (docs/22 Task H).
   // platform_superadmin (rank 5) also satisfies this. The RPC stamps the override with the target's
   // brand (user_overrides.site_id) and writes an admin_actions audit row.
-  router.post(`${BASE}/admin/users/:id/overrides`, auth, superadmin, async (ctx: Ctx) => {
+  router.post(`${BASE}/admin/users/:id/overrides`, auth, ownerTier, async (ctx: Ctx) => {
     const patch = parseOverridePatch(ctx);
     await ensureUserInScope(deps, ctx, ctx.params.id!);
     return domain(() => deps.admin.setUserOverrides(ctx.claims!.userId, ctx.claims!.role ?? "player", ctx.params.id!, patch));
@@ -619,7 +625,7 @@ export function registerAdminRoutes(router: Router, deps: ApiDeps): void {
 
   router.get(`${BASE}/admin/game-config`, auth, admin, async (ctx: Ctx) => deps.admin.getGameConfig(configSiteId(ctx)));
 
-  router.patch(`${BASE}/admin/game-config`, auth, superadmin, async (ctx: Ctx) => {
+  router.patch(`${BASE}/admin/game-config`, auth, ownerTier, async (ctx: Ctx) => {
     const patch = parseGameConfigPatch(ctx);
     return domain(() => deps.admin.updateGameConfig(ctx.claims!.userId, ctx.claims!.role ?? "player", patch, configSiteId(ctx)));
   });
@@ -632,7 +638,7 @@ export function registerAdminRoutes(router: Router, deps: ApiDeps): void {
     return deps.admin.getWithdrawalPool(configSiteId(ctx), day);
   });
 
-  router.put(`${BASE}/admin/withdrawal-pool`, auth, superadmin, async (ctx: Ctx) => {
+  router.put(`${BASE}/admin/withdrawal-pool`, auth, ownerTier, async (ctx: Ctx) => {
     const body = ctx.body && typeof ctx.body === "object" ? (ctx.body as Record<string, unknown>) : {};
     const day = body.day === undefined || body.day === null ? eatDay() : String(body.day);
     if (!EAT_DAY_RE.test(day)) throw new ApiError("VALIDATION", "day must be YYYY-MM-DD (EAT)", 400);
@@ -678,14 +684,14 @@ export function registerAdminRoutes(router: Router, deps: ApiDeps): void {
   // ── M-Pesa configuration (admin reads masked; superadmin edits; secrets write-only) ──────────
   router.get(`${BASE}/admin/mpesa-config`, auth, admin, async () => domain(() => deps.admin.getMpesaConfig()));
 
-  router.patch(`${BASE}/admin/mpesa-config`, auth, superadmin, async (ctx: Ctx) => {
+  router.patch(`${BASE}/admin/mpesa-config`, auth, ownerTier, async (ctx: Ctx) => {
     const patch = parseMpesaConfigPatch(ctx);
     return domain(() => deps.admin.updateMpesaConfig(ctx.claims!.userId, ctx.claims!.role ?? "player", patch));
   });
 
   router.get(`${BASE}/admin/seeds`, auth, admin, async (ctx: Ctx) => ({ items: await deps.admin.listSeeds(listLimit(ctx, 30), adminScopeSite(ctx) ?? undefined) }));
 
-  router.post(`${BASE}/admin/seeds/rotate`, auth, superadmin, async (ctx: Ctx) =>
+  router.post(`${BASE}/admin/seeds/rotate`, auth, ownerTier, async (ctx: Ctx) =>
     domain(() => deps.admin.rotateSeed(ctx.claims!.userId, ctx.claims!.role ?? "player", bodyTradeDate(ctx))));
 
   // ── J6: affiliate payout approve/reject QUEUE ────────────────────────────────────────────────
@@ -713,7 +719,7 @@ export function registerAdminRoutes(router: Router, deps: ApiDeps): void {
     return ["invest254-api", "invest254-engine-pm"];
   };
 
-  router.post(`${BASE}/admin/fly/restart`, auth, superadmin, flyRestartLimit, async (ctx: Ctx) => {
+  router.post(`${BASE}/admin/fly/restart`, auth, ownerTier, flyRestartLimit, async (ctx: Ctx) => {
     const token = process.env.FLY_API_TOKEN;
     if (!token) throw new ApiError("FLY_NOT_CONFIGURED", "FLY_API_TOKEN is not set on the API server", 503);
     const apps = flyTargetApps();
@@ -749,7 +755,7 @@ export function registerAdminRoutes(router: Router, deps: ApiDeps): void {
   });
 
   // Status check so the UI can show whether the integration is configured.
-  router.get(`${BASE}/admin/fly/status`, auth, superadmin, async () => ({
+  router.get(`${BASE}/admin/fly/status`, auth, ownerTier, async () => ({
     configured: Boolean(process.env.FLY_API_TOKEN),
     apps: flyTargetApps(),
     // legacy single-app field kept for older clients

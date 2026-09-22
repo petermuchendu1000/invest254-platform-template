@@ -101,13 +101,13 @@ export function registerReferralRoutes(router: Router, deps: ApiDeps): void {
     ({ items: await deps.referral.listPayouts(adminScopeSite(ctx) ?? undefined, ctx.query.get("status") ?? undefined, limitOf(ctx)) }));
 
   router.post(`${BASE}/admin/commission-payouts/:id/approve`, auth, admin, async (ctx: Ctx) => {
-    await requireApprovalPassword(ctx, deps.verifyApprovalPassword); // superadmin password gate (Issue 1)
+    await requireApprovalPassword(ctx, deps.verifyApprovalPassword); // system owner password gate (Issue 1)
     assertTargetSiteInScope(ctx, await deps.referral.siteOfPayout(ctx.params.id!));
     return domain(() => deps.referral.approvePayout(ctx.params.id!, ctx.claims!.userId));
   });
 
   router.post(`${BASE}/admin/commission-payouts/:id/paid`, auth, admin, async (ctx: Ctx) => {
-    await requireApprovalPassword(ctx, deps.verifyApprovalPassword); // superadmin password gate (Issue 1)
+    await requireApprovalPassword(ctx, deps.verifyApprovalPassword); // system owner password gate (Issue 1)
     assertTargetSiteInScope(ctx, await deps.referral.siteOfPayout(ctx.params.id!));
     const b = (ctx.body ?? {}) as Record<string, unknown>;
     const ref = typeof b.ref === "string" ? b.ref : null;
