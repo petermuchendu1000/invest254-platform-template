@@ -82,7 +82,9 @@ export interface NotificationRepository {
   // site; platform admin -> its platform; system owner -> everyone).
   audienceCount(actorId: string, actorRole: string, audience: BroadcastAudience): Promise<number>;
   broadcast(actorId: string, actorRole: string, templateKey: string, audience: BroadcastAudience | null): Promise<number>;
-  resolveCategory(actorId: string, actorRole: string, category: string): Promise<number>;
+  /** Clear an incident category across the actor's tenant — or, when `siteId` is given, ONLY that brand
+   *  (and only if it is within the actor's permission set; migration 0156, Issue 1 / F-46). */
+  resolveCategory(actorId: string, actorRole: string, category: string, siteId?: string): Promise<number>;
 }
 
 /**
@@ -132,10 +134,10 @@ export class NotificationService {
     if (!key) throw new Error("TEMPLATE_KEY_REQUIRED");
     return this.repo.broadcast(actorId, actorRole, key, audience ?? null);
   }
-  resolveCategory(actorId: string, actorRole: string, category: string): Promise<number> {
+  resolveCategory(actorId: string, actorRole: string, category: string, siteId?: string): Promise<number> {
     const cat = String(category ?? "").trim();
     if (!cat) throw new Error("CATEGORY_REQUIRED");
-    return this.repo.resolveCategory(actorId, actorRole, cat);
+    return this.repo.resolveCategory(actorId, actorRole, cat, siteId);
   }
 }
 
@@ -195,7 +197,7 @@ export class InMemoryNotificationRepository implements NotificationRepository {
   async listTemplates(): Promise<NotificationTemplate[]> { return []; }
   async audienceCount(_actorId: string, _actorRole: string, _audience: BroadcastAudience): Promise<number> { return 0; }
   async broadcast(_actorId: string, _actorRole: string, _templateKey: string, _audience: BroadcastAudience | null): Promise<number> { return 0; }
-  async resolveCategory(_actorId: string, _actorRole: string, _category: string): Promise<number> { return 0; }
+  async resolveCategory(_actorId: string, _actorRole: string, _category: string, _siteId?: string): Promise<number> { return 0; }
 }
 
 // ───────────────────────────── Postgres ─────────────────────────────
@@ -289,8 +291,10 @@ export class PgNotificationRepository implements NotificationRepository {
       [actorId, actorRole, templateKey, audience == null ? null : JSON.stringify(audience)]);
     return Number(r.rows[0]?.n ?? 0);
   }
-  async resolveCategory(actorId: string, actorRole: string, category: string): Promise<number> {
-    const r = await this.q.query(`select fn_resolve_notifications_by_category($1, $2, $3) as n`, [actorId, actorRole, category]);
+  async resolveCategory(actorId: string, actorRole: string, category: string, siteId?: string): Promise<number> {
+    const r = siteId
+      ? await this.q.query(`select fn_resolve_notifications_by_category($1, $2, $3, $4::uuid) as n`, [actorId, actorRole, category, siteId])
+      : await this.q.query(`select fn_resolve_notifications_by_category($1, $2, $3) as n`, [actorId, actorRole, category]);
     return Number(r.rows[0]?.n ?? 0);
   }
 }

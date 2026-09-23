@@ -16,9 +16,9 @@ export function usePlatformOverview() {
 }
 
 // ── Platform tier governance (Issue 1) ──
-export function usePlatforms() {
+export function usePlatforms(enabled = true) {
   const t = useTok();
-  return useQuery({ queryKey: ['platform', 'platforms'], queryFn: () => platformApi.platforms(t), enabled: !!t });
+  return useQuery({ queryKey: ['platform', 'platforms'], queryFn: () => platformApi.platforms(t), enabled: !!t && enabled });
 }
 export function usePlatformsOverview() {
   const t = useTok();
@@ -176,7 +176,7 @@ export function usePlatformMarketerRollup() {
   return useQuery({ queryKey: ['platform', 'marketers'], queryFn: () => platformApi.marketerRollup(t), enabled: !!t });
 }
 
-/** Mint a brand-scoped superadmin token so the platform owner can enter a client's admin console. */
+/** Mint a brand-scoped `admin` token so the owner or a platform admin can enter a client's admin console. */
 export function useImpersonate() {
   const t = useTok();
   return useMutation({ mutationFn: (siteId: string) => platformApi.impersonate(t, siteId) });
@@ -291,7 +291,7 @@ export function useSetSiteTheme() {
 /**
  * Apply a COMPLETE curated site theme (one of the 56 mirrors in lib/brand/siteThemes) to a client in
  * one action: writes the full token palette (theme_tokens) AND the mode + legacy colour_* columns so
- * the whole brand re-skins. Both are platform_superadmin writes; served live on the next /site/brand
+ * the whole brand re-skins. Both are platform-tier writes (owner or the brand's platform admin); served live on the next /site/brand
  * fetch (colours instant; radius/mono/heading render once the web build carries the token contract).
  */
 export function useApplySiteTheme() {

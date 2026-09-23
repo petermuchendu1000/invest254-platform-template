@@ -12,6 +12,9 @@ import { useAuthActions } from '@/lib/auth/useAuthActions';
 import { useHydrated } from '@/lib/useHydrated';
 import { useSidebarCollapsed } from '@/lib/useSidebarCollapsed';
 import { CommandPalette } from '@/components/platform/CommandPalette';
+import { roleFromToken, actorFromToken } from '@/lib/auth/token';
+import { can } from '@invest254/shared/capabilities';
+import { endImpersonation } from '@/lib/platform/impersonate';
 
 function Icon({ d }: { d: string }) {
   return (
@@ -34,11 +37,17 @@ const NAV = [
   { href: '/platform/payments', label: 'Payments', system: true, icon: <Icon d="M3 10h18M3 7a2 2 0 012-2h14a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2z" /> },
   { href: '/platform/config', label: 'Global config', system: true, icon: <Icon d="M12 15a3 3 0 100-6 3 3 0 000 6zM19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 11-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 110-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 110 4h-.09a1.65 1.65 0 00-1.51 1z" /> },
   { href: '/platform/addons', label: 'Add-ons & requests', system: true, icon: <Icon d="M20 7l-9-4-9 4 9 4 9-4zM3 12l9 4 9-4M3 17l9 4 9-4" /> },
+  // docs/42 UI-2: owner governance lives in the console (moved from the brand back office).
+  { href: '/platform/audit', label: 'Audit log', system: true, icon: <Icon d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /> },
+  { href: '/platform/logs', label: 'System logs', system: true, icon: <Icon d="M4 5h16M4 5a1 1 0 00-1 1v12a1 1 0 001 1h16a1 1 0 001-1V6a1 1 0 00-1-1M8 9h8M8 13h8M8 17h5" /> },
+  { href: '/platform/mpesa', label: 'M-Pesa (global)', system: true, icon: <Icon d="M5 7h14M5 7a2 2 0 00-2 2v6a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2M5 7V5a2 2 0 012-2h10a2 2 0 012 2v2M12 14a2 2 0 100-4 2 2 0 000 4z" /> },
+  { href: '/platform/engine', label: 'Engine (Fly.io)', system: true, icon: <Icon d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" /> },
 ];
 
 /**
- * Operator-console shell for the platform-superadmin: a persistent left sidebar (desktop) / top
- * scroll-nav (mobile), a global ⌘K command palette, and strict platform_superadmin gating.
+ * Operator-console shell for the system owner and platform admins: a persistent left sidebar (desktop) / top
+ * scroll-nav (mobile), a global ⌘K command palette, and capability gating (docs/42: console.enter =
+ * platform admin + system owner; console.system = owner only).
  * Brand-token styling, consistent with the admin back office.
  */
 export function PlatformShell({ children }: { children: React.ReactNode }) {
@@ -68,19 +77,32 @@ export function PlatformShell({ children }: { children: React.ReactNode }) {
     // sign in here regardless of which host serves the console.
     return <AdminSignIn />;
   }
-  if (user && user.role !== 'platform_superadmin' && user.role !== 'platform_admin') {
-    // Wrong role: reveal nothing — no hint that an operator console exists here.
+  // docs/42 UI-3: decisions use the TOKEN role (what the API authorises). A brand session opened from
+  // the console (impersonation, `act` claim) is not a console session: offer the way back, don't 404.
+  const actor = actorFromToken(token);
+  if (actor) {
+    return (
+      <Gate
+        title={`You're in ${actor.brand ?? 'a brand'} as admin`}
+        body="Leave the brand to return to your console."
+        action={<Button onClick={() => { void endImpersonation(); }}>Exit brand</Button>}
+      />
+    );
+  }
+  const tokenRole = roleFromToken(token);
+  if (!can(tokenRole, 'console.enter')) {
+    // Wrong tier: reveal nothing — no hint that an operator console exists here.
     return <Gate title="404" body="This page could not be found." action={null} />;
   }
   // Platform admins see a SCOPED console (their platform's sites only); system-only tools are hidden.
-  const isSystem = user?.role === 'platform_superadmin';
+  const isSystem = can(tokenRole, 'console.system');
 
   // Defense-in-depth: hide-from-nav is not enough. A platform admin typing a System-only URL must get
   // a plain 404 (reveal nothing), not a broken page that 403s every call. The API + RPCs already gate
   // these, this is the matching client guard.
   // Onboarding + registrar config are available to platform admins (they manage their own clients);
   // platforms/payments/global-config remain SYSTEM-owner only.
-  const SYSTEM_ONLY_PREFIXES = ['/platform/platforms', '/platform/payments', '/platform/config', '/platform/addons'];
+  const SYSTEM_ONLY_PREFIXES = ['/platform/platforms', '/platform/payments', '/platform/config', '/platform/addons', '/platform/audit', '/platform/logs', '/platform/mpesa', '/platform/engine'];
   if (!isSystem && SYSTEM_ONLY_PREFIXES.some((p) => pathname?.startsWith(p))) {
     return <Gate title="404" body="This page could not be found." action={null} />;
   }
@@ -98,7 +120,10 @@ export function PlatformShell({ children }: { children: React.ReactNode }) {
             </span>
             <span className="flex flex-col leading-tight">
               <span className="text-sm font-semibold tracking-tight">TrioCodes</span>
-              <span className="text-[10px] font-medium uppercase tracking-wide text-accent">Operator console</span>
+              {/* docs/42 UI-8 (P3): a platform admin always sees WHICH platform it is operating. */}
+              <span className="truncate text-[10px] font-medium uppercase tracking-wide text-accent">
+                {isSystem ? 'System console · all platforms' : `Platform · ${user?.scope?.platform?.name ?? 'your platform'}`}
+              </span>
             </span>
           </span>
           <button
@@ -153,16 +178,16 @@ export function PlatformShell({ children }: { children: React.ReactNode }) {
             <>
               {/* Only the SYSTEM owner has a single-brand back office at /admin; a platform admin
                   drills into a brand via impersonation, so the link would 404 for them (Issue 1). */}
-              {isSystem && <Link href="/admin" title="Admin back office" aria-label="Admin back office" className="mx-auto flex h-9 w-9 items-center justify-center rounded-lg text-muted transition hover:text-fg"><Icon d="M14 6l-6 6 6 6" /></Link>}
+              {isSystem && <Link href="/admin" title="Open a brand" aria-label="Open a brand" className="mx-auto flex h-9 w-9 items-center justify-center rounded-lg text-muted transition hover:text-fg"><Icon d="M14 6l-6 6 6 6" /></Link>}
               <button type="button" onClick={logout} title="Log out" aria-label="Log out" className="mx-auto flex h-9 w-9 items-center justify-center rounded-lg bg-surface-2 text-muted transition hover:text-fg"><Icon d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9" /></button>
             </>
           ) : (
             <>
               <div className="flex flex-col gap-1">
                 <span className="truncate text-sm font-medium">@{user?.username}</span>
-                <span className="inline-flex w-fit items-center gap-1 rounded-full bg-accent/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent">{isSystem ? '◆ System owner' : '◆ Platform admin'}</span>
+                <span className="inline-flex w-fit items-center gap-1 rounded-full bg-accent/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent">{isSystem ? '◆ System owner' : `◆ Platform admin · ${user?.scope?.platform?.name ?? ''}`}</span>
               </div>
-              {isSystem && <Link href="/admin" className="text-xs text-muted hover:text-fg">← Admin back office</Link>}
+              {isSystem && <Link href="/admin" className="text-xs text-muted hover:text-fg">Open a brand →</Link>}
               <Button variant="secondary" size="sm" onClick={logout}>Log out</Button>
             </>
           )}

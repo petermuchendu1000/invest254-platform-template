@@ -10,6 +10,7 @@ import { useAuthActions } from '@/lib/auth/useAuthActions';
 import { useHydrated } from '@/lib/useHydrated';
 import { ReferralInviteCard } from '@/components/account/ReferralInviteCard';
 import { SecurityCard } from '@/components/account/SecurityCard';
+import { useCan } from '@/lib/auth/can';
 
 export default function AccountPage() {
   const hydrated = useHydrated();
@@ -17,6 +18,8 @@ export default function AccountPage() {
   const user = useSession((s) => s.user);
   const openAuth = useAuthUi((s) => s.openAuth);
   const { logout } = useAuthActions();
+  // docs/42 UI-12: operators never get a referral code/link (the API refuses /me/referral for them).
+  const mayEarn = useCan('earn.referrals');
 
   if (!hydrated) return <Skeleton className="h-48 w-full" />;
 
@@ -45,8 +48,8 @@ export default function AccountPage() {
         <Row label="Username" value={`@${user.username}`} />
       </Card>
 
-      {/* Referral link + code, right under the username (item 3) */}
-      <ReferralInviteCard />
+      {/* Referral link + code, right under the username (item 3) — players and marketers only (UI-12) */}
+      {mayEarn ? <ReferralInviteCard /> : null}
 
       {/* Admin/operator security controls (2FA management) — hidden for players. */}
       <SecurityCard />

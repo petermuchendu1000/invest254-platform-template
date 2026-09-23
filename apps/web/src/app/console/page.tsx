@@ -12,7 +12,7 @@ import { useHydrated } from '@/lib/useHydrated';
  *
  * One URL for every admin, meant to be served on a dedicated admin domain (e.g. console.<host>).
  * Logged out → the identity-based operator sign-in. Logged in → routed to the surface for the
- * account's role: System owner / Platform admin → /platform; Site admin/superadmin → /admin.
+ * account's role: System owner / Platform admin → /platform; Site admin → /admin.
  * A non-operator who lands here is told they have no console access (and can sign out).
  */
 function destinationFor(role: string | undefined | null): string | null {

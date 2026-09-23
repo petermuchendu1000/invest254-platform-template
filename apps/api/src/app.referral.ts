@@ -1,4 +1,4 @@
-import { Router, ApiError, requireAuth, requireRole, requireSiteAdmin, adminScopeSite, type Ctx } from "./http.js";
+import { Router, ApiError, requireAuth, requireRole, requireSiteAdmin, requireEarningRole, adminScopeSite, type Ctx } from "./http.js";
 import { assertSiteTarget } from "./scope.js";
 import type { ApiDeps } from "./app.js";
 import { requireApprovalPassword } from "./approvalgate.js";
@@ -6,7 +6,7 @@ import { requireApprovalPassword } from "./approvalgate.js";
 /**
  * Referral / commission routes (deposit-based differential-unilevel model, migrations 0078/0079).
  *
- *  - GET  /me/referral                        every authed user: their code + link + commission summary
+ *  - GET  /me/referral                        players + marketers (UI-12: never operators): their code + link + commission summary
  *  - GET  /me/referral/commissions            the caller's commission line-items (newest first)
  *  - POST /me/referral/payouts                request a commission payout (balance must be >= KES 500)
  *  - GET  /me/referral/payouts                the caller's own payout requests
@@ -77,26 +77,28 @@ function limitOf(ctx: Ctx, def = 50): number {
 
 export function registerReferralRoutes(router: Router, deps: ApiDeps): void {
   const auth = requireAuth(deps.verifier);
+  // docs/42 UI-12: the player-side referral routes are for players and marketers only.
+  const earner = requireEarningRole();
   const admin = requireSiteAdmin("admin");
   // F-44: strict, fail-closed target scope for id-addressed commission-payout moderation (scope.ts).
   const strictScope = { platformOfSite: (s: string) => deps.platform.platformOfSite(s) };
 
-  // ── Every authenticated user: their referral code, link, and commission summary ────────────────
-  router.get(`${BASE}/me/referral`, auth, async (ctx: Ctx) =>
+  // ── Players and marketers (never operators, UI-12): their referral code, link, and commission summary ────────────────
+  router.get(`${BASE}/me/referral`, auth, earner, async (ctx: Ctx) =>
     deps.referral.myReferral(ctx.claims!.userId));
 
-  router.get(`${BASE}/me/referral/commissions`, auth, async (ctx: Ctx) =>
+  router.get(`${BASE}/me/referral/commissions`, auth, earner, async (ctx: Ctx) =>
     ({ items: await deps.referral.listMyCommissions(ctx.claims!.userId, limitOf(ctx)) }));
 
   // Request a commission payout (marketer balance must be >= KES 500). One pending request at a time.
   // On success, alert the superadmin (Telegram + email) — this is REAL money needing approval (Issue 1).
-  router.post(`${BASE}/me/referral/payouts`, auth, async (ctx: Ctx) => {
+  router.post(`${BASE}/me/referral/payouts`, auth, earner, async (ctx: Ctx) => {
     const row = await domain(() => deps.referral.requestPayout(ctx.claims!.userId));
     try { deps.onCommissionRequested?.(row.id); } catch { /* never block the request */ }
     return row;
   });
 
-  router.get(`${BASE}/me/referral/payouts`, auth, async (ctx: Ctx) =>
+  router.get(`${BASE}/me/referral/payouts`, auth, earner, async (ctx: Ctx) =>
     ({ items: await deps.referral.listMyPayouts(ctx.claims!.userId, limitOf(ctx)) }));
 
   // ── Admin commission-payout queue (brand-scoped; platform_superadmin sees all) ─────────────────

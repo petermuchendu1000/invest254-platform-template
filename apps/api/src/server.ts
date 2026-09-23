@@ -20,6 +20,7 @@ import { makePgReferralRepo } from "./referral.pg.js";
 import { makePgSupportDeps } from "./support.pg.js";
 import { makeDomainProvisioner, type DomainProvisioner } from "./domains.js";
 import { RegistrarConfigService } from "./registrarconfig.js";
+import { refuseForeignReonboard, refuseDomainClash, assertDomainInPlatform, platformDomainSet } from "./onboardscope.js";
 import { AddonService } from "./addonservice.js";
 import { makeWebPushTransport } from "./webpush.js";
 import { makeResendSender, buildPayoutEmail } from "./email.js";
@@ -590,7 +591,7 @@ async function buildDeps(): Promise<ApiDeps> {
       const p = await provisionerFor(platformId);
       return { domainConfigured: Boolean(p), registrarConfigured: p?.registrarConfigured ?? false };
     },
-    async onboard(input: OnboardInput, platformId: string | null): Promise<OnboardResult> {
+    async onboard(input: OnboardInput, platformId: string | null, callerScope?: string | null): Promise<OnboardResult> {
       const f = {
         name: input.name,
         primary_domain: input.primaryDomain ? input.primaryDomain.trim().toLowerCase() : null,
@@ -605,10 +606,15 @@ async function buildDeps(): Promise<ApiDeps> {
         support_email: input.supportEmail ?? null,
         status: "active",
       };
-      const existing = await q.query("select id from sites where slug = $1", [input.slug]);
+      // Issue 1 / F-47: slugs are GLOBALLY unique, so an existing slug may belong to ANOTHER platform. A
+      // bounded caller (platform admin) may only re-onboard its OWN platform's brand — re-onboarding
+      // used to overwrite any tenant's brand identity, domain AND economy (house edge, stakes).
+      const existingId = await refuseForeignReonboard(q, input.slug, callerScope);
+      // F-47: a domain belongs to ONE brand (case-insensitive, like host resolution).
+      if (f.primary_domain) await refuseDomainClash(q, f.primary_domain, existingId);
       let siteId: string;
-      if (existing.rows.length) {
-        siteId = String(existing.rows[0].id);
+      if (existingId) {
+        siteId = existingId;
         const sets = Object.keys(f).map((k, i) => `${k} = $${i + 2}`).join(", ");
         await q.query(`update sites set ${sets}, updated_at = now() where id = $1`, [siteId, ...Object.values(f)]);
       } else {
@@ -644,8 +650,11 @@ async function buildDeps(): Promise<ApiDeps> {
       }
       return { siteId, brand, domain: domainResult };
     },
-    async domainStatus(d: string) {
+    async domainStatus(d: string, callerScope?: string | null) {
       if (!envProvisioner) throw new Error("NOT_CONFIGURED: domain provisioning is not configured");
+      // F-47: a platform admin may only probe a domain claimed by a brand of ITS platform (the system
+      // Cloudflare account holds every tenant's zones). The system owner (null scope) is unrestricted.
+      await assertDomainInPlatform(q, d, callerScope);
       return envProvisioner.status(d);
     },
     async listRegistrarDomains(platformId: string | null) {
@@ -668,12 +677,18 @@ async function buildDeps(): Promise<ApiDeps> {
       domains.sort((a, b) => (Number(a.alreadyClient) - Number(b.alreadyClient)) || a.domain.localeCompare(b.domain));
       return { registrarConfigured: true, domains };
     },
-    async domainHealth() {
+    async domainHealth(callerScope?: string | null) {
       if (!envProvisioner) return { configured: false, statuses: {} };
       try {
         const pages = await envProvisioner.pagesDomains();
+        // F-47: a platform admin sees ONLY its own platform's brand domains (apex + www); the system
+        // Cloudflare account lists every tenant's, which used to be returned to every platform admin.
+        const allowed = await platformDomainSet(q, callerScope);
         const statuses: Record<string, string> = {};
-        for (const p of pages) statuses[p.name.trim().toLowerCase()] = p.status;
+        for (const p of pages) {
+          const name = p.name.trim().toLowerCase();
+          if (!allowed || allowed.has(name)) statuses[name] = p.status;
+        }
         return { configured: true, statuses };
       } catch (e) {
         console.warn("[api] domainHealth failed:", (e as Error).message);
@@ -844,6 +859,14 @@ async function buildDeps(): Promise<ApiDeps> {
     payments,
     platformGate,
     resolveHandle,
+    // docs/42 UI-8: one targeted lookup for the scope chip (never a full brand list).
+    scopeNames: async (siteId: string | null, platformId: string | null) => {
+      const r = await q.query(
+        "select (select name from public.sites where id = $1::uuid) as site_name, (select name from public.platforms where id = $2::uuid) as platform_name",
+        [siteId, platformId]);
+      const x = (r.rows[0] ?? {}) as Record<string, unknown>;
+      return { siteName: x.site_name == null ? null : String(x.site_name), platformName: x.platform_name == null ? null : String(x.platform_name) };
+    },
     walletBalance: async (userId: string, siteId?: string): Promise<WalletBalance> => {
       // Spendable balance must match the game engine's source of truth (PgGameRepository
       // .getWalletSnapshot, migration 0084): marketer/demo accounts spend the DEMO bucket, players

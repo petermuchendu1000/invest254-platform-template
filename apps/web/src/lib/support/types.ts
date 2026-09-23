@@ -7,6 +7,8 @@ export interface SupportCitation {
 export interface SupportStartResult {
   conversationId: string;
   siteId: string;
+  /** Capability token for this conversation (Issue 1 / F-48): returned once, required on every write. */
+  conversationToken: string;
 }
 
 export interface SupportAnswerResult {

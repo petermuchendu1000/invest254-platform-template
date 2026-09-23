@@ -73,3 +73,31 @@ jobs:
             echo "No DATABASE_URL secret (non-prod mirror) — skipping reproducibility gate."; exit 0
           fi
           node --import tsx scripts/reproducibility_check.mts --days 2 --limit 500 --dry-run
+
+  # docs/42 role-matrix UI e2e: the PRODUCTION web build in headless Chromium, as every operator tier
+  # (incl. impersonation in a second tab), with the API mocked at the network layer. Fails if a screen
+  # shows a tier a control the API refuses, hides one it allows, or drops the impersonation mode.
+  web-roles-e2e:
+    name: web roles e2e
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install
+        run: npm ci
+      - name: Build web against the mocked API origin
+        env:
+          NEXT_PUBLIC_API_BASE_URL: http://api.e2e.test/api/v1
+        run: npm -w @invest254/web run build
+      - name: Install a headless browser (not saved to the lockfile)
+        run: |
+          npm i --no-save playwright-core@1.56.1
+          npx playwright-core install --with-deps chromium
+      - name: Run the role matrix
+        run: |
+          (cd apps/web && npx next start -p 3100 > ../../web.log 2>&1 &)
+          for i in $(seq 1 60); do curl -sf -o /dev/null http://127.0.0.1:3100/console && break; sleep 1; done
+          WEB_URL=http://127.0.0.1:3100 node apps/web/e2e/roles.e2e.mjs

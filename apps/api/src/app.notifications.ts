@@ -1,4 +1,4 @@
-import { Router, ApiError, requireAuth, requireRole, type Ctx } from "./http.js";
+import { Router, ApiError, requireAuth, requireRole, adminScopeSite, type Ctx } from "./http.js";
 import { assertUserTarget } from "./scope.js";
 import type { NotificationRow, NotificationLevel } from "@invest254/engine";
 import type { ApiDeps } from "./app.js";
@@ -104,6 +104,24 @@ export function registerNotificationRoutes(router: Router, deps: ApiDeps): void 
     return a && typeof a === "object" ? (a as Record<string, unknown>) : null;
   };
 
+  // Issue 1 / F-46: a SITE-tier token (a genuine site admin, or an impersonation session minted as
+  // role='admin' + site=X) always NAMES its brand on bulk actions, so the DB never resolves the actor's
+  // HOME brand (for an impersonator that is the wrong brand — possibly on another platform). Platform
+  // admins and the system owner keep their tenant-wide semantics (narrowable by an explicit `sites`).
+  const siteTierBrand = (ctx: Ctx): string | null => (ctx.claims?.role === "admin" ? adminScopeSite(ctx) : null);
+  const scopedAudience = async (ctx: Ctx, templateKey: string | null): Promise<Record<string, unknown> | null> => {
+    const aud = parseAudience(ctx);
+    const brand = siteTierBrand(ctx);
+    if (!brand) return aud;
+    // Keep the template's own default filter when the caller sent none (the RPC would otherwise replace it).
+    let base = aud;
+    if (!base && templateKey) {
+      const t = (await deps.notifications.listTemplates()).find((x) => x.key === templateKey);
+      base = (t?.defaultAudience as Record<string, unknown> | undefined) ?? null;
+    }
+    return { ...(base ?? {}), sites: [brand] };
+  };
+
   // The saved system-notification library (deposits down/restored, maintenance, security, etc.).
   router.get(`${BASE}/admin/notification-templates`, auth, admin, async () => {
     return { items: await deps.notifications.listTemplates() };
@@ -112,7 +130,7 @@ export function registerNotificationRoutes(router: Router, deps: ApiDeps): void 
   // Live recipient count for a proposed audience — powers the preview before sending.
   router.post(`${BASE}/admin/notifications/audience-count`, auth, admin, async (ctx: Ctx) => {
     const count = await deps.notifications.audienceCount(
-      ctx.claims!.userId, ctx.claims!.role ?? "player", (parseAudience(ctx) ?? {}) as never);
+      ctx.claims!.userId, ctx.claims!.role ?? "player", ((await scopedAudience(ctx, null)) ?? {}) as never);
     return { count };
   });
 
@@ -122,7 +140,7 @@ export function registerNotificationRoutes(router: Router, deps: ApiDeps): void 
     const templateKey = typeof b.templateKey === "string" ? b.templateKey.trim() : "";
     if (!templateKey) throw new ApiError("VALIDATION", "templateKey is required", 400);
     const recipients = await deps.notifications.broadcast(
-      ctx.claims!.userId, ctx.claims!.role ?? "player", templateKey, parseAudience(ctx) as never);
+      ctx.claims!.userId, ctx.claims!.role ?? "player", templateKey, (await scopedAudience(ctx, templateKey)) as never);
     return { recipients };
   });
 
@@ -131,7 +149,8 @@ export function registerNotificationRoutes(router: Router, deps: ApiDeps): void 
     const b = ctx.body && typeof ctx.body === "object" ? (ctx.body as Record<string, unknown>) : {};
     const category = typeof b.category === "string" ? b.category.trim() : "";
     if (!category) throw new ApiError("VALIDATION", "category is required", 400);
-    const cleared = await deps.notifications.resolveCategory(ctx.claims!.userId, ctx.claims!.role ?? "player", category);
+    const brand = siteTierBrand(ctx);
+    const cleared = await deps.notifications.resolveCategory(ctx.claims!.userId, ctx.claims!.role ?? "player", category, brand ?? undefined);
     return { cleared };
   });
 }

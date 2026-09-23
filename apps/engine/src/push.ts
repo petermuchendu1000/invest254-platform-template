@@ -56,14 +56,50 @@ export interface PushSubscriptionRepository {
    * and last_seen_at rather than creating a duplicate row.
    */
   upsert(sub: PushSubscriptionRow): Promise<void>;
-  /** Remove a subscription by endpoint (client unsubscribed / permission revoked). Returns removed count. */
+  /** Remove a subscription by endpoint REGARDLESS of owner. Internal only: pruning an endpoint the push
+   *  service reported as gone (404/410). Never reachable from a request (Issue 1 / F-48). */
   removeByEndpoint(endpoint: string): Promise<number>;
+  /** Remove the CALLER'S OWN subscription for `endpoint` (client unsubscribe / logout). Another user's
+   *  row with the same endpoint is untouched, so one admin can never silence another admin's alerts
+   *  (Issue 1 / F-48). Returns removed count. */
+  removeForUser(endpoint: string, userId: string): Promise<number>;
   /**
-   * Every admin/superadmin device that should be alerted for a withdrawal on `siteId`:
-   * site-scoped admins whose site_id = siteId, PLUS platform admins (site_id IS NULL). When siteId
-   * is undefined (single-tenant / unknown brand) every admin subscription is returned.
+   * Every operator device that may be alerted for a withdrawal on `siteId`, decided from each
+   * subscriber's LIVE profile (`mayReceiveWithdrawalAlert`) — never from the brand stored at opt-in,
+   * which goes stale on transfer/demotion and was null for claimless tokens (Issue 1 / F-48).
    */
   listForWithdrawalSite(siteId: string | undefined | null): Promise<PushSubscriptionRow[]>;
+}
+
+/** The live profile facts that decide whether an operator may be alerted (profiles row). */
+export interface AlertRecipientProfile {
+  role: string;
+  status: string;
+  siteId: string | null;
+  platformId: string | null;
+}
+
+/**
+ * Issue 1 / F-48 — the ONE rule for who receives a withdrawal alert (it carries the player's phone,
+ * amount and Approve/Reject actions). Mirrored exactly by PgPushSubscriptionRepository's SQL.
+ *   - only an ACTIVE account (suspended/banned/deleted operators get nothing);
+ *   - system owner (platform_superadmin): every brand;
+ *   - platform_admin: brands of ITS platform only (never another tenant's);
+ *   - site admin: its own brand only;
+ *   - anyone else (demoted to player/marketer): nothing;
+ *   - a withdrawal with no known brand: the system owner only (fail closed — was: every admin device).
+ */
+export function mayReceiveWithdrawalAlert(
+  p: AlertRecipientProfile | null | undefined,
+  siteId: string | null | undefined,
+  sitePlatformId: string | null | undefined,
+): boolean {
+  if (!p || p.status !== "active") return false;
+  if (p.role === "platform_superadmin") return true;
+  if (!siteId) return false;
+  if (p.role === "admin") return p.siteId === siteId;
+  if (p.role === "platform_admin") return Boolean(p.platformId) && Boolean(sitePlatformId) && p.platformId === sitePlatformId;
+  return false;
 }
 
 /** The payload shape delivered to the service worker; JSON-serialized as the push body. */
@@ -117,8 +153,9 @@ export class PushService {
     return this.repo.upsert(sub);
   }
 
-  removeByEndpoint(endpoint: string): Promise<number> {
-    return this.repo.removeByEndpoint(endpoint);
+  /** Owner-bound unsubscribe (the only removal a request may trigger) — Issue 1 / F-48. */
+  removeForUser(endpoint: string, userId: string): Promise<number> {
+    return this.repo.removeForUser(endpoint, userId);
   }
 
   /**
@@ -185,13 +222,22 @@ export class PushService {
   }
 }
 
-/** In-memory repo for API/engine tests (no DB). */
+/** In-memory repo for API/engine tests (no DB). Recipients follow `mayReceiveWithdrawalAlert` over the
+ *  profiles supplied by `profileOf` (wired to the identity repo in the API harness) or `_setProfile`;
+ *  a subscriber with no known profile is never alerted (fail closed, like the SQL join). */
 export class InMemoryPushSubscriptionRepository implements PushSubscriptionRepository {
   private rows: PushSubscriptionRow[] = [];
+  private readonly profiles = new Map<string, AlertRecipientProfile>();
+  constructor(private readonly opts: {
+    profileOf?: (userId: string) => Promise<AlertRecipientProfile | null> | AlertRecipientProfile | null;
+    platformOfSite?: (siteId: string) => Promise<string | null> | string | null;
+  } = {}) {}
   /** Test seam: seed an admin device. */
   _seed(sub: PushSubscriptionRow): void {
     this.upsertSync(sub);
   }
+  /** Test seam: the live profile of a subscriber (overrides `profileOf`). */
+  _setProfile(userId: string, p: AlertRecipientProfile): void { this.profiles.set(userId, p); }
   private upsertSync(sub: PushSubscriptionRow): void {
     const i = this.rows.findIndex((r) => r.endpoint === sub.endpoint);
     if (i >= 0) this.rows[i] = { ...this.rows[i], ...sub };
@@ -203,9 +249,19 @@ export class InMemoryPushSubscriptionRepository implements PushSubscriptionRepos
     this.rows = this.rows.filter((r) => r.endpoint !== endpoint);
     return before - this.rows.length;
   }
+  async removeForUser(endpoint: string, userId: string): Promise<number> {
+    const before = this.rows.length;
+    this.rows = this.rows.filter((r) => !(r.endpoint === endpoint && r.userId === userId));
+    return before - this.rows.length;
+  }
   async listForWithdrawalSite(siteId: string | undefined | null): Promise<PushSubscriptionRow[]> {
-    if (siteId === undefined || siteId === null) return [...this.rows];
-    return this.rows.filter((r) => r.siteId === null || r.siteId === siteId);
+    const sitePlatform = siteId && this.opts.platformOfSite ? await this.opts.platformOfSite(siteId) : null;
+    const out: PushSubscriptionRow[] = [];
+    for (const r of this.rows) {
+      const p = this.profiles.get(r.userId) ?? (this.opts.profileOf ? await this.opts.profileOf(r.userId) : null);
+      if (mayReceiveWithdrawalAlert(p, siteId, sitePlatform)) out.push(r);
+    }
+    return out;
   }
   /** Test seam: current rows. */
   _all(): PushSubscriptionRow[] { return [...this.rows]; }
@@ -236,16 +292,24 @@ export class PgPushSubscriptionRepository implements PushSubscriptionRepository 
     return (r as unknown as { rowCount?: number }).rowCount ?? 0;
   }
 
+  async removeForUser(endpoint: string, userId: string): Promise<number> {
+    const r = await this.q.query("delete from public.push_subscriptions where endpoint = $1 and user_id = $2", [endpoint, userId]);
+    return (r as unknown as { rowCount?: number }).rowCount ?? 0;
+  }
+
   async listForWithdrawalSite(siteId: string | undefined | null): Promise<PushSubscriptionRow[]> {
-    // Only admins/superadmins receive withdrawal alerts; join profiles to enforce the role at read
-    // time so a demoted admin's stale subscription can never be alerted. Platform admins (site_id
-    // null) get every brand; a site-scoped admin gets only its own brand.
+    // Issue 1 / F-48: recipients are decided by each subscriber's LIVE profile — exactly
+    // mayReceiveWithdrawalAlert(). The brand stored at opt-in (ps.site_id) is NOT consulted: it goes
+    // stale on transfer/demotion, and a null there used to mean "every brand on every platform".
     const sql = `
       select ps.id, ps.user_id, ps.site_id, ps.endpoint, ps.p256dh, ps.auth, ps.user_agent
         from public.push_subscriptions ps
         join public.profiles p on p.id = ps.user_id
-       where p.role in ('admin','platform_admin','platform_superadmin')
-         and ($1::uuid is null or ps.site_id is null or ps.site_id = $1::uuid)`;
+       where p.status = 'active'
+         and ( p.role = 'platform_superadmin'
+            or ($1::uuid is not null and p.role = 'admin' and p.site_id = $1::uuid)
+            or ($1::uuid is not null and p.role = 'platform_admin' and p.platform_id is not null
+                and p.platform_id = (select s.platform_id from public.sites s where s.id = $1::uuid)) )`;
     const r = await this.q.query(sql, [siteId ?? null]);
     return r.rows.map((row: any) => ({
       id: Number(row.id),

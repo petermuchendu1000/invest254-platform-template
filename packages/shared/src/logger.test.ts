@@ -82,3 +82,8 @@ test("resolveLogLevel + maskPhone helpers", () => {
   assert.deepEqual(serializeError("plain string"), { message: "plain string" });
   assert.equal(redactValue("v", "apiKey"), "[REDACTED]"); // camelCase key normalised
 });
+
+test("F-48: support capability token and its stored hash are redacted in any casing", () => {
+  const out = JSON.stringify(redactValue({ conversationToken: "tok", conversation_token: "tok", accessHash: "h", access_hash: "h" }));
+  assert.ok(!out.includes('"tok"') && !out.includes('"h"'), out);
+});

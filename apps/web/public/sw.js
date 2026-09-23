@@ -85,7 +85,8 @@ self.addEventListener('fetch', (event) => {
  * notification with inline "Approve" / "Reject" action buttons. Clicking the body (or an
  * action) opens/focuses the authenticated admin withdrawals page at the exact request —
  * the money action is executed there by the logged-in session, so no bearer token is ever
- * stored in the service worker. The page reads `?do=approve|reject` and acts on the tx.
+ * stored in the service worker. The page reads `?do=approve|reject`, highlights the tx and PRE-OPENS a
+ * confirmation — a link never acts; the admin's click does (docs/42 UI-4, RFC 9110 safe methods).
  * ─────────────────────────────────────────────────────────────────────────── */
 self.addEventListener('push', (event) => {
   let payload = {};

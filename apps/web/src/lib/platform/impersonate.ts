@@ -1,6 +1,8 @@
 'use client';
 
 import { useSession } from '@/lib/auth/session';
+import { actorFromToken, siteFromToken } from '@/lib/auth/token';
+import { api } from '@/lib/api/endpoints';
 import type { ImpersonateResult } from '@/lib/platform/endpoints';
 import {
   type ImpersonatedBrand,
@@ -15,7 +17,7 @@ import {
 /**
  * Platform-owner impersonation (docs/24 §370) — browser glue over the pure state machine in
  * ./impersonate.core.ts. The platform_superadmin "logs into" a client's admin console AS that
- * brand's superadmin using a token minted by POST /platform/sites/:id/impersonate. We swap the
+ * brand's admin using a token minted by POST /platform/sites/:id/impersonate. We swap the
  * active session token to it and hard-navigate to /admin so every provider re-inits with the new
  * token; the platform token is stashed so "Exit to platform" restores it.
  *
@@ -30,14 +32,23 @@ function store(): StorageLike | null {
   try { return typeof sessionStorage !== 'undefined' ? sessionStorage : null; } catch { return null; }
 }
 
-/** True while an impersonation session is active (used to suppress token drift-refresh). */
+/** True while the ACTIVE token is an impersonation token (docs/42 UI-3: read from the token's `act`
+ *  claim, so it holds in every tab — the per-tab sessionStorage stash is only the "way back"). */
 export function isImpersonating(): boolean {
-  return isImpersonatingIn(store());
+  // Token first; the tab stash covers impersonation tokens minted before the API added `act`.
+  return actorFromToken(useSession.getState().token) !== null || isImpersonatingIn(store());
 }
 
-/** The brand currently being impersonated, or null. */
+/** The brand being impersonated, or null. Prefers this tab's stash (slug/domain); falls back to the
+ *  token (brand id + name) so a second tab shows the same banner and fence. */
 export function getImpersonatingBrand(): ImpersonatedBrand | null {
-  return readImpersonatedBrand(store());
+  const token = useSession.getState().token;
+  const actor = actorFromToken(token);
+  const site = siteFromToken(token);
+  const stashed = readImpersonatedBrand(store());
+  if (!actor) return stashed;   // legacy impersonation token (pre-`act`): this tab's stash is the marker
+  if (stashed && stashed.siteId === site) return stashed;
+  return site ? { siteId: site, slug: '', name: actor.brand ?? 'this brand', primaryDomain: null } : null;
 }
 
 /** Stash the platform token, activate the brand token, and enter the brand admin console. */
@@ -54,11 +65,22 @@ export function startImpersonation(res: ImpersonateResult): void {
   window.location.assign('/admin');
 }
 
-/** Restore the platform token (if stashed) and return to the platform console. */
-export function endImpersonation(): void {
+/** Leave the brand: restore this tab's stashed console token; in a tab without a stash, exchange the
+ *  impersonation token for the operator's own session (POST /auth/refresh re-mints for the token's
+ *  subject — the operator). Either way, land on the console. */
+export async function endImpersonation(): Promise<void> {
   const restore = endImpersonationIn(store());
-  if (restore) useSession.getState().setToken(restore);
-  else useSession.getState().reset();
+  if (restore) {
+    useSession.getState().setToken(restore);
+  } else {
+    const current = useSession.getState().token;
+    try {
+      const r = current ? await api.refreshToken(current) : null;
+      if (r?.token) useSession.getState().setToken(r.token); else useSession.getState().reset();
+    } catch {
+      useSession.getState().reset();
+    }
+  }
   window.location.assign('/platform');
 }
 

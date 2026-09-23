@@ -186,3 +186,31 @@ test("the platform owner (no site claim) can write to EITHER brand (200) — the
     assert.equal(onB.status, 200, "owner writes brand B");
   } finally { await api.close(); }
 });
+
+// ── docs/42 UI-3: the impersonation is recorded IN the token (RFC 8693-style `act` claim) ──────────
+const payloadOf = (jwt: string): Record<string, any> =>
+  JSON.parse(Buffer.from(jwt.split(".")[1]!, "base64url").toString("utf8")) as Record<string, any>;
+
+test("UI-3: an impersonation token carries act {sub, role, brand}; the authorised role stays 'admin'", async () => {
+  const api = await startTestApi();
+  try {
+    for (const [token, actorRole] of [[PLATFORM_ADMIN, "platform_admin"], [PLATFORM, "platform_superadmin"]] as const) {
+      const b = await json(await req(api, "POST", `/api/v1/platform/sites/${SITE_A}/impersonate`, { token }));
+      const p = payloadOf(b.token);
+      assert.equal(p.role, "admin", "authorisation role unchanged");
+      assert.equal(p.site, SITE_A);
+      assert.equal(p.sub, OWNER);
+      assert.deepEqual({ sub: p.act?.sub, role: p.act?.role }, { sub: OWNER, role: actorRole }, "actor recorded");
+      assert.equal(typeof p.act?.brand, "string", "brand name recorded for the banner in any tab");
+    }
+  } finally { await api.close(); }
+});
+
+test("UI-3: an ordinary session token has NO act claim", async () => {
+  const api = await startTestApi();
+  try {
+    const r = await req(api, "POST", "/api/v1/auth/register", { body: { phone: "0711555001", username: "noact", password: "Password1" } });
+    const t = (await json(r)).token as string;
+    assert.equal(payloadOf(t).act, undefined);
+  } finally { await api.close(); }
+});

@@ -10,10 +10,10 @@ type Method = 'stk' | 'megapay' | 'payhero' | 'paybill';
 interface MethodDef { id: Method; label: string }
 
 /**
- * Deposit surface with a method switch, driven ENTIRELY by the superadmin gateway switches
+ * Deposit surface with a method switch, driven ENTIRELY by the system owner's gateway switches
  * (migration 0116, GET /deposits/providers). The 'mpesa' provider governs the Daraja rails
  * ("STK Push" + "Pay Bill"); the 'megapay' provider governs the "Mega Pay" tab. A gateway the
- * superadmin switched off for this brand disappears here — so turning M-Pesa off hides both
+ * system owner switched off for this brand disappears here — so turning M-Pesa off hides both
  * STK Push and Pay Bill, and turning Mega Pay on adds its tab. Each body owns its own state; the
  * `key` forces a clean remount when switching so a half-typed amount/code never leaks across methods.
  */

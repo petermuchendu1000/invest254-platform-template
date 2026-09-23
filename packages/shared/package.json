@@ -20,6 +20,7 @@
     "./activity": "./src/activity.ts",
     "./chatfilter": "./src/chatfilter.ts",
     "./logger": "./src/logger.ts",
-    "./fx": "./src/fx.ts"
+    "./fx": "./src/fx.ts",
+    "./capabilities": "./src/capabilities.ts"
   }
 }

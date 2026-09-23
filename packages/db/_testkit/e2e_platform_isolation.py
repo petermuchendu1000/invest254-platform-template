@@ -176,7 +176,13 @@ def main():
     ok(cur, "select * from fn_platform_revoke_platform_admin(%s,%s,%s,%s)", [ACTOR,SYS,pa2,"admin"], "system revokes a platform_admin via dedicated RPC")
     check("revoke cleared platform_id + set role", q1(cur,"select role, platform_id from profiles where id=%s",[pa2])==("admin",None))
     # a site admin cannot mint an admin
-    expect_error(cur, "select * from fn_admin_set_user_role(%s,%s,%s,%s)", [saA1,"admin",plA2,"admin"], "NOT_AUTHORIZED", "site admin cannot mint a site admin")
+    # Issue 1 / F-46: saA1 was DEMOTED to marketer above (line ~163). Acting on a stale 'admin' role it is
+    # now fenced by the DB (the prod case: actor_role='admin' with a non-admin profile).
+    expect_error(cur, "select * from fn_admin_set_user_role(%s,%s,%s,%s)", [saA1,"admin",plA1,"player"], "SITE_SCOPE_FORBIDDEN", "a DEMOTED admin on a stale token is fenced (DB)")
+    q1(cur, "select * from fn_admin_set_user_role(%s,%s,%s,%s)", [ACTOR, SYS, saA1, "admin"])   # re-promote: a genuine site admin
+    expect_error(cur, "select * from fn_admin_set_user_role(%s,%s,%s,%s)", [saA1,"admin",plA1,"admin"], "NOT_AUTHORIZED", "site admin cannot mint a site admin (own brand)")
+    # Issue 1 / F-46: the DB now fences a site admin to ITS brand even inside the same platform.
+    expect_error(cur, "select * from fn_admin_set_user_role(%s,%s,%s,%s)", [saA1,"admin",plA2,"marketer"], "SITE_SCOPE_FORBIDDEN", "site admin cannot act on another brand's user (DB fence)")
 
     print("\n== RLS defense-in-depth (authenticated + signed claims) ==")
     real_p1 = q1(cur, "select count(*) from profiles p join sites s on s.id=p.site_id where s.platform_id=%s", [p1])[0]

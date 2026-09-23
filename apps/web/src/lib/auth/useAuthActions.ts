@@ -4,7 +4,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { api, type RegisterInput } from '@/lib/api/endpoints';
 import { ApiError } from '@/lib/api/client';
 import { useSession } from '@/lib/auth/session';
-import { roleFromToken } from '@/lib/auth/token';
+import { roleFromToken, actorFromToken } from '@/lib/auth/token';
 import { clearImpersonation } from '@/lib/platform/impersonate';
 import { useBrand } from '@/lib/brand/BrandProvider';
 import { useWelcomeBonusFx } from '@/lib/game/welcomeBonusFx';
@@ -59,7 +59,7 @@ export function useAuthActions() {
       const me = await api.me(token);
       setUser(me);
       // Heal a stale token whose role claim no longer matches the live role (promotion/demotion).
-      if (roleFromToken(token) !== me.role) {
+      if (roleFromToken(token) !== me.role && !actorFromToken(token)) {   // never re-mint an impersonation token (UI-3)
         try {
           const r = await api.refreshToken(token);
           setToken(r.token);
@@ -73,7 +73,7 @@ export function useAuthActions() {
   }
 
   function logout() {
-    // Drop any brand impersonation fence BEFORE clearing the session so a scoped superadmin token
+    // Drop any brand impersonation fence BEFORE clearing the session so a brand-scoped impersonation token
     // can never outlive the logout (the "stale fence after logout" bug). Safe when not impersonating.
     clearImpersonation();
     reset();

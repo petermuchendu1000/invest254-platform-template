@@ -44,7 +44,7 @@ export function seedOnline(min = ONLINE_MIN, max = ONLINE_MAX, rnd: () => number
 
 /**
  * Returns the count to display in the UI.
- * - Staff (admin/superadmin): the REAL server-reported number.
+ * - Staff (admin and above): the REAL server-reported number.
  * - Everyone else (players, marketers, logged-out): a gently fluctuating
  *   synthetic crowd figure in [ONLINE_MIN, ONLINE_MAX] that updates on an
  *   interval so it feels live. The synthetic value is generated client-side

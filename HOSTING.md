@@ -138,19 +138,33 @@ fly machine restart <id> -a invest254-engine-pm       # rolling restart (per mac
 > A bare `fly deploy` will now error (no config) rather than silently deploy to the wrong app.
 
 #### 2.6.1 Automated deploy on merge to `main` (`.github/workflows/deploy.yml`)
-Merging backend changes to `main` now **auto-deploys both Fly apps** (the manual `fly deploy` commands
-above are the fallback / for hotfixes). The workflow:
+Merging backend changes to `main` **auto-deploys both Fly apps** (the manual `fly deploy` commands above
+are the fallback / for hotfixes). The workflow:
 1. `verify` — `npm ci` + backend typecheck (`tsc -b packages/shared apps/engine apps/api`) + `npm test`
    (DB-independent), so a broken `main` is never deployed;
-2. `deploy-api` / `deploy-engine` — `flyctl deploy --config fly.{api,engine}.toml --remote-only` in parallel.
-It triggers only when backend paths change (skips docs-only merges) and can also be run manually from the
-Actions tab (`workflow_dispatch`). Web is unaffected (Cloudflare Pages deploys it separately).
+2. `fly-auth` — proves `FLY_API_TOKEN` can reach **both** apps. Runs BEFORE `migrate`, so an expired or
+   revoked token stops the run with an explicit error annotation instead of migrating production and then
+   silently not shipping the code (BUGLOG #48);
+3. `migrate` — applies + records pending migrations (BUGLOG #24);
+4. `deploy` (matrix: api, engine; `fail-fast: false`) — `flyctl deploy --remote-only --image-label git-<sha>`,
+   then verifies the latest release image carries that label and (API) that `/api/v1/health` returns 200.
+flyctl is pinned (`FLYCTL_VERSION`) — bump it deliberately. It triggers only when backend paths change
+(skips docs-only merges) and can be run manually from the Actions tab (`workflow_dispatch`). Web is
+unaffected (Cloudflare Pages deploys it separately).
 
-**Required repo secret:** `FLY_API_TOKEN` (Actions secret). It currently holds a Fly **org** token. When
-you rotate credentials, update it — ideally to a scoped **deploy token**:
-`fly tokens create deploy -a invest254-api` (and `-a invest254-engine-pm`) or an org deploy token, then
-`gh secret set FLY_API_TOKEN` (or Settings → Secrets → Actions). If the secret is missing/expired, the
-`verify` job still runs but the deploy jobs fail fast — `main` is never left half-built, only un-deployed.
+**Which commit is live?** `flyctl releases -a invest254-api --image` — images are labelled `git-<sha>`.
+(Releases before 2026-09-23 carry the old `deployment-<id>` label.)
+
+**Required repo secret:** `FLY_API_TOKEN` (Actions secret) — must reach both `invest254-api` and
+`invest254-engine-pm`. Use a dedicated, long-lived **org deploy token** (never a personal `fly auth token`,
+which dies on logout):
+```
+fly tokens create org -o personal -n github-deploy -x 8760h
+gh secret set FLY_API_TOKEN -R petermuchendu1000/invest254      # paste the token when prompted
+```
+(or Settings → Secrets and variables → Actions → `FLY_API_TOKEN` → Update). Then re-run the failed
+"Deploy (Fly)" run, or Actions → Deploy (Fly) → Run workflow. **Rotating Fly credentials must include this
+secret**, or every later merge fails at `fly-auth`.
 
 ### 2.7 Legacy / deprecated apps (do not use — decommission)
 | App | URL | What it is | Status |

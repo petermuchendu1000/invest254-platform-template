@@ -15,16 +15,17 @@ export const supportApi = {
   // Public (optional auth)
   start: (body: { visitorId?: string; siteId?: string } = {}, token?: string | null) =>
     apiFetch<SupportStartResult>('/support/conversations', { method: 'POST', body, token: token ?? null }),
-  ask: (conversationId: string, message: string, token?: string | null) =>
+  // Writes carry the conversation's capability token (Issue 1 / F-48); the server answers 404 without it.
+  ask: (conversationId: string, conversationToken: string | null, message: string, token?: string | null) =>
     apiFetch<SupportAnswerResult>(`/support/conversations/${conversationId}/messages`, {
       method: 'POST',
-      body: { message },
+      body: { message, ...(conversationToken ? { conversationToken } : {}) },
       token: token ?? null,
     }),
-  escalate: (conversationId: string, contact: { email?: string; phone?: string }, token?: string | null) =>
+  escalate: (conversationId: string, conversationToken: string | null, contact: { email?: string; phone?: string }, token?: string | null) =>
     apiFetch<{ status: string }>(`/support/conversations/${conversationId}/escalate`, {
       method: 'POST',
-      body: contact,
+      body: { ...contact, ...(conversationToken ? { conversationToken } : {}) },
       token: token ?? null,
     }),
 

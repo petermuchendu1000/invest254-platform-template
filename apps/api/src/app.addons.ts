@@ -1,4 +1,4 @@
-import { Router, ApiError, requireAuth, requireRole, type Ctx } from "./http.js";
+import { Router, ApiError, requireAuth, requireRole, adminScopeSite, type Ctx } from "./http.js";
 import type { ApiDeps } from "./app.js";
 
 const BASE = "/api/v1";
@@ -53,6 +53,10 @@ export function registerAddonRoutes(router: Router, deps: ApiDeps): void {
   const siteOf = (ctx: Ctx, explicit?: string): string => {
     const s = (explicit && explicit.trim()) || ctx.query.get("site")?.trim() || ctx.claims?.site || "";
     if (!s) throw new ApiError("VALIDATION", "site is required", 400);
+    // Issue 1 / F-46: a site-tier token (genuine or impersonation) may only address ITS brand.
+    if (ctx.claims?.role === "admin" && s !== adminScopeSite(ctx)) {
+      throw new ApiError("SITE_SCOPE_FORBIDDEN", "SITE_SCOPE_FORBIDDEN: target belongs to another brand", 403);
+    }
     return s;
   };
 

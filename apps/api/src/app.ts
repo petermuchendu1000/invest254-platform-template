@@ -164,7 +164,7 @@ export interface ApiDeps {
   notifications: Pick<NotificationService, "create" | "listActive" | "adminList" | "dismiss" | "resolve" | "resolveByCategory" | "listTemplates" | "audienceCount" | "broadcast" | "resolveCategory" | "ownerOf">;
   /** Admin Web Push subscriptions (Issue 1): opt-in real-time withdrawal-request alerts. Absent when
    *  push is not configured (no VAPID keys) — the /admin/push/* routes then stay unregistered. */
-  push?: Pick<PushService, "publicKey" | "upsert" | "removeByEndpoint"> | undefined;
+  push?: Pick<PushService, "publicKey" | "upsert" | "removeForUser"> | undefined;
   /** HMAC secret for email magic-link withdrawal actions (Issue 1). Absent => the /w/act routes stay off. */
   actionSecret?: string | undefined;
   /** Resolves the admin profile id recorded as approver/rejecter for email magic-link actions. */
@@ -242,6 +242,9 @@ export interface ApiDeps {
     | "initiatePayHeroDeposit" | "handlePayHeroCallback" | "reconcilePayHeroDeposits" | "listDepositProviders">;
   /** Resolve a player's display handle (falls back to a guest handle). */
   resolveHandle(userId: string): Promise<string>;
+  /** docs/42 UI-8: display names of the brand/platform a session is scoped to (for the shells' scope chip).
+   *  Optional; /auth/me omits `scope` names when absent or failing. */
+  scopeNames?: ((siteId: string | null, platformId: string | null) => Promise<{ siteName: string | null; platformName: string | null }>) | undefined;
   /** Wallet balances (real + bonus) for the authenticated player, scoped to their brand. */
   walletBalance(userId: string, siteId?: string): Promise<WalletBalance>;
 

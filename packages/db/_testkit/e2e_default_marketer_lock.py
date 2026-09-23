@@ -79,6 +79,9 @@ def main():
     cur.execute("insert into site_game_config(site_id,min_stake,max_stake,house_edge,target_win_rate) values (%s,50000,5000000,0.75,0.125) on conflict (site_id) do nothing", [SITE_B])
 
     adminA = register(cur, "254790000001", "adminA", SITE_A)   # actor on brand A (role passed as param)
+    # Issue 1 / F-46: site-tier RPCs now verify the actor's REAL profile (a stale/demoted token is
+    # fenced), so the fixture's site admin must genuinely be one.
+    cur.execute("update profiles set role='admin' where id=%s", [adminA]); conn.commit()
     adminB = register(cur, "254790000002", "adminB", SITE_B)   # actor on brand B
     M      = register(cur, "254790000010", "mktM",   SITE_A); enroll(cur, M)     # active marketer on A
     P      = register(cur, "254790000011", "plyrP",  SITE_A)                     # plain player on A

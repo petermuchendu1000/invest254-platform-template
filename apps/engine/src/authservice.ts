@@ -159,11 +159,17 @@ export class AuthService {
     return { token, role: p.role, ...(site ? { site } : {}), ...(platform ? { platform } : {}) };
   }
 
-  /** Sign an HS256 JWT compatible with makeVerifier (sub = userId, `role` + optional `site` claims). */
-  async issueToken(userId: string, role: string, siteId?: string, platformId?: string): Promise<string> {
+  /** Sign an HS256 JWT compatible with makeVerifier (sub = userId, `role` + optional `site` claims).
+   *  `act` (docs/42 UI-3, modelled on RFC 8693's actor claim) marks an IMPERSONATION token: who is really
+   *  acting (their own tier) and the brand opened. It travels with the token, so every tab — not just the
+   *  one that started it — knows the session is an impersonation, and nothing "heals" it back to the
+   *  actor's own token by accident. Authorisation never reads it: the API still authorises `role`/`site`. */
+  async issueToken(userId: string, role: string, siteId?: string, platformId?: string,
+    act?: { sub: string; role: string; brand?: string }): Promise<string> {
     const claims: Record<string, unknown> = { role };
     if (siteId) claims.site = siteId; // multi-tenant: binds the token to a brand
     if (platformId) claims.platform = platformId; // platform tier: binds a platform_admin to its platform (Issue 1)
+    if (act) claims.act = { sub: act.sub, role: act.role, ...(act.brand ? { brand: act.brand } : {}) };
     let b = new SignJWT(claims).setProtectedHeader({ alg: "HS256" }).setSubject(userId)
       .setIssuedAt().setExpirationTime(`${this.ttl}s`);
     if (this.issuer) b = b.setIssuer(this.issuer);

@@ -9,7 +9,7 @@ export interface Paginated<T> {
 export interface AuthResult {
   token: string;
   userId: string;
-  role: 'player' | 'marketer' | 'admin' | 'superadmin' | 'platform_admin' | 'platform_superadmin';
+  role: 'player' | 'marketer' | 'admin' | 'platform_admin' | 'platform_superadmin';
   /** The brand (site_id) this token is scoped to, echoed when the account is brand-scoped. */
   site?: string;
   /** Cents credited by the one-time sign-up welcome bonus (0094). Present on register only when > 0. */
@@ -32,6 +32,11 @@ export interface MeDto {
    * forces a mandatory, non-dismissible 2FA enrolment gate when true (mirrors securitySetupRequired).
    */
   mfaSetupRequired?: boolean;
+  /** docs/42 UI-8: the brand / platform THIS session acts on (from the token), with display names. */
+  scope?: {
+    site: { id: string; name: string | null } | null;
+    platform: { id: string; name: string | null } | null;
+  };
 }
 
 /** GET /auth/mfa — current 2FA state for the signed-in account. */

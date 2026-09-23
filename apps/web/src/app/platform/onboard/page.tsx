@@ -1,4 +1,5 @@
 'use client';
+import { useCan } from '@/lib/auth/can';
 
 import { useMemo, useState } from 'react';
 import Link from 'next/link';
@@ -6,7 +7,6 @@ import { PageHeader, Section } from '@/components/admin/ui';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { useOnboardClient, useDomainStatus, useOnboardCapabilities, usePlatforms } from '@/lib/platform/hooks';
-import { useSession } from '@/lib/auth/session';
 import { DomainImport } from '@/components/platform/DomainImport';
 import type { OnboardResult } from '@/lib/platform/endpoints';
 
@@ -30,8 +30,8 @@ export default function OnboardPage() {
   const domainStatus = useDomainStatus(provisionedDomain);
 
   // System owner may onboard directly into a chosen platform; a platform admin auto-scopes to its own.
-  const isSystem = useSession((s) => s.user?.role) === 'platform_superadmin';
-  const platformsQ = usePlatforms();
+  const isSystem = useCan('console.system');
+  const platformsQ = usePlatforms(isSystem);   // docs/42 UI-6: owner-only endpoint — never called for a platform admin
   const platforms = useMemo(() => (platformsQ.data?.platforms ?? []) as Array<{ platformId: string; slug: string; name: string }>, [platformsQ.data]);
   const [platformId, setPlatformId] = useState('');
 

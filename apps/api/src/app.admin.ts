@@ -625,10 +625,19 @@ export function registerAdminRoutes(router: Router, deps: ApiDeps): void {
 
   // ── J5: game configuration + RTP monitor + seed rotation (superadmin mutations) ───────────────
 
-  // Resolve the brand this admin edit targets: a site-scoped operator is pinned to their JWT `site`
-  // claim (cannot cross brands); an unrestricted platform operator may name a brand via ?site=, else
-  // the default site. This is what reconnects the panel to the table the engine reads (0061).
-  const configSiteId = (ctx: Ctx): string => adminScopeSite(ctx) ?? ctx.query.get("site") ?? DEFAULT_SITE_ID;
+  // Resolve the brand this config call targets: a site-scoped operator is pinned to their JWT `site`
+  // claim (cannot cross brands); the system owner MUST name the brand via ?site= (docs/42 UI-2). The old
+  // silent fallback to the default brand meant an owner "global" edit (pool mode labelled "every brand",
+  // game config, withdrawal budget, kill switch) quietly changed brand #1 only.
+  const configSiteId = (ctx: Ctx): string => {
+    const pinned = adminScopeSite(ctx);
+    if (pinned) return pinned;
+    const named = ctx.query.get("site");
+    if (!named || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(named)) {
+      throw new ApiError("SITE_REQUIRED", "name the brand this setting applies to (?site=<brand id>)", 400);
+    }
+    return named;
+  };
 
   router.get(`${BASE}/admin/game-config`, auth, admin, async (ctx: Ctx) => deps.admin.getGameConfig(configSiteId(ctx)));
 
@@ -687,7 +696,7 @@ export function registerAdminRoutes(router: Router, deps: ApiDeps): void {
   router.get(`${BASE}/admin/real-cash-rtp`, auth, admin, async (ctx: Ctx) => deps.admin.realCashRtp(adminScopeSite(ctx) ?? undefined));
   // Economy change review (docs/28 §4): recent config versions with diffs + risk flags.
   router.get(`${BASE}/admin/config-review`, auth, admin, async (ctx: Ctx) =>
-    deps.admin.configChangeReview(adminScopeSite(ctx) ?? "00000000-0000-0000-0000-000000000001", Math.min(200, Math.max(1, Number(ctx.query.get("limit") ?? "50") || 50))));
+    deps.admin.configChangeReview(configSiteId(ctx), Math.min(200, Math.max(1, Number(ctx.query.get("limit") ?? "50") || 50))));   // UI-2: no hard-coded brand
   // ── M-Pesa configuration (admin reads masked; superadmin edits; secrets write-only) ──────────
   // F-44: the global M-Pesa config is owner-tier (it is not any one brand's) — System-owner-only,
   // matching the UI (the M-Pesa page lives in the owner-only Governance section).

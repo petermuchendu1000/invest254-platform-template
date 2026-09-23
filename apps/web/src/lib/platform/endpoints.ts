@@ -33,7 +33,7 @@ export interface SitePerformance {
 }
 export interface PerformanceResult { fromMs: number; toMs: number; sites: SitePerformance[] }
 
-/** Result of minting a brand-scoped superadmin token for the platform owner (docs/24 impersonation). */
+/** Result of minting a brand-scoped `admin` token (with an `act` claim) for the owner or a platform admin (docs/24 impersonation). */
 export interface ImpersonateResult {
   token: string; role: string; site: string;
   brand: { siteId: string; slug: string; name: string; primaryDomain: string | null };
@@ -51,7 +51,7 @@ export interface MarketerRollupGroup {
   totals: { clients: number; ggrCents: number; commissionCents: number };
 }
 
-/** Platform-superadmin API surface (docs/22 Task H + R). All calls require a platform_superadmin token. */
+/** Platform-superadmin API surface (docs/22 Task H + R). Gated per route: system-owner routes vs platform-admin routes (see docs/42 §3). */
 export interface OnboardColors { primary?: string; bg?: string; accent?: string }
 export interface OnboardBody {
   slug: string; name: string; primaryDomain?: string; currency?: string; supportEmail?: string;

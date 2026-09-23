@@ -19,7 +19,17 @@ import type { LlmMessage } from "@invest254/shared";
 
 const json = (r: Response): Promise<any> => r.json() as Promise<any>;
 interface ReqOpts { token?: string; body?: unknown; }
+/** Capability tokens issued at creation (F-48). `req` acts as the conversation's legitimate browser and
+ *  attaches its token to writes; `raw` never does — it models a stranger who only knows the id. */
+const convTokens = new Map<string, string>();
 function req(api: TestApi, method: string, path: string, o: ReqOpts = {}): Promise<Response> {
+  const m = path.match(/\/support\/conversations\/([^/]+)\/(messages|escalate)$/);
+  if (m && convTokens.has(m[1]!) && o.body && typeof o.body === "object" && !("conversationToken" in (o.body as object))) {
+    o = { ...o, body: { ...(o.body as object), conversationToken: convTokens.get(m[1]!) } };
+  }
+  return raw(api, method, path, o);
+}
+function raw(api: TestApi, method: string, path: string, o: ReqOpts = {}): Promise<Response> {
   const headers: Record<string, string> = {};
   if (o.token) headers["authorization"] = `Bearer ${o.token}`;
   const init: RequestInit = { method, headers };
@@ -45,8 +55,10 @@ const BRANDB_KB: SeedChunk[] = [
 async function startConversation(api: TestApi, body: unknown = {}, token?: string): Promise<string> {
   const r = await req(api, "POST", "/api/v1/support/conversations", token ? { token, body } : { body });
   assert.equal(r.status, 201, "conversation created");
-  const { conversationId } = await json(r);
+  const { conversationId, conversationToken } = await json(r);
   assert.match(conversationId, /^c0000000-/);
+  assert.match(conversationToken, /^[A-Za-z0-9_-]{43}$/, "a 256-bit capability token is issued once");
+  convTokens.set(conversationId, conversationToken);
   return conversationId;
 }
 
@@ -124,11 +136,17 @@ test("cross-brand posting is refused (authed brand-B token on a brand-A conversa
   await api.support.seedKb(SHARED_KB);
   try {
     const convA = await startConversation(api, { visitorId: "v-x" }); // anonymous -> brand A (default)
+    // Holding the conversation's token (same browser) but signed in to brand B -> brand mismatch.
     const r = await req(api, "POST", `/api/v1/support/conversations/${convA}/messages`, {
       token: `${TEST_USER}:player:${SITE_B}`, body: { message: "hello" },
     });
     assert.equal(r.status, 403);
     assert.equal((await json(r)).error.code, "AUTH_SITE_MISMATCH");
+    // Without the token a brand-B caller learns nothing (same 404 as an unknown id).
+    const blind = await raw(api, "POST", `/api/v1/support/conversations/${convA}/messages`, {
+      token: `${TEST_USER}:player:${SITE_B}`, body: { message: "hello" },
+    });
+    assert.equal(blind.status, 404);
   } finally { await api.close(); }
 });
 
@@ -264,4 +282,71 @@ test("rate limiting: message posts beyond the per-ip window return 429", async (
     delete process.env.SUPPORT_MSG_LIMIT;
     delete process.env.SUPPORT_MSG_WINDOW_MS;
   }
+});
+
+// ── Issue 1 / F-48: a conversation is owner-bound ─────────────────────────────────────────
+const OTHER_PLAYER_A = `u-other:player:${SITE_A}`;
+
+test("F-48: a stranger who only knows the conversation id cannot post, replay history, or re-point escalation", async () => {
+  const api = await startTestApi();
+  await api.support.seedKb(SHARED_KB);
+  try {
+    const conv = await startConversation(api, { visitorId: "victim" });
+    assert.equal((await req(api, "POST", `/api/v1/support/conversations/${conv}/messages`, { body: { message: "my PIN reset question" } })).status, 200);
+    const turnsBefore = api.support.messages.get(conv)!.length;
+
+    for (const token of [undefined, PLAYER_A, OTHER_PLAYER_A]) {
+      const post = await raw(api, "POST", `/api/v1/support/conversations/${conv}/messages`, { ...(token ? { token } : {}), body: { message: "what did I ask before?" } });
+      assert.equal(post.status, 404, `post as ${token ?? "anonymous"}`);
+      const esc = await raw(api, "POST", `/api/v1/support/conversations/${conv}/escalate`, { ...(token ? { token } : {}), body: { email: "attacker@example.com" } });
+      assert.equal(esc.status, 404, `escalate as ${token ?? "anonymous"}`);
+    }
+    const wrong = await raw(api, "POST", `/api/v1/support/conversations/${conv}/escalate`, { body: { email: "attacker@example.com", conversationToken: "x".repeat(43) } });
+    assert.equal(wrong.status, 404, "a wrong token is refused");
+    assert.equal(api.support.messages.get(conv)!.length, turnsBefore, "nothing was appended");
+    assert.equal(api.support.conversations.get(conv)!.contactEmail, null, "contact not re-pointed");
+    assert.equal(api.support.conversations.get(conv)!.escalated, false);
+  } finally { await api.close(); }
+});
+
+test("F-48: the logged-in owner may continue without the token; another account may not even WITH it", async () => {
+  const api = await startTestApi();
+  await api.support.seedKb(SHARED_KB);
+  try {
+    const conv = await startConversation(api, {}, PLAYER_A);   // owned by TEST_USER
+    const token = convTokens.get(conv)!;
+    const own = await raw(api, "POST", `/api/v1/support/conversations/${conv}/messages`, { token: PLAYER_A, body: { message: "withdraw funds" } });
+    assert.equal(own.status, 200, "owner, other device (no token)");
+    const shared = await raw(api, "POST", `/api/v1/support/conversations/${conv}/messages`, { token: OTHER_PLAYER_A, body: { message: "hi", conversationToken: token } });
+    assert.equal(shared.status, 404, "a different account on the same browser cannot continue it");
+    const anonWithToken = await raw(api, "POST", `/api/v1/support/conversations/${conv}/messages`, { body: { message: "withdraw funds", conversationToken: token } });
+    assert.equal(anonWithToken.status, 200, "the same browser after logout still holds its own conversation");
+  } finally { await api.close(); }
+});
+
+test("F-48: legacy conversations (no token hash) accept only their logged-in owner", async () => {
+  const api = await startTestApi();
+  await api.support.seedKb(SHARED_KB);
+  try {
+    const anon = await startConversation(api, { visitorId: "legacy" });
+    const owned = await startConversation(api, {}, PLAYER_A);
+    api.support.conversations.get(anon)!.accessHash = null;
+    api.support.conversations.get(owned)!.accessHash = null;
+    assert.equal((await req(api, "POST", `/api/v1/support/conversations/${anon}/messages`, { body: { message: "hi" } })).status, 404,
+      "old anonymous conversation is closed; the widget starts a new one");
+    assert.equal((await raw(api, "POST", `/api/v1/support/conversations/${owned}/messages`, { token: PLAYER_A, body: { message: "withdraw funds" } })).status, 200);
+  } finally { await api.close(); }
+});
+
+test("F-48: the token hash never leaves the server (operator DTOs omit it)", async () => {
+  const api = await startTestApi();
+  try {
+    const conv = await startConversation(api, { visitorId: "v" });
+    const list = await json(await raw(api, "GET", "/api/v1/support/conversations", { token: ADMIN_A }));
+    const detail = await json(await raw(api, "GET", `/api/v1/support/conversations/${conv}`, { token: ADMIN_A }));
+    for (const body of [JSON.stringify(list), JSON.stringify(detail)]) {
+      assert.ok(!/accessHash|access_hash|conversationToken/.test(body), "no capability material in operator responses");
+      assert.ok(!body.includes(convTokens.get(conv)!), "token absent");
+    }
+  } finally { await api.close(); }
 });

@@ -4,7 +4,7 @@ import { useEffect } from 'react';
 import { api } from '@/lib/api/endpoints';
 import { ApiError } from '@/lib/api/client';
 import { useSession } from '@/lib/auth/session';
-import { roleFromToken } from '@/lib/auth/token';
+import { roleFromToken, actorFromToken } from '@/lib/auth/token';
 import { isImpersonating, clearImpersonation } from '@/lib/platform/impersonate';
 
 /**
@@ -27,10 +27,10 @@ export function SessionBootstrap() {
       .then(async (me) => {
         if (!active) return;
         setUser(me);
-        // While impersonating a brand, the active token is a deliberately brand-scoped superadmin
-        // token whose role differs from the platform owner's own /auth/me role — do NOT "heal" it,
-        // or we'd rotate to a site-less platform token and drop the brand binding.
-        if (roleFromToken(token) !== me.role && !isImpersonating()) {
+        // An impersonation token (docs/42 UI-3: `act` claim) deliberately carries role 'admin' while
+        // /auth/me reports the operator's own tier — never "heal" it, or we'd swap in the operator's
+        // own token and drop the brand fence (for every tab sharing the token).
+        if (roleFromToken(token) !== me.role && !actorFromToken(token) && !isImpersonating()) {
           try {
             const r = await api.refreshToken(token);
             if (active) setToken(r.token);

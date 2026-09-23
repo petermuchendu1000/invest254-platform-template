@@ -12,8 +12,9 @@ import type { ApiDeps } from "./app.js";
  *
  * The actual fan-out (send a push when a withdrawal is requested) is wired in server.ts via
  * PaymentEvents.onWithdrawalRequested -> PushService.notifyWithdrawalRequested; this module owns
- * only the subscription lifecycle. All routes are admin-gated; the subscription is bound to the
- * caller's userId + site claim so a site-scoped admin only ever receives its own brand's alerts.
+ * only the subscription lifecycle. All routes are admin-gated. WHO is alerted for a brand is decided at
+ * send time from each subscriber's LIVE profile (engine `mayReceiveWithdrawalAlert`, Issue 1 / F-48),
+ * not from the site claim stored here; unsubscribe removes only the caller's own device row.
  */
 const BASE = "/api/v1";
 
@@ -63,7 +64,9 @@ export function registerPushRoutes(router: Router, deps: ApiDeps): void {
     const b = asObject(ctx.body);
     const endpoint = typeof b.endpoint === "string" ? b.endpoint.trim() : "";
     if (!endpoint) throw new ApiError("VALIDATION", "endpoint is required", 400);
-    const removed = await push.removeByEndpoint(endpoint);
+    // Issue 1 / F-48: removes only the CALLER'S OWN device row — an endpoint belonging to another admin
+    // is untouched (it used to be deleted for anyone who knew it, silencing that admin's alerts).
+    const removed = await push.removeForUser(endpoint, ctx.claims!.userId);
     return { unsubscribed: removed > 0 };
   });
 }

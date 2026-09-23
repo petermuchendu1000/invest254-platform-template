@@ -56,3 +56,26 @@ DATABASE_URL=<...> node --import tsx scripts/migrations_status.mts --record
 Together: git history + the `schema_migrations` ledger (with checksums) make the schema’s evolution
 fully queryable and reproducible, and the mirror workflows keep the template a faithful, always-current
 base for new brands.
+
+## C. Schema drift gate (what the schema IS, not just which files ran) — BUGLOG #57
+
+The ledger proves which migration files ran and that none was edited afterwards. It cannot see a
+change applied **outside** the migrations: on 2026-09-23 production carried an out-of-band script
+(player referral codes) that also silently reverted affiliate brand hardening, with every ledger
+check green. Migration 0158 reconciled it; this gate stops it recurring.
+
+`scripts/schema_drift.mts` builds a **reference** database from `_testkit/00_supabase_shim.sql` +
+Supabase-like default privileges + every migration, then compares it with production object by
+object: public function bodies, anon/authenticated `EXECUTE`, row policies, indexes, views (+ options),
+columns and anon/authenticated table write-grants. Extension-owned objects are ignored;
+`KNOWN_DIFFERENCES` lists the few justified platform helpers.
+
+```bash
+DATABASE_URL=<production> REFERENCE_DATABASE_URL=<empty scratch db> \
+  node --import tsx scripts/schema_drift.mts --build-reference     # 0 = no drift, 1 = drift, 2 = config
+```
+
+`.github/workflows/schema-drift.yml` runs it nightly (01:40 UTC), after every successful Deploy (Fly)
+run, and on demand, against a Postgres 17 + pgvector service. **Rule:** never change production's
+schema by hand — every change is a migration. If the gate fails, write a reconciling migration (as
+0158 did) instead of editing production to match.

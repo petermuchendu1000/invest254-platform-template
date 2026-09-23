@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { startTestApi, TEST_USER, TEST_ADMIN, SITE_B, type TestApi } from "./testutil.js";
+import { startTestApi, TEST_USER, TEST_ADMIN, SITE_A, SITE_B, type TestApi } from "./testutil.js";
 
 /**
  * End-to-end coverage for Issue 1: "admin/superadmin RECEIVE real-time withdrawal-request
@@ -31,6 +31,8 @@ const ADMIN = `${TEST_ADMIN}:admin:00000000-0000-0000-0000-000000000001`;
 const PLAYER = TEST_USER; // role player, seeded KES 10,000
 const PHONE = "0722000099";
 const SUB = (endpoint: string) => ({ endpoint, keys: { p256dh: "BPp256key", auth: "authsecret" } });
+// F-48: who is alerted is decided by the subscriber's LIVE profile.
+const live = (role: string, siteId: string | null, platformId: string | null = null, status = "active") => ({ role, status, siteId, platformId });
 
 test("GET /admin/push/public-key returns the VAPID key to admins, and is auth+role gated", async () => {
   const api = await startTestApi();
@@ -82,7 +84,8 @@ test("POST /admin/push/subscribe validates input, is admin-only, and stores the 
 test("player withdrawal -> admin receives a real-time push with txId + Approve/Reject actions", async () => {
   const api = await startTestApi();
   try {
-    // Admin opts in via the real subscribe route (platform admin: no site claim -> siteId null).
+    // A genuine site admin of the default brand opts in via the real subscribe route.
+    api.pushRepo._setProfile(TEST_ADMIN, live("admin", SITE_A));
     await req(api, "POST", "/api/v1/admin/push/subscribe", { token: ADMIN, body: SUB("https://push.example/admin-device") });
 
     // Player requests a withdrawal (non-marketer -> pending Daraja path -> 202).
@@ -115,8 +118,9 @@ test("player withdrawal -> admin receives a real-time push with txId + Approve/R
 test("site scoping: a brand-scoped admin is NOT alerted for another brand's withdrawal", async () => {
   const api = await startTestApi();
   try {
-    // Platform admin (site null) should get every brand; a SITE_B-scoped admin should not get the
-    // default-brand withdrawal the test player makes.
+    // The system owner gets every brand; a SITE_B admin must not get the default-brand withdrawal.
+    api.pushRepo._setProfile("super-1", live("platform_superadmin", null));
+    api.pushRepo._setProfile("admin-b", live("admin", SITE_B));
     api.pushRepo._seed({ userId: "super-1", siteId: null, endpoint: "https://push.example/platform", p256dh: "k", auth: "a" });
     api.pushRepo._seed({ userId: "admin-b", siteId: SITE_B, endpoint: "https://push.example/site-b", p256dh: "k", auth: "a" });
 
@@ -134,6 +138,7 @@ test("a dead (gone) admin endpoint is pruned after a failed push", async () => {
   const api = await startTestApi();
   try {
     // The capturing transport treats an endpoint containing "gone" as HTTP 410.
+    api.pushRepo._setProfile("super-1", live("platform_superadmin", null));
     api.pushRepo._seed({ userId: "super-1", siteId: null, endpoint: "https://push.example/gone-device", p256dh: "k", auth: "a" });
     assert.equal(api.pushRepo._all().length, 1);
 
@@ -155,5 +160,48 @@ test("marketer instant cash-out does NOT fire an admin withdrawal-request alert 
     //  withdrawals e2e suite. Here we assert the negative: a plain player pending request DOES fire,
     //  and that onWithdrawalSuccess-only paths do not populate withdrawalRequests.)
     assert.equal(api.withdrawalRequests.length, 0);
+  } finally { await api.close(); }
+});
+
+// ── Issue 1 / F-48 ────────────────────────────────────────────────────────────────────────────
+const ADMIN_B = `admin-b:admin:${SITE_B}`;
+
+test("F-48: an admin cannot unsubscribe (silence) another admin's device", async () => {
+  const api = await startTestApi();
+  try {
+    await req(api, "POST", "/api/v1/admin/push/subscribe", { token: ADMIN, body: SUB("https://push.example/victim") });
+    const r = await req(api, "POST", "/api/v1/admin/push/unsubscribe", { token: ADMIN_B, body: { endpoint: "https://push.example/victim" } });
+    assert.equal(r.status, 200);
+    assert.equal((await json(r)).unsubscribed, false);
+    assert.equal(api.pushRepo._all().length, 1, "victim's device row survives");
+    const own = await req(api, "POST", "/api/v1/admin/push/unsubscribe", { token: ADMIN, body: { endpoint: "https://push.example/victim" } });
+    assert.equal((await json(own)).unsubscribed, true);
+    assert.equal(api.pushRepo._all().length, 0);
+  } finally { await api.close(); }
+});
+
+test("F-48: alerts follow the LIVE profile — stale/claimless/demoted/suspended/other-platform devices get nothing", async () => {
+  const api = await startTestApi();
+  try {
+    api.pushSitePlatform.set(SITE_A, "plat-1");
+    api.pushSitePlatform.set(SITE_B, "plat-2");
+    const seed = (userId: string, siteId: string | null, profile: ReturnType<typeof live>) => {
+      api.pushRepo._setProfile(userId, profile);
+      api.pushRepo._seed({ userId, siteId, endpoint: `https://push.example/${userId}`, p256dh: "k", auth: "a" });
+    };
+    seed("claimless-b", null, live("admin", SITE_B));          // was alerted for EVERY brand (stored site null)
+    seed("moved", SITE_A, live("admin", SITE_B));              // subscribed on A, since moved to B
+    seed("demoted", SITE_A, live("player", SITE_A));
+    seed("suspended", SITE_A, live("admin", SITE_A, null, "suspended"));
+    seed("pa-other", null, live("platform_admin", SITE_B, "plat-2"));  // another platform, stored null
+    seed("pa-own", SITE_B, live("platform_admin", SITE_B, "plat-1"));  // this platform (home brand elsewhere)
+    seed("genuine", SITE_A, live("admin", SITE_A));
+    seed("owner", SITE_B, live("platform_superadmin", SITE_B));
+
+    const w = await req(api, "POST", "/api/v1/withdrawals", { token: PLAYER, body: { amount: 30_000, phone: PHONE } });
+    assert.equal(w.status, 202);
+    await api.flushPush();
+    const got = api.pushSends.map((x) => x.endpoint.replace("https://push.example/", "")).sort();
+    assert.deepEqual(got, ["genuine", "owner", "pa-own"]);
   } finally { await api.close(); }
 });

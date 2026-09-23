@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { parseWithdrawalDeepLink } from '@/lib/admin/deeplink';
 import Link from 'next/link';
 import { WithdrawalAlertsToggle } from '@/components/admin/WithdrawalAlertsToggle';
 import { Skeleton } from '@/components/ui/Skeleton';
@@ -83,37 +84,30 @@ export default function WithdrawalsPage() {
   const bulk = useBulkWithdrawals();
   const toast = useToast();
 
-  // Deep-link action from a push notification (Issue 1). Tapping "Approve"/"Reject" on the alert
-  // opens this page with ?highlight=<txId>&do=<action>; execute it once here using the logged-in
-  // session (the service worker holds no token), then strip ?do= so a refresh can't repeat it.
+  // Deep link from a push notification (Issue 1): ?highlight=<txId>&do=<approve|reject>. docs/42 UI-4 —
+  // a link NEVER acts: it only highlights the row and pre-opens a confirmation; the click executes.
+  // (It used to reject on page load, so any link or prefetch could reject a withdrawal.)
   const deepAction = useWithdrawalAction();
-  const deepHandled = useRef(false);
+  const [highlightId, setHighlightId] = useState<string | null>(null);
+  const [deepIntent, setDeepIntent] = useState<'approve' | 'reject' | null>(null);
   useEffect(() => {
-    if (deepHandled.current || typeof window === 'undefined') return;
-    const params = new URLSearchParams(window.location.search);
-    const act = params.get('do');
-    const tx = params.get('highlight');
-    if ((act === 'approve' || act === 'reject') && tx) {
-      deepHandled.current = true;
-      if (act === 'reject') {
-        // Reject only returns funds — safe to execute from the deep link.
-        deepAction.mutate(
-          { id: tx, action: 'reject' },
-          {
-            onSuccess: () => toast.push({ tone: 'success', title: 'Withdrawal rejected', description: 'Funds returned to the player.' }),
-            onError: (e) => toast.push({ tone: 'error', title: 'Action failed', description: e instanceof ApiError ? e.message : 'Open the row below to try again.' }),
-          },
-        );
-      } else {
-        // Approve releases money and requires the system owner password — cannot auto-run from a link.
-        toast.push({ tone: 'info', title: 'Password required to approve', description: 'Use the Approve button on the highlighted row and enter your system owner password.' });
-      }
-      params.delete('do');
-      const qs = params.toString();
-      window.history.replaceState(null, '', window.location.pathname + (qs ? `?${qs}` : ''));
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    if (typeof window === 'undefined') return;
+    const d = parseWithdrawalDeepLink(window.location.search);
+    setHighlightId(d.highlight);
+    setDeepIntent(d.intent);
+    if (d.intent) window.history.replaceState(null, '', window.location.pathname + d.cleanedSearch);
   }, []);
+  const deepRow = useMemo(() => rows.find((r) => r.txId === highlightId) ?? null, [rows, highlightId]);
+  function confirmDeepReject() {
+    if (!highlightId) return;
+    deepAction.mutate(
+      { id: highlightId, action: 'reject' },
+      {
+        onSuccess: () => { setDeepIntent(null); toast.push({ tone: 'success', title: 'Withdrawal rejected', description: 'Funds returned to the player.' }); },
+        onError: (e) => toast.push({ tone: 'error', title: 'Action failed', description: e instanceof ApiError ? e.message : 'Use the highlighted row to try again.' }),
+      },
+    );
+  }
 
   // Summary over the rows loaded so far (labelled "loaded" so partial pages aren't mistaken for totals).
   const totals = useMemo(() => {
@@ -193,6 +187,28 @@ export default function WithdrawalsPage() {
         <Empty title="Nothing here" description={status === 'pending' ? 'No withdrawals awaiting review.' : 'No withdrawals match this filter.'} />
       ) : (
         <>
+          {deepIntent ? (
+            <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-warn/40 bg-warn/10 p-3 text-sm">
+              <div>
+                <p className="font-medium">
+                  {deepIntent === 'reject' ? 'Reject this withdrawal?' : 'Approve from the highlighted row'}
+                </p>
+                <p className="text-muted">
+                  {deepRow
+                    ? <>@{deepRow.username} · <Money cents={deepRow.amountCents} /> · {deepRow.phone}{ACTIONABLE.has(deepRow.status.toLowerCase()) ? '' : ` · already ${deepRow.status}`}</>
+                    : 'You opened this from an alert. The request is highlighted below when it is on this page.'}
+                  {deepIntent === 'approve' ? ' Approving pays out real money and needs the system owner password.' : ' Rejecting returns the held funds to the player.'}
+                </p>
+              </div>
+              <span className="inline-flex gap-2">
+                {deepIntent === 'reject' && (!deepRow || ACTIONABLE.has(deepRow.status.toLowerCase())) ? (
+                  <ConfirmButton label="Reject withdrawal" confirmLabel="Confirm reject" variant="outline" busy={deepAction.isPending} onConfirm={confirmDeepReject} />
+                ) : null}
+                <Button size="sm" variant="ghost" onClick={() => setDeepIntent(null)}>Dismiss</Button>
+              </span>
+            </div>
+          ) : null}
+
           <Section title="Loaded on this page">
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               <StatCard label="Withdrawals shown" value={totals.count} />
@@ -220,7 +236,7 @@ export default function WithdrawalsPage() {
             </thead>
             <tbody>
               {rows.map((r) => (
-                <Row key={r.txId} r={r} checked={sel.isSelected(r.txId)} onToggle={() => sel.toggle(r.txId)} />
+                <Row key={r.txId} r={r} checked={sel.isSelected(r.txId)} onToggle={() => sel.toggle(r.txId)} highlighted={r.txId === highlightId} />
               ))}
             </tbody>
           </TableWrap>
@@ -293,8 +309,10 @@ function WithdrawalsSwitch() {
   );
 }
 
-function Row({ r, checked, onToggle }: { r: AdminWithdrawalRow; checked: boolean; onToggle: () => void }) {
+function Row({ r, checked, onToggle, highlighted = false }: { r: AdminWithdrawalRow; checked: boolean; onToggle: () => void; highlighted?: boolean }) {
   const action = useWithdrawalAction();
+  const rowRef = useRef<HTMLTableRowElement>(null);
+  useEffect(() => { if (highlighted) rowRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' }); }, [highlighted]);
   const toast = useToast();
   const canAct = ACTIONABLE.has(r.status.toLowerCase());
   const canMarkPaid = MARKPAYABLE.has(r.status.toLowerCase());
@@ -320,7 +338,7 @@ function Row({ r, checked, onToggle }: { r: AdminWithdrawalRow; checked: boolean
   }
 
   return (
-    <tr className={`border-b border-border last:border-0 hover:bg-surface-2/50 ${checked ? 'bg-accent/5' : ''}`}>
+    <tr ref={rowRef} aria-current={highlighted ? 'true' : undefined} className={`border-b border-border last:border-0 hover:bg-surface-2/50 ${checked ? 'bg-accent/5' : ''} ${highlighted ? 'outline outline-2 -outline-offset-2 outline-accent' : ''}`}>
       <Td><RowCheckbox checked={checked} onChange={onToggle} label={`Select ${r.username}`} /></Td>
       <Td><UserCell userId={r.userId} username={r.username} /></Td>
       <Td className="text-right font-semibold tabular-nums"><Money cents={r.amountCents} /></Td>

@@ -36,6 +36,9 @@ export interface MultiEngineOptions {
   /** Platform master switch (migration 0092): when it returns false, new positions are refused
    * platform-wide. Omitted in dev/tests => play always allowed. In-flight positions are unaffected. */
   playAllowed?: () => boolean | Promise<boolean>;
+  /** docs/42 UI-5: the brands of a platform, so a PLATFORM ADMIN's live console feed carries only its own
+   *  platform's online counts and deposits. Omitted => platform admins are refused the live feed. */
+  sitesOfPlatform?: (platformId: string) => Promise<string[]>;
 }
 
 export interface MultiEngineHandle {
@@ -158,12 +161,23 @@ export async function startMultiEngine(opts: MultiEngineOptions): Promise<MultiE
   // ── Platform live channel (docs/24): cross-brand feed for the platform_superadmin console ──
   // Platform sockets connect with `?platform=1`, never join a brand's socket set (so they don't
   // inflate a brand's online count), and receive raw per-site online counts + confirmed deposits.
-  const platformSockets = new Set<WebSocket>();
+  // docs/42 UI-5: each console socket carries the brands it may see — null = every brand (system owner),
+  // else its platform's brands (platform admin), re-resolved at most once a minute so brands onboarded
+  // later appear without a reconnect. Nothing from another platform is ever sent to a platform admin.
+  interface PlatformSub { scope: Set<string> | null; platformId: string | null; refreshedAt: number }
+  const platformSockets = new Map<WebSocket, PlatformSub>();
+  const SCOPE_TTL_MS = 60_000;
+  const refreshScope = (ws: WebSocket, sub: PlatformSub): void => {
+    if (!sub.platformId || !opts.sitesOfPlatform || Date.now() - sub.refreshedAt < SCOPE_TTL_MS) return;
+    sub.refreshedAt = Date.now();
+    void opts.sitesOfPlatform(sub.platformId).then((ids) => { if (platformSockets.has(ws)) sub.scope = new Set(ids); }).catch(() => { /* keep last scope */ });
+  };
   /** RAW per-site online counts (no onlineFloor) — the console needs the true live-player figure. */
-  const onlineSnapshot = () => {
+  const onlineSnapshot = (scope: Set<string> | null) => {
     const sites: Array<{ siteId: string; count: number }> = [];
     let total = 0;
     for (const [siteId, set] of perSiteSockets) {
+      if (scope && !scope.has(siteId)) continue;
       const c = set.size;
       if (c > 0) { sites.push({ siteId, count: c }); total += c; }
     }
@@ -171,35 +185,57 @@ export async function startMultiEngine(opts: MultiEngineOptions): Promise<MultiE
   };
   const broadcastPlatformOnline = () => {
     if (platformSockets.size === 0) return;
-    const snap = onlineSnapshot();
-    platformSockets.forEach((ws) => send(ws, "platform_online", { sites: snap.sites, totalOnline: snap.total, ts: Date.now() }));
+    platformSockets.forEach((sub, ws) => {
+      refreshScope(ws, sub);
+      const snap = onlineSnapshot(sub.scope);
+      send(ws, "platform_online", { sites: snap.sites, totalOnline: snap.total, ts: Date.now() });
+    });
   };
-  /** Fan a confirmed deposit (from the DepositNotifier LISTEN) out to every platform socket. */
-  const emitPlatformDeposit = (dep: unknown) => platformSockets.forEach((ws) => send(ws, "platform_deposit", dep));
+  /** Fan a confirmed deposit (from the DepositNotifier LISTEN) out to the console sockets allowed to see its brand. */
+  const emitPlatformDeposit = (dep: unknown) => {
+    const siteId = (dep as { siteId?: unknown } | null)?.siteId;
+    platformSockets.forEach((sub, ws) => {
+      if (sub.scope && !(typeof siteId === "string" && sub.scope.has(siteId))) return;
+      send(ws, "platform_deposit", dep);
+    });
+  };
 
-  /** A `?platform=1` connection: platform_superadmin-gated live feed, bound to NO brand. */
+  /** A `?platform=1` connection: the console live feed (system owner: every brand; platform admin: its own
+   *  platform's brands), bound to NO brand. */
   function handlePlatformConnection(ws: WebSocket) {
     send(ws, "hello", { serverTime: Date.now(), platform: true });
-    let authed = false;
+    let grant: PlatformSub | null = null;
     ws.on("message", async (raw) => {
       let msg: any; try { msg = JSON.parse(String(raw)); } catch { return send(ws, "error", { code: "BAD_JSON" }); }
       switch (msg.type) {
         case "auth": {
+          let role = "", platformId: string | null = null;
           if (opts.verifier) {
             let claims;
             try { claims = await opts.verifier(String(msg.data?.token ?? "")); }
             catch { return send(ws, "error", { code: "AUTH_INVALID" }); }
-            if ((claims as { role?: string }).role !== "platform_superadmin") return send(ws, "error", { code: "NOT_AUTHORIZED" });
-          } else if (String(msg.data?.role ?? "") !== "platform_superadmin") {
+            role = String((claims as { role?: string }).role ?? "");
+            platformId = (claims as { platform?: string }).platform ?? null;
+          } else {
+            role = String(msg.data?.role ?? "");
+            platformId = typeof msg.data?.platform === "string" ? msg.data.platform : null;
+          }
+          if (role === "platform_superadmin") {
+            grant = { scope: null, platformId: null, refreshedAt: Date.now() };
+          } else if (role === "platform_admin" && platformId && opts.sitesOfPlatform) {
+            // Fail closed: a platform admin without a platform claim (or no resolver) gets nothing.
+            let ids: string[];
+            try { ids = await opts.sitesOfPlatform(platformId); } catch { return send(ws, "error", { code: "SCOPE_UNAVAILABLE" }); }
+            grant = { scope: new Set(ids), platformId, refreshedAt: Date.now() };
+          } else {
             return send(ws, "error", { code: "NOT_AUTHORIZED" });
           }
-          authed = true;
-          return send(ws, "platform_authed", {});
+          return send(ws, "platform_authed", { scope: grant.scope ? "platform" : "system" });
         }
         case "subscribe_platform": {
-          if (!authed) return send(ws, "error", { code: "AUTH_REQUIRED" });
-          platformSockets.add(ws);
-          const snap = onlineSnapshot();
+          if (!grant) return send(ws, "error", { code: "AUTH_REQUIRED" });
+          platformSockets.set(ws, grant);
+          const snap = onlineSnapshot(grant.scope);
           return send(ws, "platform_snapshot", { sites: snap.sites, totalOnline: snap.total, ts: Date.now() });
         }
         case "ping": return send(ws, "pong", {});

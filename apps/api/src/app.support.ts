@@ -14,6 +14,7 @@ import {
 } from "./http.js";
 import type { ApiDeps } from "./app.js";
 import type { Verifier } from "@invest254/engine";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 
 /**
  * Support-chat REST surface (docs/11 chat, backend migration 0057). A Tawk-style autonomous
@@ -46,6 +47,9 @@ export interface SupportConversation {
   contactPhone: string | null;
   createdAt: string;
   lastAt: string;
+  /** SHA-256 (hex) of the conversation's capability token (Issue 1 / F-48); null for legacy rows.
+   *  Internal only — never serialised to any client (convDto omits it). */
+  accessHash: string | null;
 }
 
 export interface SupportMessageRow {
@@ -60,8 +64,9 @@ export interface SupportMessageRow {
 }
 
 export interface SupportStore {
-  /** fn_support_start: open a conversation for a brand (anonymous visitor or a logged-in user). */
-  start(siteId: string, opts: { userId?: string | null; visitorId?: string | null }): Promise<string>;
+  /** fn_support_start: open a conversation for a brand (anonymous visitor or a logged-in user), bound to
+   *  the SHA-256 of its capability token (Issue 1 / F-48). */
+  start(siteId: string, opts: { userId?: string | null; visitorId?: string | null; accessHash: string }): Promise<string>;
   /** fn_support_log: append a turn; returns the message id. */
   log(
     conversationId: string,
@@ -139,6 +144,43 @@ function publicSiteId(ctx: Ctx): string {
   return raw;
 }
 
+// ── conversation ownership (Issue 1 / F-48) ─────────────────────────────────────────────────
+const sha256Hex = (t: string): string => createHash("sha256").update(t, "utf8").digest("hex");
+
+/** A fresh capability token for a new conversation; only its SHA-256 is stored. */
+export function newConversationToken(): { token: string; hash: string } {
+  const token = randomBytes(32).toString("base64url");
+  return { token, hash: sha256Hex(token) };
+}
+
+/**
+ * May this request WRITE to `conv` (post a message / escalate)? Proof is either
+ *   - the logged-in OWNER of the conversation (conv.userId === caller), or
+ *   - the conversation's capability token (issued once, at creation, to the browser that opened it).
+ * A different logged-in account is refused even when holding the token (a shared device must never
+ * continue another person's conversation). Without proof the answer is the same 404 as an unknown id,
+ * so a conversation id alone reveals nothing. A logged-in caller of ANOTHER brand who does hold proof
+ * gets AUTH_SITE_MISMATCH (unchanged). Legacy conversations (no stored hash) accept only their owner.
+ */
+function assertConversationAccess(ctx: Ctx, conv: SupportConversation): void {
+  const notFound = new ApiError("NOT_FOUND", `conversation ${conv.id} not found`, 404);
+  const caller = ctx.claims?.userId ?? null;
+  if (conv.userId && caller && caller !== conv.userId) throw notFound;
+  let proven = Boolean(conv.userId && caller === conv.userId);
+  if (!proven) {
+    const raw = (ctx.body as Record<string, unknown> | null)?.conversationToken;
+    if (typeof raw === "string" && raw.length > 0 && raw.length <= 256 && conv.accessHash) {
+      const a = Buffer.from(sha256Hex(raw), "hex");
+      const b = Buffer.from(conv.accessHash, "hex");
+      proven = a.length === b.length && timingSafeEqual(a, b);
+    }
+  }
+  if (!proven) throw notFound;
+  if (ctx.claims?.site && ctx.claims.site !== conv.siteId) {
+    throw new ApiError("AUTH_SITE_MISMATCH", "conversation belongs to another brand", 403);
+  }
+}
+
 // ── routes ──────────────────────────────────────────────────────────────────────────────
 export function registerSupportRoutes(router: Router, deps: ApiDeps): void {
   const s = deps.support;
@@ -154,8 +196,11 @@ export function registerSupportRoutes(router: Router, deps: ApiDeps): void {
     const siteId = publicSiteId(ctx);
     const visitorId = optionalString(ctx.body, "visitorId", 128);
     const userId = ctx.claims?.userId ?? null;
-    const id = await s.store.start(siteId, { userId, visitorId });
-    return { status: 201, body: { conversationId: id, siteId } };
+    // F-48: the token is returned ONCE and never stored in clear; it (or the logged-in owner) is required
+    // for every later write to this conversation.
+    const { token, hash } = newConversationToken();
+    const id = await s.store.start(siteId, { userId, visitorId, accessHash: hash });
+    return { status: 201, body: { conversationId: id, siteId, conversationToken: token } };
   });
 
   // Ask a question -> grounded answer; both the question and the answer are recorded.
@@ -166,10 +211,7 @@ export function registerSupportRoutes(router: Router, deps: ApiDeps): void {
 
     const conv = await s.store.getConversation(id);
     if (!conv) throw new ApiError("NOT_FOUND", `conversation ${id} not found`, 404);
-    // A logged-in caller may only post to a conversation in their own brand.
-    if (ctx.claims?.site && ctx.claims.site !== conv.siteId) {
-      throw new ApiError("AUTH_SITE_MISMATCH", "conversation belongs to another brand", 403);
-    }
+    assertConversationAccess(ctx, conv);   // F-48: owner or capability token; brand match
 
     const priorRows = await s.store.listMessages(id);
     const history: SupportHistoryTurn[] = priorRows
@@ -206,9 +248,7 @@ export function registerSupportRoutes(router: Router, deps: ApiDeps): void {
 
     const conv = await s.store.getConversation(id);
     if (!conv) throw new ApiError("NOT_FOUND", `conversation ${id} not found`, 404);
-    if (ctx.claims?.site && ctx.claims.site !== conv.siteId) {
-      throw new ApiError("AUTH_SITE_MISMATCH", "conversation belongs to another brand", 403);
-    }
+    assertConversationAccess(ctx, conv);   // F-48: a stranger can no longer re-point the follow-up contact
     await s.store.escalate(id, { email, phone });
     return { status: "escalated" };
   });

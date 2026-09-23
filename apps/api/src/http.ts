@@ -401,6 +401,25 @@ export function requireRole(minRole: keyof typeof ROLE_RANK): Middleware {
   };
 }
 
+/** The only tiers that may EARN from referrals (docs/42 UI-12): players and marketers. */
+export const EARNING_ROLES: ReadonlySet<string> = new Set(["player", "marketer"]);
+
+/**
+ * docs/42 UI-12 (owner decision 2026-09-23): operators are never affiliates. An operator earning
+ * revenue share on players they can manage is a conflict of interest, so every operator tier — a
+ * site `admin` token (including a platform/system admin who opened a brand), `platform_admin`,
+ * `platform_superadmin` — is refused the player-side earning routes (enrol, referral code, commission
+ * and advance requests). FAIL CLOSED: any role outside EARNING_ROLES is refused. Run after requireAuth.
+ */
+export function requireEarningRole(): Middleware {
+  return (ctx) => {
+    if (!ctx.claims) throw new ApiError("AUTH_REQUIRED", "authentication required", 401);
+    if (!EARNING_ROLES.has(ctx.claims.role ?? "player")) {
+      throw new ApiError("OPERATOR_NOT_ELIGIBLE", "operators cannot join the affiliate or referral programme", 403);
+    }
+  };
+}
+
 /**
  * Site back-office guard (Issue 1 — residual data-leak hardening). Admits admin /
  * platform_superadmin AND, during impersonation, a platform admin's site-scoped `admin` token — but

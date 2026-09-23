@@ -94,7 +94,7 @@ export function useDepositPayhero() {
   });
 }
 
-/** Deposit gateways effective-enabled for this player's brand (superadmin switch + per-site override). */
+/** Deposit gateways effective-enabled for this player's brand (system owner switch + per-site override). */
 export function useDepositProviders() {
   const token = useSession((s) => s.token);
   return useQuery({

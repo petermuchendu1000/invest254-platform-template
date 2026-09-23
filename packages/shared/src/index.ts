@@ -23,3 +23,4 @@ export * from "./support.js";
 export * from "./globaleconomy.js";
 export * from "./platformgate.js";
 export * from "./logger.js";
+export * from "./capabilities.js";

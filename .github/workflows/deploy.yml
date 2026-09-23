@@ -8,6 +8,13 @@ name: Deploy (Fly)
 #
 # A restart does NOT pick up new code (HOSTING.md §2.5) — only a `fly deploy` does; that is what this
 # runs. The engine is restart-safe: on boot it deterministically recovers open positions (recovery.ts).
+#
+# Order: verify → fly-auth → migrate → deploy (api + engine, in parallel).
+#   fly-auth runs BEFORE migrate so a rejected/expired FLY_API_TOKEN stops the run with a clear error
+#   instead of migrating the DB and then silently failing to ship the code (BUGLOG #48 — six merges on
+#   2026-09-23 migrated production but never deployed).
+# Every image is labelled with the commit SHA, so `flyctl releases -a <app> --image` shows exactly which
+# commit is live; each deploy then verifies that label and (API) the health endpoint.
 
 on:
   push:
@@ -25,12 +32,16 @@ on:
       - 'package-lock.json'
       - 'tsconfig*.json'
       - '.github/workflows/deploy.yml'
-  workflow_dispatch: {}   # allow a manual deploy of current main from the Actions tab
+  workflow_dispatch: {}   # manual deploy of current main from the Actions tab (e.g. after rotating the token)
 
 # Never run two deploys at once, and never cancel a deploy mid-flight.
 concurrency:
   group: fly-deploy
   cancel-in-progress: false
+
+env:
+  # Pinned (was @master/latest): a new flyctl release can no longer change deploy behaviour unannounced.
+  FLYCTL_VERSION: 0.4.106
 
 jobs:
   # Gate: don't deploy a broken main. Mirrors the backend half of the CI 'build' job (typecheck + tests).
@@ -51,12 +62,39 @@ jobs:
       - name: Tests
         run: npm test
 
+  # Prove the Fly token can reach BOTH apps before anything touches production.
+  fly-auth:
+    name: fly token preflight
+    needs: verify
+    # Production repo only: the mirror template has no secrets, so everything after verify is skipped there.
+    if: github.repository == 'petermuchendu1000/invest254'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+        with:
+          version: ${{ env.FLYCTL_VERSION }}
+      - name: Check FLY_API_TOKEN reaches invest254-api and invest254-engine-pm
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          if [ -z "$FLY_API_TOKEN" ]; then
+            echo "::error title=FLY_API_TOKEN missing::Repo secret FLY_API_TOKEN is not set. See HOSTING.md §2.6.1."
+            exit 1
+          fi
+          for app in invest254-api invest254-engine-pm; do
+            if ! flyctl status -a "$app" >/dev/null 2>err.txt; then
+              echo "::error title=FLY_API_TOKEN rejected for $app::Fly refused the token ($(head -c 200 err.txt | tr '\n' ' ')). It is expired, revoked or not scoped to $app. Create a new one (fly tokens create org -n github-deploy) and update the FLY_API_TOKEN secret, then re-run this workflow. See HOSTING.md §2.6.1."
+              exit 1
+            fi
+          done
+          echo "Fly token OK for both apps" >> "$GITHUB_STEP_SUMMARY"
+
   # Apply + record any pending migrations BEFORE the code that needs them ships (BUGLOG #24). Atomic
   # apply+record (scripts/migrate.mts) makes the ledger physically unable to drift from what's applied.
-  # Runs after verify, gates both deploys. Skips gracefully when there's no DB secret (mirror template).
+  # Runs after the token preflight, gates both deploys. Skips gracefully when there's no DB secret (mirror).
   migrate:
     name: migrate (apply + record)
-    needs: verify
+    needs: fly-auth
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -76,26 +114,51 @@ jobs:
           fi
           node --import tsx scripts/migrate.mts
 
-  deploy-api:
-    name: deploy invest254-api
+  deploy:
+    name: deploy ${{ matrix.app }}
     needs: migrate
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false          # one app failing must not abort the other mid-rollout
+      matrix:
+        include:
+          - app: invest254-api
+            config: fly.api.toml
+            health: https://invest254-api.fly.dev/api/v1/health
+          - app: invest254-engine-pm
+            config: fly.engine.toml
+            health: ""          # pure WebSocket server; Fly's TCP check gates the rollout
     steps:
       - uses: actions/checkout@v4
       - uses: superfly/flyctl-actions/setup-flyctl@master
-      - name: fly deploy (api)
-        run: flyctl deploy --config fly.api.toml --remote-only
+        with:
+          version: ${{ env.FLYCTL_VERSION }}
+      - name: fly deploy (${{ matrix.app }})
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-
-  deploy-engine:
-    name: deploy invest254-engine-pm
-    needs: migrate
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: superfly/flyctl-actions/setup-flyctl@master
-      - name: fly deploy (engine)
-        run: flyctl deploy --config fly.engine.toml --remote-only
+        run: flyctl deploy --config ${{ matrix.config }} --remote-only --image-label "git-${GITHUB_SHA}" --wait-timeout 5m
+      - name: Explain a failed deploy
+        if: failure()
+        run: |
+          echo "::error title=${{ matrix.app }} deploy failed::The token passed preflight, so check (1) Fly billing — an overdue invoice blocks builds/releases (BUGLOG #48, 2026-09-23), (2) the remote builder, (3) the release health checks. Then re-run: Actions → Deploy (Fly) → Run workflow."
+      - name: Verify the live release is this commit
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          APP: ${{ matrix.app }}
+          HEALTH: ${{ matrix.health }}
+        run: |
+          img=$(flyctl releases -a "$APP" --image --json | jq -r '.[0].ImageRef // ""')
+          echo "latest release image: $img"
+          case "$img" in
+            *"git-${GITHUB_SHA}"*) ;;
+            *) echo "::error title=$APP not on this commit::latest release image is '$img', expected label git-${GITHUB_SHA}"; exit 1 ;;
+          esac
+          if [ -n "$HEALTH" ]; then
+            for i in $(seq 1 12); do
+              code=$(curl -s -o /dev/null -w '%{http_code}' "$HEALTH" || true)
+              [ "$code" = "200" ] && break
+              sleep 10
+            done
+            [ "$code" = "200" ] || { echo "::error title=$APP unhealthy::$HEALTH returned $code after deploy"; exit 1; }
+          fi
+          echo "$APP live on ${GITHUB_SHA::7} ($img)" >> "$GITHUB_STEP_SUMMARY"

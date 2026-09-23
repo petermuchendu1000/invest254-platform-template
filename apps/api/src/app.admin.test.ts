@@ -342,8 +342,14 @@ test("J5 game config: admin reads; only superadmin edits; validates; audited", a
     // a day-to-day admin cannot edit config (superadmin only)
     assert.equal((await req(api, "PATCH", "/api/v1/admin/game-config", { token: "admin-1:admin:00000000-0000-0000-0000-000000000001", body: { houseEdge: 0.7 } })).status, 403);
 
-    // superadmin edits a partial patch; rtpTarget is recomputed from house_edge
-    const upd = await req(api, "PATCH", "/api/v1/admin/game-config", { token: "root:platform_superadmin", body: { houseEdge: 0.7, maxStakeCents: 6_000_000 } });
+    // docs/42 UI-2: the system owner must NAME the brand — no silent fallback to brand #1.
+    const unnamed = await req(api, "PATCH", "/api/v1/admin/game-config", { token: "root:platform_superadmin", body: { houseEdge: 0.7 } });
+    assert.equal(unnamed.status, 400);
+    assert.equal((await json(unnamed)).error.code, "SITE_REQUIRED");
+    assert.equal((await req(api, "GET", "/api/v1/admin/game-config", { token: "root:platform_superadmin" })).status, 400, "owner read without a brand is refused too");
+
+    // the owner edits a named brand's partial patch; rtpTarget is recomputed from house_edge
+    const upd = await req(api, "PATCH", "/api/v1/admin/game-config?site=00000000-0000-0000-0000-000000000001", { token: "root:platform_superadmin", body: { houseEdge: 0.7, maxStakeCents: 6_000_000 } });
     assert.equal(upd.status, 200);
     const u = await json(upd);
     assert.equal(u.houseEdge, 0.7);
@@ -355,32 +361,32 @@ test("J5 game config: admin reads; only superadmin edits; validates; audited", a
     // and persist. Previously `minWithdrawalCents` was missing from the API's CONFIG_FIELDS
     // allowlist, so this patch was stripped to empty and rejected with "provide at least one
     // config field to update" — the value could never be saved from the admin panel.
-    const mw = await req(api, "PATCH", "/api/v1/admin/game-config", { token: "root:platform_superadmin", body: { minWithdrawalCents: 50000 } });
+    const mw = await req(api, "PATCH", "/api/v1/admin/game-config?site=00000000-0000-0000-0000-000000000001", { token: "root:platform_superadmin", body: { minWithdrawalCents: 50000 } });
     assert.equal(mw.status, 200, "editing only min withdrawal must be accepted");
     assert.equal((await json(mw)).minWithdrawalCents, 50000);
     const reread = await json(await req(api, "GET", "/api/v1/admin/game-config", { token: "admin-1:admin:00000000-0000-0000-0000-000000000001" }));
     assert.equal(reread.minWithdrawalCents, 50000, "min withdrawal persisted and reads back");
     // a non-integer cents value for the floor is still rejected
-    assert.equal((await req(api, "PATCH", "/api/v1/admin/game-config", { token: "root:platform_superadmin", body: { minWithdrawalCents: 250.5 } })).status, 400);
+    assert.equal((await req(api, "PATCH", "/api/v1/admin/game-config?site=00000000-0000-0000-0000-000000000001", { token: "root:platform_superadmin", body: { minWithdrawalCents: 250.5 } })).status, 400);
 
     // out-of-range value -> 400; non-integer cents -> 400; empty patch -> 400
-    assert.equal((await req(api, "PATCH", "/api/v1/admin/game-config", { token: "root:platform_superadmin", body: { houseEdge: 1.5 } })).status, 400);
-    assert.equal((await req(api, "PATCH", "/api/v1/admin/game-config", { token: "root:platform_superadmin", body: { minStakeCents: 50.5 } })).status, 400);
-    assert.equal((await req(api, "PATCH", "/api/v1/admin/game-config", { token: "root:platform_superadmin", body: {} })).status, 400);
+    assert.equal((await req(api, "PATCH", "/api/v1/admin/game-config?site=00000000-0000-0000-0000-000000000001", { token: "root:platform_superadmin", body: { houseEdge: 1.5 } })).status, 400);
+    assert.equal((await req(api, "PATCH", "/api/v1/admin/game-config?site=00000000-0000-0000-0000-000000000001", { token: "root:platform_superadmin", body: { minStakeCents: 50.5 } })).status, 400);
+    assert.equal((await req(api, "PATCH", "/api/v1/admin/game-config?site=00000000-0000-0000-0000-000000000001", { token: "root:platform_superadmin", body: {} })).status, 400);
 
     // 0095 pool-mode toggle: superadmin flips the brand's brain; boolean-only validation;
     // a poolMode-only patch is valid; combined with economy knobs in one PATCH works too.
-    const pmOff = await req(api, "PATCH", "/api/v1/admin/game-config", { token: "root:platform_superadmin", body: { poolMode: false } });
+    const pmOff = await req(api, "PATCH", "/api/v1/admin/game-config?site=00000000-0000-0000-0000-000000000001", { token: "root:platform_superadmin", body: { poolMode: false } });
     assert.equal(pmOff.status, 200, "poolMode-only patch accepted");
     assert.equal((await json(pmOff)).poolMode, false);
-    const pmOn = await req(api, "PATCH", "/api/v1/admin/game-config", { token: "root:platform_superadmin", body: { poolMode: true, houseEdge: 0.7 } });
+    const pmOn = await req(api, "PATCH", "/api/v1/admin/game-config?site=00000000-0000-0000-0000-000000000001", { token: "root:platform_superadmin", body: { poolMode: true, houseEdge: 0.7 } });
     assert.equal(pmOn.status, 200);
     const pmOnBody = await json(pmOn);
     assert.equal(pmOnBody.poolMode, true);
     assert.equal(pmOnBody.houseEdge, 0.7, "economy knob applied alongside the toggle");
     const pmRead = await json(await req(api, "GET", "/api/v1/admin/game-config", { token: "admin-1:admin:00000000-0000-0000-0000-000000000001" }));
     assert.equal(pmRead.poolMode, true, "pool_mode persisted and reads back");
-    assert.equal((await req(api, "PATCH", "/api/v1/admin/game-config", { token: "root:platform_superadmin", body: { poolMode: "yes" } })).status, 400, "non-boolean poolMode rejected");
+    assert.equal((await req(api, "PATCH", "/api/v1/admin/game-config?site=00000000-0000-0000-0000-000000000001", { token: "root:platform_superadmin", body: { poolMode: "yes" } })).status, 400, "non-boolean poolMode rejected");
     assert.equal((await req(api, "PATCH", "/api/v1/admin/game-config", { token: "admin-1:admin:00000000-0000-0000-0000-000000000001", body: { poolMode: false } })).status, 403, "day-to-day admin cannot toggle pool mode");
 
     const audit = await json(await req(api, "GET", "/api/v1/admin/audit", { token: "root:platform_superadmin" }));

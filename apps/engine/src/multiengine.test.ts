@@ -40,7 +40,7 @@ class Client {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-async function boot(extra?: { playAllowed?: () => boolean | Promise<boolean> }): Promise<{ handle: MultiEngineHandle; repo: InMemoryGameRepository; url: (site: string) => string }> {
+async function boot(extra?: { playAllowed?: () => boolean | Promise<boolean>; sitesOfPlatform?: (p: string) => Promise<string[]> }): Promise<{ handle: MultiEngineHandle; repo: InMemoryGameRepository; url: (site: string) => string; platformUrl: string }> {
   const repo = new InMemoryGameRepository();
   const seeded = new Set<string>();
   const registry = new SiteRegistry({
@@ -63,9 +63,10 @@ async function boot(extra?: { playAllowed?: () => boolean | Promise<boolean> }):
     devSeedBalance: (_siteId, userId) => { if (!seeded.has(userId)) { seeded.add(userId); repo.seed(userId, 1_000_000); } },
     onError: () => { /* quiet in tests */ },
     ...(extra?.playAllowed ? { playAllowed: extra.playAllowed } : {}),
+    ...(extra?.sitesOfPlatform ? { sitesOfPlatform: extra.sitesOfPlatform } : {}),
   });
   const port = (handle.wss.address() as any).port as number;
-  return { handle, repo, url: (site) => `ws://127.0.0.1:${port}/?site=${site}` };
+  return { handle, repo, url: (site) => `ws://127.0.0.1:${port}/?site=${site}`, platformUrl: `ws://127.0.0.1:${port}/?platform=1` };
 }
 
 test("multiplex: two brands get isolated, decorrelated tick streams + independent online counts", async () => {
@@ -228,4 +229,44 @@ test("bonus visibility: auth + open_position balance frames carry the bonus buck
     assert.equal(typeof postOpen.data.bonus, "number", "open_position balance frame carries bonus");
     assert.ok(postOpen.data.real < bal.data.real, "stake debited");
   } finally { c.close(); await handle.close(); }
+});
+
+// ── docs/42 UI-5: the console live feed is scoped — owner sees every brand, a platform admin only its own ──
+test("UI-5: platform live feed — owner: all brands; platform admin: its platform only; others refused", async () => {
+  const P1 = "10000000-0000-0000-0000-00000000000a";
+  const { handle, platformUrl, url } = await boot({ sitesOfPlatform: async (p) => (p === P1 ? [SITE_A] : []) });
+  const clients: Client[] = [];
+  const mk = async (u: string) => { const c = new Client(u); clients.push(c); await c.open(); return c; };
+  try {
+    // One player online on each brand.
+    const pa = await mk(url(SITE_A)); await pa.waitFor("hello");
+    const pb = await mk(url(SITE_B)); await pb.waitFor("hello");
+    await sleep(150);
+
+    const owner = await mk(platformUrl); owner.send("auth", { role: "platform_superadmin" }); await owner.waitFor("platform_authed");
+    owner.send("subscribe_platform", {});
+    const os = await owner.waitFor("platform_snapshot");
+    assert.deepEqual(os.data.sites.map((x: any) => x.siteId).sort(), [SITE_A, SITE_B].sort(), "owner sees every brand");
+
+    const plat = await mk(platformUrl); plat.send("auth", { role: "platform_admin", platform: P1 }); await plat.waitFor("platform_authed");
+    plat.send("subscribe_platform", {});
+    const ps = await plat.waitFor("platform_snapshot");
+    assert.deepEqual(ps.data.sites.map((x: any) => x.siteId), [SITE_A], "platform admin sees ONLY its platform's brand");
+    assert.equal(ps.data.totalOnline, 1);
+
+    handle.emitPlatformDeposit({ siteId: SITE_B, userId: "pB", username: "b", amountCents: 100, txId: "t-b", atMs: 1 });
+    handle.emitPlatformDeposit({ siteId: SITE_A, userId: "pA", username: "a", amountCents: 200, txId: "t-a", atMs: 2 });
+    await sleep(150);
+    assert.deepEqual(plat.of("platform_deposit").map((m) => m.data.txId), ["t-a"], "other platform's deposit never reaches a platform admin");
+    assert.deepEqual(owner.of("platform_deposit").map((m) => m.data.txId), ["t-b", "t-a"], "owner receives every deposit");
+
+    for (const bad of [{ role: "platform_admin" }, { role: "admin" }, { role: "player" }]) {
+      const c = await mk(platformUrl); c.send("auth", bad);
+      const e = await c.waitFor("error");
+      assert.equal(e.data.code, "NOT_AUTHORIZED", JSON.stringify(bad));
+    }
+  } finally {
+    clients.forEach((c) => c.close());
+    await handle.close();
+  }
 });

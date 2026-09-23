@@ -4,7 +4,7 @@ import { useMemo } from 'react';
 import Link from 'next/link';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { Money } from '@/components/ui/Money';
-import { useSession } from '@/lib/auth/session';
+import { useCan } from '@/lib/auth/can';
 import { PageHeader, StatCard, Section, TableWrap, Th, Td, Empty } from '@/components/admin/ui';
 import { KpiCard, kesCompact, type Point } from '@/components/admin/charts';
 import { useOverview, useRtp, useReportDaily } from '@/lib/admin/hooks';
@@ -19,9 +19,9 @@ function isoDaysAgo(days: number): string {
 export default function AdminOverviewPage() {
   const o = useOverview();
   const rtp = useRtp();
-  const myRole = useSession((s) => s.user?.role);
-  // Owner tier = superadmin OR the higher platform_superadmin (mirrors AdminShell/API hierarchy).
-  const isSuper = myRole === 'superadmin' || myRole === 'platform_superadmin';
+  // docs/42: decided by the TOKEN role via the shared capability list (UI-3/UI-11).
+  const isSuper = useCan('backoffice.governance');
+  const showIntegrity = useCan('backoffice.economy_integrity');
 
   return (
     <>
@@ -144,7 +144,7 @@ export default function AdminOverviewPage() {
       </Section>
 
       {/* Economy integrity (rec #7 + docs/28 §4): real-cash truth + config change review. Owner tier. */}
-      {isSuper && (
+      {showIntegrity && (
         <>
           <RealCashRtpPanel />
           <ConfigChangeReviewPanel />

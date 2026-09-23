@@ -6,8 +6,10 @@ import { useSession } from '@/lib/auth/session';
 
 /**
  * Platform live feed (docs/24). Opens a single WebSocket to the multiplexed engine on the
- * brand-less `?platform=1` channel, authenticates with the platform_superadmin token, and
- * subscribes to the cross-brand feed:
+ * brand-less `?platform=1` channel, authenticates with the console token, and subscribes to the feed
+ * the engine grants it (system owner: every brand; platform admin: its own platform's brands — docs/42
+ * UI-5). `connected` becomes true only once the feed is GRANTED; a refusal sets `denied` and stops
+ * reconnecting, so the console never shows a "Live" badge for a feed it is not receiving (P6):
  *   - `platform_snapshot` / `platform_online` → live per-brand online player counts (raw, no floor)
  *   - `platform_deposit`                       → each deposit the instant it confirms (migration 0071)
  *
@@ -26,6 +28,8 @@ export interface LiveDeposit {
 
 export interface PlatformLive {
   connected: boolean;
+  /** The engine refused this session the live feed (docs/42 P6: hide the live widgets, don't fake them). */
+  denied: boolean;
   /** siteId → currently-connected player sockets (raw count). Absent site ⇒ 0 online. */
   onlineBySite: Record<string, number>;
   totalOnline: number;
@@ -46,6 +50,7 @@ export function usePlatformLive(): PlatformLive {
   const token = useSession((s) => s.token);
   const [state, setState] = useState<PlatformLive>({
     connected: false,
+    denied: false,
     onlineBySite: {},
     totalOnline: 0,
     deposits: [],
@@ -85,7 +90,6 @@ export function usePlatformLive(): PlatformLive {
 
       ws.onopen = () => {
         attempts = 0;
-        setState((prev) => ({ ...prev, connected: true }));
         if (tokenRef.current) ws?.send(JSON.stringify({ type: 'auth', data: { token: tokenRef.current } }));
         pingTimer = setInterval(() => {
           if (ws && ws.readyState === ws.OPEN) ws.send(JSON.stringify({ type: 'ping', data: {} }));
@@ -97,8 +101,19 @@ export function usePlatformLive(): PlatformLive {
         try { msg = JSON.parse(String(ev.data)); } catch { return; }
         switch (msg.type) {
           case 'platform_authed':
+            setState((prev) => ({ ...prev, connected: true, denied: false }));
             ws?.send(JSON.stringify({ type: 'subscribe_platform', data: {} }));
             return;
+          case 'error': {
+            const code = (msg.data as { code?: string } | undefined)?.code ?? '';
+            if (code === 'NOT_AUTHORIZED' || code === 'AUTH_INVALID' || code === 'SCOPE_UNAVAILABLE') {
+              // Refused: honest state, and no reconnect storm (a refusal will not change by retrying).
+              closed = true;
+              setState((prev) => ({ ...prev, connected: false, denied: true }));
+              try { ws?.close(); } catch { /* ignore */ }
+            }
+            return;
+          }
           case 'platform_snapshot':
           case 'platform_online':
             applyOnline(msg.data as Parameters<typeof applyOnline>[0]);

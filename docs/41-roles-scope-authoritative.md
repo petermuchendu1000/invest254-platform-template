@@ -27,7 +27,8 @@ SYSTEM ADMIN     platform_superadmin   global — every platform, every brand
 `ROLE_RANK` (apps/api/src/http.ts:58): player 1 < marketer 2 < admin 3 < platform_admin 4 <
 platform_superadmin 5 **[code-proven]**. `profiles_role_check` allows exactly these five (0152)
 **[DB-proven]**. The legacy `superadmin` is gone from the CHECK, but its string literal remains inert in
-~29 `fn_*` allow-lists and in `v_mfa_status` (which therefore lists no MFA state for platform tiers).
+~29 `fn_*` allow-lists. (`v_mfa_status` listed only `admin`/`superadmin` — no platform tiers — until 0157
+rebuilt it for the three live operator tiers, service_role only; F-48.)
 
 ### 1.1 How scope travels — and the one rule everything depends on
 Scope is carried in the signed JWT: `role`, `site` (brand) and, for a platform admin, `platform`.
@@ -44,7 +45,7 @@ BUGLOG #38 enforced S1 for `platform_admin` only. §5 shows S1 is violated for `
 | 1 | JWT claims (`AuthService.issueToken` / `issueSessionToken`) | live profile | ✅ every mint path stamps site/platform (F-43) |
 | 2 | API rank gate (`requireRole`, `requireSiteAdmin`) | token `role` | ✅ |
 | 3 | API scope gate (`scope.ts` → `assertSiteTarget`/`assertUserTarget`) | token `site`/`platform` vs the TARGET's brand | ✅ fail-closed on all id-addressed operator routes (F-43, F-44); guarded by the route-registry attack matrix |
-| 4a | DB RPCs (SECURITY DEFINER, `p_actor_role`) | **actor's profile** (`fn_actor_target_sites`, 22 fns) | ⚠️ disagrees with layer 3 during impersonation (F-46) |
+| 4a | DB RPCs (SECURITY DEFINER, `p_actor_role`) | permission `fn_actor_scope_sites` (token tier verified against the actor's real profile) + brand named by the API | ✅ site-tier fence on 17 user/brand/advance RPCs; impersonation acts on the token's brand (F-46, 0156) |
 | 4b | DB RLS for PostgREST (anon key) | JWT GUCs | ✅ after 0153 (was: 36 tables without RLS + 14 owner-run views, #42) |
 
 ---
@@ -76,16 +77,16 @@ BUGLOG #38 enforced S1 for `platform_admin` only. §5 shows S1 is violated for `
 - **When:** daily portfolio operations.
 - **Why:** the middle tier that makes 10k platforms independent.
 - **Gaps / over-grants:**
-  - ❌ **Over-grant (leak): `GET /platform/domains/health`** returns the Cloudflare status of **every
+  - ✅ (F-47 fixed) **Over-grant (leak): `GET /platform/domains/health`** returns the Cloudflare status of **every
     platform's** brand domains (the system Cloudflare account), i.e. every other tenant's client list
     **[code-proven server.ts:671]** (F-47).
-  - ❌ **Over-grant: `GET /platform/onboard/domain-status?domain=`** probes any domain on the system
+  - ✅ (F-47 fixed) **Over-grant: `GET /platform/onboard/domain-status?domain=`** probes any domain on the system
     Cloudflare account, not just its own (F-47).
   - ⚠️ Routes guarded by `requireRole("admin")` (notifications, push, tickets, add-ons) also admit a raw
     `platform_admin`; they are safe only where the RPC re-derives scope (tickets, broadcast, add-ons ✅;
     per-user notifications ❌ — F-44).
-  - ⚠️ **Impersonation mis-scope in the DB (F-46):** while impersonating brand X, RPCs that re-derive an
-    `admin` actor's site from its **profile** act on the platform admin's **home** brand, not X.
+  - ✅ ~~**Impersonation mis-scope in the DB (F-46):** while impersonating brand X, RPCs that re-derive an
+    `admin` actor's site from its **profile** act on the platform admin's **home** brand, not X.~~ Fixed by 0156 (BUGLOG #46).
 
 ### 2.3 SITE ADMIN — `admin`
 - **Who:** the day-to-day operator of exactly one brand.
@@ -139,16 +140,18 @@ BUGLOG #38 enforced S1 for `platform_admin` only. §5 shows S1 is violated for `
 ### 2.5 PLAYER — `player`
 - **Who / What / Where / When / Why:** an end user of one brand; own wallet/positions/transactions/
   bonuses/notifications; own rows only (`sel_own` = `auth.uid()` AND `site = current_site()`).
-- **Gaps:** ❌ a refreshed token (F-43) loses `site` → `requireSite` defaults to the default brand.
-  Support chat checks the brand but not the conversation owner (anyone holding a conversation UUID can
-  post into it; LOW, UUIDs are unguessable) (F-48).
+- **Gaps:** ✅ ~~a refreshed token loses `site`~~ (F-43). ✅ Support chat is owner-bound (F-48, 0157): a
+  write needs the logged-in owner or the conversation's capability token (issued once at creation, only
+  its SHA-256 stored); a stranger holding the id gets the same 404 as an unknown id, a different account
+  on a shared browser cannot continue it, and the widget wipes a signed-in transcript when the person
+  using the browser changes.
 
 ### 2.6 Non-human principals (easy to forget, must be scoped too)
 | Principal | Scope today | Finding |
 |---|---|---|
 | Public anon key (PostgREST) | RLS only | ✅ #42 → closed by 0153 |
 | Anyone on the internet (public repo) | the repo | ❌ #41 → `.e2e.env` removed + CI secret-scan; **rotation pending (owner)** |
-| Impersonation session | token `site` at API; actor **profile** at DB | ⚠️ F-46 |
+| Impersonation session | token `site` at API; DB permission from the impersonator's real tier, brand named by the API | ✅ F-46 (0156) |
 | Payment callbacks (`/deposits/*/callback`) | STKPushQuery verify + optional CIDR | ✅ (not re-audited in depth here) |
 | Telegram / email approval links | password-gated approve | ✅ (not re-audited in depth here) |
 
@@ -205,8 +208,8 @@ hidden in the UI, but reachable by calling the API directly.
 | F-43 | P0 | Tokens minted without `site`/`platform`; claimless `admin` = unrestricted | app.auth.ts:329, app.affiliate.ts:87, app.marketers.ts:349,404; http.ts:465 | `issueSessionToken` choke point; `adminScopeSite` fail-closed; `adminListSite` | ✅ BUGLOG #43, branch `fix/issue1-f43-token-scope-claims` |
 | F-44 | P0/P1 | 25+ admin routes lacked target-scope checks; global audit/M-Pesa reads; cross-tenant accrual & expenses | §2.3 | `scope.ts` single fail-closed tier rule on all 72 id-addressed operator routes; owner-only audit/M-Pesa; migration 0154; route-registry attack matrix | ✅ BUGLOG #44 |
 | F-45 | P1 | Audit rows mis-attributed to the default brand (cross-platform leak via `/platform/sites/:id/audit`) | 26/50 fns + `recordAction` omitted `site_id`; prod: 801 rows on the wrong brand | migration 0155: derived attribution trigger + backfill; NULL = platform-level | ✅ BUGLOG #45 |
-| F-46 | P1 | DB scope ≠ API scope during impersonation | 22 fns re-derive from actor profile | carry the effective site into the RPC scope | after F-45 |
-| F-47 | P2 | Platform admin sees all tenants' domains | server.ts:647,671 | filter to own platform's brands | queue |
-| F-48 | P3 | Support conversation not owner-bound; push unsubscribe by endpoint; `v_mfa_status` stale | app.support.ts:162; app.push.ts:64 | owner binding; scope | queue |
+| F-46 | P1 | DB scope ≠ API scope during impersonation; no DB brand fence for site-tier RPCs | 22 fns re-derive from actor profile; 17 RPCs fenced only `platform_admin` | migration 0156: permission/targeting split, 17-RPC fence, API names the brand | ✅ BUGLOG #46 |
+| F-47 | P2 | Platform admin sees all tenants' domains; could re-onboard another platform's brand; case-sensitive domain uniqueness | server.ts:608,647,671 | `onboardscope.ts`: foreign-slug refusal, case-insensitive domain clash, own-platform domain status/health | ✅ BUGLOG #47 |
+| F-48 | P2 | Support conversation not owner-bound (post/replay/re-point escalation); shared-device transcript leak; withdrawal alerts scoped by the brand stored at opt-in (null = every brand on every platform; suspended admins included); unsubscribe not owner-bound; `v_mfa_status` stale + granted to public roles | app.support.ts:162,199; useSupportChat.ts; push.ts:239; app.push.ts:64; 0027 | capability token + owner check (0157); live-profile recipient rule `mayReceiveWithdrawalAlert` mirrored in SQL; owner-bound unsubscribe; view rebuilt service_role-only | ✅ BUGLOG #49 |
 
 Cross-references: BUGLOG #41–#42 (and the F-IDs as they land), docs/38, docs/40.

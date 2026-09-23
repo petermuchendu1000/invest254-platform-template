@@ -166,7 +166,7 @@ export default function PlatformOverviewPage() {
       {/* Platform-wide KPIs */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-7">
         <StatCard label="Brands" value={siteList.length} hint={`${kpis.filter((k) => k.status === 'active').length} active`} />
-        <LiveOnlineCard total={live.totalOnline} connected={live.connected} />
+        {!live.denied ? <LiveOnlineCard total={live.totalOnline} connected={live.connected} /> : null}
         <StatCard label="Players" value={totals.users.toLocaleString()} hint="registered" />
         <StatCard label={`Deposits · ${rangeLabel}`} money={windowTotals.deposits} tone="up" />
         <StatCard label={`GGR · ${rangeLabel}`} money={windowTotals.ggr} tone={windowTotals.ggr >= 0 ? 'up' : 'down'} />
@@ -174,8 +174,9 @@ export default function PlatformOverviewPage() {
         <StatCard label="Needs setup" value={needsSetup} tone={needsSetup > 0 ? 'warn' : 'up'} hint="domain / M-Pesa incomplete" />
       </div>
 
-      {/* Live deposits feed (pushed the instant a deposit confirms, across every brand) */}
-      <LiveDeposits live={live} nameById={nameById} />
+      {/* Live deposits feed, pushed the instant a deposit confirms — every brand for the owner, the
+          platform's own brands for a platform admin (docs/42 UI-5); hidden if the feed is refused (P6). */}
+      {!live.denied ? <LiveDeposits live={live} nameById={nameById} /> : null}
 
       {/* Clients table */}
       <Section title="Clients">

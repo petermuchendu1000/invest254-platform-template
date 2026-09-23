@@ -39,7 +39,9 @@ def migrate(include_0117: bool):
     with conn.cursor() as c:
         c.execute(open(SHIM, encoding="utf-8").read())
         for f in sorted(glob.glob(os.path.join(MIG, "0[0-9][0-9][0-9]_*.sql"))):
-            if (not include_0117) and os.path.basename(f).startswith("0117_"):
+            # BEFORE = exactly 0001..0116. Skipping only 0117 was fragile: any LATER migration that
+            # redefines fn_pay_referral_commissions (e.g. 0159, UI-12) would mask the reproduction.
+            if (not include_0117) and os.path.basename(f)[:4] >= "0117":
                 continue
             c.execute(open(f, encoding="utf-8").read())
     return conn

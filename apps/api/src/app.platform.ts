@@ -38,13 +38,19 @@ export interface PlatformOnboardDeps {
   registrarConfigured: boolean;
   /** Per-platform capabilities (a platform admin may have its OWN registrar even if env has none). */
   capabilities(platformId: string | null): Promise<{ domainConfigured: boolean; registrarConfigured: boolean }>;
-  /** Create/upsert a brand. platformId stamps the new site into the caller's platform (null = default). */
-  onboard(input: OnboardInput, platformId: string | null): Promise<OnboardResult>;
-  domainStatus(domain: string): Promise<DomainStatus>;
+  /** Create/upsert a brand. platformId stamps the new site into the caller's platform (null = default).
+   *  `callerScope` = the platform a BOUNDED caller (platform admin) is confined to, null for the system
+   *  owner: re-onboarding an EXISTING slug that lives in another platform is refused (SLUG_TAKEN) —
+   *  Issue 1 / F-47 (it used to overwrite another tenant's brand + economy). */
+  onboard(input: OnboardInput, platformId: string | null, callerScope?: string | null): Promise<OnboardResult>;
+  /** Provisioning status of a domain. A bounded caller may only probe a domain claimed by a brand of its
+   *  own platform (DOMAIN_NOT_FOUND otherwise) — F-47. */
+  domainStatus(domain: string, callerScope?: string | null): Promise<DomainStatus>;
   /** List the registrar account's domains for the caller's platform, annotated with which are clients. */
   listRegistrarDomains(platformId: string | null): Promise<RegistrarDomainsView>;
-  /** Real domain health (Cloudflare Pages custom-domain statuses) so the console never fakes "live". */
-  domainHealth(): Promise<DomainHealthView>;
+  /** Real domain health (Cloudflare Pages custom-domain statuses) so the console never fakes "live".
+   *  A bounded caller only sees the domains of its own platform's brands — F-47. */
+  domainHealth(callerScope?: string | null): Promise<DomainHealthView>;
 }
 
 /** Per-platform registrar (Namecheap) config surface (Issue 1 #3). Implemented by RegistrarConfigService. */
@@ -83,6 +89,8 @@ const PLATFORM_STATUS: Readonly<Record<string, number>> = {
   OVERRIDE_FAVORS_PLAYER: 422,
   INVALID_OVERRIDE: 400,
   SLUG_TAKEN: 409,
+  DOMAIN_NOT_FOUND: 404,   // F-47: a platform admin probing a domain outside its platform
+  DOMAIN_TAKEN: 409,       // F-47: a domain already claimed by another brand (case-insensitive)
   SITE_NOT_FOUND: 404,
   site_cfg_feasible: 422, // the economy-feasibility CHECK (RTP/win-rate) rejected the tuning
   // Task R — cross-brand marketer rollup
@@ -208,7 +216,8 @@ export function registerPlatformRoutes(router: Router, deps: ApiDeps): void {
     // owner may target a specific platform via body.platformId (else the default platform).
     const scoped = adminScopePlatform(ctx);
     const targetPlatform = scoped ?? (typeof b.platformId === "string" && b.platformId.trim() ? b.platformId.trim() : null);
-    const res = await domain(() => deps.platformOnboard!.onboard(input, targetPlatform));
+    // F-47: `scoped` bounds re-onboarding of an EXISTING slug to the caller's own platform.
+    const res = await domain(() => deps.platformOnboard!.onboard(input, targetPlatform, scoped));
     return { status: 201, body: res };
   });
 
@@ -217,7 +226,7 @@ export function registerPlatformRoutes(router: Router, deps: ApiDeps): void {
     if (!deps.platformOnboard) throw new ApiError("NOT_CONFIGURED", "onboarding is not configured on this deployment", 503);
     const d = ctx.query.get("domain");
     if (!d || !d.trim()) throw new ApiError("VALIDATION", "domain is required", 400);
-    return domain(() => deps.platformOnboard!.domainStatus(d.trim()));
+    return domain(() => deps.platformOnboard!.domainStatus(d.trim(), adminScopePlatform(ctx)));   // F-47: own platform's domains only
   });
 
   // Onboarding capabilities so the console can be HONEST up-front about what will happen — per platform
@@ -236,9 +245,10 @@ export function registerPlatformRoutes(router: Router, deps: ApiDeps): void {
 
   // Real per-domain health (Cloudflare Pages custom-domain status), so the Clients table shows the TRUE
   // state (Live / Pending / Not provisioned) instead of a fake "✓ Domain" just because a string is set.
-  router.get(`${BASE}/platform/domains/health`, auth, platformAdmin, async () => {
+  router.get(`${BASE}/platform/domains/health`, auth, platformAdmin, async (ctx: Ctx) => {
     if (!deps.platformOnboard) return { configured: false, statuses: {} };
-    return domain(() => deps.platformOnboard!.domainHealth());
+    // F-47: was every platform's domains (the system Cloudflare account) — now the caller's own only.
+    return domain(() => deps.platformOnboard!.domainHealth(adminScopePlatform(ctx)));
   });
 
   // ── Per-platform registrar (Namecheap) configuration (Issue 1 #3) ──────────────────────────────
@@ -321,8 +331,10 @@ export function registerPlatformRoutes(router: Router, deps: ApiDeps): void {
     ({ sites: await domain(() => deps.platform.overview(ctx.claims!.userId, ctx.claims!.role ?? "player")) }));
 
   // Per-brand performance within a [from, to) window (docs/24 performance filters). `from`/`to` are
-  // epoch-ms (or ISO); defaults to the last 24h when omitted. Read-only; platform_superadmin-gated.
-  router.get(`${BASE}/platform/performance`, auth, platform, async (ctx: Ctx) => {
+  // epoch-ms (or ISO); defaults to the last 24h when omitted. Read-only. docs/42 UI-5: platform admins
+  // too, scoped to THEIR platform's brands (adminScopePlatform: owner -> null = all; claimless -> 403).
+  router.get(`${BASE}/platform/performance`, auth, platformAdmin, async (ctx: Ctx) => {
+    const scope = adminScopePlatform(ctx);
     const parse = (raw: string | null): number | null => {
       if (!raw || !raw.trim()) return null;
       const n = Number(raw);
@@ -333,7 +345,7 @@ export function registerPlatformRoutes(router: Router, deps: ApiDeps): void {
     const toMs = parse(ctx.query.get("to")) ?? now;
     const fromMs = parse(ctx.query.get("from")) ?? toMs - 24 * 60 * 60 * 1000;
     if (toMs <= fromMs) throw new ApiError("VALIDATION", "`to` must be after `from`", 400);
-    return { fromMs, toMs, sites: await domain(() => deps.platform.performance(fromMs, toMs)) };
+    return { fromMs, toMs, sites: await domain(() => deps.platform.performance(fromMs, toMs, scope)) };
   });
 
   // Brands + economy — platform-scoped: a platform_admin sees only ITS platform's brands.
@@ -346,7 +358,7 @@ export function registerPlatformRoutes(router: Router, deps: ApiDeps): void {
   //
   // The minted ROLE matches the operator's TIER — this fixes the leak where a platform_admin was
   // offered (and, if the gate were widened, granted) a 'superadmin' session:
-  //   - platform_superadmin (system owner) -> 'superadmin' (full site governance; they own everything);
+  //   - platform_superadmin (system owner) -> 'admin' as well since F1/Option B (governance lives in the console);
   //   - platform_admin                     -> 'admin'      (site Operations only, fenced to the brand —
   //                                                         NEVER superadmin governance, so a platform
   //                                                         admin can never escalate on a client).
@@ -362,7 +374,9 @@ export function registerPlatformRoutes(router: Router, deps: ApiDeps): void {
     // site-fenced `superadmin` token entirely. The site claim scopes the impersonated session to the
     // one brand; the action is audited with the caller's REAL role below.
     const impersonatedRole = "admin";
-    const token = await deps.auth.issueToken(ctx.claims!.userId, impersonatedRole, siteId);
+    // docs/42 UI-3: the token itself records the impersonation (RFC 8693-style `act` claim).
+    const token = await deps.auth.issueToken(ctx.claims!.userId, impersonatedRole, siteId, undefined,
+      { sub: ctx.claims!.userId, role: ctx.claims!.role ?? "player", brand: brand.name });
     await deps.admin.recordAction(
       ctx.claims!.userId, ctx.claims!.role ?? "player",
       "platform.impersonate", "site", siteId, { slug: brand.slug, name: brand.name, as: impersonatedRole },

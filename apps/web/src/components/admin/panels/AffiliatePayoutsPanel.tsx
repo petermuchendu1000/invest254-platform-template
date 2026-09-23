@@ -9,7 +9,7 @@ import { ApiError } from '@/lib/api/client';
 import { formatKes } from '@invest254/shared/money';
 import { useToast } from '@/lib/toast/ToastProvider';
 import { formatRelativeTime } from '@/lib/format';
-import { StatCard, TableWrap, Th, Td, Empty, Toolbar, FilterSelect, ConfirmButton } from '@/components/admin/ui';
+import { StatCard, TableWrap, Th, Td, Empty, Toolbar, FilterSelect, ConfirmButton, PasswordConfirmButton } from '@/components/admin/ui';
 import { useRowSelection, SelectAllCheckbox, RowCheckbox, BulkBar, downloadCsv, copyText } from '@/components/admin/BulkSelect';
 import { RejectDialog } from '@/components/admin/RejectDialog';
 import { useAffiliatePayouts, usePayoutAction, useBulkPayouts } from '@/lib/admin/hooks';
@@ -56,14 +56,14 @@ export function AffiliatePayoutsPanel() {
     return { amount, actionableIds: actionable.map((r) => r.payoutId), actionableAmount: actionable.reduce((s, r) => s + r.amountCents, 0) };
   }, [sel.selectedRows]);
 
-  function runBulk(action: 'approve' | 'reject') {
+  function runBulk(action: 'approve' | 'reject', password?: string) {
     const payoutIds = selInfo.actionableIds;
     if (payoutIds.length === 0) {
       toast.push({ tone: 'error', title: 'Nothing actionable', description: 'Only requested payouts can be approved or rejected.' });
       return;
     }
     bulk.mutate(
-      { action, payoutIds },
+      { action, payoutIds, ...(action === 'approve' ? { password: password ?? '' } : {}) },
       {
         onSuccess: (res) => {
           toast.push({
@@ -162,7 +162,7 @@ export function AffiliatePayoutsPanel() {
             onClear={sel.clear}
             summary={<>Total <Money cents={selInfo.amount} /> · {selInfo.actionableIds.length} actionable (<Money cents={selInfo.actionableAmount} />)</>}
           >
-            <ConfirmButton label={`Approve ${selInfo.actionableIds.length}`} confirmLabel="Pay out all" variant="primary" busy={bulk.isPending} disabled={selInfo.actionableIds.length === 0} onConfirm={() => runBulk('approve')} />
+            <PasswordConfirmButton label={`Approve ${selInfo.actionableIds.length}`} confirmLabel="Pay out all" variant="primary" busy={bulk.isPending} disabled={selInfo.actionableIds.length === 0} onConfirm={(pw) => runBulk('approve', pw)} />
             <ConfirmButton label={`Reject ${selInfo.actionableIds.length}`} confirmLabel="Reject all" variant="outline" busy={bulk.isPending} disabled={selInfo.actionableIds.length === 0} onConfirm={() => runBulk('reject')} />
             <Button size="sm" variant="outline" onClick={copyPhones}>Copy phones</Button>
             <Button size="sm" variant="outline" onClick={exportCsv}>Export CSV</Button>
@@ -194,9 +194,9 @@ function Row({ r, checked, onToggle, onReject }: { r: AdminPayoutRow; checked: b
   const toast = useToast();
   const canAct = ACTIONABLE.has(r.status.toLowerCase());
 
-  function approve() {
+  function approve(password: string) {
     action.mutate(
-      { id: r.payoutId, action: 'approve' },
+      { id: r.payoutId, action: 'approve', password },
       {
         onSuccess: () => toast.push({ tone: 'success', title: 'Payout approved', description: 'M-Pesa transfer dispatched.' }),
         onError: (e) => toast.push({ tone: 'error', title: 'Action failed', description: e instanceof ApiError ? e.message : 'Try again.' }),
@@ -219,7 +219,7 @@ function Row({ r, checked, onToggle, onReject }: { r: AdminPayoutRow; checked: b
       <Td className="text-right">
         {canAct ? (
           <span className="inline-flex items-center justify-end gap-1.5">
-            <ConfirmButton label="Approve" confirmLabel="Pay out" variant="primary" busy={action.isPending} onConfirm={approve} />
+            <PasswordConfirmButton label="Approve" confirmLabel="Pay out" variant="primary" busy={action.isPending} onConfirm={approve} />
             <Button size="sm" variant="outline" disabled={action.isPending} onClick={onReject}>Reject</Button>
           </span>
         ) : (

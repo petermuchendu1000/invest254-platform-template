@@ -68,7 +68,7 @@ async function domain<T>(fn: () => Promise<T>, ctx?: Ctx): Promise<T> {
         ...(ctx.siteId ? { siteId: ctx.siteId } : {}),
       });
       const notConfigured = /NOT_CONFIGURED/.test(code);
-      const privileged = ["admin", "superadmin", "platform_admin", "platform_superadmin"].includes(ctx?.claims?.role ?? "");
+      const privileged = ["admin", "platform_admin", "platform_superadmin"].includes(ctx?.claims?.role ?? "");
       if (privileged) throw new ApiError(code, message, notConfigured ? 503 : 502); // operators see the detail
       throw new ApiError(
         notConfigured ? "PROVIDER_UNAVAILABLE" : "PROVIDER_ERROR",

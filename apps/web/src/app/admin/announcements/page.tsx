@@ -19,7 +19,7 @@ const AUDIENCES: { key: string; label: string; value: BroadcastAudienceInput }[]
   { key: 'affected_wd', label: 'Only affected (failed withdrawal, last 24h)', value: { affected_within_hours: 24, affected_kind: 'withdrawal' } },
   { key: 'players', label: 'Players only', value: { roles: ['player'] } },
   { key: 'marketers', label: 'Marketers only', value: { roles: ['marketer'] } },
-  { key: 'admins', label: 'Admins only', value: { roles: ['admin', 'superadmin', 'platform_superadmin'] } },
+  { key: 'admins', label: 'Admins only', value: { roles: ['admin', 'platform_superadmin'] } },
 ];
 
 const LEVEL_STYLES: Record<string, string> = {

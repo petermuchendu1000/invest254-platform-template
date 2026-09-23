@@ -32,6 +32,7 @@ function mapConversation(x: Record<string, unknown>): SupportConversation {
     contactPhone: (x.contact_phone as string | null) ?? null,
     createdAt: iso(x.created_at),
     lastAt: iso(x.last_at),
+    accessHash: (x.access_hash as string | null | undefined) ?? null,
   };
 }
 
@@ -54,7 +55,8 @@ function mapMessage(x: Record<string, unknown>): SupportMessageRow {
 export function makePgSupportStore(q: Querier): SupportStore {
   return {
     async start(siteId, opts) {
-      const r = await q.query("select fn_support_start($1,$2,$3) as id", [siteId, opts.visitorId ?? null, opts.userId ?? null]);
+      // F-48 (migration 0157): 4-arg overload binds the conversation to its capability-token hash.
+      const r = await q.query("select fn_support_start($1,$2,$3,$4) as id", [siteId, opts.visitorId ?? null, opts.userId ?? null, opts.accessHash]);
       return String(r.rows[0]!.id);
     },
     async log(conversationId, role, content, sources, confidence) {
@@ -69,7 +71,7 @@ export function makePgSupportStore(q: Querier): SupportStore {
     },
     async getConversation(conversationId) {
       const r = await q.query(
-        `select id, site_id, user_id, visitor_id, status, escalated, contact_email, contact_phone, created_at, last_at
+        `select id, site_id, user_id, visitor_id, status, escalated, contact_email, contact_phone, created_at, last_at, access_hash
            from support_conversations where id = $1`,
         [conversationId],
       );

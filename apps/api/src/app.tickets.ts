@@ -1,4 +1,4 @@
-import { Router, ApiError, requireAuth, requireRole, type Ctx } from "./http.js";
+import { Router, ApiError, requireAuth, requireRole, adminScopeSite, type Ctx } from "./http.js";
 import type { ApiDeps } from "./app.js";
 
 const BASE = "/api/v1";
@@ -43,7 +43,11 @@ export function registerTicketRoutes(router: Router, deps: ApiDeps): void {
     if (typeof b.subject !== "string" || !b.subject.trim()) throw new ApiError("VALIDATION", "subject is required", 400);
     if (typeof b.urgency !== "string") throw new ApiError("VALIDATION", "urgency is required", 400);
     const [a, r] = actor(ctx);
-    return { status: 201, body: await domain(() => t.create(a, r, str(b.platformId), str(b.siteId), b.subject as string, typeof b.body === "string" ? b.body : "", b.urgency as string)) };
+    // Issue 1 / F-46: a site-tier token files the ticket under ITS brand (an impersonation session names
+    // the impersonated brand; the DB no longer falls back to the actor's home brand).
+    const siteTier = r === "admin" ? adminScopeSite(ctx) : null;
+    const siteId = siteTier ?? str(b.siteId);
+    return { status: 201, body: await domain(() => t.create(a, r, str(b.platformId), siteId, b.subject as string, typeof b.body === "string" ? b.body : "", b.urgency as string)) };
   });
 
   router.get(`${BASE}/tickets`, auth, admin, async (ctx: Ctx) => {

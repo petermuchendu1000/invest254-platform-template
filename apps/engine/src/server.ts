@@ -241,6 +241,11 @@ const handle = await startMultiEngine({
   onlineFloor: ONLINE_FLOOR,
   ...(devSeed ? { devSeedBalance: devSeed } : {}),
   ...(platformGate ? { playAllowed: () => platformGate!.allows("play") } : {}),
+  // docs/42 UI-5: a platform admin's console live feed is scoped to its platform's brands.
+  ...(realtimeQuery ? { sitesOfPlatform: async (platformId: string) => {
+    const r = await realtimeQuery!.query("select id from public.sites where platform_id = $1", [platformId]);
+    return (r.rows as Array<{ id: unknown }>).map((x) => String(x.id));
+  } } : {}),
 });
 
 if (!verifier) console.warn("[engine] WARNING: no JWT verifier — DEV auth (trusts client userId). Not for production.");

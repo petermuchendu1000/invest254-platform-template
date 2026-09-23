@@ -30,6 +30,11 @@ export function SupportWidget() {
   const escalated = useSupportChat((s) => s.escalated);
   const send = useSupportChat((s) => s.send);
   const escalate = useSupportChat((s) => s.escalate);
+  const syncIdentity = useSupportChat((s) => s.syncIdentity);
+
+  // Issue 1 / F-48: the moment the signed-in person changes (logout, account switch, forced 401),
+  // drop a conversation that belonged to someone else so its transcript is never displayed.
+  React.useEffect(() => { syncIdentity(token); }, [token, syncIdentity]);
 
   const [draft, setDraft] = React.useState('');
   const scrollRef = React.useRef<HTMLDivElement>(null);

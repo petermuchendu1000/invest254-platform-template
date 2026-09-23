@@ -1,4 +1,5 @@
 'use client';
+import { useCan } from '@/lib/auth/can';
 
 /**
  * Billing console (Issue 2). System owner: manage every platform's plan, status and payments.
@@ -13,7 +14,6 @@ import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Modal } from '@/components/ui/Modal';
 import { useToast } from '@/lib/toast/ToastProvider';
-import { useSession } from '@/lib/auth/session';
 import { usePlatforms } from '@/lib/platform/hooks';
 import { usePlans, useSubscription, useMySubscription, useSetPlan, useSetSubStatus, useRecordPayment } from '@/lib/ops/hooks';
 import type { PlatformSubscription, PlatformUsage } from '@/lib/ops/endpoints';
@@ -40,8 +40,7 @@ function UsageMeter({ label, used, max }: { label: string; used: number; max: nu
 }
 
 export default function BillingPage() {
-  const role = useSession((s) => s.user?.role);
-  const isSystem = role === 'platform_superadmin';
+  const isSystem = useCan('console.system');   // docs/42: token role via the shared capability list
   return (
     <div className="flex flex-col gap-6">
       <PageHeader title="Billing & subscriptions" subtitle={isSystem ? 'Manage every platform\'s plan, status and payments.' : 'Your platform\'s plan, status and usage.'} />

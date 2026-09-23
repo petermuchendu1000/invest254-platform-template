@@ -176,7 +176,7 @@ export function ConfirmButton({
 /**
  * Approve action gated by the system owner password (Issue 1). Clicking reveals a password field; the
  * action only fires once the operator enters a value. The password is passed to `onConfirm`, which
- * forwards it to the API (the server verifies it against the superadmin credential).
+ * forwards it to the API (the server verifies it against the system owner's approval password).
  */
 export function PasswordConfirmButton({
   label,
@@ -214,7 +214,7 @@ export function PasswordConfirmButton({
           value={pw}
           onChange={(e) => setPw(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter') submit(); if (e.key === 'Escape') { setPw(''); setOpen(false); } }}
-          placeholder="Superadmin password"
+          placeholder="System owner password"
           autoComplete="off"
           className="h-8 w-44 rounded-md border border-border bg-surface px-2 text-sm outline-none focus:border-accent"
         />

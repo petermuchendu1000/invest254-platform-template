@@ -21,6 +21,16 @@ Marketers are players who also **promote a brand and earn 25% of deposits**. The
   alphabet (no `0/O/1/I/L`). Logic lives in the `fn_affiliate_enroll` RPC (service-role only,
   migration 0017); the API returns `{ referralCode, commissionRate, status, role, referralPath }`.
 
+- **Operators are never affiliates (docs/42 UI-12, migration 0159, BUGLOG #58).** Only `player` and
+  `marketer` may enrol, hold a referral code/link, be attributed a sign-up, receive the 5% player perk,
+  accrue GGR revenue share, or request commission payouts/advances. Site admins (including an owner or
+  platform admin who opened a brand), platform admins and the system admin are refused at the API
+  (`requireEarningRole` → 403 `OPERATOR_NOT_ELIGIBLE`) and in the database (`fn_affiliate_enroll`,
+  `fn_register_user`, `fn_pay_referral_commissions`, `fn_accrue_affiliate_commissions`). The admin
+  side (queues, approvals, expenses) is unchanged.
+- **Codes survive enrolment (0159).** Every profile has a 7-character referral code (0158). Enrolling
+  keeps it as the affiliate code, so links a player shared before becoming a marketer keep attributing.
+
 ## 2. Attribution ✅ (I1)
 - A new user arriving via `/r/<code>` carries the code through signup (`POST /auth/register` with
   an optional `referral_code` — auth is self-managed phone+password, no OTP). On account creation:

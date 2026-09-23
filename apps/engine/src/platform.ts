@@ -163,7 +163,8 @@ export interface PlatformRepository {
   /** Revoke a platform_admin back to a site-level role (clears platform_id). */
   revokePlatformAdmin(actorId: string, actorRole: string, targetUserId: string, newRole: string): Promise<{ userId: string; role: string }>;
   /** Per-brand performance within a time window (read-only; the API route gates on platform_superadmin). */
-  performance(fromMs: number, toMs: number): Promise<SitePerformance[]>;
+  /** Per-brand performance in [from, to). `platformScope` (docs/42 UI-5): a platform admin's own platform only; null = every brand. */
+  performance(fromMs: number, toMs: number, platformScope?: string | null): Promise<SitePerformance[]>;
   // Task R — cross-brand marketer rollup (reporting only; money stays per site).
   marketerRollup(actorRole: string): Promise<MarketerRollupRow[]>;
   createMarketerGlobal(actorId: string, actorRole: string, label: string): Promise<string>;
@@ -360,7 +361,7 @@ export class PgPlatformRepository implements PlatformRepository {
     return { userId: String(x.user_id), role: String(x.role) };
   }
 
-  async performance(fromMs: number, toMs: number): Promise<SitePerformance[]> {
+  async performance(fromMs: number, toMs: number, platformScope?: string | null): Promise<SitePerformance[]> {
     const from = new Date(fromMs).toISOString();
     const to = new Date(toMs).toISOString();
     const r = await this.q.query(
@@ -401,8 +402,9 @@ export class PgPlatformRepository implements PlatformRepository {
          left join dep on dep.site_id = s.id
          left join pos on pos.site_id = s.id
          left join np  on np.site_id  = s.id
+        where ($3::uuid is null or s.platform_id = $3::uuid)
         order by s.created_at asc`,
-      [from, to],
+      [from, to, platformScope ?? null],
     );
     return r.rows.map((x: Record<string, unknown>) => ({
       siteId: String(x.site_id), slug: String(x.slug), name: String(x.name), status: String(x.status),
@@ -762,9 +764,11 @@ export class InMemoryPlatformRepository implements PlatformRepository {
     return { userId: targetUserId, role: newRole };
   }
 
-  async performance(_fromMs: number, _toMs: number): Promise<SitePerformance[]> {
+  async performance(_fromMs: number, _toMs: number, platformScope?: string | null): Promise<SitePerformance[]> {
     // No transaction/position store in the in-memory repo — return each brand with zeroed metrics.
-    return [...this.sites.values()].map((s) => ({
+    const inScope = await this.listSites(platformScope ?? null);
+    const ids = new Set(inScope.map((x) => x.siteId));
+    return [...this.sites.values()].filter((s) => ids.has(s.siteId)).map((s) => ({
       siteId: s.siteId, slug: s.slug, name: s.name, status: s.status,
       depositsCents: 0, withdrawalsCents: 0, ggrCents: 0, bets: 0, stakedCents: 0, newPlayers: 0,
     }));
@@ -837,7 +841,7 @@ export class InMemoryPlatformRepository implements PlatformRepository {
   // (fn_admin_set_site_owner, migration 0104) and are covered by rolled-back live e2e. Here we only
   // gate the role and apply to the default site so route wiring/tests compile and behave sanely.
   async setDefaultMarketer(_actorId: string, actorRole: string, marketerId: string, makeDefault: boolean): Promise<SiteRow> {
-    if (!["admin", "superadmin", "platform_superadmin"].includes(actorRole)) throw new Error("NOT_AUTHORIZED");
+    if (!["admin", "platform_superadmin"].includes(actorRole)) throw new Error("NOT_AUTHORIZED");
     const s = this.sites.get(DEFAULT_SITE_ID)!;
     s.ownerUserId = makeDefault ? marketerId : (s.ownerUserId === marketerId ? null : s.ownerUserId);
     const { config, ...row } = s;
@@ -992,10 +996,10 @@ export class PlatformService {
   listSites(platformScope?: string | null): Promise<SiteWithConfig[]> { return this.repo.listSites(platformScope ?? null); }
   overview(actorId: string, actorRole: string): Promise<SiteKpis[]> { return this.repo.overview(actorId, actorRole); }
   platformOfSite(siteId: string): Promise<string | null> { return this.repo.platformOfSite(siteId); }
-  performance(fromMs: number, toMs: number): Promise<SitePerformance[]> {
+  performance(fromMs: number, toMs: number, platformScope?: string | null): Promise<SitePerformance[]> {
     const from = Number(fromMs), to = Number(toMs);
     if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from) throw new Error("INVALID_RANGE");
-    return this.repo.performance(from, to);
+    return this.repo.performance(from, to, platformScope ?? null);
   }
   createSite(actorId: string, actorRole: string, input: CreateSiteInput): Promise<string> {
     if (!input || typeof input.slug !== "string" || typeof input.name !== "string" || !input.slug.trim() || !input.name.trim()) {

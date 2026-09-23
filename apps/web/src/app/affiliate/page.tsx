@@ -13,6 +13,7 @@ import { useSession } from '@/lib/auth/session';
 import { useAuthUi } from '@/lib/auth/ui';
 import { useAuthActions } from '@/lib/auth/useAuthActions';
 import { useHydrated } from '@/lib/useHydrated';
+import { useCan } from '@/lib/auth/can';
 import { useToast } from '@/lib/toast/ToastProvider';
 import { formatDateTime } from '@/lib/format';
 import {
@@ -31,7 +32,6 @@ function maskHandle(username: string): string {
 export default function AffiliatePage() {
   const hydrated = useHydrated();
   const token = useSession((s) => s.token);
-  const user = useSession((s) => s.user);
   const openAuth = useAuthUi((s) => s.openAuth);
 
   if (!hydrated) return <Skeleton className="h-48 w-full" />;
@@ -45,9 +45,20 @@ export default function AffiliatePage() {
       />
     );
   }
-  if (!user) return <Skeleton className="h-48 w-full" />;
+  return <SignedInAffiliate />;
+}
 
-  const isMarketer = user.role === 'marketer' || user.role === 'admin';
+/**
+ * docs/42 UI-12 (owner decision 2026-09-23): operators are never affiliates. Decided on the TOKEN role
+ * (what the API authorises — an opened brand is an `admin` session), from the shared capability list.
+ */
+function SignedInAffiliate() {
+  const user = useSession((s) => s.user);
+  const mayEarn = useCan('earn.referrals');
+  const isMarketer = useCan('earn.marketer_dashboard');
+
+  if (!mayEarn) return <OperatorNotice />;
+  if (!user) return <Skeleton className="h-48 w-full" />;
 
   return (
     <section className="flex flex-col gap-4">
@@ -57,6 +68,21 @@ export default function AffiliatePage() {
       </header>
       {isMarketer ? <MarketerView /> : <ApplyCard />}
     </section>
+  );
+}
+
+/** Staff sessions: say plainly why the programme is closed to them, and point back to their workspace. */
+function OperatorNotice() {
+  return (
+    <EmptyState
+      title="Not available for staff accounts"
+      description="Operator accounts (brand, platform and system admins) can't join the affiliate or referral programme — commission must never depend on the people who manage players' accounts. Use a separate player account if you want to refer friends."
+      action={
+        <a href="/console" className="text-sm font-medium text-accent hover:underline">
+          Back to your workspace
+        </a>
+      }
+    />
   );
 }
 
@@ -176,7 +202,7 @@ function MarketerView() {
     );
   }
   if (summaryQ.isError) {
-    // 404 NOT_AFFILIATE → role is privileged (admin) but not enrolled → offer to apply.
+    // 404 NOT_AFFILIATE → a marketer without an affiliate row (e.g. promoted by an admin) → offer to apply.
     return summaryQ.error instanceof ApiError && summaryQ.error.status === 404 ? (
       <ApplyCard />
     ) : (

@@ -12,7 +12,7 @@ import { cn } from '@/lib/cn';
 import { ApiError } from '@/lib/api/client';
 import { useToast } from '@/lib/toast/ToastProvider';
 import { formatDateTime, formatRelativeTime } from '@/lib/format';
-import { useSession } from '@/lib/auth/session';
+import { useCan } from '@/lib/auth/can';
 import { PageHeader, StatCard, Section, Empty, ConfirmButton, TableWrap, Th, Td, Toolbar, FilterSelect } from '@/components/admin/ui';
 import { useUser, useUserActivity, useSetUserStatus, useAdjustBalance, useClearBalance, useResetBalance, useSetCommissionRate, useSetUserRole, useDeleteUser, useSetDefaultMarketer, useUpdateUserDetails, useUserNotifications, useSendNotification, useResolveNotification, useUserOverrides, useSetOverrides, useGameConfig, useMarketerExpenses, useAddMarketerExpense } from '@/lib/admin/hooks';
 import type { AdminUserActivityRow, AdminNotificationRow, NotificationLevel, UserOverridePatch } from '@/lib/admin/types';
@@ -96,7 +96,7 @@ export default function UserDetailPage({ params }: { params: { id: string } }) {
           ) : (
             <>
               <StatusActions id={id} status={q.data.status} />
-              <EditDetails id={id} phone={q.data.phone} username={q.data.username} />
+              <EditDetails id={id} phone={q.data.phone} username={q.data.username} targetRole={q.data.role} />
               <RoleManage id={id} current={q.data.role} />
               {q.data.isMarketer ? <MarketerHubLink /> : null}
               <BalanceAdjust id={id} />
@@ -269,15 +269,17 @@ function StatusActions({ id, status }: { id: string; status: string }) {
   );
 }
 
-function EditDetails({ id, phone, username }: { id: string; phone: string; username: string }) {
+function EditDetails({ id, phone, username, targetRole }: { id: string; phone: string; username: string; targetRole: string }) {
   const m = useUpdateUserDetails();
   const toast = useToast();
-  const myRole = useSession((s) => s.user?.role);
+  const canEdit = useCan('backoffice.users.edit_details');
+  const canManageAdmins = useCan('backoffice.users.set_role_admin');
   const [ph, setPh] = useState(phone ?? '');
   const [un, setUn] = useState(username ?? '');
 
-  // Admin+ may edit contact details (the API also confines a plain admin to non-admin targets).
-  if (myRole !== 'admin' && myRole !== 'superadmin' && myRole !== 'platform_superadmin') return null;
+  // docs/42 (token role): a brand admin edits players/marketers; an operator account only the owner.
+  if (!canEdit) return null;
+  if (['admin', 'platform_admin', 'platform_superadmin'].includes(targetRole) && !canManageAdmins) return null;
 
   function run() {
     const body: { id: string; phone?: string; username?: string } = { id };
@@ -317,17 +319,15 @@ function EditDetails({ id, phone, username }: { id: string; phone: string; usern
 function RoleManage({ id, current }: { id: string; current: string }) {
   const m = useSetUserRole();
   const toast = useToast();
-  const myRole = useSession((s) => s.user?.role);
+  const canBasic = useCan('backoffice.users.set_role_basic');
+  const canAdmin = useCan('backoffice.users.set_role_admin');
   const [role, setRole] = useState(current);
 
-  // Owner-tier can set any role; a plain admin may promote/demote player<->marketer only (the API
-  // enforces this too). platform_superadmin outranks superadmin.
-  const isOwnerTier = myRole === 'superadmin' || myRole === 'platform_superadmin';
-  const isAdmin = myRole === 'admin';
-  if (!isOwnerTier && !isAdmin) return null;
-  // An admin can only act on player/marketer accounts, and only choose player/marketer.
-  if (isAdmin && current !== 'player' && current !== 'marketer') return null;
-  const roleOptions = isOwnerTier ? ROLES : ['player', 'marketer'];
+  // docs/42 (token role, shared capability list): player<->marketer for a brand admin; the admin role
+  // (and admin accounts) only for the system owner's own session — never during impersonation.
+  if (!canBasic) return null;
+  if (!canAdmin && current !== 'player' && current !== 'marketer') return null;
+  const roleOptions = canAdmin ? ROLES : ['player', 'marketer'];
 
   function run() {
     m.mutate(
@@ -396,17 +396,16 @@ function MarketerHubLink() {
 }
 
 /** Danger zone: soft-delete this account (status='deleted', login-blocked, hidden). Server-guarded:
- *  no self, superadmin-protected, admin-only-by-superadmin, default marketer must be reassigned. */
+ *  no self, operator tiers protected, admin accounts only by the system owner, default marketer must be reassigned. */
 function DeleteAccount({ id, role, username }: { id: string; role: string; username: string }) {
   const del = useDeleteUser();
   const toast = useToast();
   const router = useRouter();
-  const myRole = useSession((s) => s.user?.role);
-  const isOwnerTier = myRole === 'superadmin' || myRole === 'platform_superadmin';
-  const isAdmin = myRole === 'admin';
-  if (!isOwnerTier && !isAdmin) return null;
-  if (role === 'superadmin' || role === 'platform_superadmin') return null; // protected
-  if (isAdmin && role === 'admin') return null; // only owner-tier deletes admins
+  const canDelete = useCan('backoffice.users.delete');
+  const canDeleteAdmin = useCan('backoffice.users.delete_admin');
+  if (!canDelete) return null;
+  if (role === 'platform_admin' || role === 'platform_superadmin') return null; // protected tiers
+  if (role === 'admin' && !canDeleteAdmin) return null; // only the owner's own session deletes admins
   function run() {
     del.mutate(id, {
       onSuccess: () => { toast.push({ tone: 'success', title: 'Account deleted', description: `@${username} can no longer log in. History is preserved.` }); router.push('/admin/users'); },
@@ -432,8 +431,7 @@ function DeleteAccount({ id, role, username }: { id: string; role: string; usern
 function DefaultMarketerControl({ id, isDefault, username, role }: { id: string; isDefault: boolean; username: string; role: string }) {
   const m = useSetDefaultMarketer();
   const toast = useToast();
-  const myRole = useSession((s) => s.user?.role);
-  if (myRole !== 'admin' && myRole !== 'superadmin' && myRole !== 'platform_superadmin') return null;
+  if (!useCan('backoffice.marketers.default')) return null;
   // Removing a default must ALWAYS be possible (even if this account's role has drifted off
   // 'marketer' — the exact live corruption, migration 0124). Only ASSIGNING requires a marketer.
   const isStaleDefault = isDefault && role !== 'marketer';
@@ -842,6 +840,7 @@ function LabeledInput({ label, value, onChange, placeholder }: { label: string; 
 
 /** Per-user engine overrides: win rate, forced auto-sell duration, payout cap, stake bounds (J8). */
 function OverridesPanel({ id }: { id: string }) {
+  const canWriteOverrides = useCan('backoffice.users.overrides_write');   // docs/42 UI-7: owner-only at the API
   const q = useUserOverrides(id);
   const m = useSetOverrides(id);
   const gc = useGameConfig();
@@ -957,7 +956,11 @@ function OverridesPanel({ id }: { id: string }) {
           <LabeledInput label="Max stake (KES)" value={form.maxStake ?? ''} onChange={(v) => set('maxStake', v)} placeholder="e.g. 50000" />
           <LabeledInput label="Notes" value={form.notes ?? ''} onChange={(v) => set('notes', v)} placeholder="optional" />
         </div>
-        <ConfirmButton label="Save overrides" confirmLabel="Confirm save" variant="primary" size="md" busy={m.isPending} disabled={q.isLoading} onConfirm={save} />
+        {canWriteOverrides ? (
+          <ConfirmButton label="Save overrides" confirmLabel="Confirm save" variant="primary" size="md" busy={m.isPending} disabled={q.isLoading} onConfirm={save} />
+        ) : (
+          <p className="text-xs text-muted">Read-only here. Per-player overrides are set by the system owner from the system console.</p>
+        )}
         {q.data?.updatedAtMs ? (
           <p className="text-xs text-muted">
             Last updated {formatRelativeTime(q.data.updatedAtMs)} ago{q.data.updatedBy ? ` by ${q.data.updatedBy.slice(0, 8)}…` : ''}.

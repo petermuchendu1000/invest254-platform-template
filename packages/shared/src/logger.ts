@@ -30,7 +30,7 @@ export function resolveLogLevel(env: Record<string, string | undefined> = {}): L
 // ── Redaction ──────────────────────────────────────────────────────────────────────────────────
 // Keys whose VALUE is a secret/credential → replaced wholesale. Matched case-insensitively against
 // the key name (also tolerant of separators, e.g. api_key / apiKey / api-key).
-const SENSITIVE_KEY = /^(pass(word)?|pin|otp|token|access_?token|refresh_?token|id_?token|authorization|auth|bearer|api_?key|secret|consumer_?secret|client_?secret|passkey|security_?credential|service_?role_?key|anon_?key|publishable_?key|jwt|session|cookie|set_?cookie|x_?user_?id|credential|db_?url|database_?url|connection_?string|dsn|private_?key)$/i;
+const SENSITIVE_KEY = /^(pass(word)?|pin|otp|token|access_?token|refresh_?token|id_?token|authorization|auth|bearer|api_?key|secret|consumer_?secret|client_?secret|passkey|security_?credential|service_?role_?key|anon_?key|publishable_?key|jwt|session|cookie|set_?cookie|x_?user_?id|credential|db_?url|database_?url|connection_?string|dsn|private_?key|conversation_?token|access_?hash)$/i;   // F-48: support capability token + its hash
 // Keys that hold a phone/MSISDN → masked (keep enough to identify, hide the subscriber digits).
 const PHONE_KEY = /^(phone|phone_?raw|msisdn|party_?a|party_?b|mobile|tel|number)$/i;
 

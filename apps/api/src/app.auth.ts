@@ -303,6 +303,12 @@ export function registerAuthRoutes(router: Router, deps: ApiDeps): void {
     // skip protection once enrolled. (Fail-open to false so a transient DB blip never locks a console.)
     const mfaState = await deps.auth.mfaStatus(userId).catch(() => ({ enabled: false, required: false, recoveryCodesLeft: 0 }));
     const mfaSetupRequired = mfaState.required && !mfaState.enabled;
+    // docs/42 UI-8 (P3 "scope is always visible"): the brand/platform THIS SESSION acts on — read from the
+    // token (so an impersonated session reports the opened brand), with display names.
+    const siteId = ctx.claims!.site ?? null, platformId = ctx.claims!.platform ?? null;
+    const names = deps.scopeNames && (siteId || platformId)
+      ? await deps.scopeNames(siteId, platformId).catch(() => ({ siteName: null, platformName: null }))
+      : { siteName: null, platformName: null };
     return {
       userId,
       role: profile?.role ?? ctx.claims!.role ?? "player",
@@ -310,6 +316,10 @@ export function registerAuthRoutes(router: Router, deps: ApiDeps): void {
       phone: profile?.phone ?? null,
       securitySetupRequired,
       mfaSetupRequired,
+      scope: {
+        site: siteId ? { id: siteId, name: names.siteName } : null,
+        platform: platformId ? { id: platformId, name: names.platformName } : null,
+      },
     };
   });
 

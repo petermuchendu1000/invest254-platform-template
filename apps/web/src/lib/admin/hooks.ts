@@ -225,20 +225,20 @@ export function useWithdrawalAction() {
 }
 
 /** Per-brand withdrawal kill switch (0067): read the current state. */
-export function useWithdrawalsEnabled() {
+export function useWithdrawalsEnabled(site?: string) {
   const t = useTok();
   return useQuery({
-    queryKey: ['admin', 'withdrawals-enabled'],
+    queryKey: ['admin', 'withdrawals-enabled', site ?? 'own'],
     enabled: !!t,
-    queryFn: () => adminApi.withdrawalsEnabled(t),
+    queryFn: () => adminApi.withdrawalsEnabled(t, site),
   });
 }
-/** Toggle the per-brand withdrawal kill switch (admin/superadmin). */
-export function useSetWithdrawalsEnabled() {
+/** Toggle the per-brand withdrawal kill switch (brand admin; the owner via Open brand). */
+export function useSetWithdrawalsEnabled(site?: string) {
   const t = useTok();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (enabled: boolean) => adminApi.setWithdrawalsEnabled(t, enabled),
+    mutationFn: (enabled: boolean) => adminApi.setWithdrawalsEnabled(t, enabled, site),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['admin', 'withdrawals-enabled'] });
     },
@@ -333,8 +333,8 @@ export function usePayoutAction() {
   const t = useTok();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (v: { id: string; action: 'approve' | 'reject'; reason?: string }) =>
-      v.action === 'approve' ? adminApi.approvePayout(t, v.id) : adminApi.rejectPayout(t, v.id, v.reason),
+    mutationFn: (v: { id: string; action: 'approve' | 'reject'; reason?: string; password?: string }) =>
+      v.action === 'approve' ? adminApi.approvePayout(t, v.id, v.password ?? '') : adminApi.rejectPayout(t, v.id, v.reason),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['admin', 'payouts'] });
       void qc.invalidateQueries({ queryKey: ['admin', 'overview'] });
@@ -377,15 +377,15 @@ export function useCommissionPayoutAction() {
 }
 
 // ── Game config / seeds ──
-export function useGameConfig() {
+export function useGameConfig(site?: string) {
   const t = useTok();
-  return useQuery({ queryKey: ['admin', 'game-config'], queryFn: () => adminApi.gameConfig(t), enabled: !!t });
+  return useQuery({ queryKey: ['admin', 'game-config', site ?? 'own'], queryFn: () => adminApi.gameConfig(t, site), enabled: !!t });
 }
-export function useUpdateGameConfig() {
+export function useUpdateGameConfig(site?: string) {
   const t = useTok();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (patch: GameConfigPatch) => adminApi.updateGameConfig(t, patch),
+    mutationFn: (patch: GameConfigPatch) => adminApi.updateGameConfig(t, patch, site),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['admin', 'game-config'] });
       void qc.invalidateQueries({ queryKey: ['admin', 'rtp'] });
@@ -412,15 +412,15 @@ export function useSeeds() {
 }
 
 // ── docs/25: daily withdrawal-pool budget ──
-export function useWithdrawalPool(day?: string) {
+export function useWithdrawalPool(day?: string, site?: string) {
   const t = useTok();
-  return useQuery({ queryKey: ['admin', 'withdrawal-pool', day ?? 'today'], queryFn: () => adminApi.withdrawalPool(t, day), enabled: !!t });
+  return useQuery({ queryKey: ['admin', 'withdrawal-pool', day ?? 'today', site ?? 'own'], queryFn: () => adminApi.withdrawalPool(t, day, site), enabled: !!t });
 }
-export function useSetWithdrawalPool() {
+export function useSetWithdrawalPool(site?: string) {
   const t = useTok();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (v: { amountCents?: number; defaultAmountCents?: number; day?: string }) => adminApi.setWithdrawalPool(t, v),
+    mutationFn: (v: { amountCents?: number; defaultAmountCents?: number; day?: string }) => adminApi.setWithdrawalPool(t, v, site),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ['admin', 'withdrawal-pool'] }),
   });
 }
@@ -621,7 +621,7 @@ export function useMarketerStatus(id: string) {
   });
 }
 
-// ── Fly.io machine restart (superadmin only) ──
+// ── Fly.io machine restart (system owner only) ──
 export function useFlyStatus() {
   const t = useTok();
   return useQuery({ queryKey: ['admin', 'fly-status'], queryFn: () => adminApi.flyStatus(t), enabled: !!t });
@@ -652,7 +652,7 @@ export function useBulkPayouts() {
   const t = useTok();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: { action: 'approve' | 'reject'; payoutIds: string[] }) => adminApi.bulkPayouts(t, body),
+    mutationFn: (body: { action: 'approve' | 'reject'; payoutIds: string[]; password?: string }) => adminApi.bulkPayouts(t, body),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['admin', 'payouts'] });
       void qc.invalidateQueries({ queryKey: ['admin', 'overview'] });
