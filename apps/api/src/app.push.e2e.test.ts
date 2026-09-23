@@ -27,7 +27,7 @@ function req(api: TestApi, method: string, path: string, opts: ReqOpts = {}): Pr
   return fetch(`${api.baseUrl}${path}`, init);
 }
 
-const ADMIN = `${TEST_ADMIN}:admin`;
+const ADMIN = `${TEST_ADMIN}:admin:00000000-0000-0000-0000-000000000001`;
 const PLAYER = TEST_USER; // role player, seeded KES 10,000
 const PHONE = "0722000099";
 const SUB = (endpoint: string) => ({ endpoint, keys: { p256dh: "BPp256key", auth: "authsecret" } });

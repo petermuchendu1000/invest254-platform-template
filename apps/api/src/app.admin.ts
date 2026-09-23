@@ -1,4 +1,5 @@
-import { Router, ApiError, requireAuth, requireRole, requireSiteAdmin, rateLimit, assertTargetSiteInScope, adminScopeSite, DEFAULT_SITE_ID, type Ctx } from "./http.js";
+import { Router, ApiError, requireAuth, requireRole, requireSiteAdmin, rateLimit, adminScopeSite, adminListSite, DEFAULT_SITE_ID, type Ctx } from "./http.js";
+import { assertUserTarget } from "./scope.js";
 import type { PageQuery, AdminUserListQuery, AdminWithdrawalListQuery, AdminDepositListQuery, AdminTransactionListQuery, ReportRange, GameConfigPatch, MpesaConfigPatch, AdminPayoutListQuery, AdminUserActivityQuery, UserOverridePatch } from "@invest254/engine";
 import type { ApiDeps } from "./app.js";
 
@@ -93,14 +94,13 @@ async function domain<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 /**
- * Admin write-path per-brand enforcement (docs/22 Task H): a site-scoped admin may only mutate a
- * user in its own brand; a platform admin / platform_superadmin is unrestricted. Resolves the
- * target's brand via the AdminService then defers to the shared HTTP guard (tolerant of an unknown
- * target — the site-aware RPC stays the ultimate guard). Throws SITE_SCOPE_FORBIDDEN (403) on a
- * known cross-brand target.
+ * Per-brand enforcement for every user-addressed admin route, reads AND writes (Issue 1 / F-44).
+ * Uses the single fail-closed tier rule in scope.ts: a site admin may only touch a user of its own
+ * brand (403 SITE_SCOPE_FORBIDDEN), an unknown target is 404 (never "allowed"), the system owner is
+ * unrestricted. Previously reads (detail/activity/overrides) had no check at all.
  */
 async function ensureUserInScope(deps: ApiDeps, ctx: Ctx, userId: string): Promise<void> {
-  assertTargetSiteInScope(ctx, await deps.admin.siteOfUser(userId));
+  await assertUserTarget(ctx, userId, { siteOfUser: (id) => deps.admin.siteOfUser(id), platformOfSite: (s) => deps.platform.platformOfSite(s) });
 }
 
 /** Parse cursor pagination params (limit clamped by the repository). */
@@ -275,15 +275,17 @@ export function registerAdminRoutes(router: Router, deps: ApiDeps): void {
       minWithdrawalsCents: numParam("minWithdrawalsCents"),
       minTurnoverCents: numParam("minTurnoverCents"),
       minBets: numParam("minBets"),
-      // Admin site scope: a token minted for a site operator carries a `site` claim -> only that
-      // brand's users; a platform admin token has no claim -> all brands (docs/22 Task E/H).
-      siteId: ctx.claims?.site,
+      // Admin site scope (Issue 1 / F-43): a site admin -> only its brand's users (fail-closed if the
+      // token lost its site claim); the system owner -> its own site claim, else all brands.
+      siteId: adminListSite(ctx),
     };
     return deps.admin.listUsers(q);
   });
 
-  router.get(`${BASE}/admin/users/:id`, auth, admin, async (ctx: Ctx) =>
-    domain(() => deps.admin.getUserDetail(ctx.params.id!)));
+  router.get(`${BASE}/admin/users/:id`, auth, admin, async (ctx: Ctx) => {
+    await ensureUserInScope(deps, ctx, ctx.params.id!);   // F-44: was unscoped (any brand's PII/balances)
+    return domain(() => deps.admin.getUserDetail(ctx.params.id!));
+  });
 
   // Per-user activity timeline (J7) — deposits + withdrawals + bets, newest-first, keyset-paginated.
   router.get(`${BASE}/admin/users/:id/activity`, auth, admin, async (ctx: Ctx) => {
@@ -291,6 +293,7 @@ export function registerAdminRoutes(router: Router, deps: ApiDeps): void {
     if (kindRaw !== null && kindRaw !== "deposit" && kindRaw !== "withdrawal" && kindRaw !== "bet") {
       throw new ApiError("INVALID_KIND", "kind must be 'deposit', 'withdrawal', or 'bet'", 400);
     }
+    await ensureUserInScope(deps, ctx, ctx.params.id!);   // F-44: was unscoped
     const q: AdminUserActivityQuery = { ...pageQuery(ctx), kind: kindRaw ?? undefined };
     const page = await deps.admin.listUserActivity(ctx.params.id!, q);
     return { items: page.items, nextCursor: page.nextCursor };
@@ -523,11 +526,13 @@ export function registerAdminRoutes(router: Router, deps: ApiDeps): void {
   });
 
   // J8: per-user engine overrides (win rate / auto-sell duration / max multiplier / stake bounds).
-  router.get(`${BASE}/admin/users/:id/overrides`, auth, admin, async (ctx: Ctx) =>
-    (await deps.admin.getUserOverrides(ctx.params.id!)) ?? {
+  router.get(`${BASE}/admin/users/:id/overrides`, auth, admin, async (ctx: Ctx) => {
+    await ensureUserInScope(deps, ctx, ctx.params.id!);   // F-44: was unscoped
+    return (await deps.admin.getUserOverrides(ctx.params.id!)) ?? {
       userId: ctx.params.id!, winRate: null, houseEdge: null, tradeDurationS: null, maxWinMultiplier: null,
       minStakeCents: null, maxStakeCents: null, notes: null, updatedBy: null, updatedAtMs: null,
-    });
+    };
+  });
   // Writing a per-user override is a powerful statistical lever → superadmin-gated (docs/22 Task H).
   // platform_superadmin (rank 5) also satisfies this. The RPC stamps the override with the target's
   // brand (user_overrides.site_id) and writes an admin_actions audit row.
@@ -538,7 +543,7 @@ export function registerAdminRoutes(router: Router, deps: ApiDeps): void {
   });
 
   router.get(`${BASE}/admin/withdrawals`, auth, admin, async (ctx: Ctx) => {
-    const q: AdminWithdrawalListQuery = { ...pageQuery(ctx), status: ctx.query.get("status") ?? undefined, siteId: ctx.claims?.site };
+    const q: AdminWithdrawalListQuery = { ...pageQuery(ctx), status: ctx.query.get("status") ?? undefined, siteId: adminListSite(ctx) };
     return deps.admin.listWithdrawals(q);
   });
 
@@ -549,7 +554,7 @@ export function registerAdminRoutes(router: Router, deps: ApiDeps): void {
   });
 
   router.get(`${BASE}/admin/deposits`, auth, admin, async (ctx: Ctx) => {
-    const q: AdminDepositListQuery = { ...pageQuery(ctx), status: ctx.query.get("status") ?? undefined, siteId: ctx.claims?.site };
+    const q: AdminDepositListQuery = { ...pageQuery(ctx), status: ctx.query.get("status") ?? undefined, siteId: adminListSite(ctx) };
     return deps.admin.listDeposits(q);
   });
 
@@ -565,7 +570,7 @@ export function registerAdminRoutes(router: Router, deps: ApiDeps): void {
       kind: kindRaw ?? undefined,
       status: ctx.query.get("status") ?? undefined,
       q: ctx.query.get("q") ?? undefined,
-      siteId: ctx.claims?.site,
+      siteId: adminListSite(ctx),
     };
     return deps.admin.listTransactions(q);
   });
@@ -597,7 +602,9 @@ export function registerAdminRoutes(router: Router, deps: ApiDeps): void {
     return deps.admin.reportDay(date, adminScopeSite(ctx) ?? undefined);
   });
 
-  router.get(`${BASE}/admin/audit`, auth, admin, async (ctx: Ctx) => deps.admin.listAudit(pageQuery(ctx)));
+  // F-44: the admin audit trail is cross-brand (and, until F-45, mis-attributed by site), so it is
+  // System-owner-only — matching the UI, which already shows it only to the owner.
+  router.get(`${BASE}/admin/audit`, auth, ownerTier, async (ctx: Ctx) => deps.admin.listAudit(pageQuery(ctx)));
 
   // Owner-only System logs (docs/36, BUGLOG #33): the persisted structured request/error/money-path
   // log lines, newest-first, filterable (level, status, q, requestId, since). platform_superadmin only
@@ -682,7 +689,9 @@ export function registerAdminRoutes(router: Router, deps: ApiDeps): void {
   router.get(`${BASE}/admin/config-review`, auth, admin, async (ctx: Ctx) =>
     deps.admin.configChangeReview(adminScopeSite(ctx) ?? "00000000-0000-0000-0000-000000000001", Math.min(200, Math.max(1, Number(ctx.query.get("limit") ?? "50") || 50))));
   // ── M-Pesa configuration (admin reads masked; superadmin edits; secrets write-only) ──────────
-  router.get(`${BASE}/admin/mpesa-config`, auth, admin, async () => domain(() => deps.admin.getMpesaConfig()));
+  // F-44: the global M-Pesa config is owner-tier (it is not any one brand's) — System-owner-only,
+  // matching the UI (the M-Pesa page lives in the owner-only Governance section).
+  router.get(`${BASE}/admin/mpesa-config`, auth, ownerTier, async () => domain(() => deps.admin.getMpesaConfig()));
 
   router.patch(`${BASE}/admin/mpesa-config`, auth, ownerTier, async (ctx: Ctx) => {
     const patch = parseMpesaConfigPatch(ctx);

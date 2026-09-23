@@ -23,7 +23,7 @@ test("onboard: only platform_superadmin may call it", async () => {
   try {
     assert.equal((await req(api, "POST", "/api/v1/platform/onboard", { body: { slug: "x", name: "X" } })).status, 401);
     assert.equal((await req(api, "POST", "/api/v1/platform/onboard", { token: TEST_USER, body: { slug: "x", name: "X" } })).status, 403);
-    assert.equal((await req(api, "POST", "/api/v1/platform/onboard", { token: `${TEST_ADMIN}:admin`, body: { slug: "x", name: "X" } })).status, 403);
+    assert.equal((await req(api, "POST", "/api/v1/platform/onboard", { token: `${TEST_ADMIN}:admin:00000000-0000-0000-0000-000000000001`, body: { slug: "x", name: "X" } })).status, 403);
   } finally { await api.close(); }
 });
 
@@ -89,7 +89,7 @@ test("GET /platform/domains/registrar: superadmin-only; lists domains flagged al
   const api = await startTestApi();
   try {
     assert.equal((await req(api, "GET", "/api/v1/platform/domains/registrar", { token: TEST_USER })).status, 403);
-    assert.equal((await req(api, "GET", "/api/v1/platform/domains/registrar", { token: `${TEST_ADMIN}:admin` })).status, 403);
+    assert.equal((await req(api, "GET", "/api/v1/platform/domains/registrar", { token: `${TEST_ADMIN}:admin:00000000-0000-0000-0000-000000000001` })).status, 403);
     const res = await req(api, "GET", "/api/v1/platform/domains/registrar", { token: SUPER });
     assert.equal(res.status, 200);
     const body = await res.json() as { registrarConfigured: boolean; domains: Array<{ domain: string; alreadyClient: boolean; suggestedSlug: string }> };
@@ -105,7 +105,7 @@ test("GET /platform/domains/registrar: superadmin-only; lists domains flagged al
 test("GET /platform/domains/health: superadmin-only; returns real per-domain Cloudflare status", async () => {
   const api = await startTestApi();
   try {
-    assert.equal((await req(api, "GET", "/api/v1/platform/domains/health", { token: `${TEST_ADMIN}:admin` })).status, 403);
+    assert.equal((await req(api, "GET", "/api/v1/platform/domains/health", { token: `${TEST_ADMIN}:admin:00000000-0000-0000-0000-000000000001` })).status, 403);
     const res = await req(api, "GET", "/api/v1/platform/domains/health", { token: SUPER });
     assert.equal(res.status, 200);
     const body = await res.json() as { configured: boolean; statuses: Record<string, string> };

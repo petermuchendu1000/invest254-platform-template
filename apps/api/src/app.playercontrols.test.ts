@@ -56,7 +56,7 @@ test("superadmin sets/reads per-user overrides; validates ranges; player forbidd
     // a player cannot set overrides (write is superadmin-gated; docs/22 Task H)
     assert.equal((await req(api, "POST", `/api/v1/admin/users/${uid}/overrides`, { token: uid, body: { winRate: 0.2 } })).status, 403);
     // a plain admin also cannot write an override (superadmin-only)
-    assert.equal((await req(api, "POST", `/api/v1/admin/users/${uid}/overrides`, { token: "admin-2:admin", body: { winRate: 0.2 } })).status, 403);
+    assert.equal((await req(api, "POST", `/api/v1/admin/users/${uid}/overrides`, { token: "admin-2:admin:00000000-0000-0000-0000-000000000001", body: { winRate: 0.2 } })).status, 403);
 
     // audited
     const audit = await json(await req(api, "GET", "/api/v1/admin/audit", { token: "admin-1:platform_superadmin" }));
@@ -70,27 +70,27 @@ test("admin adjusts the bonus wallet and clears balances", async () => {
     const uid = await register(api, "0712500002", "bal_target");
 
     // credit the bonus wallet
-    const credit = await req(api, "POST", `/api/v1/admin/wallets/${uid}/adjust`, { token: "fin-1:admin", body: { amountCents: 30000, kind: "bonus", reason: "welcome bonus" } });
+    const credit = await req(api, "POST", `/api/v1/admin/wallets/${uid}/adjust`, { token: "fin-1:admin:00000000-0000-0000-0000-000000000001", body: { amountCents: 30000, kind: "bonus", reason: "welcome bonus" } });
     assert.equal(credit.status, 200);
     const cb = await json(credit);
     assert.equal(cb.kind, "bonus");
     assert.equal(cb.newBalanceCents, 30000);
 
     // credit the real wallet too
-    await req(api, "POST", `/api/v1/admin/wallets/${uid}/adjust`, { token: "fin-1:admin", body: { amountCents: 50000, reason: "manual credit" } });
+    await req(api, "POST", `/api/v1/admin/wallets/${uid}/adjust`, { token: "fin-1:admin:00000000-0000-0000-0000-000000000001", body: { amountCents: 50000, reason: "manual credit" } });
 
     // clear the bonus wallet only
-    const clr = await req(api, "POST", `/api/v1/admin/wallets/${uid}/clear`, { token: "fin-1:admin", body: { kind: "bonus", reason: "expire bonus" } });
+    const clr = await req(api, "POST", `/api/v1/admin/wallets/${uid}/clear`, { token: "fin-1:admin:00000000-0000-0000-0000-000000000001", body: { kind: "bonus", reason: "expire bonus" } });
     assert.equal(clr.status, 200);
     const c = await json(clr);
     assert.equal(c.bonusBalanceCents, 0);
     assert.equal(c.realBalanceCents, 50000, "real wallet untouched when clearing bonus");
 
     // clear requires a reason
-    assert.equal((await req(api, "POST", `/api/v1/admin/wallets/${uid}/clear`, { token: "fin-1:admin", body: { kind: "both" } })).status, 400);
+    assert.equal((await req(api, "POST", `/api/v1/admin/wallets/${uid}/clear`, { token: "fin-1:admin:00000000-0000-0000-0000-000000000001", body: { kind: "both" } })).status, 400);
 
     // both -> zeroes real too
-    const both = await json(await req(api, "POST", `/api/v1/admin/wallets/${uid}/clear`, { token: "fin-1:admin", body: { kind: "both", reason: "reset" } }));
+    const both = await json(await req(api, "POST", `/api/v1/admin/wallets/${uid}/clear`, { token: "fin-1:admin:00000000-0000-0000-0000-000000000001", body: { kind: "both", reason: "reset" } }));
     assert.equal(both.realBalanceCents, 0);
     assert.equal(both.bonusBalanceCents, 0);
   } finally { await api.close(); }

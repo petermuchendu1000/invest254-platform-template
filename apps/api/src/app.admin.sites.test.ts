@@ -13,7 +13,7 @@ const json = (r: Response): Promise<any> => r.json() as Promise<any>;
 const get = (api: TestApi, path: string, token: string) =>
   fetch(`${api.baseUrl}${path}`, { headers: { authorization: `Bearer ${token}` } });
 
-const PLATFORM_ADMIN = `${TEST_ADMIN}:admin`;               // no site claim -> all brands
+const PLATFORM_ADMIN = `${TEST_ADMIN}:platform_superadmin`; // unrestricted operator = the system owner (F-43: a claimless `admin` is refused)
 const ADMIN_A = `${TEST_ADMIN}:admin:${SITE_A}`;            // scoped to brand A
 const ADMIN_B = `${TEST_ADMIN}:admin:${SITE_B}`;            // scoped to brand B
 

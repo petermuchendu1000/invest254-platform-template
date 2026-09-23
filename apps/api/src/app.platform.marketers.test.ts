@@ -20,7 +20,7 @@ function req(api: TestApi, method: string, path: string, o: Opts = {}): Promise<
 }
 
 const PLATFORM = `${TEST_ADMIN}:platform_superadmin`;
-const ADMIN = `${TEST_ADMIN}:admin`;
+const ADMIN = `${TEST_ADMIN}:admin:00000000-0000-0000-0000-000000000001`;
 const SUPERADMIN = `${TEST_ADMIN}:platform_superadmin`;
 
 test("every marketer-rollup route is platform_superadmin-gated", async () => {

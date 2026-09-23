@@ -5,3 +5,8 @@ dist/
 .env.local
 coverage/
 __pycache__/
+# Never commit env files with real values (BUGLOG #41). Only *.example templates are tracked.
+*.env
+.env.*
+!.env.example
+!**/.env.example

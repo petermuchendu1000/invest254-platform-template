@@ -31,7 +31,7 @@ function req(api: TestApi, method: string, path: string, o: Opts = {}): Promise<
 
 const OWNER = TEST_ADMIN;
 const PLATFORM = `${OWNER}:platform_superadmin`;              // the owner's own session (no site claim)
-const ADMIN = `${OWNER}:admin`;
+const ADMIN = `${OWNER}:admin:00000000-0000-0000-0000-000000000001`;
 // A platform admin of SITE_A's platform (harness default platform owns SITE_A), and one of a DIFFERENT
 // platform — used to prove scope + the leak fix (a platform admin is fenced, never escalated).
 const DEFAULT_PLATFORM = "10000000-0000-0000-0000-000000000001";

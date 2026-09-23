@@ -53,7 +53,7 @@ test("withdrawal-pool is isolated per brand and per day", async () => {
 test("withdrawal-pool: only superadmin+ may set; a plain admin is forbidden", async () => {
   const api = await startTestApi();
   try {
-    const res = await req(api, "PUT", `/api/v1/admin/withdrawal-pool?site=${SITE_A}`, { token: "a:admin", body: { amountCents: 100000, day: DAY } });
+    const res = await req(api, "PUT", `/api/v1/admin/withdrawal-pool?site=${SITE_A}`, { token: "a:admin:00000000-0000-0000-0000-000000000001", body: { amountCents: 100000, day: DAY } });
     assert.equal(res.status, 403);
   } finally { await api.close(); }
 });

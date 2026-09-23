@@ -21,7 +21,7 @@ async function register(api: TestApi, phone: string, username: string, body: Rec
   return (await json(res)).userId as string;
 }
 
-const ADMIN = `${TEST_ADMIN}:admin`;
+const ADMIN = `${TEST_ADMIN}:admin:00000000-0000-0000-0000-000000000001`;
 
 // ───────────────────────────────── withdrawals bulk ─────────────────────────────────
 test("POST /admin/withdrawals/bulk: multi-approve, partial success, idempotent, auth+validation", async () => {
@@ -38,15 +38,18 @@ test("POST /admin/withdrawals/bulk: multi-approve, partial success, idempotent, 
     assert.equal((await req(api, "POST", "/api/v1/admin/withdrawals/bulk", { token: ADMIN, body: { action: "approve", txIds: [] } })).status, 400);
     assert.equal((await req(api, "POST", "/api/v1/admin/withdrawals/bulk", { token: ADMIN, body: { action: "nope", txIds: [id1] } })).status, 400);
 
-    // bulk approve both + a bogus id. Approve is TOLERANT: an unknown/non-pending tx is a safe
-    // no-op (row ok:true, approved:false), not a hard error — so all rows succeed at the row level.
+    // bulk approve both + a bogus id. A REAL non-pending tx is still a safe no-op (idempotency, below),
+    // but an UNKNOWN id now fails its row: target scope is fail-closed (Issue 1 / F-44) — an unresolvable
+    // target is never passed through to the money RPC. The real rows still succeed (partial success).
     const res = await req(api, "POST", "/api/v1/admin/withdrawals/bulk", { token: ADMIN, body: { action: "approve", txIds: [id1, id2, "bogus-id", id1] } });
     assert.equal(res.status, 200);
     const body = await json(res);
     assert.equal(body.total, 3, "dedup drops the repeat id");
-    assert.equal(body.okCount, 3);
+    assert.equal(body.okCount, 2);
+    assert.equal(body.failCount, 1);
     assert.equal(body.results.find((r: any) => r.id === id1).result.approved, true, "a real pending row is approved");
-    assert.equal(body.results.find((r: any) => r.id === "bogus-id").result.approved, false, "unknown id is a safe no-op");
+    const bogus = body.results.find((r: any) => r.id === "bogus-id");
+    assert.equal(bogus.ok, false, "an unknown id fails its row (fail-closed scope)");
 
     // idempotent: re-approving an already-approved withdrawal succeeds at the row level with approved:false
     const again = await json(await req(api, "POST", "/api/v1/admin/withdrawals/bulk", { token: ADMIN, body: { action: "approve", txIds: [id1] } }));
@@ -72,7 +75,7 @@ async function seedPayout(api: TestApi, affPhone: string, refPhone: string, affN
   const code: string = (await json(await req(api, "POST", "/api/v1/affiliate/enroll", { token: affId }))).referralCode;
   const refId = await register(api, refPhone, refName, { referral_code: code });
   api.identity.recordSettledPlay(refId, "2026-06-10", 10000, 2500); // GGR 7500 -> commission 1500
-  await req(api, "POST", "/api/v1/admin/affiliate/accrue", { token: `${affId}:admin`, body: { date: "2026-06-10" } });
+  await req(api, "POST", "/api/v1/admin/affiliate/accrue", { token: `${affId}:admin:00000000-0000-0000-0000-000000000001`, body: { date: "2026-06-10" } });
   const payout = await json(await req(api, "POST", "/api/v1/affiliate/payouts", { token: `${affId}:marketer` }));
   return { affId, payoutId: payout.payoutId, amountCents: payout.amountCents };
 }

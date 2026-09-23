@@ -20,7 +20,7 @@ const post = (api: TestApi, path: string, token: string, body?: unknown) =>
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
 
-const PLATFORM_ADMIN = `${TEST_ADMIN}:admin`;                 // no site claim -> all brands
+const PLATFORM_ADMIN = `${TEST_ADMIN}:platform_superadmin`;   // unrestricted operator = the system owner (F-43: a claimless `admin` is refused)
 const ADMIN_A = `${TEST_ADMIN}:admin:${SITE_A}`;              // scoped to brand A (the default brand)
 const ADMIN_B = `${TEST_ADMIN}:admin:${SITE_B}`;             // scoped to brand B
 const SUPERADMIN_B = `${TEST_ADMIN}:platform_superadmin:${SITE_B}`;   // site-scoped superadmin (brand B)

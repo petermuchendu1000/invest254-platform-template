@@ -1,5 +1,6 @@
 import type { Cents } from "@invest254/shared";
-import { Router, ApiError, requireAuth, requireRole, requireSiteAdmin, requireSite, rateLimit, restrictToCidrs, assertTargetSiteInScope, type Ctx, type Middleware } from "./http.js";
+import { Router, ApiError, requireAuth, requireRole, requireSiteAdmin, requireSite, rateLimit, restrictToCidrs, type Ctx, type Middleware } from "./http.js";
+import { assertSiteTarget } from "./scope.js";
 import type { ApiDeps } from "./app.js";
 import { requireApprovalPassword } from "./approvalgate.js";
 
@@ -368,14 +369,16 @@ export function registerProtectedRoutes(router: Router, deps: ApiDeps): void {
   // platform admin / platform_superadmin is unrestricted. The target is a transaction id, so its
   // brand is resolved via the AdminService (tolerant of an unknown tx — the RPC stays the guard).
   const admin = requireSiteAdmin("admin");
+  // F-44: strict, fail-closed target scope for id-addressed withdrawal moderation (scope.ts).
+  const strictScope = { platformOfSite: (s: string) => deps.platform.platformOfSite(s) };
   router.post(`${BASE}/admin/withdrawals/:id/approve`, auth, admin, async (ctx: Ctx) => {
     await requireApprovalPassword(ctx, deps.verifyApprovalPassword); // system owner password gate (Issue 1)
-    assertTargetSiteInScope(ctx, await deps.admin.siteOfTransaction(ctx.params.id!));
+    await assertSiteTarget(ctx, await deps.admin.siteOfTransaction(ctx.params.id!), strictScope);   // F-44: fail-closed (unresolved -> 404)
     return domain(() => deps.payments.approveWithdrawal(ctx.params.id!, ctx.claims!.userId), ctx);
   });
 
   router.post(`${BASE}/admin/withdrawals/:id/reject`, auth, admin, async (ctx: Ctx) => {
-    assertTargetSiteInScope(ctx, await deps.admin.siteOfTransaction(ctx.params.id!));
+    await assertSiteTarget(ctx, await deps.admin.siteOfTransaction(ctx.params.id!), strictScope);   // F-44: fail-closed (unresolved -> 404)
     return domain(() => deps.payments.rejectWithdrawal(ctx.params.id!, ctx.claims!.userId), ctx);
   });
 
@@ -387,7 +390,7 @@ export function registerProtectedRoutes(router: Router, deps: ApiDeps): void {
   // failed/reversed row (that money was returned — paying again would double-pay).
   router.post(`${BASE}/admin/withdrawals/:id/mark-paid`, auth, admin, async (ctx: Ctx) => {
     await requireApprovalPassword(ctx, deps.verifyApprovalPassword);
-    assertTargetSiteInScope(ctx, await deps.admin.siteOfTransaction(ctx.params.id!));
+    await assertSiteTarget(ctx, await deps.admin.siteOfTransaction(ctx.params.id!), strictScope);   // F-44: fail-closed (unresolved -> 404)
     const body = ctx.body && typeof ctx.body === "object" ? (ctx.body as Record<string, unknown>) : {};
     const receipt = typeof body.receipt === "string" && body.receipt.trim() ? body.receipt.trim() : null;
     return domain(() => deps.payments.markWithdrawalPaid(ctx.params.id!, ctx.claims!.userId, receipt), ctx);
@@ -408,7 +411,7 @@ export function registerProtectedRoutes(router: Router, deps: ApiDeps): void {
     if (txIds.length > 200) throw new ApiError("VALIDATION", "at most 200 withdrawals per bulk action", 400);
     const results = await Promise.all(txIds.map(async (id) => {
       try {
-        assertTargetSiteInScope(ctx, await deps.admin.siteOfTransaction(id));
+        await assertSiteTarget(ctx, await deps.admin.siteOfTransaction(id), strictScope);   // F-44: fail-closed (unresolved -> 404)
         const result = action === "approve"
           ? await deps.payments.approveWithdrawal(id, ctx.claims!.userId)
           : await deps.payments.rejectWithdrawal(id, ctx.claims!.userId);

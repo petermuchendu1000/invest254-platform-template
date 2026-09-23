@@ -1,4 +1,5 @@
-import { Router, ApiError, requireAuth, requireRole, requireSiteAdmin, rateLimit, adminScopeSite, type Ctx } from "./http.js";
+import { Router, ApiError, requireAuth, requireRole, requireSiteAdmin, rateLimit, adminScopeSite, DEFAULT_SITE_ID, type Ctx } from "./http.js";
+import { assertSiteTarget } from "./scope.js";
 import type { ApiDeps } from "./app.js";
 import { mpesaCode, mpesaReceivedMessage, mpesaSentMessage, ksh } from "./mpesa.js";
 
@@ -254,6 +255,16 @@ export function registerMarketerRoutes(router: Router, deps: ApiDeps): void {
   const auth = requireAuth(deps.verifier);
   const admin = requireSiteAdmin("admin");
   const marketer = requireMarketer(deps);
+  // F-44: every id-addressed admin marketer route resolves the marketer's brand and applies the
+  // single fail-closed tier rule (scope.ts). Before this, a site admin of ANY brand could read, credit,
+  // withdraw, re-PIN (account takeover) or disable a marketer of any other brand on any platform.
+  const scope = { platformOfSite: (sid: string) => deps.platform.platformOfSite(sid) };
+  const marketerInScope = async (ctx: Ctx, id: string): Promise<MarketerProfile> => {
+    const p = await deps.marketers.profile(id);
+    if (!p) throw new ApiError("MARKETER_NOT_FOUND", "marketer not found", 404);
+    await assertSiteTarget(ctx, p.site_id ?? DEFAULT_SITE_ID, scope);
+    return p;
+  };
   const loginLimit = rateLimit({ name: "marketer-login", by: "ip", limit: Number(process.env.RATE_LIMIT_AUTH_PER_MIN) || 40, windowMs: 60_000 });
   // Self-service demo top-up: modest abuse guard (the RPC is idempotent + capped, so this is belt-and-braces).
   const demoTopupLimit = rateLimit({ name: "marketer-demo-topup", by: "ip", limit: 30, windowMs: 60_000 });
@@ -270,6 +281,7 @@ export function registerMarketerRoutes(router: Router, deps: ApiDeps): void {
 
   // Edit an existing marketer's name and/or phone (admin/superadmin). Per-brand phone-unique.
   router.patch(`${BASE}/admin/marketers/:id`, auth, admin, async (ctx: Ctx) => {
+    await marketerInScope(ctx, idOf(ctx));   // F-44
     const b = bodyObj(ctx);
     const name = typeof b.name === "string" ? b.name : null;
     const phone = typeof b.phone === "string" ? b.phone : null;
@@ -293,14 +305,11 @@ export function registerMarketerRoutes(router: Router, deps: ApiDeps): void {
     domain(() => deps.marketers.list(limitOf(ctx), adminScopeSite(ctx) ?? undefined)));
 
   // Single marketer profile.
-  router.get(`${BASE}/admin/marketers/:id`, auth, admin, async (ctx: Ctx) => {
-    const p = await domain(() => deps.marketers.profile(idOf(ctx)));
-    if (!p) throw new ApiError("MARKETER_NOT_FOUND", "marketer not found", 404);
-    return p;
-  });
+  router.get(`${BASE}/admin/marketers/:id`, auth, admin, async (ctx: Ctx) => marketerInScope(ctx, idOf(ctx)));   // F-44
 
   // Pay a marketer (credit). Idempotent when `ref` is supplied.
   router.post(`${BASE}/admin/marketers/:id/credit`, auth, admin, async (ctx: Ctx) => {
+    await marketerInScope(ctx, idOf(ctx));   // F-44
     const b = bodyObj(ctx);
     const balanceCents = await domain(() =>
       deps.marketers.credit(idOf(ctx), reqPositiveCents(b), optStr(b, "ref"), b.meta ?? {}));
@@ -309,6 +318,7 @@ export function registerMarketerRoutes(router: Router, deps: ApiDeps): void {
 
   // Withdraw from a marketer. Blocks overdraw; idempotent when `ref` is supplied.
   router.post(`${BASE}/admin/marketers/:id/withdraw`, auth, admin, async (ctx: Ctx) => {
+    await marketerInScope(ctx, idOf(ctx));   // F-44
     const b = bodyObj(ctx);
     return domain(() =>
       deps.marketers.withdraw(idOf(ctx), reqPositiveCents(b), optStr(b, "ref"), b.meta ?? {}, optStr(b, "method") ?? "internal"));
@@ -316,19 +326,23 @@ export function registerMarketerRoutes(router: Router, deps: ApiDeps): void {
 
   // Admin sets Available Fuliza for a marketer.
   router.patch(`${BASE}/admin/marketers/:id/fuliza`, auth, admin, async (ctx: Ctx) => {
+    await marketerInScope(ctx, idOf(ctx));   // F-44
     const availableFulizaCents = await domain(() => deps.marketers.setFuliza(idOf(ctx), reqNonNegCents(bodyObj(ctx))));
     return { availableFulizaCents };
   });
 
   // Admin sets airtime balance for a marketer.
   router.patch(`${BASE}/admin/marketers/:id/airtime`, auth, admin, async (ctx: Ctx) => {
+    await marketerInScope(ctx, idOf(ctx));   // F-44
     const airtimeBalanceCents = await domain(() => deps.marketers.setAirtime(idOf(ctx), reqNonNegCents(bodyObj(ctx))));
     return { airtimeBalanceCents };
   });
 
   // Marketer ledger statement (newest-first).
-  router.get(`${BASE}/admin/marketers/:id/statement`, auth, admin, async (ctx: Ctx) =>
-    domain(() => deps.marketers.statement(idOf(ctx), limitOf(ctx))));
+  router.get(`${BASE}/admin/marketers/:id/statement`, auth, admin, async (ctx: Ctx) => {
+    await marketerInScope(ctx, idOf(ctx));   // F-44
+    return domain(() => deps.marketers.statement(idOf(ctx), limitOf(ctx)));
+  });
 
   // ── Marketer self-service auth (phone + PIN) ───────────────────────────────
   // Login: returns a marketer-role JWT + the caller's profile. Generic 401 on any failure.
@@ -346,8 +360,9 @@ export function registerMarketerRoutes(router: Router, deps: ApiDeps): void {
     const siteId = await resolveSiteId(ctx, b, deps);
     const id = await domain(() => deps.marketers.login(phone, pin, siteId));
     if (!id) throw new ApiError("INVALID_CREDENTIALS", "invalid phone or PIN", 401);
-    const token = await deps.auth.issueToken(id, "marketer");
     const marketerProfile = await deps.marketers.profile(id);
+    // Issue 1 / F-43: bind the marketer-app session to the marketer's brand (site claim).
+    const token = await deps.auth.issueToken(id, "marketer", marketerProfile?.site_id ?? undefined);
     return { token, marketer: marketerProfile };
   });
 
@@ -401,7 +416,8 @@ export function registerMarketerRoutes(router: Router, deps: ApiDeps): void {
     if (profile.status !== "active") throw new ApiError("MARKETER_INACTIVE", `marketer is ${profile.status}`, 403);
 
     // 3) Mint a marketer-scoped token (subject = marketer id, as requireMarketer/me expect).
-    const token = await deps.auth.issueToken(profile.id, "marketer");
+    // Issue 1 / F-43: bind the marketer-app session to the marketer's brand (site claim).
+    const token = await deps.auth.issueToken(profile.id, "marketer", profile.site_id ?? undefined);
     return { token, marketer: profile };
   });
 
@@ -437,12 +453,14 @@ export function registerMarketerRoutes(router: Router, deps: ApiDeps): void {
   // ── Admin lifecycle (onboarding + demotion/suspension) ─────────────────────
   // Set/reset a marketer's PIN (onboarding or admin recovery — no self-service reset).
   router.post(`${BASE}/admin/marketers/:id/pin`, auth, admin, async (ctx: Ctx) => {
+    await marketerInScope(ctx, idOf(ctx));   // F-44
     await domain(() => deps.marketers.setPin(idOf(ctx), reqPin(bodyObj(ctx), "pin")));
     return { ok: true };
   });
 
   // Set status: active | suspended | disabled. 'disabled'/'suspended' = demotion (blocks login + /me).
   router.patch(`${BASE}/admin/marketers/:id/status`, auth, admin, async (ctx: Ctx) => {
+    await marketerInScope(ctx, idOf(ctx));   // F-44
     const status = await domain(() => deps.marketers.setStatus(idOf(ctx), reqStr(bodyObj(ctx), "status")));
     return { status };
   });
@@ -471,7 +489,8 @@ export function registerMarketerRoutes(router: Router, deps: ApiDeps): void {
       throw new ApiError("VALIDATION", "action must be one of: activate, suspend, disable, credit", 400);
     }
     const results = await Promise.all(ids.map(async (id) => {
-      try { return { id, ok: true, result: await run(id) }; }
+      // F-44: scope-checked per target, so a cross-brand id fails just that row (partial success).
+      try { await marketerInScope(ctx, id); return { id, ok: true, result: await run(id) }; }
       catch (e) { return { id, ok: false, error: (e as { message?: string })?.message ?? "ERROR" }; }
     }));
     const okCount = results.filter((r) => r.ok).length;

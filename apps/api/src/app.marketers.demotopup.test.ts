@@ -14,7 +14,7 @@ function req(api: TestApi, method: string, path: string, o: { token?: string; bo
   if (o.body !== undefined) { headers["content-type"] = "application/json"; init.body = JSON.stringify(o.body); }
   return fetch(`${api.baseUrl}${path}`, init);
 }
-const ADMIN = "u-admin:admin";
+const ADMIN = "u-admin:admin:00000000-0000-0000-0000-000000000001";
 const PLAYER = "u-player:player";
 const mtok = (id: string) => `${id}:marketer`;
 const CAP = 10_000_000; // default MARKETER_DEMO_TOPUP_CAP_CENTS (KES 100,000)

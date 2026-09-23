@@ -12,7 +12,7 @@ function req(api: TestApi, method: string, path: string, opts: { token?: string;
 }
 const PLAYER = TEST_USER;
 const PLATFORM = `${TEST_ADMIN}:platform_superadmin`;
-const ADMIN = `${TEST_ADMIN}:admin`;
+const ADMIN = `${TEST_ADMIN}:admin:00000000-0000-0000-0000-000000000001`;
 
 // ── player: provider discovery + Mega Pay deposit lifecycle ───────────────────────────────────────
 test("GET /deposits/providers → lists the brand's enabled gateways", async () => {

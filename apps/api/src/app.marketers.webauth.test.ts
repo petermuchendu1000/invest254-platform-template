@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { startTestApi, type TestApi } from "./testutil.js";
+import { startTestApi, SITE_B, type TestApi } from "./testutil.js";
 
 /**
  * E2E for the app's website-credential login (POST /marketers/auth/login-web): a marketer signs in
@@ -19,7 +19,7 @@ function req(api: TestApi, method: string, path: string, opts: ReqOpts = {}): Pr
   return fetch(`${api.baseUrl}${path}`, init);
 }
 
-const ADMIN = "u-admin:admin";
+const ADMIN = "u-admin:admin:00000000-0000-0000-0000-000000000001";
 
 /** Create the invest254 website account (phone + password) the marketer will log in with. */
 async function registerWebsiteAccount(api: TestApi, phone: string, username: string, password: string): Promise<void> {
@@ -52,7 +52,11 @@ test("anyBrand login-web: an OLDER soft-DELETED same-phone account never shadows
     await registerWebsiteAccount(api, PHONE, "jake", PW);
     const marketerId = await createMarketer(api, "Jake Ochieng", PHONE);
     // 3) Soft-delete the older brand-B account (status='deleted').
-    const del = await req(api, "POST", `/api/v1/admin/users/${deletedUserId}/delete`, { token: ADMIN });
+    // Issue 1 / F-43: the deleted account lives on brand B, so brand B's own admin deletes it (a brand-A
+    // admin is refused — cross-brand writes are out of scope).
+    assert.equal((await req(api, "POST", `/api/v1/admin/users/${deletedUserId}/delete`, { token: ADMIN })).status, 403,
+      "a brand-A site admin must not delete a brand-B account");
+    const del = await req(api, "POST", `/api/v1/admin/users/${deletedUserId}/delete`, { token: `u-admin:admin:${SITE_B}` });
     assert.equal(del.status, 200, "older account soft-deleted");
     // 4) login-web must skip the deleted shadow and resolve the active marketer (was 401 before the fix).
     const res = await loginWeb(api, PHONE, PW);

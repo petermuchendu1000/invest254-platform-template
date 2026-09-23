@@ -7,7 +7,7 @@ import { startTestApi, TEST_USER, TEST_ADMIN, SITE_B, type TestApi } from "./tes
  * the system owner password; a wrong/absent password is refused (403). Reject is NOT gated.
  */
 const json = (r: Response) => r.json() as Promise<any>;
-const ADMIN = `${TEST_ADMIN}:admin`;
+const ADMIN = `${TEST_ADMIN}:admin:00000000-0000-0000-0000-000000000001`;
 const PASSWORD = "sup3r-secret";
 
 async function harness(): Promise<TestApi> {

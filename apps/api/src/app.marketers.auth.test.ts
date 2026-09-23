@@ -13,7 +13,7 @@ function req(api: TestApi, method: string, path: string, opts: ReqOpts = {}): Pr
   return fetch(`${api.baseUrl}${path}`, init);
 }
 
-const ADMIN = "u-admin:admin";
+const ADMIN = "u-admin:admin:00000000-0000-0000-0000-000000000001";
 const PLAYER = "u-player:player";
 
 /** Admin creates a marketer + sets a PIN; returns its id. */

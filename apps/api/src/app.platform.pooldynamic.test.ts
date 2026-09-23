@@ -17,7 +17,7 @@ function req(api: TestApi, method: string, path: string, o: { token?: string; bo
   return fetch(`${api.baseUrl}${path}`, init);
 }
 const PLATFORM = `${TEST_ADMIN}:platform_superadmin`;
-const ADMIN = `${TEST_ADMIN}:admin`;
+const ADMIN = `${TEST_ADMIN}:admin:00000000-0000-0000-0000-000000000001`;
 
 test("pool demand preview: returns per-brand rows; zero demand ⇒ nothing suggested, all reserved", async () => {
   const api = await startTestApi();

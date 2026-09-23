@@ -14,7 +14,7 @@
 | Cross‑tenant "missing platform claim = unrestricted" hole (#38) | ✅ FIXED & LIVE | `adminScopePlatform()` throws `PLATFORM_CLAIM_MISSING`; `assertTargetPlatformInScope()` refuses unresolved targets. |
 | PrivEsc: anon/authenticated executing admin `fn_*` with spoofed `p_actor_role` (#39) | ✅ FIXED & LIVE | Live grant check: **anon/authenticated can EXECUTE 0 of 152 SECURITY DEFINER fns**. Spot‑checked `fn_admin_adjust_balance`, `fn_admin_set_user_role`, `fn_platform_appoint_platform_admin`, `fn_admin_delete_user` → all `anon=no, authenticated=no`. |
 | Direct PostgREST writes to money/PII | ✅ deny‑all | 70 RLS tables; money/PII tables have **only SELECT** policies (no INSERT/UPDATE/DELETE for `authenticated`) → writes only via `service_role` RPCs. |
-| `sites` / `platforms` / `marketers` direct read | ✅ deny‑all | RLS enabled, **0 policies** → invisible to anon/authenticated; served via API (`service_role`). |
+| `sites` / `platforms` / `marketers` direct read | ⚠️ **CORRECTED 2026‑09‑23 (BUGLOG #42)** | No migration ever enabled RLS on these (or on 33 other tables), and all 14 views ran as owner. Under Supabase default privileges the anon key could read **and write** them. Closed by migration `0153` (RLS everywhere, invoker views, least‑privilege grants) + CI guard `packages/db/migrations.guard.test.ts`. |
 
 **Conclusion:** the platform‑isolation core is sound and the two most recent critical leaks are closed in
 production. The remaining work is **structural cleanliness** (the role model the user asked for), not an

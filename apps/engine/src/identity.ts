@@ -20,6 +20,9 @@ export interface CredentialRecord { userId: string; role: string; status: string
 /** Profile state for the `/me` view. */
 export interface ProfileRow {
   userId: string; username: string; phone: string; role: string; status: string;
+  /** The account's brand (profiles.site_id) and, for a platform_admin, its platform (profiles.platform_id).
+   *  Read LIVE so every re-minted session token carries its holder's scope (Issue 1 / F-43). */
+  siteId: string | null; platformId: string | null;
 }
 
 /** An affiliate (marketer) enrollment: the stable referral code + commission terms + current role. */
@@ -413,13 +416,14 @@ export class PgIdentityRepository implements IdentityRepository, AffiliateReposi
   }
   async getProfile(userId: string): Promise<ProfileRow | null> {
     const r = await this.q.query(
-      "select id, username, phone, role, status from profiles where id = $1", [userId]);
+      "select id, username, phone, role, status, site_id, platform_id from profiles where id = $1", [userId]);
     if (!r.rows.length) return null;
     return this.rowToProfile(r.rows[0]);
   }
   private rowToProfile(x: Record<string, unknown>): ProfileRow {
     return {
       userId: String(x.id), username: String(x.username), phone: String(x.phone), role: String(x.role), status: String(x.status),
+      siteId: x.site_id == null ? null : String(x.site_id), platformId: x.platform_id == null ? null : String(x.platform_id),
     };
   }
   async setSecurityAnswers(userId: string, answers: SecurityAnswerHash[]): Promise<void> {
@@ -461,6 +465,8 @@ export class PgIdentityRepository implements IdentityRepository, AffiliateReposi
 interface MemUser {
   userId: string; phone: string; username: string; role: string; status: string;
   passwordHash: string; referredBy: string | null; createdAtMs: number; siteId: string | null;
+  /** profiles.platform_id — set only for a platform_admin (see setPlatformId). */
+  platformId?: string | null;
 }
 
 /** Per-site identity key so the same phone/username can exist on different brands. */
@@ -732,13 +738,23 @@ export class InMemoryIdentityRepository implements IdentityRepository, Affiliate
     for (const c of this.commissions) if (c.payoutId === payoutId && c.status === "accrued") c.payoutId = null; // release
     return true;
   }
-  // The in-memory mirror doesn't track a payout's brand, so it can't resolve one — return null,
-  // which the write-path guard treats as "don't block" (the site-aware RPC is the real guard).
-  async siteOfPayout(_payoutId: string): Promise<string | null> { return null; }
+  // A payout's brand is its affiliate's brand (as affiliate_payouts.site_id is in Postgres), so the
+  // strict write-path guard (Issue 1 / F-44) resolves real payouts and 404s unknown ones.
+  async siteOfPayout(payoutId: string): Promise<string | null> {
+    const p = this.payouts.get(payoutId);
+    if (!p) return null;
+    return this.byId.get(p.affiliateId)?.siteId ?? "00000000-0000-0000-0000-000000000001";
+  }
   private toProfile(u: MemUser): ProfileRow {
     return {
       userId: u.userId, username: u.username, phone: u.phone, role: u.role, status: u.status,
+      siteId: u.siteId ?? null, platformId: u.platformId ?? null,
     };
+  }
+  /** Test seam: bind an account to a platform (profiles.platform_id), as appointing a platform_admin does. */
+  setPlatformId(userId: string, platformId: string | null): void {
+    const u = this.byId.get(userId);
+    if (u) u.platformId = platformId;
   }
   /** Test seam: flip an account's status (active | suspended | banned). */
   setStatus(phone: string, status: string): void {

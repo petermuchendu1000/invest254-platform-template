@@ -88,7 +88,12 @@ export interface AuthSession { token: string; userId: string; role: string; site
 /** Profile view returned by `/me`. */
 export interface Profile {
   userId: string; username: string; phone: string; role: string; status: string;
+  /** Live scope (profiles.site_id / profiles.platform_id) — see issueSessionToken. */
+  siteId?: string | null; platformId?: string | null;
 }
+
+/** A freshly minted session token plus the scope it carries. */
+export interface ScopedSession { token: string; role: string; site?: string; platform?: string; }
 
 export interface AuthServiceOptions {
   /** HS256 signing secret. Use the same value as SUPABASE_JWT_SECRET so makeVerifier accepts the token. */
@@ -134,6 +139,24 @@ export class AuthService {
     this.mfaRoles = new Set(opts.mfaRequiredRoles ?? ["admin", "platform_admin", "platform_superadmin"]);
     this.mfaIssuer = opts.mfaIssuer ?? "Invest254";
     this.allowUnverifiedReset = opts.allowUnverifiedPasswordReset ?? false;
+  }
+
+  /**
+   * THE choke point for re-minting a session for an existing account (Issue 1 / F-43, invariant S1:
+   * "every token carries its holder's scope"). Reads the LIVE profile and stamps role + `site` +
+   * (platform_admin) `platform`, exactly as login does. Re-mint paths (token refresh after a role
+   * change, affiliate enrolment) MUST use this instead of `issueToken(userId, role)`: dropping the
+   * claims turned a site admin into an unrestricted, every-brand admin (adminScopeSite: missing
+   * site => null => unrestricted), and a platform admin into a locked-out claimless token.
+   * Throws NOT_FOUND for an unknown account.
+   */
+  async issueSessionToken(userId: string): Promise<ScopedSession> {
+    const p = await this.repo.getProfile(userId);
+    if (!p) throw new Error("NOT_FOUND");
+    const site = p.siteId ?? undefined;
+    const platform = p.platformId ?? undefined;
+    const token = await this.issueToken(userId, p.role, site, platform);
+    return { token, role: p.role, ...(site ? { site } : {}), ...(platform ? { platform } : {}) };
   }
 
   /** Sign an HS256 JWT compatible with makeVerifier (sub = userId, `role` + optional `site` claims). */

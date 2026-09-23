@@ -43,14 +43,14 @@ test("marketer advances (0122): request -> admin approve logs an 'advance' expen
     // The marketer sees their own request; the admin queue lists it.
     const mine = await json(await req(api, "GET", "/api/v1/affiliate/advances", { token: mk }));
     assert.equal(mine.items.length, 1);
-    const queue = await json(await req(api, "GET", "/api/v1/admin/affiliate/advances?status=requested", { token: "admin-1:admin" }));
+    const queue = await json(await req(api, "GET", "/api/v1/admin/affiliate/advances?status=requested", { token: "admin-1:admin:00000000-0000-0000-0000-000000000001" }));
     assert.ok(queue.items.some((x: any) => x.id === adv.id), "admin queue shows the pending request");
 
     // A marketer token cannot decide (admin-gated).
     assert.equal((await req(api, "POST", `/api/v1/admin/affiliate/advances/${adv.id}/approve`, { token: mk })).status, 403);
 
     // ── Approve -> status approved, an 'advance' expense is logged (nets withdrawable), marketer notified ─
-    const appr = await req(api, "POST", `/api/v1/admin/affiliate/advances/${adv.id}/approve`, { token: "admin-1:admin", body: { note: "Recover from November commission" } });
+    const appr = await req(api, "POST", `/api/v1/admin/affiliate/advances/${adv.id}/approve`, { token: "admin-1:admin:00000000-0000-0000-0000-000000000001", body: { note: "Recover from November commission" } });
     assert.equal(appr.status, 200);
     assert.equal((await json(appr)).status, "approved");
 
@@ -63,11 +63,11 @@ test("marketer advances (0122): request -> admin approve logs an 'advance' expen
     assert.ok(notifs.items.some((n: any) => n.category === "advance" && /approved/i.test(n.title)), "marketer notified of approval");
 
     // Re-deciding a settled request is rejected (409).
-    assert.equal((await req(api, "POST", `/api/v1/admin/affiliate/advances/${adv.id}/approve`, { token: "admin-1:admin" })).status, 409);
+    assert.equal((await req(api, "POST", `/api/v1/admin/affiliate/advances/${adv.id}/approve`, { token: "admin-1:admin:00000000-0000-0000-0000-000000000001" })).status, 409);
 
     // ── Reject a fresh request -> no expense logged; marketer notified with the reason ───────────
     const r2 = await json(await req(api, "POST", "/api/v1/affiliate/advances", { token: mk, body: { amountCents: 12_000 } }));
-    const rej = await req(api, "POST", `/api/v1/admin/affiliate/advances/${r2.id}/reject`, { token: "admin-1:admin", body: { note: "Not this month" } });
+    const rej = await req(api, "POST", `/api/v1/admin/affiliate/advances/${r2.id}/reject`, { token: "admin-1:admin:00000000-0000-0000-0000-000000000001", body: { note: "Not this month" } });
     assert.equal(rej.status, 200);
     assert.equal((await json(rej)).status, "rejected");
     assert.equal((await json(await req(api, "GET", "/api/v1/affiliate/expenses", { token: mk }))).totalCents, 30_000, "reject logs no expense");

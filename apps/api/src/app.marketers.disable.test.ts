@@ -11,7 +11,7 @@ import { startTestApi, TEST_ADMIN, type TestApi } from "./testutil.js";
  * a 403 clears the session and bounces to the sign-in screen.
  */
 const json = (r: Response): Promise<any> => r.json() as Promise<any>;
-const ADMIN = `${TEST_ADMIN}:admin`;
+const ADMIN = `${TEST_ADMIN}:admin:00000000-0000-0000-0000-000000000001`;
 const mtok = (id: string) => `${id}:marketer`;
 
 function req(api: TestApi, method: string, path: string, token?: string, body?: unknown): Promise<Response> {

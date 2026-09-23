@@ -46,7 +46,7 @@ export interface HandlerResult { status?: number; body: unknown; }
 export type Handler = (ctx: Ctx) => Promise<HandlerResult | unknown> | HandlerResult | unknown;
 export type Middleware = (ctx: Ctx) => Promise<void> | void;
 
-interface Route { method: string; regex: RegExp; keys: string[]; chain: Array<Middleware | Handler>; }
+interface Route { method: string; path: string; regex: RegExp; keys: string[]; chain: Array<Middleware | Handler>; }
 
 /**
  * Role hierarchy — higher rank satisfies any lower minimum (see docs/05 §7, docs/38). Five tiers:
@@ -226,8 +226,14 @@ export class Router {
 
   private add(method: string, path: string, chain: Array<Middleware | Handler>): this {
     const { regex, keys } = compile(path);
-    this.routes.push({ method, regex, keys, chain });
+    this.routes.push({ method, path, regex, keys, chain });
     return this;
+  }
+
+  /** Read-only listing of every registered route (method + path pattern). Used by the scope
+   *  registry guard (Issue 1 / F-44) so a new id-addressed operator route cannot ship unclassified. */
+  listRoutes(): ReadonlyArray<{ method: string; path: string }> {
+    return this.routes.map((r) => ({ method: r.method, path: r.path }));
   }
   // Last argument is the handler; any preceding arguments are middleware.
   get(path: string, ...chain: Array<Middleware | Handler>): this { return this.add("GET", path, chain); }
@@ -450,8 +456,12 @@ export function requireSite(defaultSiteId: string = DEFAULT_SITE_ID): Middleware
  *
  * `adminScopeSite` returns the brand a caller is restricted to when acting, or null for unrestricted:
  *   - a platform_superadmin (rank 5) is cross-brand -> null (never restricted);
- *   - a platform admin token carries NO `site` claim -> null (unchanged single-tenant behaviour);
- *   - a site-scoped admin token carries a `site` claim -> that brand id.
+ *   - a platform_admin is bounded by PLATFORM, not site -> null here (see adminScopePlatform);
+ *   - a site `admin` -> its `site` claim. FAIL CLOSED (Issue 1 / F-43, invariant S1): a site admin
+ *     token WITHOUT a `site` claim is refused (SITE_CLAIM_MISSING, 403) — never read as
+ *     "unrestricted". Reading a missing claim as null is exactly how a refreshed site admin became an
+ *     admin of every brand on every platform (the #38 class, which had only been closed for
+ *     platform_admin).
  */
 export function adminScopeSite(ctx: Ctx): string | null {
   if (!ctx.claims) throw new ApiError("AUTH_REQUIRED", "authentication required", 401);
@@ -462,7 +472,21 @@ export function adminScopeSite(ctx: Ctx): string | null {
   // per-brand bound is a PLATFORM check (adminScopePlatform / assertTargetPlatformInScope), so it
   // must not be treated as a single-site admin here.
   if (role === "platform_admin") return null;
-  return ctx.claims.site ?? null;
+  const site = ctx.claims.site;
+  if (!site) {
+    throw new ApiError("SITE_CLAIM_MISSING", "site admin token carries no brand scope; sign in again", 403);
+  }
+  return site;
+}
+
+/**
+ * The brand an admin LIST resolves to. A site admin -> its own brand (fail-closed via adminScopeSite);
+ * the system owner -> its own `site` claim if any (unchanged: the owner's back-office lists default to
+ * the brand it signed in on / is impersonating), else undefined (every brand). Use this — never a raw
+ * `ctx.claims.site` read — so the fail-closed rule applies to every list (Issue 1 / F-43).
+ */
+export function adminListSite(ctx: Ctx): string | undefined {
+  return adminScopeSite(ctx) ?? ctx.claims?.site ?? undefined;
 }
 
 /**

@@ -72,6 +72,9 @@ export interface NotificationRepository {
   listForUser(userId: string, includeInactive: boolean, limit: number): Promise<NotificationRow[]>;
   dismiss(userId: string, id: number): Promise<boolean>;           // only dismissible + active
   resolve(id: number): Promise<boolean>;                           // admin/system clears (any)
+  /** The user a notification belongs to (null if no such notification) — lets the API scope-check
+   *  an id-addressed admin action before touching it (Issue 1 / F-44). */
+  ownerOf(id: number): Promise<string | null>;
   resolveByCategory(userId: string, category: string): Promise<number>;
   // ── Broadcast engine (migration 0106) ──
   listTemplates(): Promise<NotificationTemplate[]>;
@@ -119,6 +122,7 @@ export class NotificationService {
   dismiss(userId: string, id: number): Promise<boolean> { return this.repo.dismiss(userId, id); }
   /** Admin/system resolve: clears a blocking (or any) notification. */
   resolve(id: number): Promise<boolean> { return this.repo.resolve(id); }
+  ownerOf(id: number): Promise<string | null> { return this.repo.ownerOf(id); }
   resolveByCategory(userId: string, category: string): Promise<number> { return this.repo.resolveByCategory(userId, category); }
   // ── Broadcast engine (migration 0106) ──
   listTemplates(): Promise<NotificationTemplate[]> { return this.repo.listTemplates(); }
@@ -170,6 +174,9 @@ export class InMemoryNotificationRepository implements NotificationRepository {
     if (!r || !r.dismissible || r.dismissedAtMs !== null || r.resolvedAtMs !== null) return false;
     r.dismissedAtMs = this.now();
     return true;
+  }
+  async ownerOf(id: number): Promise<string | null> {
+    return this.rows.find((x) => x.id === id)?.userId ?? null;
   }
   async resolve(id: number): Promise<boolean> {
     const r = this.rows.find((x) => x.id === id);
@@ -241,6 +248,10 @@ export class PgNotificationRepository implements NotificationRepository {
         where id = $1 and user_id = $2 and dismissible = true and dismissed_at is null and resolved_at is null
         returning id`, [id, userId]);
     return r.rows.length > 0;
+  }
+  async ownerOf(id: number): Promise<string | null> {
+    const r = await this.q.query("select user_id from user_notifications where id = $1", [id]);
+    return r.rows.length ? String(r.rows[0].user_id) : null;
   }
   async resolve(id: number): Promise<boolean> {
     const r = await this.q.query(

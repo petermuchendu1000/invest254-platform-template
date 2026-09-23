@@ -17,7 +17,7 @@ function req(api: TestApi, method: string, path: string, opts: ReqOpts = {}): Pr
   return fetch(`${api.baseUrl}${path}`, init);
 }
 
-const ADMIN = "u-admin:admin";     // stub verifier: "<userId>:<role>"
+const ADMIN = "u-admin:admin:00000000-0000-0000-0000-000000000001";     // stub verifier: "<userId>:<role>"
 const PLAYER = "u-player:player";
 
 test("admin routes are gated (401 no token, 403 for players)", async () => {

@@ -326,7 +326,11 @@ export function registerAuthRoutes(router: Router, deps: ApiDeps): void {
     if (profile.status !== "active") {
       throw new ApiError(`ACCOUNT_${profile.status.toUpperCase()}`, `account is ${profile.status}`, 403);
     }
-    const token = await deps.auth.issueToken(userId, profile.role);
-    return { token, userId, role: profile.role };
+    // Issue 1 / F-43: re-stamp the holder's scope (site, and platform for a platform_admin) from the
+    // LIVE profile via the single choke point. Minting `issueToken(userId, role)` here dropped the
+    // `site` claim, which adminScopeSite() read as "unrestricted" — every refreshed site admin became
+    // an admin of every brand on every platform (and a platform_admin lost its platform claim).
+    const s = await domain(() => deps.auth.issueSessionToken(userId));
+    return { token: s.token, userId, role: s.role, ...(s.site ? { site: s.site } : {}), ...(s.platform ? { platform: s.platform } : {}) };
   });
 }

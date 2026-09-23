@@ -108,7 +108,7 @@ test("only superadmin/platform_superadmin may edit; a plain admin is forbidden",
   const api = await startTestApi();
   try {
     const res = await req(api, "PATCH", `/api/v1/admin/game-config?site=${SITE_A}`,
-      { token: "someadmin:admin", body: { houseEdge: 0.7 } });
+      { token: "someadmin:admin:00000000-0000-0000-0000-000000000001", body: { houseEdge: 0.7 } });
     assert.equal(res.status, 403, "day-to-day admin cannot change the economy");
   } finally { await api.close(); }
 });

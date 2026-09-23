@@ -16,7 +16,7 @@ async function register(api: TestApi, phone: string, username: string): Promise<
   assert.equal(res.status, 201, `register ${username}`);
   return (await json(res)).userId as string;
 }
-const ADMIN = `${TEST_ADMIN}:admin`;
+const ADMIN = `${TEST_ADMIN}:admin:00000000-0000-0000-0000-000000000001`;
 
 test("admin edits a user's phone + username (item 6)", async () => {
   const api = await startTestApi();

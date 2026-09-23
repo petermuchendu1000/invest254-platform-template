@@ -1,4 +1,5 @@
 import { Router, ApiError, requireAuth, requireRole, type Ctx } from "./http.js";
+import { assertUserTarget } from "./scope.js";
 import type { NotificationRow, NotificationLevel } from "@invest254/engine";
 import type { ApiDeps } from "./app.js";
 
@@ -38,6 +39,9 @@ function parseId(ctx: Ctx): number {
 export function registerNotificationRoutes(router: Router, deps: ApiDeps): void {
   const auth = requireAuth(deps.verifier);
   const admin = requireRole("admin");
+  // F-44: every per-user / per-notification admin action is scope-checked against the target's brand
+  // (site admin -> own brand; platform admin -> own platform; system -> any).
+  const scope = { siteOfUser: (id: string) => deps.admin.siteOfUser(id), platformOfSite: (s: string) => deps.platform.platformOfSite(s) };
 
   // ── Player ─────────────────────────────────────────────────────────────
   router.get(`${BASE}/notifications`, auth, async (ctx: Ctx) => {
@@ -63,6 +67,7 @@ export function registerNotificationRoutes(router: Router, deps: ApiDeps): void 
     // dismissible defaults to true; pass false for blocking (suspension-style) notices.
     const dismissible = body.dismissible === undefined ? true : Boolean(body.dismissible);
     const category = typeof body.category === "string" && body.category ? body.category.slice(0, 64) : null;
+    await assertUserTarget(ctx, ctx.params.id!, scope);   // F-44: was any user on any platform
     const row = await deps.notifications.create({
       userId: ctx.params.id!, title, body: bodyText, level, dismissible, category, createdBy: ctx.claims!.userId,
     });
@@ -73,12 +78,17 @@ export function registerNotificationRoutes(router: Router, deps: ApiDeps): void 
   });
 
   router.get(`${BASE}/admin/users/:id/notifications`, auth, admin, async (ctx: Ctx) => {
+    await assertUserTarget(ctx, ctx.params.id!, scope);   // F-44
     const rows = await deps.notifications.adminList(ctx.params.id!, true, 100);
     return { items: rows.map(notificationDto) };
   });
 
   router.post(`${BASE}/admin/notifications/:id/resolve`, auth, admin, async (ctx: Ctx) => {
     const id = parseId(ctx);
+    // F-44: ids are sequential integers (enumerable) — resolve the owner and scope-check first.
+    const owner = await deps.notifications.ownerOf(id);
+    if (!owner) throw new ApiError("NOT_FOUND", "notification not found or already cleared", 404);
+    await assertUserTarget(ctx, owner, scope);
     const ok = await deps.notifications.resolve(id);
     if (!ok) throw new ApiError("NOT_FOUND", "notification not found or already cleared", 404);
     await deps.admin.recordAction(ctx.claims!.userId, ctx.claims!.role ?? "player", "notification.resolve", "notification", String(id), {});

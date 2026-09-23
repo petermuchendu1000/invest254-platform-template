@@ -18,6 +18,10 @@ jobs:
           cache: npm
       - name: Install
         run: npm ci
+      - name: Secret scan (no committed credentials — BUGLOG #41)
+        run: |
+          node --import tsx --test scripts/secret_scan.test.mts
+          node --import tsx scripts/secret_scan.mts
       - name: Typecheck (shared / engine / api)
         run: npx tsc -b packages/shared apps/engine apps/api
       - name: Build web (includes type checking)

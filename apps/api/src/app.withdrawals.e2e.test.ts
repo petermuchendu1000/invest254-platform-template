@@ -29,7 +29,7 @@ function req(api: TestApi, method: string, path: string, opts: ReqOpts = {}): Pr
   return fetch(`${api.baseUrl}${path}`, init);
 }
 
-const ADMIN = `${TEST_ADMIN}:admin`;
+const ADMIN = `${TEST_ADMIN}:admin:00000000-0000-0000-0000-000000000001`;
 const PLAYER = TEST_USER; // "u-test", role player, seeded with KES 10,000 by default
 const PHONE = "0722000099";
 const mtok = (id: string) => `${id}:marketer`;

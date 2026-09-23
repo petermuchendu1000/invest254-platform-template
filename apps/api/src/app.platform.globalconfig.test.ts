@@ -12,7 +12,7 @@ function req(api: TestApi, method: string, path: string, o: Opts = {}): Promise<
   return fetch(`${api.baseUrl}${path}`, init);
 }
 const PLATFORM = `${TEST_ADMIN}:platform_superadmin`;
-const ADMIN = `${TEST_ADMIN}:admin`;
+const ADMIN = `${TEST_ADMIN}:admin:00000000-0000-0000-0000-000000000001`;
 
 test("global-config: read defaults, patch switches (versioned), reflect on re-read", async () => {
   const api = await startTestApi();

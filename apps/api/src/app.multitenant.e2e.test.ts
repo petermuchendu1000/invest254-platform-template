@@ -32,7 +32,7 @@ const get = (api: TestApi, path: string, token?: string) => req(api, "GET", path
 // Tokens: legacy (no site claim -> default brand A), brand-B scoped, admin.
 const A = TEST_USER;                                  // legacy => site A (default)
 const B = `${TEST_USER}:player:${SITE_B}`;            // 3rd segment = site claim
-const ADMIN = `${TEST_ADMIN}:admin`;
+const ADMIN = `${TEST_ADMIN}:admin:00000000-0000-0000-0000-000000000001`;
 
 const stkOk = (checkoutRequestId: string, receipt: string) => ({
   Body: { stkCallback: {
@@ -160,7 +160,10 @@ test("E2E routing: full withdrawal lifecycle settles via the brand-prefixed B2C 
     assert.equal(txA.items.length, 0, "brand A cannot see brand B's withdrawal");
 
     // Finance admin approves, then Safaricom posts the B2C result to the brand-prefixed URL.
-    assert.equal((await req(api, "POST", `/api/v1/admin/withdrawals/${transactionId}/approve`, { token: ADMIN })).status, 200);
+    // Issue 1 / F-43: brand A's admin can no longer act on a brand-B withdrawal; brand B's own admin can.
+    assert.equal((await req(api, "POST", `/api/v1/admin/withdrawals/${transactionId}/approve`, { token: ADMIN })).status, 403,
+      "a brand-A site admin must not approve a brand-B withdrawal");
+    assert.equal((await req(api, "POST", `/api/v1/admin/withdrawals/${transactionId}/approve`, { token: `${TEST_ADMIN}:admin:${SITE_B}` })).status, 200);
     const res = await req(api, "POST", `/api/v1/s/brandb/withdrawals/mpesa/result/${transactionId}`, {
       body: { Result: { ResultCode: 0, ConversationID: "AG_x", TransactionReceipt: "RB-W" } },
     });

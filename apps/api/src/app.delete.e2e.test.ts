@@ -19,7 +19,7 @@ async function register(api: TestApi, phone: string, username: string, password 
   assert.equal(res.status, 201, `register ${username}`);
   return (await json(res)).userId as string;
 }
-const ADMIN = `${TEST_ADMIN}:admin`;
+const ADMIN = `${TEST_ADMIN}:admin:00000000-0000-0000-0000-000000000001`;
 const SUPER = `${TEST_ADMIN}:platform_superadmin`;
 
 test("soft-delete user: marks deleted, hides from list, blocks login", async () => {
@@ -46,7 +46,10 @@ test("soft-delete user: marks deleted, hides from list, blocks login", async () 
 test("soft-delete user: cannot delete yourself", async () => {
   const api = await startTestApi();
   try {
-    const r = await req(api, "POST", `/api/v1/admin/users/${TEST_ADMIN}/delete`, ADMIN);
+    // F-44: target scope resolves a REAL account, so the self-deleting admin is a registered brand-A admin.
+    const me = await register(api, "0712009777", "self_admin");
+    api.identity._setRole(me, "admin");
+    const r = await req(api, "POST", `/api/v1/admin/users/${me}/delete`, `${me}:admin:00000000-0000-0000-0000-000000000001`);
     assert.equal(r.status, 409);
     assert.equal((await json(r)).error.code, "NO_SELF_ACTION");
   } finally { await api.close(); }

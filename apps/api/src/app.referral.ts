@@ -1,4 +1,5 @@
-import { Router, ApiError, requireAuth, requireRole, requireSiteAdmin, adminScopeSite, assertTargetSiteInScope, type Ctx } from "./http.js";
+import { Router, ApiError, requireAuth, requireRole, requireSiteAdmin, adminScopeSite, type Ctx } from "./http.js";
+import { assertSiteTarget } from "./scope.js";
 import type { ApiDeps } from "./app.js";
 import { requireApprovalPassword } from "./approvalgate.js";
 
@@ -77,6 +78,8 @@ function limitOf(ctx: Ctx, def = 50): number {
 export function registerReferralRoutes(router: Router, deps: ApiDeps): void {
   const auth = requireAuth(deps.verifier);
   const admin = requireSiteAdmin("admin");
+  // F-44: strict, fail-closed target scope for id-addressed commission-payout moderation (scope.ts).
+  const strictScope = { platformOfSite: (s: string) => deps.platform.platformOfSite(s) };
 
   // ── Every authenticated user: their referral code, link, and commission summary ────────────────
   router.get(`${BASE}/me/referral`, auth, async (ctx: Ctx) =>
@@ -102,20 +105,20 @@ export function registerReferralRoutes(router: Router, deps: ApiDeps): void {
 
   router.post(`${BASE}/admin/commission-payouts/:id/approve`, auth, admin, async (ctx: Ctx) => {
     await requireApprovalPassword(ctx, deps.verifyApprovalPassword); // system owner password gate (Issue 1)
-    assertTargetSiteInScope(ctx, await deps.referral.siteOfPayout(ctx.params.id!));
+    await assertSiteTarget(ctx, await deps.referral.siteOfPayout(ctx.params.id!), strictScope);   // F-44: fail-closed (unresolved -> 404)
     return domain(() => deps.referral.approvePayout(ctx.params.id!, ctx.claims!.userId));
   });
 
   router.post(`${BASE}/admin/commission-payouts/:id/paid`, auth, admin, async (ctx: Ctx) => {
     await requireApprovalPassword(ctx, deps.verifyApprovalPassword); // system owner password gate (Issue 1)
-    assertTargetSiteInScope(ctx, await deps.referral.siteOfPayout(ctx.params.id!));
+    await assertSiteTarget(ctx, await deps.referral.siteOfPayout(ctx.params.id!), strictScope);   // F-44: fail-closed (unresolved -> 404)
     const b = (ctx.body ?? {}) as Record<string, unknown>;
     const ref = typeof b.ref === "string" ? b.ref : null;
     return domain(() => deps.referral.markPaid(ctx.params.id!, ctx.claims!.userId, ref));
   });
 
   router.post(`${BASE}/admin/commission-payouts/:id/reject`, auth, admin, async (ctx: Ctx) => {
-    assertTargetSiteInScope(ctx, await deps.referral.siteOfPayout(ctx.params.id!));
+    await assertSiteTarget(ctx, await deps.referral.siteOfPayout(ctx.params.id!), strictScope);   // F-44: fail-closed (unresolved -> 404)
     const b = (ctx.body ?? {}) as Record<string, unknown>;
     const reason = typeof b.reason === "string" ? b.reason : null;
     return domain(() => deps.referral.rejectPayout(ctx.params.id!, ctx.claims!.userId, reason));

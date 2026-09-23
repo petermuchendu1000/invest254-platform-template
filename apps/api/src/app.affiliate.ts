@@ -1,4 +1,5 @@
-import { Router, ApiError, requireAuth, requireRole, requireSiteAdmin, requireSite, adminScopeSite, assertTargetSiteInScope, rateLimit, DEFAULT_SITE_ID, type Ctx } from "./http.js";
+import { Router, ApiError, requireAuth, requireRole, requireSiteAdmin, requireSite, adminScopeSite, adminListSite, rateLimit, DEFAULT_SITE_ID, type Ctx } from "./http.js";
+import { assertUserTarget, assertSiteTarget } from "./scope.js";
 import type { PageQuery } from "@invest254/engine";
 import type { ApiDeps } from "./app.js";
 import { parseB2cResult } from "./app.payments.js";
@@ -32,6 +33,10 @@ const AFFILIATE_STATUS: Readonly<Record<string, number>> = {
   INVALID_AMOUNT: 400,
   INVALID_STATE: 409,
   NOT_AUTHORIZED: 403,
+  // Marketer expenses (0068/0154): the DB refuses an expense outside the marketer's brand.
+  CATEGORY_REQUIRED: 400,
+  MARKETER_NOT_FOUND: 404,
+  MARKETER_SITE_MISMATCH: 403,
 };
 
 /** Parse cursor pagination params from the query string (limit clamped by the repository). */
@@ -62,6 +67,9 @@ export function registerAffiliateRoutes(router: Router, deps: ApiDeps): void {
   // Marketer-facing routes run under requireSite: a marketer's identity is brand-bound, so this
   // both makes ctx.siteId available and rejects a token that names a different brand (?site=).
   const site = requireSite();
+  // F-44: tier-aware, fail-closed target scope for marketer-addressed admin routes (scope.ts).
+  const scope = { siteOfUser: (id: string) => deps.admin.siteOfUser(id), platformOfSite: (s: string) => deps.platform.platformOfSite(s) };
+  const strictScope = scope;
 
   // Public referral-link click tracking (funnel stage 0, docs/19). Fire-and-forget from the
   // /r/<code> landing page BEFORE signup, so no auth. Tolerant: an unknown/inactive code is a
@@ -84,7 +92,8 @@ export function registerAffiliateRoutes(router: Router, deps: ApiDeps): void {
     // Enrollment promotes player -> marketer in the DB, but the caller's JWT still carries the
     // old role. Reissue a token that reflects the new role so the marketer-gated dashboard routes
     // (summary/referrals/commissions/payouts) work immediately, without forcing a re-login.
-    const token = deps.verifier ? await deps.auth.issueToken(ctx.claims!.userId, e.role) : undefined;
+    // Scope-preserving re-mint (Issue 1 / F-43): the new token keeps the account's brand claim.
+    const token = deps.verifier ? (await deps.auth.issueSessionToken(ctx.claims!.userId)).token : undefined;
     return {
       referralCode: e.referralCode,
       commissionRate: e.commissionRate,
@@ -132,7 +141,7 @@ export function registerAffiliateRoutes(router: Router, deps: ApiDeps): void {
     domain(async () => {
       // Per-brand write-path guard (docs/22 Task H): a site-scoped finance admin only decides its
       // own brand's payouts. Tolerant of an unknown payout — the site-aware RPC remains the guard.
-      assertTargetSiteInScope(ctx, await deps.affiliate.siteOfPayout(ctx.params.id!));
+      await assertSiteTarget(ctx, await deps.affiliate.siteOfPayout(ctx.params.id!), strictScope);   // F-44: fail-closed (unresolved -> 404)
       const res = await deps.affiliate.approvePayout(ctx.params.id!, ctx.claims!.userId);
       await deps.admin.recordAction(ctx.claims!.userId, ctx.claims!.role ?? "player", "affiliate.payout.approve", "affiliate_payout", ctx.params.id!, res);
       return res;
@@ -140,7 +149,7 @@ export function registerAffiliateRoutes(router: Router, deps: ApiDeps): void {
 
   router.post(`${BASE}/admin/affiliate/payouts/:id/reject`, auth, admin, async (ctx: Ctx) =>
     domain(async () => {
-      assertTargetSiteInScope(ctx, await deps.affiliate.siteOfPayout(ctx.params.id!));
+      await assertSiteTarget(ctx, await deps.affiliate.siteOfPayout(ctx.params.id!), strictScope);   // F-44: fail-closed (unresolved -> 404)
       const b = ctx.body && typeof ctx.body === "object" ? (ctx.body as Record<string, unknown>) : {};
       const reason = typeof b.reason === "string" && b.reason.trim() ? b.reason.trim() : undefined;
       const rejected = await deps.affiliate.rejectPayout(ctx.params.id!, ctx.claims!.userId, reason);
@@ -163,7 +172,7 @@ export function registerAffiliateRoutes(router: Router, deps: ApiDeps): void {
     const actorRole = ctx.claims!.role ?? "player";
     const results = await Promise.all(payoutIds.map(async (id) => {
       try {
-        assertTargetSiteInScope(ctx, await deps.affiliate.siteOfPayout(id));
+        await assertSiteTarget(ctx, await deps.affiliate.siteOfPayout(id), strictScope);   // F-44: fail-closed (unresolved -> 404)
         if (action === "approve") {
           const res = await deps.affiliate.approvePayout(id, actorId);
           await deps.admin.recordAction(actorId, actorRole, "affiliate.payout.approve", "affiliate_payout", id, res);
@@ -198,7 +207,10 @@ export function registerAffiliateRoutes(router: Router, deps: ApiDeps): void {
     const amountCents = typeof b.amountCents === "number" ? b.amountCents : Number(b.amountCents);
     if (!Number.isInteger(amountCents) || amountCents <= 0) throw new ApiError("VALIDATION", "amountCents must be a positive integer (cents)", 400);
     const note = typeof b.note === "string" && b.note.trim() ? b.note.trim() : null;
-    const siteId = ctx.claims?.site ?? DEFAULT_SITE_ID;
+    // F-44: the marketer must be in the caller's scope, and the expense is recorded on the MARKETER's
+    // brand — never the admin's (the system owner's expenses were landing on its home brand).
+    const marketerSite = await assertUserTarget(ctx, marketerUserId, scope);
+    const siteId = marketerSite ?? adminListSite(ctx) ?? DEFAULT_SITE_ID;
     return domain(() => deps.marketerExpenses.add(ctx.claims!.userId, ctx.claims!.role ?? "player", siteId, marketerUserId, category, amountCents, note));
   });
 
@@ -206,6 +218,7 @@ export function registerAffiliateRoutes(router: Router, deps: ApiDeps): void {
     const marketerUserId = ctx.query.get("marketerUserId");
     if (!marketerUserId) throw new ApiError("VALIDATION", "marketerUserId query param is required", 400);
     const limit = Number(ctx.query.get("limit")) || 100;
+    await assertUserTarget(ctx, marketerUserId, scope);   // F-44: was any marketer on any platform
     // Full sum, not the page sum (BUGLOG #23) — the admin "Total logged" must equal what actually
     // reduces the marketer's withdrawable.
     const [items, totalCents] = await domain(async () => Promise.all([
@@ -246,7 +259,7 @@ export function registerAffiliateRoutes(router: Router, deps: ApiDeps): void {
   // Approve/reject. The RPC writes the admin_actions audit; here we COMMUNICATE the outcome to the
   // marketer via a per-user in-app notification (approved -> success; rejected -> warning + reason).
   const decideAdvance = (approve: boolean) => async (ctx: Ctx) => {
-    assertTargetSiteInScope(ctx, await deps.marketerAdvances.siteOf(ctx.params.id!));
+    await assertSiteTarget(ctx, await deps.marketerAdvances.siteOf(ctx.params.id!), strictScope);   // F-44: fail-closed (unresolved -> 404)
     const b = (ctx.body ?? {}) as Record<string, unknown>;
     const note = typeof b.note === "string" && b.note.trim() ? b.note.trim().slice(0, 500) : null;
     const row = await domain(() => deps.marketerAdvances.decide(ctx.claims!.userId, ctx.claims!.role ?? "player", ctx.params.id!, approve, note));
@@ -273,8 +286,15 @@ export function registerAffiliateRoutes(router: Router, deps: ApiDeps): void {
     if (typeof period !== "string") throw new ApiError("VALIDATION", "date (YYYY-MM-DD) is required", 400);
     // Optional `site` (brand uuid) scopes the accrual to one brand; omit to accrue every brand
     // (platform-wide cron). A site-scoped operator console (Task H) will pass its own brand here.
-    const site = body.site;
-    if (site !== undefined && typeof site !== "string") throw new ApiError("VALIDATION", "site must be a brand id string", 400);
+    const requested = body.site;
+    if (requested !== undefined && typeof requested !== "string") throw new ApiError("VALIDATION", "site must be a brand id string", 400);
+    // F-44: a site admin may only accrue ITS OWN brand (was: any brand, or every brand when omitted);
+    // only the system owner may target another brand or run the platform-wide accrual.
+    const own = adminScopeSite(ctx);
+    if (own !== null && requested !== undefined && requested !== own) {
+      throw new ApiError("SITE_SCOPE_FORBIDDEN", "SITE_SCOPE_FORBIDDEN: target belongs to another brand", 403);
+    }
+    const site = own ?? requested;
     const r = await domain(() => deps.affiliate.accrueDaily(period, site));
     return { period, site: site ?? null, buckets: r.buckets, totalCommissionCents: r.totalCommissionCents };
   });

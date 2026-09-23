@@ -17,7 +17,7 @@ function req(api: TestApi, method: string, path: string, opts: ReqOpts = {}): Pr
 }
 
 const PLAYER = TEST_USER;                       // role defaults to "player"
-const ADMIN = `${TEST_ADMIN}:admin`;
+const ADMIN = `${TEST_ADMIN}:admin:00000000-0000-0000-0000-000000000001`;
 
 // ─────────────────────────── wallet ───────────────────────────
 
