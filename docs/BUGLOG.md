@@ -5,6 +5,224 @@ entry: what, evidence, root cause, impact, and resolution.
 
 ---
 
+## #69 — No per-brand pool view; dynamic distribution had no setting and was off unless a GitHub variable was set; history hid who got what (POOL-1) — FIXED (branch `feat/pool1-overview-auto`, migration 0164)
+- **What (owner request, 2026-09-23):**
+  - Nothing showed each brand's pool for today: budget, paid, reserved and available.
+  - Automatic (dynamic) distribution only ran if the `POOL_DAILY_TOTAL_CENTS` repo variable was set, and then as one envelope across every platform.
+  - Dynamic runs were stored as `per_site`, the same as hand edits, and the history never showed each brand's share.
+  - Pool controls were duplicated on Controls & economy.
+- **Fix:** see docs/46.
+  - Migration 0164 adds the overview RPC, per-platform `pool_auto_settings` (dynamic when nothing is saved), and a `source` on each distribution.
+  - `PoolOpsService`, the rewritten daily job, four API routes, and a rebuilt `/platform/pool`.
+  - Controls & economy now links to the pool page.
+- **Tests:**
+  - `e2e_pool_overview.py` (BEFORE reproduces; AFTER 22 checks).
+  - Engine 3, a real-schema pg test, and unit tests: 1155 pass.
+  - Role e2e: 8 new checks, all failed before the fix; 139/139 pass after.
+
+---
+
+## #68 — No C2B configuration: Pay Bill details not editable, C2B URLs never registered with Safaricom (PAY-2) — FIXED (branch `feat/pay2-c2b-config`, migration 0163)
+- **What (owner question, 2026-09-23):**
+  - `/platform/mpesa` had only STK and B2C settings.
+  - The Pay Bill players are told to pay into (`paybill_config`) was seed-only: no API or UI could change it.
+  - Nothing could set or register the C2B Confirmation and Validation URLs. Without that registration Safaricom never reports Pay Bill payments, so the manual Pay Bill rail can verify nothing. It works only if someone registers the URLs by hand outside the product.
+  - The page also said "Save 3 changes" before anything had been touched: our own auto-filled endpoints counted as edits.
+  - The warning said credential changes needed a restart, but they reload within a minute.
+- **Fix:** see docs/45.
+  - Migration 0163 adds owner-only read and update (validated and audited), Safaricom's URL rules, and a record of each registration.
+  - Daraja C2B RegisterURL v2 is wired up.
+  - The API has three routes.
+  - The M-Pesa page is split into Deposits / Payouts / Pay Bill (C2B) / Credentials. The C2B tab shows status and health, what players see, the URLs, and a Register button.
+  - Auto-filled endpoints now count as suggestions, not changes.
+- **Tests:**
+  - `e2e_c2b_config.py` (BEFORE reproduces; AFTER 18 checks).
+  - Engine: 3 tests. API: 1 test.
+  - Role e2e: 5 new checks. All 5 failed before the fix; 131/131 pass after.
+  - `e2e_c2b_paybill`, `e2e_function_grants` and `e2e_postgrest_surface` still pass.
+
+---
+
+## #67 — Page-level P1s from the UI audit: clipped withdrawal actions, an announcement that couldn't be edited, fake trends, editable-looking read-only overrides, sideways scroll on phones (UI-C) — FIXED (branch `ui/c-page-p1-fixes`, migration 0162)
+- **What:**
+  - **Withdrawals.** At 1440px the Reject and Mark paid buttons sat past the right edge of the table (Reject measured at x=1505). On a phone, Approve was at x=1146 on a 390px screen.
+  - **Announcements.** The "Announcement" template said "Edit the title and body before sending", but there was no text field, and `fn_broadcast_notification` could only send a template verbatim. A brand admin would have sent "We have an update to share with you…" to every player. The clear button's copy said "platform-wide" on a brand page.
+  - **Overview.** Trend chips showed "▲100%" whenever the first half of the 30 days was zero, and rising withdrawals were coloured green.
+  - **User page.** Player overrides rendered as eight editable inputs, and only a footnote said they were read-only. Nobody in the brand back office can write them.
+  - **Phones.** /admin/marketer-finance was 456px wide on a 390px screen. The segmented tab control overflowed.
+  - **Brand page.** Add-ons rendered under every tab, and the open tab was not in the URL.
+- **Fix:**
+  - **Withdrawals.** Actions are pinned to the right edge, and the phone view uses a card list. Four duplicate KPI tiles became one summary line. The kill switch is now a compact row.
+  - **Announcements.** Migration 0162 adds `p_title`/`p_body` to `fn_broadcast_notification`. They are trimmed and bounded, blank means the template's own text, and the audit trail records that the text was edited. It is one function, not an overload, and deploy-order safe. The API validates the text, and the page gets Title and Message fields with a live preview.
+  - **Overview.** A metric with nothing in the earlier half now shows "New", and each metric is coloured by what counts as good news for it.
+  - **User page.** Overrides are shown read-only as values, with "Managed in the console".
+  - **Tabs.** One underline `PageTabs` component, with the tab in the URL, replaces the segmented control and the old brand-page tabs. Add-ons now has its own tab.
+- **Tests:**
+  - `e2e_broadcast_custom_text.py` (BEFORE reproduces; AFTER 11 checks). `e2e_notification_scope`, `e2e_actor_scope_impersonation` and `e2e_function_grants` pass.
+  - API test for the edited text and its validation. `charts.test.ts` (trendDelta).
+  - Role e2e: 12 new checks. 9 failed before the fix; 126/126 pass after.
+
+---
+
+## #66 — "now ago", browser-dependent dates and numbers, "KES 1,607.5" in the operator consoles (UI-B) — FIXED (branch `ui/b-shared-formatting`)
+- **What:**
+  - `formatRelativeTime` returns "now" for anything under 5 s, and 13 call sites appended " ago", so tables read "now ago" (seen in System logs).
+  - Dates were printed with `toLocaleString()` / `toLocaleDateString()` without a locale, so the same timestamp showed as "23 Sept 2026, 21:03" on one page and "9/23/2026, 9:03:05 PM" on another, depending on the browser.
+  - Counts used the browser locale too.
+  - Four console pages formatted money with a local helper that dropped the second decimal ("KES 1,607.5").
+  - KPI values and money cells wrapped ("KES" on one line, the number on the next).
+  - Disabled buttons kept their colour at 50% opacity, so a disabled green "Save" looked live, and `pointer-events-none` stopped any tooltip explaining why.
+- **Fix:**
+  - `formatAgo` ("just now", "5m ago"; the date after a week).
+  - `formatDate` and `formatNumber` pinned to en-KE.
+  - `formatKes` everywhere.
+  - Money, badges and KPI values no longer wrap; table headers no longer wrap, and `Th`/`Td` gained a `numeric` prop that right-aligns numbers.
+  - A neutral disabled style that keeps tooltips working.
+  - One toolbar search control, 36px, the same height as the filters.
+- **Tests:** `format.test.ts` (no "now ago"; the date shown after a week; en-KE dates and numbers). Role e2e and a screenshot review on seeded data.
+
+---
+
+## #65 — Console shell: collapse control drawn over page content; no Log out on phones; flat, unlabelled navigation (UI-A) — FIXED (branch `ui/a-console-shell`)
+- **What (found by the docs/44 UI audit on seeded data):**
+  - System owner console: the sidebar header row had no `min-w-0`, so the long subtitle "SYSTEM CONSOLE · ALL PLATFORMS" pushed the collapse chevron out of the 240px sidebar (measured at x=250–282). It sat on top of the first letter of every page title.
+  - Every tier on a phone: the account block and Log out were `hidden md:flex`, so an operator could not sign out of a money console from a phone. The horizontal nav strip showed about 3 of 10–16 items, was not sticky, and could hide the current page.
+  - Navigation was a flat list (16 items for the owner), with duplicate icons and near-duplicate labels.
+- **Fix:** one shared `ConsoleShell` (see docs/44): a truncating workspace header, labelled groups with dividers, one current item, distinct icons, a footer with collapse (⌘/Ctrl+B) and the account with Log out, and a phone top bar plus drawer. Navigation is defined once in `components/console/nav.tsx`.
+- **Tests:** role e2e with 16 new checks. Before the fix, 15 of them failed (collapse chevron at x=250 > sidebar 240; no labelled groups; no phone menu or Log out). After the fix all pass, and so do all 98 existing checks. `nav.test.ts` covers the navigation rules.
+
+---
+
+## #64 — Phone-only password reset + "Change number" on withdrawals = wallet theft for players (F-49) — FIXED (branch `fix/f49-payout-to-registered-phone`, migration 0161)
+- **What:**
+  - The player password reset is phone-only (no OTP) while `ALLOW_UNVERIFIED_PASSWORD_RESET` is on. **Confirmed live on 2026-09-23:** a reset for an unregistered number returns `{"reset":true}` instead of `RESET_DISABLED`.
+  - Privileged accounts have been protected by security questions since #4. Players and marketers were not.
+  - The withdraw form had **"Change number"**, and `fn_create_withdrawal` accepted any payout phone.
+  - So anyone who knew a player's phone number could reset the password, sign in, and request a withdrawal to their own M-Pesa. Only a manual approval stood in the way, and approvers are not told the number differs.
+- **Impact (production, read-only):** no evidence of abuse.
+  - 74 real withdrawals ever. 2 were to a different number, 0 of those were paid, and none is pending now.
+  - Every profile phone has at least 9 digits.
+- **Fix (money-side, independent of how an attacker gets in):**
+  - `fn_create_withdrawal` (0161) pays out **only to the account's registered number**, compared on the significant 9 digits so every format matches. Anything else is refused with `PAYOUT_PHONE_MISMATCH` (400) and nothing is held.
+  - The in-memory double mirrors this.
+  - The web form shows the registered number with "Withdrawals are paid to your registered number only" and no Change button.
+  - Also tightened: the wallet debit in that function is now filtered by `site_id` as well as `user_id`.
+- **Owner decision (2026-09-23): phone-only player reset stays ON until an SMS provider is integrated.**
+  - The flag was briefly unset in production (probe returned `RESET_DISABLED`), then restored at the owner's request (probe returns `{"reset":true}` again). Admin-issued reset codes were considered and declined as extra support load.
+  - Accepted residual risk: someone who knows a player's number can still sign in and gamble the balance away, but can no longer withdraw it (0161).
+  - **Follow-up:** replace the phone-only reset with an SMS one-time code once a provider is chosen. Then unset `ALLOW_UNVERIFIED_PASSWORD_RESET` on `invest254-api`.
+- **Tests:**
+  - `e2e_payout_phone.py`: BEFORE reproduces any-number acceptance; AFTER, 7 checks cover refusal, nothing held, 3 formats accepted, short number refused and grants.
+  - Engine test `F-49` (other number refused, formatted own number accepted).
+  - `e2e_account_demo_mode.py` fixture made realistic: numeric phone, withdrawing to the registered number.
+
+---
+
+## #63 — PAY-1: platform admins can run their platform / brands on their OWN payment accounts, honoured by live payments (owner decision 2026-09-23) — DONE (branch `feat/pay1-payment-scopes`, migration 0160, docs/43)
+- **Before:**
+  - Every deposit, verification and payout used ONE System-wide account set: the `mpesa_config` singleton and the global Mega Pay / PayHero rows.
+  - The per-brand M-Pesa fields on the brand page were editable by platform admins but **never read by payments**. The page itself said live routing used the platform-wide config, and was misleading.
+  - Per-site `payment_provider_config` rows could exist, but nothing wrote or read them.
+- **Design:** docs/43.
+  - **Payment owner.** A brand's payment owner is its own scope if active, else its platform's scope if active, else the System.
+  - **Drafts until go-live.** Non-global configs stay drafts until an explicit go-live. Go-live is audited and the System owner is notified.
+  - **Money-safety invariants, enforced and tested:**
+    - (1) No mixing across owners: scoped clients never use env, a stub or a parent scope's account, and an unset rail is refused rather than re-routed.
+    - (2) Payouts follow the owner and are refused before approval when the owner cannot pay, so no withdrawal is stranded in processing.
+    - (3) Verification and reconcile use the scope recorded on the transaction, so deposits in flight survive a switch.
+    - (4) Platform admins cannot set sandbox mode, base URLs, callback URLs or CIDRs. Enforced in the database and the API; otherwise they could point verification at a fake provider.
+    - (5) Go-live needs a ready deposit rail, plus a payout account or an explicit "deposits only".
+    - (6) The System's manual Pay Bill is hidden and refused for brands on their own accounts.
+- **Also:**
+  - Platform admins may switch entitled gateways on or off for their own brands.
+  - Affiliate B2C payouts follow the owner too.
+  - Owner and client caches are invalidated by NOTIFY, with a TTL backstop.
+- **Production at deploy:** behaviour-neutral. No scope is active, so every brand stays on the System accounts, and the legacy global RPCs ignore platform rows.
+- **Tests:**
+  - DB e2e 63/63.
+  - Engine money-invariant suite 11/11.
+  - Real-schema money path (pg).
+  - API 5/5.
+  - F-44 cross-tenant matrix and capability contract extended.
+  - Browser role e2e 89/89.
+
+---
+
+## #62 — M-Pesa Till number, B2C shortcode and B2C CommandID could never take effect (PAY-0, found while designing PAY-1) — FIXED (branch `fix/pay0-mpesa-till-b2c-fields`)
+- **What:** two independent drops.
+  - (A) `resolveDarajaConfig` rebuilt the live Daraja config from `mpesa_config` **without** `transactionType`, `tillNumber`, `b2cShortcode` or `b2cCommandId`. A Till (Buy Goods) configuration would have gone out as a Paybill STK to the paybill shortcode, and B2C always paid from the STK shortcode with `BusinessPayment`.
+  - (B) `PATCH /admin/mpesa-config` accepted only the older plain fields and silently discarded the four the M-Pesa page sends, so they could not even be saved. Migration 0150 and `HttpDarajaClient` supported all four; the tests built `HttpDarajaClient` directly, so neither gap was visible.
+- **Impact (production, read-only):** none so far. `transaction_type = 'paybill'` and `b2c_shortcode`/`till_number` are empty, which matches the defaults. It would have broken the first Till brand or separate B2C shortcode.
+- **Fix:**
+  - Carried through: DB value first, then env (`MPESA_TRANSACTION_TYPE`, `MPESA_TILL_NUMBER`, `MPESA_B2C_SHORTCODE`, `MPESA_B2C_COMMAND_ID`), then the client defaults.
+  - The PATCH accepts and validates them: rail `paybill|till`, CommandID enum, numbers 4–10 digits or empty.
+  - The in-memory repository mirrors this.
+- **Tests:**
+  - `daraja.configfields.test.ts` drives the real factory and reads the Safaricom bodies: Till + PartyB, B2C PartyA + CommandID, env fallback and DB precedence, defaults unchanged. The first two fail on the old code.
+  - `app.admin.mpesafields.pay0.test.ts`: saved and read back; 5 invalid values give 400.
+
+---
+
+## #61 — Paged lists silently skipped rows that shared a millisecond with the page boundary (PAGE-1) — FIXED (branch `fix/page1-keyset-precision`)
+- **What:** every keyset-paginated list (audit log, system logs, admin transactions/withdrawals/deposits, user list, user activity, affiliate payouts, referrals, commissions, a player's ledger/positions/digits/transactions) built its cursor from the last row's time in **milliseconds** and asked the database for `(created_at, id) < (cursor_ms, id)`. Postgres timestamps carry **microseconds**, so every remaining row in the cursor row's millisecond compared as *newer* and was never shown on any page. Rows written in one transaction share `now()` exactly — e.g. a bulk action's audit rows, a settlement's ledger lines.
+- **Evidence:** production `admin_actions` has 1,223 rows in 406 same-millisecond groups (the owner's Audit log could hide them at page boundaries). A real-schema test paging 7 same-transaction ledger rows 2 at a time returned **2 of 7** on the old code.
+- **Fix:** each keyset now compares against the cursor row's EXACT timestamp, looked up by its id (`coalesce((select k.created_at from <table> k where k.id = $cursorId [and k.user_id = $owner]), $cursor_ms)`) — an index-friendly InitPlan; the ORDER BY and indexes are unchanged (EXPLAIN on production `system_logs`: PK lookup + the existing `(t, id)` index scan). User-scoped lists resolve the cursor only within the caller's own rows. The activity union resolves across its three sources with guarded casts.
+- **Tests:** `keyset.page1.pg.test.ts` (real schema, one transaction = identical timestamps): ledger, positions, player transactions, user activity (21-row union, 3/page), audit, system logs and admin transactions each return every row exactly once; fails on the old code.
+
+---
+
+## #60 — Platform admins could not see or manage a player properly: no detail, bonus adjustments impossible, overrides API with no UI (and no validation), no audit across their brands (docs/42 UI-10) — FIXED (branch `fix/ui10-platform-admin-gaps`)
+- **What:**
+  - A platform admin's player panel showed only the list row.
+  - "Adjust balance" never sent a wallet, so every credit or debit hit **real cash**. The API supported `kind: real|bonus`; bonus could not be adjusted, and a goodwill bonus became withdrawable money.
+  - `PATCH /platform/sites/:id/users/:uid/overrides` existed with no read route and no UI. It forwarded the raw body, so a typo reached the database and came back as a 500.
+  - No page showed the audit trail across a platform's brands; each brand's Audit tab had to be opened one at a time.
+- **Fix (API):**
+  - `GET /platform/sites/:id/users/:uid/overrides` (platform-scoped).
+  - The PATCH now uses the back office's `parseOverridePatch` (400 `VALIDATION`). The database's fairness fence (0135) still refuses any override better for the player than the brand.
+  - `GET /platform/audit-log[?platform=][&site=]`: a platform admin is pinned to its own platform; `?site=` must be in scope (403 otherwise). Rows carry the brand name and actor username.
+- **Fix (web):**
+  - The Players panel shows a summary: real/bonus balance, deposits and withdrawals, net, turnover and bets, GGR, last active, joined/referred.
+  - `BalanceAdjust` has an explicit Wallet (real cash vs bonus) and a review step that states "credit KES X to @user's bonus (non-withdrawable) balance — before → after", blocking any overdraw.
+  - `PlayerOverridesForm` shows the brand's limits up front and blocks invalid or player-favouring values before saving.
+  - New **Brand audit** page (`/platform/activity`), in the nav for platform admins only (the owner keeps the global Audit log), with a brand filter and Load more.
+- **Found alongside, fixed separately:** PAGE-1. Keyset pagination compares a millisecond cursor with microsecond timestamps, so rows sharing the cursor's millisecond are skipped. Production `admin_actions` has 1,223 rows in 406 same-millisecond groups. The new audit query already uses the millisecond-consistent form.
+- **Tests:**
+  - `app.platform.players.ui10.test.ts`: override read and scope, 6 invalid patches return 400, valid saved, audit pinning and site scope, refused requests never query.
+  - `platformaudit.pg.test.ts` (real schema): own brands only, brand and actor names, site filter, paging across a shared timestamp.
+  - Browser role e2e 78/78 (+10 UI-10 checks: detail, bonus wallet sent, before→after confirm, override fence, audit page, nav).
+
+---
+
+## #59 — The System console hid who runs each platform, and several owner tools silently acted on the wrong platform (docs/42 UI-9) — FIXED (branch `fix/ui9-owner-console-gaps`)
+- **What (six gaps):**
+  - **Platform admins by raw uuid.** The owner saw only a COUNT of platform admins and appointed/revoked by pasting a user id. Refusals from the governance RPCs (`NO_SELF_ACTION`, `PLATFORM_NOT_FOUND`, `USER_NOT_FOUND`, `SUPERADMIN_PROTECTED`, `DEFAULT_MARKETER_LOCKED`, `INVALID_ROLE`, `NOT_A_PLATFORM_ADMIN`) were unmapped, so they surfaced as HTTP 500.
+  - **Tickets.** The owner's "New ticket" sent no platform, so the API refused it with 400 `INVALID_PLATFORM`, while the dialog said "Assigned to your platform admin". "Escalate to System" was offered to the System admin itself; it would only reassign the ticket to the owner.
+  - **Withdrawal pool.** For the owner, `/platform/pool` distributed across every brand of every platform while its copy said "your brands".
+  - **Registrar.** The registrar page always edited the default platform. A registrar the owner saved for the default platform was never used: provisioning for the default platform was hard-wired to the env Namecheap account.
+  - **Onboarding and domain import.** The onboarding capability banner and the registrar domain import took no platform. Bulk-imported brands were created without the owner's chosen platform.
+  - **Add-ons.** The add-on grant/revoke API existed but had no UI. A brand page only ever offered "Request", even to the System admin.
+- **Fix (API):**
+  - `GET /platform/platform-admins[?platform=]` (who, platform, home brand) and `GET /platform/users/search?q=` (cross-brand username/phone search, 2–64 characters, at most 25 rows, `LIKE` wildcards escaped, default-marketer flag). Both are System-owner only.
+  - Governance and pool codes are now mapped to 4xx.
+  - `actingPlatform()`: a platform admin is always pinned to its own platform; the owner may name one with `?platform=<uuid>` (a bad value returns 400). It is used by onboarding capabilities, the registrar domain import, `/platform/sites`, and the pool routes (distribute, dynamic, demand, history).
+  - Provisioner resolution is extracted to `provisionerfor.ts`. Each platform uses its own stored registrar. The default platform uses its stored registrar, falling back to env; any other platform with none gets no registrar and never borrows the owner's.
+  - Production has no stored registrar config, so this is behaviour-neutral live.
+- **Fix (web):**
+  - `PlatformAdminsPanel` lists current admins (revoke with an explicit "make them" role). Appoint works from search results; ineligible people are shown disabled with the reason, and every action is confirmed.
+  - `TicketsView` is role-aware: the owner picks the platform and gets matching routing copy, never sees "Escalate to System", and sees a Platform column. A platform admin is told its ticket goes straight to the System admin.
+  - `OwnerPlatformPicker` appears only for the owner, on the registrar, onboarding and pool pages. One choice at the top drives the capabilities banner, the domain import (listing and `platformId` on every onboard) and the manual form.
+  - `BrandAddons` gives the owner Assign/Remove with an inline effect statement (active for every player now, the price, and that gateway payments stop).
+- **Tests:**
+  - `app.platform.admins.ui9.test.ts` (list, filter, search, gating, 4xx mapping).
+  - `platformadmins.pg.test.ts` (real schema: literal `_`/`%`, default-marketer flag, platform resolution).
+  - `app.platform.registrar.ui9.test.ts` and `app.platform.pool.ui9.test.ts` (the owner's `?platform=` honoured and a platform admin pinned).
+  - `provisionerfor.test.ts` (4).
+  - `e2e_subscriptions_tickets.py`: an owner ticket without a platform is refused; with one it goes to that platform's admin at level 0.
+  - Browser role e2e 68/68 (+22 UI-9 checks).
+
+---
+
 ## #58 — Operators could join the affiliate/referral programme and earn on players they manage (docs/42 UI-12) — FIXED (branch `fix/ui12-operators-never-affiliates`, migration 0159; owner decision 2026-09-23: hide for all operators)
 - **What:** every operator tier could (API) enrol via `POST /affiliate/enroll`, read and share a referral code (`/me/referral`), request commission payouts, and — because the marketer routes used `requireRole("marketer")`, a MINIMUM rank — use every marketer earning route: a site admin could file a **cash-advance request** (`POST /affiliate/advances` → 200). In the DB, `fn_affiliate_enroll` enrolled admins / platform admins / the system admin, `fn_register_user` attributed sign-ups to an operator's code, the instant 5% perk paid any referrer whose role was `<> 'marketer'` (so every operator tier), and GGR accrual credited an affiliate row whatever its owner's role (e.g. a marketer later made admin). The web showed operators the "Apply" card on `/affiliate` (and treated `admin` as a marketer) and the "Invite & earn 5%" card on `/account`.
 - **Also fixed (found in DRIFT-1):** enrolment replaced the player's existing referral code with a new affiliate code, silently breaking every link the player had already shared. Enrolment now keeps it. `fn_gen_referral_code` also avoids other users' affiliate codes.

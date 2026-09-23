@@ -1,11 +1,10 @@
-name: Dynamic Pool Distribution
+name: Automatic Pool Distribution
 
-# Autonomy (#5): re-sizes every brand's withdrawal-pool cap from DEMAND once a day, with no superadmin.
-# Reuses the audited engine path (PlatformService.distributePoolDynamic -> fn_platform_distribute_pool).
-#
-# GUARDED + opt-in: the job is INERT until the operator sets the repo variable POOL_DAILY_TOTAL_CENTS
-# (the global envelope, integer cents). Without it the script cleanly no-ops. Requires repo secret
-# DATABASE_URL (Supabase session-pooler URL, :5432). Trigger manually anytime via "Run workflow".
+# POOL-1 (docs/46): once a day, applies each platform's automatic pool distribution (pool_auto_settings,
+# migration 0164). DYNAMIC (demand-based) is the default and works over each platform's CURRENT total unless a
+# daily total is configured on /platform/pool, so it never budgets more than the operator set. Audited
+# (source='auto') and each run's outcome is shown on /platform/pool. Requires repo secret DATABASE_URL.
+# Trigger manually anytime via "Run workflow" (optionally as a dry run).
 on:
   schedule:
     - cron: "15 21 * * *"   # 21:15 UTC daily = 00:15 EAT (Africa/Nairobi, UTC+3) — start of the new EAT day
@@ -31,10 +30,9 @@ jobs:
           cache: npm
       - name: Install
         run: npm ci
-      - name: Distribute pool by demand
+      - name: Apply each platform's automatic distribution
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          POOL_DAILY_TOTAL_CENTS: ${{ vars.POOL_DAILY_TOTAL_CENTS }}
           # Absolute anti-starvation floor (docs/25 §15.6, item A): every active brand is funded to at
           # least max(POOL_MIN_FLOOR_CENTS, targetRtp × robust expected turnover). Optional; the
           # per-site DB valve (migration 0119) is the always-on guarantee, this is the operator dial.

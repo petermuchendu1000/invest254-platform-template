@@ -39,7 +39,7 @@ export default function SupportInboxPage() {
   return (
     <>
       <PageHeader
-        title="Support inbox"
+        title="Player chats"
         subtitle="Every visitor inquiry, answered by the assistant and grounded in your knowledge base. Escalations are flagged for follow up."
         actions={
           <Toolbar>

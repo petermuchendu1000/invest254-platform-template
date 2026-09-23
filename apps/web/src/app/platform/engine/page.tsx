@@ -7,6 +7,7 @@ import { useToast } from '@/lib/toast/ToastProvider';
 import { PageHeader, Section } from '@/components/admin/ui';
 import { RequireCapability } from '@/components/auth/RequireCapability';
 import { useFlyStatus, useFlyRestart } from '@/lib/admin/hooks';
+import { formatDateTime } from '@/lib/format';
 
 function FlyBody() {
   const statusQ = useFlyStatus();
@@ -85,7 +86,7 @@ function FlyBody() {
 
           {lastResult && (
             <p className="text-xs text-muted">
-              Last restart: {new Date(lastResult.at).toLocaleString()} · {lastResult.machines} machine(s)
+              Last restart: {formatDateTime(lastResult.at)} · {lastResult.machines} machine(s)
             </p>
           )}
         </div>
@@ -97,7 +98,7 @@ function FlyBody() {
 export default function FlyAdminPage() {
   return (
     <>
-      <PageHeader title="Fly.io" subtitle="Deployment controls — restart the engine after shipping updates." />
+      <PageHeader title="Deployment" subtitle="Deployment controls — restart the engine after shipping updates." />
       <RequireCapability cap="backoffice.governance" title="Owner-only area" hint="System governance is managed by the system owner from their own console session.">
         <FlyBody />
       </RequireCapability>

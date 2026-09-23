@@ -1,5 +1,6 @@
 import type { Page, PageQuery } from "./paging.js";
 import type {
+  PlatformAuditRow, PlatformAuditQuery,
   AdminRepository, AdminOverview, AdminUserRow, AdminUserDetail, AdminWithdrawalRow, AdminAuditRow,
   AdminSystemLogRow, AdminSystemLogQuery,
   AdminUserListQuery, AdminWithdrawalListQuery, AdminTransactionRow, AdminTransactionListQuery,
@@ -68,6 +69,8 @@ export class AdminService {
   listTransactions(q: AdminTransactionListQuery): Promise<Page<AdminTransactionRow>> { return this.repo.listTransactions(q); }
 
   listAudit(q: PageQuery, siteId?: string): Promise<Page<AdminAuditRow>> { return this.repo.listAudit(q, siteId); }
+  /** docs/42 UI-10: audit across a platform's brands (platformId null = every brand). */
+  listPlatformAudit(q: PlatformAuditQuery): Promise<Page<PlatformAuditRow>> { return this.repo.listPlatformAudit(q); }
   listSystemLogs(q: AdminSystemLogQuery): Promise<Page<AdminSystemLogRow>> { return this.repo.listSystemLogs(q); }
 
   /** Manual wallet credit/debit (J3) — signed cents, mandatory reason; guards + audit live in the repo/RPC. */

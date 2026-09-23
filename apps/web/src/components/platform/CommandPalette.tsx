@@ -4,6 +4,7 @@ import * as React from 'react';
 import { useRouter } from 'next/navigation';
 import { usePlatformSites } from '@/lib/platform/hooks';
 import type { SiteWithConfig } from '@/lib/platform/endpoints';
+import type { NavGroup } from '@/components/console/nav';
 
 interface Cmd { id: string; label: string; hint?: string; group: string; run: () => void }
 
@@ -11,7 +12,7 @@ interface Cmd { id: string; label: string; hint?: string; group: string; run: ()
  * ⌘K / Ctrl-K command palette for the operator console: jump to any brand or run a top action in
  * two keystrokes. Keyboard-first (↑/↓ to move, ↵ to run, Esc to close), filtered live.
  */
-export function CommandPalette({ open, onClose }: { open: boolean; onClose: () => void }) {
+export function CommandPalette({ open, onClose, nav = [] }: { open: boolean; onClose: () => void; nav?: NavGroup[] }) {
   const router = useRouter();
   const sites = usePlatformSites();
   const [q, setQ] = React.useState('');
@@ -26,19 +27,19 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
 
   const commands = React.useMemo<Cmd[]>(() => {
     const brands = (sites.data?.sites ?? []) as SiteWithConfig[];
-    const actions: Cmd[] = [
-      { id: 'overview', label: 'Overview', hint: 'All brands', group: 'Go to', run: () => go('/platform') },
-      { id: 'onboard', label: 'Onboard a client', hint: 'New brand', group: 'Actions', run: () => go('/platform/onboard') },
-    ];
+    // UI-A: every page this tier can open (same labels as the sidebar), then its brands.
+    const actions: Cmd[] = nav.flatMap((g) => g.items.map((i) => ({
+      id: `go-${i.href}`, label: i.label, ...(i.hint ? { hint: i.hint } : {}), group: 'Go to', run: () => go(i.href),
+    })));
     const brandCmds: Cmd[] = brands.map((s) => ({
       id: `brand-${s.siteId}`,
       label: s.name,
       hint: `${s.slug}${s.primaryDomain ? ` · ${s.primaryDomain}` : ''}`,
-      group: 'Clients',
+      group: 'Brands',
       run: () => go(`/platform/clients/${s.siteId}`),
     }));
     return [...actions, ...brandCmds];
-  }, [sites.data, go]);
+  }, [sites.data, go, nav]);
 
   const filtered = React.useMemo(() => {
     const s = q.trim().toLowerCase();
@@ -75,7 +76,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
           ref={inputRef}
           value={q}
           onChange={(e) => setQ(e.target.value)}
-          placeholder="Search brands or actions…"
+          placeholder="Search pages and brands…"
           className="w-full border-b border-border bg-surface px-4 py-3.5 text-sm text-fg outline-none placeholder:text-muted"
         />
         <div className="max-h-[52vh] overflow-y-auto py-1">

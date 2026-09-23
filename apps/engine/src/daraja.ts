@@ -147,7 +147,7 @@ export class HttpDarajaClient implements DarajaClient {
 }
 
 /** Resolve the full Daraja config by layering DB overrides over env defaults (DB wins per field). */
-function resolveDarajaConfig(over: Partial<DarajaConfig>, env: NodeJS.ProcessEnv): DarajaConfig {
+export function resolveDarajaConfig(over: Partial<DarajaConfig>, env: NodeJS.ProcessEnv): DarajaConfig {
   const pick = (k: keyof DarajaConfig, envKey: string): string =>
     (over[k] as string | undefined) ?? env[envKey] ?? "";
   return {
@@ -161,7 +161,25 @@ function resolveDarajaConfig(over: Partial<DarajaConfig>, env: NodeJS.ProcessEnv
     b2cSecurityCredential: pick("b2cSecurityCredential", "MPESA_B2C_SECURITY_CREDENTIAL"),
     b2cResultUrl: pick("b2cResultUrl", "MPESA_B2C_RESULT_URL"),
     b2cTimeoutUrl: pick("b2cTimeoutUrl", "MPESA_B2C_TIMEOUT_URL"),
+    // PAY-0 (BUGLOG #62): the Paybill/Till rail, till number, separate B2C shortcode and B2C CommandID
+    // were loaded from mpesa_config but DROPPED here, so a Till brand's STK went out as a Paybill
+    // request and B2C always paid from the STK shortcode. Carried through now (DB, else env, else the
+    // client's defaults).
+    ...optionalDaraja(over, env),
   };
+}
+
+function optionalDaraja(over: Partial<DarajaConfig>, env: NodeJS.ProcessEnv): Partial<DarajaConfig> {
+  const out: Partial<DarajaConfig> = {};
+  const tt = over.transactionType ?? env.MPESA_TRANSACTION_TYPE;
+  if (tt === "paybill" || tt === "till") out.transactionType = tt;
+  const till = over.tillNumber ?? env.MPESA_TILL_NUMBER;
+  if (till) out.tillNumber = till;
+  const b2cSc = over.b2cShortcode ?? env.MPESA_B2C_SHORTCODE;
+  if (b2cSc) out.b2cShortcode = b2cSc;
+  const cmd = over.b2cCommandId ?? env.MPESA_B2C_COMMAND_ID;
+  if (cmd === "BusinessPayment" || cmd === "SalaryPayment" || cmd === "PromotionPayment") out.b2cCommandId = cmd;
+  return out;
 }
 
 /**
@@ -242,4 +260,40 @@ export function makeDarajaClientFromConfig(over: Partial<DarajaConfig> = {}, env
 /** Build the real client from env only when fully configured; otherwise the deterministic stub. */
 export function makeDarajaClient(env: NodeJS.ProcessEnv = process.env): DarajaClient {
   return makeDarajaClientFromConfig({}, env);
+}
+
+/**
+ * PAY-2 (docs/45): register the C2B Confirmation / Validation URLs for a Pay Bill or Till with Safaricom
+ * (Daraja C2B RegisterURL v2). Without this, Safaricom never tells us about payments made from the M-PESA
+ * menu, so the manual Pay Bill rail cannot verify anything. Uses the app's consumer key/secret (the same
+ * Daraja app that owns the shortcode). Returns Safaricom's verdict; never throws for a Safaricom "no".
+ */
+export interface C2bRegisterArgs { shortCode: string; responseType: "Completed" | "Cancelled"; confirmationUrl: string; validationUrl: string; }
+export interface C2bRegisterResult { ok: boolean; message: string }
+export async function registerC2bUrls(cfg: Pick<DarajaConfig, "env" | "consumerKey" | "consumerSecret">, a: C2bRegisterArgs, fetchImpl: typeof fetch = fetch): Promise<C2bRegisterResult> {
+  if (!cfg.consumerKey || !cfg.consumerSecret) return { ok: false, message: "The M-Pesa consumer key and secret are not set (M-Pesa defaults → Credentials)." };
+  const base = BASES[cfg.env];
+  const auth = Buffer.from(`${cfg.consumerKey}:${cfg.consumerSecret}`).toString("base64");
+  let token: string;
+  try {
+    const t = await fetchImpl(`${base}/oauth/v1/generate?grant_type=client_credentials`, { headers: { Authorization: `Basic ${auth}` } });
+    if (!t.ok) return { ok: false, message: `Safaricom refused the app credentials (HTTP ${t.status}).` };
+    token = String(((await t.json()) as { access_token?: string }).access_token ?? "");
+    if (!token) return { ok: false, message: "Safaricom returned no access token." };
+  } catch (e) {
+    return { ok: false, message: `Could not reach Safaricom: ${(e as Error).message}` };
+  }
+  try {
+    const res = await fetchImpl(`${base}/mpesa/c2b/v2/registerurl`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ ShortCode: a.shortCode, ResponseType: a.responseType, ConfirmationURL: a.confirmationUrl, ValidationURL: a.validationUrl || a.confirmationUrl }),
+    });
+    const j = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    const code = String(j.ResponseCode ?? j.responseCode ?? "");
+    const desc = String(j.ResponseDescription ?? j.errorMessage ?? j.ResponseDesc ?? `HTTP ${res.status}`);
+    return res.ok && (code === "0" || code === "00000000" || /success/i.test(desc)) ? { ok: true, message: desc } : { ok: false, message: desc };
+  } catch (e) {
+    return { ok: false, message: `Could not reach Safaricom: ${(e as Error).message}` };
+  }
 }

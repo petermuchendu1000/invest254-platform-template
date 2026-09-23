@@ -76,6 +76,7 @@ const PROBES: Record<Capability, Probe | { exempt: string }> = {
   "console.system": (api, t) => req(api, "GET", "/platform/platforms", t),
   "console.site.owner_settings": (api, t) => req(api, "PATCH", `/platform/sites/${SITE_A}/owner`, t, { ownerUserId: null }),
   "console.performance": (api, t) => req(api, "GET", "/platform/performance", t),
+  "console.payment_accounts": (api, t) => req(api, "GET", "/platform/payment-scopes", t),
   "earn.referrals": (api, t) => req(api, "GET", "/me/referral", t),
   "earn.marketer_dashboard": (api, t) => req(api, "GET", "/affiliate/advances", t),
   "console.live": { exempt: "engine WebSocket (multiengine `subscribe_platform`), not an API route — covered by multiengine tests" },

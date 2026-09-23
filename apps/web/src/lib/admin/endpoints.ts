@@ -1,4 +1,5 @@
 import { apiFetch } from '@/lib/api/client';
+import type { C2bConfigRow, C2bConfigPatch } from '@/lib/admin/types';
 import type { Paginated, MarketerExpensesResponse, MarketerExpenseRow, AdminAdvanceDto } from '@/lib/api/types';
 import type {
   AdjustBalanceResult,
@@ -210,6 +211,10 @@ export const adminApi = {
   updateGameConfig: (t: string, patch: GameConfigPatch, site?: string) =>
     apiFetch<GameConfigRow>('/admin/game-config', { method: 'PATCH', token: t, body: patch, ...(site ? { query: { site } } : {}) }),
   mpesaConfig: (t: string) => apiFetch<MpesaConfigRow>('/admin/mpesa-config', { token: t }),
+  // PAY-2 (docs/45): C2B Pay Bill settings + Safaricom URL registration (owner tier).
+  c2bConfig: (t: string) => apiFetch<C2bConfigRow>('/admin/c2b-config', { token: t }),
+  updateC2bConfig: (t: string, patch: C2bConfigPatch) => apiFetch<C2bConfigRow>('/admin/c2b-config', { method: 'PATCH', token: t, body: patch }),
+  registerC2b: (t: string) => apiFetch<{ ok: boolean; message: string; config: C2bConfigRow }>('/admin/c2b-config/register', { method: 'POST', token: t }),
   updateMpesaConfig: (t: string, patch: MpesaConfigPatch) =>
     apiFetch<MpesaConfigRow>('/admin/mpesa-config', { method: 'PATCH', token: t, body: patch }),
   seeds: (t: string, limit = 30) => apiFetch<{ items: AdminSeedRow[] }>('/admin/seeds', { token: t, query: { limit } }),
@@ -298,8 +303,8 @@ export const adminApi = {
     apiFetch<{ items: NotificationTemplateRow[] }>('/admin/notification-templates', { token: t }),
   notificationAudienceCount: (t: string, audience: BroadcastAudienceInput) =>
     apiFetch<{ count: number }>('/admin/notifications/audience-count', { method: 'POST', token: t, body: { audience } }),
-  notificationBroadcast: (t: string, templateKey: string, audience: BroadcastAudienceInput) =>
-    apiFetch<{ recipients: number }>('/admin/notifications/broadcast', { method: 'POST', token: t, body: { templateKey, audience } }),
+  notificationBroadcast: (t: string, templateKey: string, audience: BroadcastAudienceInput, text?: { title: string; body: string }) =>
+    apiFetch<{ recipients: number }>('/admin/notifications/broadcast', { method: 'POST', token: t, body: { templateKey, audience, ...(text ?? {}) } }),
   notificationResolveCategory: (t: string, category: string) =>
     apiFetch<{ cleared: number }>('/admin/notifications/resolve-category', { method: 'POST', token: t, body: { category } }),
 };

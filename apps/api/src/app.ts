@@ -29,6 +29,8 @@ import { registerSupportRoutes, type SupportDeps } from "./app.support.js";
 import { registerSubscriptionRoutes } from "./app.subscriptions.js";
 import { registerAddonRoutes, type AddonDeps } from "./app.addons.js";
 import { registerTicketRoutes } from "./app.tickets.js";
+import { registerPaymentScopeRoutes } from "./app.paymentscopes.js";
+import { registerC2bRoutes } from "./app.c2b.js";
 import type { PlatformOnboardDeps, RegistrarConfigDeps } from "./app.platform.js";
 import type { Server } from "node:http";
 
@@ -140,7 +142,7 @@ export interface ApiDeps {
     | "requestPayout" | "approvePayout" | "completePayout" | "rejectPayout" | "siteOfPayout" | "recordClick">;
   /** Admin back office (J2): dashboard reads, user status, commission rate, withdrawal queue, audit. */
   admin: Pick<AdminService,
-    "overview" | "listUsers" | "getUserDetail" | "listUserActivity" | "setUserStatus" | "setCommissionRate" | "setUserRole" | "deleteUser" | "updateUserDetails" | "listWithdrawals" | "listTransactions" | "listAudit" | "listSystemLogs"
+    "overview" | "listUsers" | "getUserDetail" | "listUserActivity" | "setUserStatus" | "setCommissionRate" | "setUserRole" | "deleteUser" | "updateUserDetails" | "listWithdrawals" | "listTransactions" | "listAudit" | "listPlatformAudit" | "listSystemLogs"
     | "adjustBalance" | "resetBalanceToLastFunded" | "listDeposits" | "depositsReconcile" | "reportDaily" | "reportByUser" | "reportDay"
     | "getGameConfig" | "updateGameConfig" | "getMpesaConfig" | "updateMpesaConfig" | "rtpMonitor" | "realCashRtp" | "configChangeReview" | "listSeeds" | "rotateSeed"
     | "getWithdrawalPool" | "setWithdrawalPool" | "setDefaultPool" | "getWithdrawalsEnabled" | "setWithdrawalsEnabled"
@@ -155,7 +157,7 @@ export interface ApiDeps {
     | "listPaymentProviders" | "setProviderGlobal" | "setProviderSite" | "clearProviderSite"
     | "gatewaySchemas" | "getProviderConfig" | "setProviderConfig" | "testProviderConnection"
     | "listPlatforms" | "platformsOverview" | "createPlatform" | "updatePlatform" | "assignSiteToPlatform"
-    | "appointPlatformAdmin" | "revokePlatformAdmin" | "platformOfSite">;
+    | "appointPlatformAdmin" | "revokePlatformAdmin" | "platformOfSite" | "listPlatformAdmins" | "searchUsers">;
   /** Subscription plans + per-platform billing/status (Issue 2). Absent -> /subscriptions routes off. */
   subscriptions?: SubscriptionService | undefined;
   /** Internal escalation ticketing (Issue 2). Absent -> /tickets routes off. */
@@ -268,6 +270,12 @@ export interface ApiDeps {
    * domain across Cloudflare + Namecheap. Optional; when absent the /platform/onboard route 503s.
    */
   platformOnboard?: PlatformOnboardDeps;
+  /** PAY-1 (docs/43): per-platform / per-brand payment accounts. Absent -> the routes answer 503. */
+  paymentScopes?: import("@invest254/engine").PaymentScopeService | undefined;
+  /** PAY-2 (docs/45): C2B Pay Bill settings + Safaricom URL registration (owner tier). */
+  c2b?: import("@invest254/engine").C2bConfigService | undefined;
+  /** POOL-1 (docs/46): per-brand pool overview + automatic distribution. */
+  poolOps?: import("@invest254/engine").PoolOpsService | undefined;
   /** Per-platform domain-registrar (Namecheap) configuration service (Issue 1 #3). */
   registrarConfig?: RegistrarConfigDeps;
   /** Add-on catalog / entitlements / requests service (Issue 2). */
@@ -391,6 +399,8 @@ export function createRouter(deps: ApiDeps): Router {
   registerSupportRoutes(router, deps);
   registerSubscriptionRoutes(router, deps);
   registerAddonRoutes(router, deps);
+  registerPaymentScopeRoutes(router, deps);
+  registerC2bRoutes(router, deps);
   registerTicketRoutes(router, deps);
   return router;
 }

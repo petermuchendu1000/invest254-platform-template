@@ -38,7 +38,9 @@ export function Button({
       className={cn(
         'inline-flex items-center justify-center gap-2 rounded-brand font-medium transition',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
-        'disabled:opacity-50 disabled:pointer-events-none',
+        // UI-B: a disabled button looks disabled whatever its colour (a faded green "Save" read as live), and keeps
+        // pointer events so a `title` can say WHY it is disabled. The disabled attribute still blocks clicks.
+        'disabled:cursor-not-allowed disabled:border-transparent disabled:bg-surface-2 disabled:text-muted disabled:opacity-70 disabled:hover:opacity-70',
         variants[variant],
         sizes[size],
         fullWidth && 'w-full',

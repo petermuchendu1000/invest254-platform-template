@@ -1,4 +1,4 @@
-export function formatDateTime(ms: number): string {
+export function formatDateTime(ms: number | string): string {
   return new Date(ms).toLocaleString('en-KE', { dateStyle: 'medium', timeStyle: 'short' });
 }
 
@@ -28,6 +28,27 @@ export function formatRelativeTime(ms: number, nowMs: number = Date.now()): stri
   if (h < 24) return `${h}h`;
   const d = Math.floor(h / 24);
   return `${d}d`;
+}
+
+/**
+ * "Time ago" for operator tables (UI-B): "just now", "30s ago", "5m ago", "3h ago", "2d ago"; older than a
+ * week shows the date instead. Replaces `${formatRelativeTime(x)} ago`, which rendered "now ago".
+ */
+export function formatAgo(ms: number, nowMs: number = Date.now()): string {
+  const diff = nowMs - ms;
+  if (diff < 5_000) return 'just now';
+  if (diff >= 7 * 86_400_000) return formatDate(ms);
+  return `${formatRelativeTime(ms, nowMs)} ago`;
+}
+
+/** Date only, one Kenyan format everywhere (e.g. "23 Sept 2026") — never the browser's "9/23/2026". */
+export function formatDate(ms: number | string): string {
+  return new Date(ms).toLocaleDateString('en-KE', { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
+/** Counts with Kenyan grouping regardless of the browser locale ("1,234,567"). */
+export function formatNumber(n: number): string {
+  return n.toLocaleString('en-KE');
 }
 
 /** Clock time only (e.g. "14:05") — used for chat timestamps. */

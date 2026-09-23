@@ -128,6 +128,12 @@ def main():
     tk2=q1(cur,"select escalation_level,assignee_role from fn_ticket_create(%s,%s,%s,%s,%s,%s,%s)",[padm,"platform_admin",None,None,"Infra","engine lag","critical"])
     check("platform-admin ticket starts at level 1 (system)", tk2==(1,"platform_superadmin"), str(tk2))
 
+    print("\n== System-owner-issued ticket -> the chosen platform's admin (docs/42 UI-9) ==")
+    expect_error(cur,"select fn_ticket_create(%s,%s,%s,%s,%s,%s,%s)",[ACTOR,SYS,None,None,"No target","x","low"],"INVALID_PLATFORM","the owner must name a platform (the console now asks for one)")
+    tk4=q1(cur,"select escalation_level,assignee_role,sla_due_at from fn_ticket_create(%s,%s,%s,%s,%s,%s,%s)",[ACTOR,SYS,ph,None,"Check KYC queue","please review","medium"])
+    check("owner ticket -> level 0 on the named platform's admin, SLA set", tk4[0]==0 and tk4[1]=="platform_admin" and tk4[2] is not None, str(tk4))
+    check("that platform's admin is notified", q1(cur,"select count(*) from user_notifications where user_id=%s and category='ticket'",[padm])[0]>=2)
+
     print("\n== AUTO escalation (SLA breach) ==")
     tk3=q1(cur,"select id from fn_ticket_create(%s,%s,%s,%s,%s,%s,%s)",[sadm,"admin",None,None,"Slow","x","low"])[0]
     q1(cur,"update tickets set sla_due_at=now()-interval '1 minute' where id=%s",[tk3])

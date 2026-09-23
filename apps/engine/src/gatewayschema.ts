@@ -141,7 +141,10 @@ export interface SplitConfig { settings: Record<string, string>; secrets: Record
 
 /** Split a flat {key:value} submission into non-secret settings + secret values, ignoring unknown keys. */
 export function splitSubmission(code: string, values: Record<string, unknown>): SplitConfig {
-  const s = getSchema(code);
+  return splitSubmissionWith(getSchema(code), values);
+}
+/** splitSubmission for an explicit schema (PAY-1: scoped M-Pesa has its own schema). */
+export function splitSubmissionWith(s: GatewaySchema, values: Record<string, unknown>): SplitConfig {
   const settings: Record<string, string> = {};
   const secrets: Record<string, string> = {};
   for (const f of s.fields) {
@@ -167,7 +170,10 @@ export function validateConfig(
   split: SplitConfig,
   existingSecretKeys: string[] = [],
 ): ValidationIssue[] {
-  const s = getSchema(code);
+  return validateConfigWith(getSchema(code), split, existingSecretKeys);
+}
+/** validateConfig for an explicit schema (PAY-1). */
+export function validateConfigWith(s: GatewaySchema, split: SplitConfig, existingSecretKeys: string[] = []): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
   const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   const urlRe = /^https?:\/\/[^\s]+$/;

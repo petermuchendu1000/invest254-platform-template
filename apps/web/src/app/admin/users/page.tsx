@@ -6,10 +6,10 @@ import { Skeleton } from '@/components/ui/Skeleton';
 import { Button } from '@/components/ui/Button';
 import { Money } from '@/components/ui/Money';
 import { StatusBadge } from '@/components/ui/Badge';
-import { formatExact, formatRelativeTime } from '@/lib/format';
+import { formatExact, formatAgo, formatNumber } from '@/lib/format';
 import { ApiError } from '@/lib/api/client';
 import { useToast } from '@/lib/toast/ToastProvider';
-import { PageHeader, StatCard, Section, TableWrap, Th, Td, Empty, Toolbar, FilterSelect, ConfirmButton } from '@/components/admin/ui';
+import { PageHeader, StatCard, Section, TableWrap, Th, Td, Empty, Toolbar, FilterSelect, ConfirmButton, SearchInput } from '@/components/admin/ui';
 import { useUsers, useOverview, useBulkAction, type UsersFilter } from '@/lib/admin/hooks';
 import type { AdminUserRow, BulkAction, BulkActionInput, NotificationLevel } from '@/lib/admin/types';
 
@@ -121,12 +121,7 @@ export default function UsersPage() {
       </Section>
 
       <Toolbar>
-        <input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search username or phone…"
-          className="h-9 w-full max-w-xs rounded-lg border border-border bg-surface-2 px-3 text-sm text-fg outline-none focus:border-accent sm:w-72"
-        />
+        <SearchInput value={search} onChange={setSearch} placeholder="Search username or phone…" className="sm:w-72" />
         <FilterSelect value={role} onChange={setRole} options={ROLE_OPTS} />
         <FilterSelect value={status} onChange={setStatus} options={STATUS_OPTS} />
         <Button variant="outline" size="sm" onClick={() => setShowAdv((v) => !v)}>
@@ -381,7 +376,7 @@ function UserRow({ r, selected, onToggle }: { r: AdminUserRow; selected: boolean
       <Td className="text-right tabular-nums text-down"><Money cents={r.withdrawalsCents} /></Td>
       <Td className="text-right tabular-nums"><Money cents={r.turnoverCents} /></Td>
       <Td className={'text-right font-medium tabular-nums ' + (r.ggrCents >= 0 ? 'text-up' : 'text-down')}><Money cents={r.ggrCents} /></Td>
-      <Td className="text-right tabular-nums text-muted">{r.betCount.toLocaleString()}</Td>
+      <Td className="text-right tabular-nums text-muted">{formatNumber(r.betCount)}</Td>
       <Td>
         {r.lastTxAtMs && r.lastTxKind ? (
           <span className="flex flex-col leading-tight">
@@ -389,16 +384,16 @@ function UserRow({ r, selected, onToggle }: { r: AdminUserRow; selected: boolean
               {r.lastTxKind}
               {r.lastTxAmountCents != null ? <span className="ml-1 tabular-nums text-muted"><Money cents={r.lastTxAmountCents} /></span> : null}
             </span>
-            <span className="text-[10px] text-muted" title={formatExact(r.lastTxAtMs)}>{r.lastTxStatus ? `${r.lastTxStatus} · ` : ''}{formatRelativeTime(r.lastTxAtMs)} ago</span>
+            <span className="text-[10px] text-muted" title={formatExact(r.lastTxAtMs)}>{r.lastTxStatus ? `${r.lastTxStatus} · ` : ''}{formatAgo(r.lastTxAtMs)}</span>
           </span>
         ) : (
           <span className="text-xs text-muted">No transactions</span>
         )}
       </Td>
       <Td className="whitespace-nowrap text-right text-xs text-muted">
-        {r.lastActiveAtMs ? <span title={formatExact(r.lastActiveAtMs)}>{formatRelativeTime(r.lastActiveAtMs)} ago</span> : '—'}
+        {r.lastActiveAtMs ? <span title={formatExact(r.lastActiveAtMs)}>{formatAgo(r.lastActiveAtMs)}</span> : '—'}
       </Td>
-      <Td className="whitespace-nowrap text-right text-xs text-muted"><span title={formatExact(r.createdAtMs)}>{formatRelativeTime(r.createdAtMs)} ago</span></Td>
+      <Td className="whitespace-nowrap text-right text-xs text-muted"><span title={formatExact(r.createdAtMs)}>{formatAgo(r.createdAtMs)}</span></Td>
       <Td className="text-right"><Link href={href} className="text-sm font-medium text-accent hover:underline">Open</Link></Td>
     </tr>
   );

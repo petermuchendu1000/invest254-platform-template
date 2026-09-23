@@ -8,6 +8,8 @@ import {
 } from '@/lib/platform/hooks';
 import type { GatewayFieldDto, ConnResultDto } from '@/lib/platform/endpoints';
 import { GatewayLogo } from '@/components/platform/GatewayLogo';
+import { gatewayCopy } from '@/lib/payments/gatewayCopy';
+import { formatDateTime } from '@/lib/format';
 
 const STATUS_STYLES: Record<ConnResultDto['status'], string> = {
   valid: 'bg-emerald-500/15 text-emerald-500 border-emerald-500/30',
@@ -16,7 +18,7 @@ const STATUS_STYLES: Record<ConnResultDto['status'], string> = {
   not_configured: 'bg-border/40 text-muted border-border',
 };
 const STATUS_LABEL: Record<ConnResultDto['status'], string> = {
-  valid: 'Connection valid', invalid: 'Rejected', unreachable: 'Unreachable', not_configured: 'Incomplete',
+  valid: 'Connected', invalid: 'Rejected by the gateway', unreachable: 'Could not reach the gateway', not_configured: 'Details missing',
 };
 
 /** Dedicated configuration page for ONE payment gateway: availability + credentials + safe test. */
@@ -29,7 +31,7 @@ export function GatewayDetail({ code }: { code: string }) {
     return (
       <div className="rounded-2xl border border-border bg-surface-2 p-6">
         <p className="text-sm text-fg">Unknown gateway “{code}”.</p>
-        <Link href="/platform/payments" className="mt-2 inline-block text-sm text-accent hover:underline">← Back to Payments</Link>
+        <Link href="/platform/payments" className="mt-2 inline-block text-sm text-accent hover:underline">← Back to Gateways</Link>
       </div>
     );
   }
@@ -46,7 +48,6 @@ function Detail({ code, schema, config }: { code: string; schema: import('@/lib/
 
   const provider = providers?.providers.find((p) => p.code === code);
   const sites = sitesData?.sites ?? [];
-  const [siteId, setSiteId] = useState('');
   const overrideMap = useMemo(() => {
     const m = new Map<string, boolean>();
     for (const o of providers?.overrides ?? []) if (o.providerCode === code) m.set(o.siteId, o.enabled);
@@ -104,34 +105,35 @@ function Detail({ code, schema, config }: { code: string; schema: import('@/lib/
 
   const configuredCount = Object.values(config.secretMeta).filter((m) => m?.set).length;
   const enabled = provider?.enabledGlobal ?? false;
-  const overrideState: 'inherit' | 'on' | 'off' = !siteId ? 'inherit' : !overrideMap.has(siteId) ? 'inherit' : overrideMap.get(siteId) ? 'on' : 'off';
+  const copy = gatewayCopy(code, schema.blurb, schema.playerAvailable);
+  const stateOf = (sid: string): 'inherit' | 'on' | 'off' => (!overrideMap.has(sid) ? 'inherit' : overrideMap.get(sid) ? 'on' : 'off');
+  const pill = !schema.playerAvailable ? { label: 'Coming soon', cls: 'bg-info/15 text-info' }
+    : !config.hasSecret ? { label: 'Not set up', cls: 'bg-surface-2 text-muted' }
+      : enabled ? { label: 'Live for players', cls: 'bg-up/15 text-up' } : { label: 'Ready · not offered', cls: 'bg-warn/15 text-warn' };
+  // Setup checklist (Stripe onboarding pattern): what is done, what is next.
+  const steps: Array<{ done: boolean; label: string }> = [
+    { done: config.hasSecret, label: 'Credentials saved' },
+    { done: result?.status === 'valid', label: 'Connection tested' },
+    ...(schema.playerAvailable ? [{ done: enabled || overrideMap.size > 0, label: 'Offered to players' }] : []),
+  ];
 
   return (
     <div className="flex flex-col gap-5">
       {/* Breadcrumb + header */}
       <div className="flex flex-col gap-2">
-        <Link href="/platform/payments" className="text-xs text-muted hover:text-fg">← Payments</Link>
+        <Link href="/platform/payments" className="text-xs text-muted hover:text-fg">← Gateways</Link>
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
+          <div className="flex min-w-0 items-center gap-3">
             <GatewayLogo code={code} name={schema.displayName} size="lg" />
-            <div>
-              <h1 className="text-xl font-semibold tracking-tight text-fg">{schema.displayName}</h1>
-              <p className="text-xs text-muted">{schema.blurb}</p>
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <h1 className="text-xl font-semibold tracking-tight text-fg md:text-2xl">{schema.displayName}</h1>
+                <span className={`whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium ${pill.cls}`}>{pill.label}</span>
+              </div>
+              <p className="mt-0.5 text-sm text-muted">{copy.summary}</p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            {schema.playerAvailable ? (
-              <span className={['rounded-full border px-2.5 py-1 text-xs font-medium', enabled ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-500' : 'border-border bg-border/30 text-muted'].join(' ')}>
-                {enabled ? 'Live for players' : 'Hidden'}
-              </span>
-            ) : (
-              <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2.5 py-1 text-xs font-medium text-amber-500">Config only</span>
-            )}
-            <span className={['rounded-full border px-2.5 py-1 text-xs font-medium', config.exists ? 'border-accent/30 bg-accent/10 text-accent' : 'border-border text-muted'].join(' ')}>
-              {config.hasSecret ? 'Configured' : config.exists ? 'Settings only' : 'Not configured'}
-            </span>
-            <a href={schema.docsUrl} target="_blank" rel="noreferrer" className="rounded-lg border border-border px-3 py-1.5 text-xs font-semibold text-fg hover:bg-surface-2">Docs ↗</a>
-          </div>
+          <a href={schema.docsUrl} target="_blank" rel="noreferrer" className="inline-flex h-9 items-center rounded-brand border border-border px-3 text-sm font-medium text-fg hover:bg-surface-2">{schema.displayName} docs ↗</a>
         </div>
       </div>
 
@@ -139,8 +141,8 @@ function Detail({ code, schema, config }: { code: string; schema: import('@/lib/
         {/* Credentials & settings (spans 2 cols on desktop) */}
         <section className="flex flex-col gap-4 rounded-2xl border border-border bg-surface-2 p-5 lg:col-span-2">
           <div>
-            <h2 className="text-base font-semibold text-fg">Credentials &amp; settings</h2>
-            <p className="mt-1 text-sm text-muted">Secrets are encrypted with AES-256-GCM before storage. Leave a secret blank to keep the current value.</p>
+            <h2 className="text-base font-semibold text-fg">Account details</h2>
+            <p className="mt-1 text-sm text-muted">Keys are encrypted and never shown again. Leave a key blank to keep the saved one.</p>
           </div>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             {schema.fields.map((f) => (
@@ -151,13 +153,13 @@ function Detail({ code, schema, config }: { code: string; schema: import('@/lib/
           <div className="flex flex-wrap items-center gap-2">
             <button type="button" onClick={onSave} disabled={save.isPending}
               className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-accent-fg transition hover:opacity-90 disabled:opacity-50">
-              {save.isPending ? 'Saving…' : 'Save configuration'}
+              {save.isPending ? 'Saving…' : 'Save'}
             </button>
             <button type="button" onClick={onTest} disabled={test.isPending}
               className="rounded-lg border border-border px-4 py-2 text-sm font-semibold text-fg transition hover:bg-surface disabled:opacity-50">
               {test.isPending ? 'Testing…' : 'Test connection'}
             </button>
-            {saved && <span className="text-xs font-medium text-emerald-500">✓ Saved &amp; encrypted</span>}
+            {saved && <span className="text-xs font-medium text-up">✓ Saved</span>}
           </div>
           {result && (
             <div className={['flex items-start gap-2 rounded-lg border px-3 py-2 text-xs', STATUS_STYLES[result.status]].join(' ')}>
@@ -167,56 +169,64 @@ function Detail({ code, schema, config }: { code: string; schema: import('@/lib/
           {serverError && <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-500">{serverError}</div>}
         </section>
 
-        {/* Availability + meta (side column) */}
+        {/* Setup + availability (side column) */}
         <div className="flex flex-col gap-5">
+          <section className="flex flex-col gap-3 rounded-2xl border border-border bg-surface-2 p-5" aria-label="Setup">
+            <h2 className="text-base font-semibold text-fg">Setup</h2>
+            <ol className="flex flex-col gap-2 text-sm">
+              {steps.map((st, i) => (
+                <li key={st.label} className="flex items-center gap-2">
+                  <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold ${st.done ? 'bg-up text-white' : 'border border-border text-muted'}`}>{st.done ? '✓' : i + 1}</span>
+                  <span className={st.done ? 'text-fg' : 'text-muted'}>{st.label}</span>
+                </li>
+              ))}
+            </ol>
+            <p className="text-xs text-muted">{configuredCount} key{configuredCount === 1 ? '' : 's'} saved · last changed {config.updatedAt ? formatDateTime(config.updatedAt) : 'never'}</p>
+          </section>
+
           <section className="flex flex-col gap-3 rounded-2xl border border-border bg-surface-2 p-5">
-            <h2 className="text-base font-semibold text-fg">Availability</h2>
+            <h2 className="text-base font-semibold text-fg">Offered to players</h2>
             {schema.playerAvailable ? (
               <>
-            <div className="flex items-center justify-between gap-3 rounded-xl border border-border px-4 py-3">
-              <div className="min-w-0">
-                <div className="text-sm font-medium text-fg">Show to all clients</div>
-                <div className="text-xs text-muted">{enabled ? 'Visible on the deposit page (unless overridden)' : 'Hidden everywhere (unless overridden)'}</div>
-              </div>
-              <ToggleSwitch checked={enabled} disabled={setGlobal.isPending} onChange={(next) => setGlobal.mutate({ code, enabled: next })} label={`Toggle ${schema.displayName}`} />
-            </div>
-            <div className="flex flex-col gap-2 rounded-xl border border-border p-4">
-              <div className="text-sm font-medium text-fg">Per-client override</div>
-              <select value={siteId} onChange={(e) => setSiteId(e.target.value)} className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-fg outline-none focus:border-accent">
-                <option value="">Select a client…</option>
-                {sites.map((s) => <option key={s.siteId} value={s.siteId}>{s.name} ({s.slug})</option>)}
-              </select>
-              {siteId && (
-                <div className="flex rounded-lg border border-border bg-surface p-0.5" role="group">
-                  {(['inherit', 'on', 'off'] as const).map((opt) => (
-                    <button key={opt} type="button" disabled={setSite.isPending}
-                      onClick={() => setSite.mutate({ code, siteId, enabled: opt === 'inherit' ? null : opt === 'on' })}
-                      className={['flex-1 rounded-md px-3 py-1 text-xs font-semibold capitalize transition',
-                        overrideState === opt ? 'bg-accent text-accent-fg' : 'text-muted hover:text-fg'].join(' ')}>
-                      {opt}
-                    </button>
-                  ))}
+                <div className="flex items-center justify-between gap-3 rounded-xl border border-border px-4 py-3">
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium text-fg">Every brand on the System accounts</div>
+                    <div className="text-xs text-muted">{enabled ? 'Shown on the deposit screen' : 'Not shown'}{!config.hasSecret && !enabled ? ' · save the account details first' : ''}</div>
+                  </div>
+                  <ToggleSwitch checked={enabled} disabled={setGlobal.isPending || (!enabled && !config.hasSecret)} onChange={(next) => setGlobal.mutate({ code, enabled: next })} label={`Offer ${schema.displayName} to every brand`} />
                 </div>
-              )}
-              <p className="text-[11px] text-muted">“Inherit” follows the global switch; On/Off forces it for this client only.</p>
-            </div>
+                <div className="flex flex-col gap-2">
+                  <div className="text-sm font-medium text-fg">Per brand</div>
+                  <p className="text-xs text-muted">“Default” follows the switch above; On or Off overrides it for that brand only.</p>
+                  <ul className="flex max-h-80 flex-col divide-y divide-border overflow-y-auto rounded-xl border border-border" aria-label="Per-brand availability">
+                    {sites.filter((s2) => s2.status === 'active').map((s2) => {
+                      const st = stateOf(s2.siteId);
+                      return (
+                        <li key={s2.siteId} className="flex items-center justify-between gap-2 px-3 py-2">
+                          <span className="min-w-0 truncate text-sm">{s2.name}</span>
+                          <div className="flex shrink-0 rounded-lg border border-border bg-surface p-0.5" role="radiogroup" aria-label={`${schema.displayName} for ${s2.name}`}>
+                            {(['inherit', 'on', 'off'] as const).map((opt) => (
+                              <button key={opt} type="button" role="radio" aria-checked={st === opt} disabled={setSite.isPending}
+                                onClick={() => setSite.mutate({ code, siteId: s2.siteId, enabled: opt === 'inherit' ? null : opt === 'on' })}
+                                className={['rounded-md px-2 py-0.5 text-xs font-medium transition', st === opt ? 'bg-surface-2 text-fg ring-1 ring-border' : 'text-muted hover:text-fg'].join(' ')}>
+                                {opt === 'inherit' ? 'Default' : opt === 'on' ? 'On' : 'Off'}
+                              </button>
+                            ))}
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
               </>
             ) : (
-              <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-4">
-                <div className="text-sm font-medium text-amber-500">Player deposits not available yet</div>
+              <div className="rounded-xl border border-info/30 bg-info/5 p-4">
+                <div className="text-sm font-medium text-info">Coming soon for players</div>
                 <p className="mt-1 text-xs text-muted">
-                  {schema.displayName} has no live deposit rail in the app yet, so it can’t be switched “Live for players”.
-                  Store &amp; test its credentials here now — it will be offered to players automatically once its rail ships.
+                  Players can’t pay with {schema.displayName} in the app yet. Save and test the account now — it can be offered as soon as it is switched on in the app.
                 </p>
               </div>
             )}
-          </section>
-
-          <section className="flex flex-col gap-2 rounded-2xl border border-border bg-surface-2 p-5 text-xs text-muted">
-            <h2 className="text-base font-semibold text-fg">Status</h2>
-            <div className="flex justify-between"><span>Secrets on file</span><span className="text-fg">{configuredCount}</span></div>
-            <div className="flex justify-between"><span>Last updated</span><span className="text-fg">{config.updatedAt ? new Date(config.updatedAt).toLocaleString() : '—'}</span></div>
-            <div className="flex justify-between"><span>Encryption</span><span className="text-fg">AES-256-GCM</span></div>
           </section>
         </div>
       </div>

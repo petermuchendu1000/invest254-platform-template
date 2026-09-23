@@ -163,7 +163,7 @@ export const api = {
   createPayheroDeposit: (token: string, body: { amount: number; phone: string }) =>
     apiFetch<{ transactionId: string; reference: string; checkoutRequestId: string }>('/deposits/payhero', { method: 'POST', token, body }),
   // Pay Bill (manual C2B) deposit: public display config + authed claim-by-code.
-  paybillInfo: () => apiFetch<PaybillInfoDto>('/deposits/paybill/info'),
+  paybillInfo: (site?: string) => apiFetch<PaybillInfoDto>('/deposits/paybill/info', { query: { site } }),
   claimPaybill: (token: string, body: { code: string }) =>
     apiFetch<PaybillClaimDto>('/deposits/paybill/claim', { method: 'POST', token, body }),
   createWithdrawal: (token: string, body: { amount: number; phone: string }) =>

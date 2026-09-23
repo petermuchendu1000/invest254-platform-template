@@ -10,6 +10,7 @@ import {
 import { api, type TransactionFilter } from '@/lib/api/endpoints';
 import type { Paginated, TransactionDto, LedgerEntryDto } from '@/lib/api/types';
 import { useSession } from '@/lib/auth/session';
+import { siteFromToken } from '@/lib/auth/token';
 
 export function useWallet() {
   const token = useSession((s) => s.token);
@@ -119,7 +120,9 @@ export function useWithdraw() {
 
 /** Public Pay Bill display config (paybill number, account number, business name). */
 export function usePaybillInfo() {
-  return useQuery({ queryKey: ['paybill-info'], queryFn: () => api.paybillInfo() });
+  // PAY-1: name the player's brand — a brand on its own payment accounts has no (System) Pay Bill.
+  const site = siteFromToken(useSession((st) => st.token));
+  return useQuery({ queryKey: ['paybill-info', site ?? ''], queryFn: () => api.paybillInfo(site ?? undefined) });
 }
 
 /** Claim a Pay Bill payment by its M-PESA confirmation code; on success the wallet is credited. */

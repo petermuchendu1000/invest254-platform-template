@@ -8,7 +8,7 @@ import {
 } from '@tanstack/react-query';
 import { adminApi } from '@/lib/admin/endpoints';
 import type { Paginated } from '@/lib/api/types';
-import type { MpesaConfigPatch, GameConfigPatch } from '@/lib/admin/types';
+import type { MpesaConfigPatch, GameConfigPatch, C2bConfigPatch } from '@/lib/admin/types';
 import { useSession } from '@/lib/auth/session';
 
 /** Bearer token for admin calls. */
@@ -404,6 +404,26 @@ export function useUpdateMpesaConfig() {
   return useMutation({
     mutationFn: (patch: MpesaConfigPatch) => adminApi.updateMpesaConfig(t, patch),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ['admin', 'mpesa-config'] }),
+  });
+}
+export function useC2bConfig() {
+  const t = useTok();
+  return useQuery({ queryKey: ['admin', 'c2b-config'], queryFn: () => adminApi.c2bConfig(t), enabled: !!t });
+}
+export function useUpdateC2bConfig() {
+  const t = useTok();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (patch: C2bConfigPatch) => adminApi.updateC2bConfig(t, patch),
+    onSuccess: (row) => qc.setQueryData(['admin', 'c2b-config'], row),
+  });
+}
+export function useRegisterC2b() {
+  const t = useTok();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => adminApi.registerC2b(t),
+    onSuccess: (r) => qc.setQueryData(['admin', 'c2b-config'], r.config),
   });
 }
 export function useSeeds() {

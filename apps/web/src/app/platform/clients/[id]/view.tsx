@@ -29,30 +29,29 @@ export default function ClientDetailView({ params }: { params: { id: string } })
         <Empty title="Brand not found" description="It may have been archived — head back to the overview." />
       ) : (
         <>
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <h1 className="text-xl font-bold tracking-tight text-fg">{site.name}</h1>
-              <p className="text-xs text-muted">
-                {site.slug} · {site.primaryDomain ?? 'no domain'} · economy v{site.config.version}
+          {/* UI-C: status sits with the name; actions share one size. */}
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <h1 className="text-xl font-semibold tracking-tight text-fg md:text-2xl">{site.name}</h1>
+                <span className={`rounded-full px-2 py-0.5 text-xs font-medium capitalize ${statusCls(site.status)}`}>{site.status}</span>
+              </div>
+              <p className="mt-1 text-sm text-muted">
+                {site.primaryDomain ?? 'No domain yet'} · {site.slug} · economy v{site.config.version}
               </p>
             </div>
-            <div className="flex items-center gap-2">
-              <OpenBrandButton siteId={site.siteId} brandName={site.name} />
+            <div className="flex flex-wrap items-center gap-2">
               {site.primaryDomain ? (
-                <a href={`https://${site.primaryDomain}`} target="_blank" rel="noreferrer" className="rounded-lg border border-border px-2.5 py-1 text-xs font-medium text-muted hover:text-fg">
-                  Open live ↗
+                <a href={`https://${site.primaryDomain}`} target="_blank" rel="noreferrer" className="inline-flex h-9 items-center rounded-brand border border-border px-3 text-sm font-medium text-fg transition hover:bg-surface-2">
+                  Visit site ↗
                 </a>
               ) : null}
-              <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${statusCls(site.status)}`}>{site.status}</span>
+              <OpenBrandButton siteId={site.siteId} brandName={site.name} />
             </div>
           </div>
 
-          <ClientDetail key={site.siteId} site={site} />
-
-          <div className="mt-6">
-            <h2 className="mb-3 text-sm font-semibold tracking-tight">Systems &amp; gateways</h2>
-            <BrandAddons siteId={site.siteId} />
-          </div>
+          {/* Add-ons are a tab (they used to render under EVERY tab, reading as part of Identity). */}
+          <ClientDetail key={site.siteId} site={site} addons={<BrandAddons siteId={site.siteId} />} />
         </>
       )}
     </>

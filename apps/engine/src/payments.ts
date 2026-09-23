@@ -18,7 +18,11 @@ export type WithdrawalOutcome =
   | { mode: "marketer"; txId: string; newBalance: Cents; mpesaBalanceCents: Cents }
   | { mode: "daraja"; txId: string; newBalance: Cents };
 export interface ApproveResult { approved: boolean; amountCents: Cents | null; phone: string | null; provider?: string | null; userId?: string | null; }
-export interface TxRow { id: string; userId: string; kind: "deposit" | "withdrawal"; amountCents: Cents; status: string; phone: string; }
+export interface TxRow {
+  id: string; userId: string; kind: "deposit" | "withdrawal"; amountCents: Cents; status: string; phone: string;
+  /** PAY-1: the brand, rail and payment scope the transaction ran under (absent on legacy doubles). */
+  siteId?: string | null; provider?: string | null; paymentScope?: string | null;
+}
 
 /** A transaction as shown in a player's payment history. */
 export interface TransactionRecord {
@@ -31,7 +35,7 @@ export interface TxListQuery extends PageQuery { kind?: "deposit" | "withdrawal"
 export interface AdminTxSnapshot { txId: string; userId: string; kind: "deposit" | "withdrawal"; amountCents: Cents; status: string; phone: string; mpesaReceipt: string | null; checkoutRequestId: string | null; createdAtMs: number; siteId?: string | null; }
 
 /** A deposit still awaiting a terminal outcome — the reconciliation sweep's unit of work. */
-export interface UnsettledDeposit { txId: string; checkoutRequestId: string; }
+export interface UnsettledDeposit { txId: string; checkoutRequestId: string; /** PAY-1: verify with THIS scope's client. */ paymentScope?: string | null; }
 
 /** A C2B confirmation Safaricom pushed for a payment to our Pay Bill (migration 0115). */
 export interface C2bPayment { transId: string; amountCents: Cents; msisdn: string | null; billRef: string | null; shortcode: string | null; raw?: unknown; }
@@ -73,6 +77,10 @@ export interface PaymentRepository {
    */
   markWithdrawalPaid(txId: string, adminId: string, receipt: string | null): Promise<CompleteResult>;
   getTransaction(txId: string): Promise<TxRow | null>;
+  /** PAY-1 (docs/43): stamp the payment scope a provider transaction runs under. */
+  setPaymentScope(txId: string, scope: string): Promise<void>;
+  /** PAY-1: the payment scope of the deposit with this provider checkout id (null = legacy/global/unknown). */
+  scopeOfCheckout(checkoutRequestId: string): Promise<string | null>;
   /** A player's transaction history (optional kind/status filter), newest-first, cursor-paginated. `siteId` scopes it per brand. */
   listTransactions(userId: string, q: TxListQuery, siteId?: string): Promise<Page<TransactionRecord>>;
   /**
@@ -89,7 +97,7 @@ export interface PaymentRepository {
   getPaybillConfig(): Promise<PaybillConfig>;
 }
 
-interface MemTx { id: string; userId: string; kind: "deposit" | "withdrawal"; amount: Cents; status: string; phone: string; checkoutId?: string; seq: number; createdAtMs: number; receipt: string | null; siteId?: string | null; provider?: string; marketerId?: string; }
+interface MemTx { id: string; userId: string; kind: "deposit" | "withdrawal"; amount: Cents; status: string; phone: string; checkoutId?: string; seq: number; createdAtMs: number; receipt: string | null; siteId?: string | null; provider?: string; marketerId?: string; paymentScope?: string; }
 interface MemLedger { userId: string; type: string; amount: Cents; ref: string; }
 
 export class InMemoryPaymentRepository implements PaymentRepository {
@@ -152,7 +160,15 @@ export class InMemoryPaymentRepository implements PaymentRepository {
         && (provider == null || (t.provider ?? "mpesa") === provider))
       .sort((a, b) => a.createdAtMs - b.createdAtMs || a.seq - b.seq)
       .slice(0, limit)
-      .map((t) => ({ txId: t.id, checkoutRequestId: t.checkoutId! }));
+      .map((t) => ({ txId: t.id, checkoutRequestId: t.checkoutId!, paymentScope: t.paymentScope ?? null }));
+  }
+  async setPaymentScope(txId: string, scope: string): Promise<void> {
+    const tx = this.txns.get(txId);
+    if (tx) tx.paymentScope = scope;
+  }
+  async scopeOfCheckout(checkoutRequestId: string): Promise<string | null> {
+    const id = this.byCheckout.get(checkoutRequestId);
+    return id ? (this.txns.get(id)?.paymentScope ?? null) : null;
   }
 
   async ingestC2b(p: C2bPayment): Promise<boolean> {
@@ -184,6 +200,10 @@ export class InMemoryPaymentRepository implements PaymentRepository {
   async createWithdrawal(userId: string, amountCents: Cents, phone: string, minCents: Cents, siteId?: string): Promise<CreateWithdrawalResult> {
     if (amountCents <= 0) throw new Error("INVALID_AMOUNT");
     if (amountCents < minCents) throw new Error("BELOW_MIN");
+    // F-49 (0161): pay out only to the registered number (when the double knows it).
+    const registered = this.phones.get(userId);
+    const sig9 = (x: string) => x.replace(/\D/g, "").slice(-9);
+    if (registered !== undefined && (sig9(phone).length < 9 || sig9(phone) !== sig9(registered))) throw new Error("PAYOUT_PHONE_MISMATCH");
     const bal = this.balances.get(userId);
     if (bal === undefined) throw new Error("WALLET_NOT_FOUND");
     if (bal < amountCents) throw new Error("INSUFFICIENT_FUNDS");
@@ -274,7 +294,8 @@ export class InMemoryPaymentRepository implements PaymentRepository {
   }
   async getTransaction(txId: string): Promise<TxRow | null> {
     const tx = this.txns.get(txId);
-    return tx ? { id: tx.id, userId: tx.userId, kind: tx.kind, amountCents: tx.amount, status: tx.status, phone: tx.phone } : null;
+    return tx ? { id: tx.id, userId: tx.userId, kind: tx.kind, amountCents: tx.amount, status: tx.status, phone: tx.phone,
+      siteId: tx.siteId ?? null, provider: tx.provider ?? "mpesa", paymentScope: tx.paymentScope ?? null } : null;
   }
 
   async listTransactions(userId: string, q: TxListQuery, siteId?: string): Promise<Page<TransactionRecord>> {
@@ -373,7 +394,7 @@ export class PgPaymentRepository implements PaymentRepository {
   }
   async listUnsettledDeposits(olderThanMs: number, limit: number, provider?: string): Promise<UnsettledDeposit[]> {
     const r = await this.q.query(
-      `select id, checkout_request_id from transactions
+      `select id, checkout_request_id, payment_scope from transactions
         where kind = 'deposit' and status in ('pending','processing')
           and checkout_request_id is not null
           and ($3::text is null or provider = $3)
@@ -382,7 +403,14 @@ export class PgPaymentRepository implements PaymentRepository {
         limit $2`,
       [olderThanMs, limit, provider ?? null],
     );
-    return r.rows.map((x: any) => ({ txId: String(x.id), checkoutRequestId: String(x.checkout_request_id) }));
+    return r.rows.map((x: any) => ({ txId: String(x.id), checkoutRequestId: String(x.checkout_request_id), paymentScope: x.payment_scope ?? null }));
+  }
+  async setPaymentScope(txId: string, scope: string): Promise<void> {
+    await this.q.query("select public.fn_set_transaction_payment_scope($1,$2)", [txId, scope]);
+  }
+  async scopeOfCheckout(checkoutRequestId: string): Promise<string | null> {
+    const r = await this.q.query("select payment_scope from transactions where checkout_request_id = $1 limit 1", [checkoutRequestId]);
+    return r.rows[0]?.payment_scope ?? null;
   }
   async ingestC2b(p: C2bPayment): Promise<boolean> {
     const r = await this.q.query("select fn_ingest_c2b($1,$2,$3,$4,$5,$6) as inserted",
@@ -441,10 +469,11 @@ export class PgPaymentRepository implements PaymentRepository {
     return { applied: Boolean(r.rows[0].applied), status: String(r.rows[0].status), newBalance: toCents(r.rows[0].new_balance) };
   }
   async getTransaction(txId: string): Promise<TxRow | null> {
-    const r = await this.q.query("select id, user_id, kind, amount, status, phone from transactions where id = $1", [txId]);
+    const r = await this.q.query("select id, user_id, kind, amount, status, phone, site_id, provider, payment_scope from transactions where id = $1", [txId]);
     if (!r.rows.length) return null;
     const x = r.rows[0];
-    return { id: String(x.id), userId: String(x.user_id), kind: x.kind, amountCents: toCents(x.amount), status: String(x.status), phone: String(x.phone) };
+    return { id: String(x.id), userId: String(x.user_id), kind: x.kind, amountCents: toCents(x.amount), status: String(x.status), phone: String(x.phone),
+      siteId: x.site_id == null ? null : String(x.site_id), provider: x.provider == null ? null : String(x.provider), paymentScope: x.payment_scope ?? null };
   }
 
   async listTransactions(userId: string, q: TxListQuery, siteId?: string): Promise<Page<TransactionRecord>> {
@@ -457,7 +486,7 @@ export class PgPaymentRepository implements PaymentRepository {
           and ($7::uuid is null or site_id = $7)
           and ($2::text is null or kind = $2)
           and ($3::text is null or status = $3)
-          and ($4::timestamptz is null or (created_at, id) < ($4::timestamptz, $5::uuid))
+          and ($4::timestamptz is null or (created_at, id) < (coalesce((select k.created_at from transactions k where k.id = $5::uuid and k.user_id = $1), $4::timestamptz), $5::uuid))
         order by created_at desc, id desc
         limit $6`,
       [userId, q.kind ?? null, q.status ?? null, cur ? new Date(cur.tsMs).toISOString() : null, cur ? cur.id : null, limit + 1, siteId ?? null]);

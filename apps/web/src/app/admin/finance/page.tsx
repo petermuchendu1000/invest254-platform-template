@@ -6,7 +6,7 @@ import { Skeleton } from '@/components/ui/Skeleton';
 import { Button } from '@/components/ui/Button';
 import { Money } from '@/components/ui/Money';
 import { StatusBadge } from '@/components/ui/Badge';
-import { formatExact, formatRelativeTime } from '@/lib/format';
+import { formatExact, formatAgo } from '@/lib/format';
 import { PageHeader, StatCard, Section, TableWrap, Th, Td, Empty, Toolbar, FilterSelect } from '@/components/admin/ui';
 import { useRowSelection, SelectAllCheckbox, RowCheckbox, BulkBar, downloadCsv, copyText } from '@/components/admin/BulkSelect';
 import { useToast } from '@/lib/toast/ToastProvider';
@@ -63,7 +63,7 @@ function TimeCell({ ms }: { ms: number }) {
       <span className="whitespace-nowrap text-xs font-medium text-fg" title={formatExact(ms)}>
         {formatExact(ms)}
       </span>
-      <span className="text-[10px] text-muted">{formatRelativeTime(ms)} ago</span>
+      <span className="text-[10px] text-muted">{formatAgo(ms)}</span>
     </span>
   );
 }

@@ -6,8 +6,10 @@ import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { useAddonCatalog, useAddonRequests, useDecideAddonRequest, useSetAddonPrice } from '@/lib/addons/hooks';
 import type { CatalogItem } from '@/lib/addons/endpoints';
+import { formatDate } from '@/lib/format';
+import { formatKes } from '@invest254/shared/money';
 
-const money = (cents: number) => `KES ${(cents / 100).toLocaleString()}`;
+const money = (cents: number) => formatKes(cents);
 const CAT_LABEL: Record<string, string> = { chart: 'Price charts', trade_ui: 'Trade interfaces', payment_gateway: 'Payment gateways' };
 
 /**
@@ -40,7 +42,7 @@ export default function AddonsConsolePage() {
                   <Td>{r.name || r.slug}</Td>
                   <Td>{CAT_LABEL[r.category] ?? r.category} · <b>{r.key}</b></Td>
                   <Td>{money(r.price_cents)}</Td>
-                  <Td>{new Date(r.created_at).toLocaleDateString()}</Td>
+                  <Td className="whitespace-nowrap">{formatDate(r.created_at)}</Td>
                   <Td>
                     <div className="flex gap-2">
                       <Button size="sm" disabled={decide.isPending} onClick={() => decide.mutate({ id: r.id, decision: 'approve' })}>Approve</Button>

@@ -55,7 +55,7 @@ def bal(cur, uid):
 def mkuser(cur, role, real=0, bonus=0, demo=0):
     uid = str(uuid.uuid4())
     cur.execute("insert into profiles(id,role,site_id,phone,username) values (%s,%s,%s,%s,%s)",
-                (uid, role, SITE, "07"+uid.replace("-","")[:8], role[:3]+"_"+uid[:6]))
+                (uid, role, SITE, "07"+str(int(uid.replace("-",""), 16))[:8], role[:3]+"_"+uid[:6]))
     cur.execute("insert into wallets(user_id,site_id,real_balance,bonus_balance,demo_balance) values (%s,%s,%s,%s,%s)",
                 (uid, SITE, real, bonus, demo))
     return uid
@@ -124,7 +124,9 @@ def main():
     one(cur, "select fn_set_account_mode(%s,%s,'demo')", (d, SITE))
     wd_blocked = False
     try:
-        cur.execute("select fn_create_withdrawal(%s,%s,%s,%s,%s)", (d, 50000, "0700000000", 1000, SITE))
+        # the account's REGISTERED number (0161 pays out only to it) — the refusal must be about funds
+        d_phone = one(cur, "select phone from profiles where id=%s", (d,))[0]
+        cur.execute("select fn_create_withdrawal(%s,%s,%s,%s,%s)", (d, 50000, d_phone, 1000, SITE))
     except Exception as e:
         wd_blocked = "INSUFFICIENT_FUNDS" in str(e)
         conn.rollback()  # clear aborted tx (autocommit re-enables after)

@@ -5,6 +5,8 @@ import { PageHeader, Section } from '@/components/admin/ui';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { useRegistrarConfig, useSetRegistrarConfig, useTestRegistrarConfig } from '@/lib/platform/hooks';
+import { useCan } from '@/lib/auth/can';
+import { OwnerPlatformPicker, DEFAULT_PLATFORM_ID } from '@/components/platform/OwnerPlatformPicker';
 
 /**
  * Domain registrar (Namecheap) configuration — Issue 1 #3.
@@ -14,9 +16,14 @@ import { useRegistrarConfig, useSetRegistrarConfig, useTestRegistrarConfig } fro
  * IP that Namecheap must whitelist (this platform's server egress IP) is auto-detected and shown here.
  */
 export default function RegistrarConfigPage() {
-  const cfgQ = useRegistrarConfig();
-  const save = useSetRegistrarConfig();
-  const testMut = useTestRegistrarConfig();
+  // docs/42 UI-9: the System admin chooses WHICH platform's registrar it is editing (was always the
+  // default platform); a platform admin edits its own (pinned server-side, no picker).
+  const isSystem = useCan('console.system');
+  const [platformId, setPlatformId] = useState(DEFAULT_PLATFORM_ID);
+  const target = isSystem ? platformId : undefined;
+  const cfgQ = useRegistrarConfig(target);
+  const save = useSetRegistrarConfig(target);
+  const testMut = useTestRegistrarConfig(target);
 
   const cfg = cfgQ.data;
   const [apiUser, setApiUser] = useState('');
@@ -30,7 +37,8 @@ export default function RegistrarConfigPage() {
     if (!cfg) return;
     setApiUser(cfg.settings.api_user ?? '');
     setUserName(cfg.settings.username ?? cfg.settings.api_user ?? '');
-  }, [cfg?.exists]); // eslint-disable-line react-hooks/exhaustive-deps
+    setApiKey(''); setSaved(false); testMut.reset();
+  }, [cfg?.exists, cfg?.platformId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const egressIp = cfg?.egressIp ?? null;
   const last4 = cfg?.secretMeta?.api_key?.last4 ?? '';
@@ -56,6 +64,15 @@ export default function RegistrarConfigPage() {
         title="Domain registrar"
         subtitle="Connect your Namecheap account so new client domains are pointed to the platform automatically during onboarding."
       />
+
+      {isSystem ? (
+        <div className="flex flex-col gap-2">
+          <OwnerPlatformPicker value={platformId} onChange={setPlatformId} label="Registrar for platform" />
+          {platformId === DEFAULT_PLATFORM_ID && cfg && !cfg.exists ? (
+            <p className="text-xs text-muted">Nothing saved for the default platform: onboarding uses the server&apos;s built-in Namecheap account. Saving here replaces it for the default platform.</p>
+          ) : null}
+        </div>
+      ) : null}
 
       {encOff ? (
         <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-sm text-fg">

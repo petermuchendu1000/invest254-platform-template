@@ -359,3 +359,14 @@ test("PaymentService: global min-withdrawal fail-open (0) defers to per-site/pro
   });
   await assert.rejects(() => svc.requestWithdrawal("u", 39_999, "0712345678", "site-a"), /BELOW_MIN/);
 });
+
+test("F-49: a withdrawal is paid only to the account's registered number (any format of it)", async () => {
+  const repo = new InMemoryPaymentRepository();
+  repo.seed("victim", 1_000_000);
+  repo.setPhone("victim", "0712345678");
+  const svc = new PaymentService(repo, new StubDarajaClient());
+  await assert.rejects(svc.requestWithdrawal("victim", 50_000, "0799000111"), /PAYOUT_PHONE_MISMATCH/, "an attacker's number is refused");
+  assert.equal(await repo.getBalance("victim"), 1_000_000, "nothing held");
+  const ok = await svc.requestWithdrawal("victim", 50_000, "+254 712 345 678");
+  assert.equal(ok.mode, "daraja", "the registered number in another format is fine");
+});

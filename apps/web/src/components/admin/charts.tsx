@@ -142,6 +142,19 @@ export function Sparkline({ points, tone = 'accent', className = 'h-8 w-full' }:
   );
 }
 
+/**
+ * Second half of a series vs the first half. `isNew` when the first half is zero (a % is undefined), and
+ * no delta at all for series too short to compare or with nothing in either half.
+ */
+export function trendDelta(values: number[]): { deltaPct: number | null; isNew: boolean } {
+  if (values.length < 4) return { deltaPct: null, isNew: false };
+  const mid = Math.floor(values.length / 2);
+  const a = values.slice(0, mid).reduce((s, v) => s + v, 0);
+  const b = values.slice(mid).reduce((s, v) => s + v, 0);
+  if (a === 0) return { deltaPct: null, isNew: b !== 0 };
+  return { deltaPct: ((b - a) / Math.abs(a)) * 100, isNew: false };
+}
+
 /** KPI card: big value + a delta chip vs the previous period + a sparkline of the series. */
 export function KpiCard({
   label,
@@ -149,25 +162,37 @@ export function KpiCard({
   series,
   tone = 'accent',
   deltaPct,
+  isNew = false,
+  goodWhen = 'up',
+  deltaHint = 'vs the previous period',
 }: {
   label: string;
   value: string;
   series: Point[];
   tone?: Tone;
   deltaPct?: number | null;
+  /** Activity started in this window (nothing in the previous one): a % change would be meaningless. */
+  isNew?: boolean;
+  /** Which direction is good news for this metric (withdrawals rising is not "green"). */
+  goodWhen?: 'up' | 'down' | 'neutral';
+  deltaHint?: string;
 }) {
   const up = (deltaPct ?? 0) >= 0;
+  const good = goodWhen === 'neutral' ? null : goodWhen === 'up' ? up : !up;
+  const chip = good === null ? 'bg-surface-2 text-muted' : good ? 'bg-up/15 text-up' : 'bg-down/15 text-down';
   return (
-    <div className="flex flex-col gap-2 rounded-2xl border border-border bg-surface p-4">
+    <div className="flex min-w-0 flex-col gap-2 rounded-2xl border border-border bg-surface p-4">
       <div className="flex items-start justify-between gap-2">
         <span className="text-xs uppercase tracking-wide text-muted">{label}</span>
-        {deltaPct !== undefined && deltaPct !== null && Number.isFinite(deltaPct) ? (
-          <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold tabular-nums ${up ? 'bg-up/15 text-up' : 'bg-down/15 text-down'}`}>
+        {isNew ? (
+          <span title={`No activity in the previous period (${deltaHint})`} className="whitespace-nowrap rounded-full bg-surface-2 px-1.5 py-0.5 text-[10px] font-semibold text-muted">New</span>
+        ) : deltaPct !== undefined && deltaPct !== null && Number.isFinite(deltaPct) ? (
+          <span title={deltaHint} className={`whitespace-nowrap rounded-full px-1.5 py-0.5 text-[10px] font-semibold tabular-nums ${chip}`}>
             {up ? '▲' : '▼'} {Math.abs(deltaPct).toFixed(0)}%
           </span>
         ) : null}
       </div>
-      <span className="text-xl font-bold tabular-nums text-fg sm:text-2xl">{value}</span>
+      <span className="whitespace-nowrap text-xl font-bold tabular-nums text-fg sm:text-2xl">{value}</span>
       <Sparkline points={series} tone={tone} />
     </div>
   );

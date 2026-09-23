@@ -24,7 +24,7 @@ export function OpenBrandButton({ siteId, brandName, size = 'sm', variant = 'out
       onClick={() => impersonate.mutate(siteId, { onSuccess: (res) => startImpersonation(res) })}
       title={`Open ${brandName}'s back office as its admin (leave any time from the banner)`}
     >
-      {impersonate.isPending ? 'Opening…' : 'Open brand as admin ↗'}
+      {impersonate.isPending ? 'Opening…' : 'Open as admin'}
     </Button>
   );
 }

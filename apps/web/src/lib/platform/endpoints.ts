@@ -1,5 +1,6 @@
 import { apiFetch } from '@/lib/api/client';
 import type { CohortEconomy, PaymentsEconomy } from '@invest254/shared/globaleconomy';
+import type { AdminUserDetail, UserOverrideRow, UserOverridePatch } from '@/lib/admin/types';
 
 /** A brand's economy (mirrors site_game_config; cents for money fields). */
 export interface SiteConfig {
@@ -89,6 +90,8 @@ export interface SiteUserRow {
 export interface AuditRow {
   id: string; actorId: string; actorRole: string; action: string; targetType: string; targetId: string | null; detail: unknown; createdAtMs: number;
 }
+/** docs/42 UI-10: an audit row in the platform-wide view (brand + actor name). */
+export interface PlatformAuditRowDto extends AuditRow { siteId: string | null; siteName: string | null; actorUsername: string | null }
 
 /** Platform-wide master config (migrations 0092 + 0099) — the global console. */
 export interface GlobalConfigDto {
@@ -100,7 +103,20 @@ export interface GlobalConfigDto {
   version: number; updatedAt: string | null;
 }
 export interface DistributeResultDto { totalCents: number; mode: string; perSite: Record<string, number> }
-export interface PoolDistributionDto { id: number; totalCents: number; mode: string; siteCount: number; perSite: Record<string, number>; createdAt: string }
+export interface PoolDistributionDto { id: number; totalCents: number; mode: string; siteCount: number; perSite: Record<string, number>; createdAt: string; source?: string }
+/** POOL-1 (docs/46): one brand's pool today. */
+export interface PoolOverviewRowDto {
+  siteId: string; name: string; slug: string; platformId: string | null; platformName: string | null;
+  poolMode: boolean; withdrawalsEnabled: boolean; defaultCents: number; todayCents: number; paidCents: number;
+  reservedCents: number; availableCents: number; todaySet: boolean; pendingCount: number; pendingCents: number;
+  paid7dCents: number; lastChangedAtMs: number | null;
+}
+export type PoolAutoMode = 'dynamic' | 'equal' | 'off';
+export interface PoolAutoSettingsDto {
+  platformId: string; mode: PoolAutoMode; dailyTotalCents: number | null; lookbackDays: number; isDefault: boolean;
+  lastRunAtMs: number | null; lastRunOk: boolean | null; lastRunMessage: string | null; updatedAtMs: number | null;
+}
+export interface PoolAutoRunDto { platformId: string; mode: PoolAutoMode; ok: boolean; message: string; totalCents: number; brands: number }
 
 /** Superadmin payment-gateway registry view (migration 0116). */
 export interface PaymentProviderDto { code: string; displayName: string; enabledGlobal: boolean; sortOrder: number }
@@ -142,7 +158,7 @@ export const platformApi = {
     apiFetch<PerformanceResult>('/platform/performance', { token: t, query: { from: fromMs, to: toMs } }),
   impersonate: (t: string, siteId: string) =>
     apiFetch<ImpersonateResult>(`/platform/sites/${siteId}/impersonate`, { method: 'POST', token: t }),
-  sites: (t: string) => apiFetch<{ sites: SiteWithConfig[] }>('/platform/sites', { token: t }),
+  sites: (t: string, platformId?: string) => apiFetch<{ sites: SiteWithConfig[] }>('/platform/sites', { token: t, query: { platform: platformId } }),
   createSite: (t: string, body: CreateSiteBody) =>
     apiFetch<{ siteId: string }>('/platform/sites', { method: 'POST', token: t, body }),
   updateSite: (t: string, id: string, patch: Record<string, unknown>) =>
@@ -157,14 +173,15 @@ export const platformApi = {
   marketerRollup: (t: string) => apiFetch<{ marketers: MarketerRollupGroup[] }>('/platform/marketers/rollup', { token: t }),
   // Instant client onboarding (brand + economy + optional domain provisioning).
   onboard: (t: string, body: OnboardBody) => apiFetch<OnboardResult>('/platform/onboard', { method: 'POST', token: t, body }),
-  onboardCapabilities: (t: string) => apiFetch<{ domainConfigured: boolean; registrarConfigured: boolean }>('/platform/onboard/capabilities', { token: t }),
-  registrarDomains: (t: string) => apiFetch<RegistrarDomainsDto>('/platform/domains/registrar', { token: t }),
+  // docs/42 UI-9: `platformId` is honoured for the System admin only (a platform admin is pinned server-side).
+  onboardCapabilities: (t: string, platformId?: string) => apiFetch<{ domainConfigured: boolean; registrarConfigured: boolean }>('/platform/onboard/capabilities', { token: t, query: { platform: platformId } }),
+  registrarDomains: (t: string, platformId?: string) => apiFetch<RegistrarDomainsDto>('/platform/domains/registrar', { token: t, query: { platform: platformId } }),
   domainHealth: (t: string) => apiFetch<{ configured: boolean; statuses: Record<string, string> }>('/platform/domains/health', { token: t }),
   domainStatus: (t: string, domain: string) => apiFetch<DomainStatus>('/platform/onboard/domain-status', { token: t, query: { domain } }),
   // Per-platform registrar (Namecheap) configuration (Issue 1 #3).
-  registrarConfig: (t: string) => apiFetch<RegistrarConfigDto>('/platform/registrar/config', { token: t }),
-  setRegistrarConfig: (t: string, body: RegistrarConfigBody) => apiFetch<RegistrarConfigSaveDto>('/platform/registrar/config', { method: 'PUT', token: t, body }),
-  testRegistrarConfig: (t: string, body: RegistrarConfigBody) => apiFetch<RegistrarTestDto>('/platform/registrar/config/test', { method: 'POST', token: t, body }),
+  registrarConfig: (t: string, platformId?: string) => apiFetch<RegistrarConfigDto>('/platform/registrar/config', { token: t, query: { platform: platformId } }),
+  setRegistrarConfig: (t: string, body: RegistrarConfigBody, platformId?: string) => apiFetch<RegistrarConfigSaveDto>('/platform/registrar/config', { method: 'PUT', token: t, body, query: { platform: platformId } }),
+  testRegistrarConfig: (t: string, body: RegistrarConfigBody, platformId?: string) => apiFetch<RegistrarTestDto>('/platform/registrar/config/test', { method: 'POST', token: t, body, query: { platform: platformId } }),
   // Phase 2 — per-brand players + audit (cross-brand via explicit site id).
   siteUsers: (t: string, id: string, params?: Record<string, string | undefined>) => {
     const query: Record<string, string> = {};
@@ -178,6 +195,13 @@ export const platformApi = {
     apiFetch(`/platform/sites/${id}/users/${uid}/role`, { method: 'POST', token: t, body }),
   siteUserBalance: (t: string, id: string, uid: string, body: { amountCents: number; reason?: string | undefined; kind?: string | undefined }) =>
     apiFetch(`/platform/sites/${id}/users/${uid}/balance`, { method: 'POST', token: t, body }),
+  // docs/42 UI-10 — player detail, overrides (read + validated write) and the platform-wide audit trail
+  siteUserDetail: (t: string, id: string, uid: string) => apiFetch<AdminUserDetail>(`/platform/sites/${id}/users/${uid}`, { token: t }),
+  siteUserOverrides: (t: string, id: string, uid: string) => apiFetch<UserOverrideRow>(`/platform/sites/${id}/users/${uid}/overrides`, { token: t }),
+  setSiteUserOverrides: (t: string, id: string, uid: string, patch: UserOverridePatch) =>
+    apiFetch<UserOverrideRow>(`/platform/sites/${id}/users/${uid}/overrides`, { method: 'PATCH', token: t, body: patch }),
+  platformAudit: (t: string, q: { platformId?: string | undefined; siteId?: string | undefined; cursor?: string | undefined; limit?: number | undefined }) =>
+    apiFetch<Page<PlatformAuditRowDto>>('/platform/audit-log', { token: t, query: { platform: q.platformId, site: q.siteId, cursor: q.cursor, limit: q.limit } }),
   // ── Global config console (migration 0092) ──
   globalConfig: (t: string) => apiFetch<{ config: GlobalConfigDto }>('/platform/global-config', { token: t }),
   // ── Payment-gateway provider switches (migration 0116) ──
@@ -195,19 +219,30 @@ export const platformApi = {
     apiFetch<{ result: ConnResultDto }>(`/platform/payment-providers/${encodeURIComponent(code)}/config/test`, { method: 'POST', token: t, body: draft }),
   setGlobalConfig: (t: string, patch: Record<string, unknown>) =>
     apiFetch<{ config: GlobalConfigDto }>('/platform/global-config', { method: 'PATCH', token: t, body: patch }),
-  distributePool: (t: string, body: { totalCents?: number; mode: string; overrides?: Record<string, number> }) =>
-    apiFetch<{ result: DistributeResultDto }>('/platform/pool/distribute', { method: 'POST', token: t, body }),
-  poolDistributions: (t: string) =>
-    apiFetch<{ distributions: PoolDistributionDto[] }>('/platform/pool/distributions', { token: t }),
+  // docs/42 UI-9: `platformId` scopes the System admin's pool actions to one platform (omitted = global).
+  distributePool: (t: string, body: { totalCents?: number; mode: string; overrides?: Record<string, number> }, platformId?: string) =>
+    apiFetch<{ result: DistributeResultDto }>('/platform/pool/distribute', { method: 'POST', token: t, body, query: { platform: platformId } }),
+  poolDistributions: (t: string, platformId?: string) =>
+    apiFetch<{ distributions: PoolDistributionDto[] }>('/platform/pool/distributions', { token: t, query: { platform: platformId } }),
+  // POOL-1 (docs/46): per-brand overview + automatic daily distribution.
+  poolOverview: (t: string, platformId?: string) =>
+    apiFetch<{ platformId: string | null; brands: PoolOverviewRowDto[] }>('/platform/pool/overview', { token: t, query: { platform: platformId } }),
+  poolAutoSettings: (t: string, platformId?: string) =>
+    apiFetch<{ settings: PoolAutoSettingsDto }>('/platform/pool/auto-settings', { token: t, query: { platform: platformId } }),
+  savePoolAutoSettings: (t: string, body: { mode: PoolAutoMode; dailyTotalCents: number | null; lookbackDays: number }, platformId?: string) =>
+    apiFetch<{ settings: PoolAutoSettingsDto }>('/platform/pool/auto-settings', { method: 'PUT', token: t, body, query: { platform: platformId } }),
+  runPoolAuto: (t: string, platformId?: string) =>
+    apiFetch<{ run: PoolAutoRunDto }>('/platform/pool/auto-run', { method: 'POST', token: t, query: { platform: platformId } }),
   // Dynamic (demand-based) distribution — preview (read-only) + apply.
-  poolDemand: (t: string, params?: { lookbackDays?: number | undefined; totalCents?: number | undefined }) => {
-    const query: Record<string, number> = {};
+  poolDemand: (t: string, params?: { lookbackDays?: number | undefined; totalCents?: number | undefined }, platformId?: string) => {
+    const query: Record<string, number | string> = {};
+    if (platformId) query.platform = platformId;
     if (params?.lookbackDays != null) query.lookbackDays = params.lookbackDays;
     if (params?.totalCents != null) query.totalCents = params.totalCents;
     return apiFetch<{ preview: PoolDemandPreviewDto }>('/platform/pool/demand', { token: t, query });
   },
-  distributePoolDynamic: (t: string, body: { totalCents?: number | undefined; lookbackDays?: number | undefined }) =>
-    apiFetch<{ result: DistributeDynamicResultDto }>('/platform/pool/distribute-dynamic', { method: 'POST', token: t, body }),
+  distributePoolDynamic: (t: string, body: { totalCents?: number | undefined; lookbackDays?: number | undefined }, platformId?: string) =>
+    apiFetch<{ result: DistributeDynamicResultDto }>('/platform/pool/distribute-dynamic', { method: 'POST', token: t, body, query: { platform: platformId } }),
 
   // ── Platform tier governance (Issue 1) — System-admin only ──
   platforms: (t: string) => apiFetch<{ platforms: PlatformDto[] }>('/platform/platforms', { token: t }),
@@ -222,9 +257,22 @@ export const platformApi = {
     apiFetch<AppointResultDto>('/platform/platform-admins', { method: 'POST', token: t, body }),
   revokePlatformAdmin: (t: string, uid: string, newRole: string) =>
     apiFetch<{ userId: string; role: string }>(`/platform/platform-admins/${uid}/revoke`, { method: 'POST', token: t, body: { newRole } }),
+  // docs/42 UI-9: who the platform admins are + find a person across brands (System admin only)
+  platformAdmins: (t: string, platformId?: string) =>
+    apiFetch<{ admins: PlatformAdminDto[] }>('/platform/platform-admins', { token: t, query: { platform: platformId } }),
+  searchUsers: (t: string, q: string) =>
+    apiFetch<{ users: DirectoryUserDto[] }>('/platform/users/search', { token: t, query: { q } }),
 };
 
 /** Platform tier (Issue 1). */
 export interface PlatformDto { platformId: string; slug: string; name: string; status: string; ownerUserId: string | null; notes: string | null }
 export interface PlatformKpisDto { platformId: string; slug: string; name: string; status: string; sites: number; users: number; siteAdmins: number; platformAdmins: number }
 export interface AppointResultDto { userId: string; role: string; platformId: string | null }
+export interface PlatformAdminDto {
+  userId: string; username: string | null; phone: string | null; status: string;
+  platformId: string | null; platformName: string | null; homeSiteId: string | null; homeSiteName: string | null; createdAtMs: number;
+}
+export interface DirectoryUserDto {
+  userId: string; username: string | null; phone: string | null; role: string; status: string;
+  siteId: string | null; siteName: string | null; platformId: string | null; platformName: string | null; isDefaultMarketer: boolean;
+}

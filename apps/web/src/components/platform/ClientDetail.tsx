@@ -1,5 +1,6 @@
 'use client';
 
+import { PlayerSummary, BalanceAdjust, PlayerOverridesForm } from '@/components/platform/PlayerConsolePanels';
 import { useEffect, useMemo, useState } from 'react';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
@@ -13,6 +14,9 @@ import { BRAND_FONTS, googleFontsHref } from '@/lib/brand/fonts';
 import { ThemeGallery } from '@/components/platform/ThemeGallery';
 import { useCan } from '@/lib/auth/can';
 import { useGameConfig, useUpdateGameConfig, useWithdrawalPool, useSetWithdrawalPool, useWithdrawalsEnabled, useSetWithdrawalsEnabled } from '@/lib/admin/hooks';
+import { formatNumber } from '@/lib/format';
+import { formatKes } from '@invest254/shared/money';
+import { PageTabs, useTabParam } from '@/components/admin/Tabs';
 
 /** Expandable section (accordion) — remembers its own open state; the spine of Client Detail. */
 export function Expandable({
@@ -283,7 +287,7 @@ function PaletteEditor({ site }: { site: SiteWithConfig }) {
   );
 }
 
-const kes = (c: number) => `KES ${(c / 100).toLocaleString()}`;
+const kes = (c: number) => formatKes(c);
 
 /** Players in a brand — searchable table + an actions panel for the selected player. */
 function PlayersSection({ site }: { site: SiteWithConfig }) {
@@ -298,13 +302,9 @@ function PlayersSection({ site }: { site: SiteWithConfig }) {
   const [sel, setSel] = useState<SiteUserRow | null>(null);
   const rows = users.data?.items ?? [];
 
-  const [amt, setAmt] = useState('');
-  const [dir, setDir] = useState<'credit' | 'debit'>('credit');
-  const [reason, setReason] = useState('');
-
   function run(v: Parameters<typeof action.mutate>[0], ok: string) {
     action.mutate(v, {
-      onSuccess: () => { toast.push({ tone: 'success', title: ok }); setAmt(''); setReason(''); },
+      onSuccess: () => { toast.push({ tone: 'success', title: ok }); },
       onError: (e) => toast.push({ tone: 'error', title: 'Action failed', description: (e as Error).message }),
     });
   }
@@ -371,7 +371,7 @@ function PlayersSection({ site }: { site: SiteWithConfig }) {
                 <td className="px-3 py-2"><span className={pill(u.status)}>{u.status}</span></td>
                 <td className="px-3 py-2 tabular-nums">{kes(u.realBalanceCents)}</td>
                 <td className="px-3 py-2 tabular-nums">{kes(u.depositsCents)}</td>
-                <td className="px-3 py-2 tabular-nums">{u.betCount.toLocaleString()}</td>
+                <td className="px-3 py-2 tabular-nums">{formatNumber(u.betCount)}</td>
               </tr>
             ))}
             {rows.length === 0 ? <tr><td className="px-3 py-3 text-muted" colSpan={6}>{users.isLoading ? 'Loading…' : 'No players.'}</td></tr> : null}
@@ -385,6 +385,7 @@ function PlayersSection({ site }: { site: SiteWithConfig }) {
             <span className="text-sm font-semibold text-fg">Manage @{sel.username} <span className="font-normal text-muted">{sel.phone}</span></span>
             <button className="text-xs text-muted hover:text-fg" onClick={() => setSel(null)}>close ✕</button>
           </div>
+          <PlayerSummary key={sel.userId} siteId={site.siteId} uid={sel.userId} />
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-xs text-muted">Status:</span>
             <Button size="sm" variant="outline" disabled={action.isPending} onClick={() => run({ kind: 'status', uid: sel.userId, status: 'active', reason: 'platform console' }, 'Activated')}>Activate</Button>
@@ -418,18 +419,17 @@ function PlayersSection({ site }: { site: SiteWithConfig }) {
           </div>
             </>
           ) : null}
-          <div className="flex flex-wrap items-end gap-2">
-            <label className="flex flex-col gap-1 text-xs text-muted">Amount (KES)
-              <input value={amt} onChange={(e) => setAmt(e.target.value)} type="number" className="h-9 w-28 rounded-lg border border-border bg-surface px-2 text-sm text-fg" /></label>
-            <select value={dir} onChange={(e) => setDir(e.target.value as 'credit' | 'debit')} className="h-9 rounded-lg border border-border bg-surface px-2 text-sm text-fg"><option value="credit">credit +</option><option value="debit">debit −</option></select>
-            <input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="reason (required)" className="h-9 w-48 rounded-lg border border-border bg-surface px-2 text-sm text-fg" />
-            <Button size="sm" disabled={action.isPending || !amt || !reason.trim()} onClick={() => {
-              const cents = Math.round(Number(amt) * 100) * (dir === 'debit' ? -1 : 1);
-              if (Number.isFinite(cents) && cents !== 0) run({ kind: 'balance', uid: sel.userId, amountCents: cents, reason: reason.trim() }, 'Balance adjusted');
-            }}>Adjust balance</Button>
+          {/* docs/42 UI-10: a named wallet, a before → after confirmation, and the player's overrides. */}
+          <div className="flex flex-col gap-2 border-t border-border pt-3">
+            <h4 className="text-xs font-semibold uppercase tracking-wide text-muted">Adjust balance</h4>
+            <BalanceAdjust key={sel.userId} siteId={site.siteId} uid={sel.userId} username={sel.username} />
           </div>
+          <details className="border-t border-border pt-3">
+            <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wide text-muted">Game overrides for this player</summary>
+            <div className="pt-2"><PlayerOverridesForm key={sel.userId} site={site} uid={sel.userId} /></div>
+          </details>
         </div>
-      ) : <p className="text-xs text-muted">Select a player to manage status, role and balance.</p>}
+      ) : <p className="text-xs text-muted">Select a player to see their details and manage status, role, balance and overrides.</p>}
     </div>
   );
 }
@@ -462,44 +462,12 @@ function AuditSection({ site }: { site: SiteWithConfig }) {
 
 /** Per-brand M-Pesa config (non-secret). Secret values are infra-managed; live routing note below. */
 function PaymentsSection({ site }: { site: SiteWithConfig }) {
-  const update = useUpdateSite();
-  const toast = useToast();
-  const init = useMemo(() => ({
-    mpesa_env: site.mpesaEnv ?? 'sandbox', mpesa_shortcode: site.mpesaShortcode ?? '',
-    mpesa_callback_base: site.mpesaCallbackBase ?? '', mpesa_b2c_initiator: site.mpesaB2cInitiator ?? '',
-  }), [site]);
-  const [form, setForm] = useState(init);
-  useEffect(() => setForm(init), [init]);
-  const set = (k: keyof typeof init) => (e: { target: { value: string } }) => setForm((s) => ({ ...s, [k]: e.target.value }));
-  const patch = useMemo(() => Object.fromEntries(Object.entries(form).filter(([k, v]) => v !== (init as Record<string, string>)[k])), [form, init]);
-  const dirty = Object.keys(patch).length;
-  const secret = (label: string, present?: boolean) => (
-    <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${present ? 'bg-up/15 text-up' : 'bg-surface-2 text-muted'}`}>{label}: {present ? 'set' : 'unset'}</span>
-  );
+  // PAY-1 (docs/43): the old per-brand M-Pesa fields here were never read by live payments. A brand's
+  // payment accounts are now managed (and honoured) on the Payment accounts page.
   return (
-    <div className="flex flex-col gap-4">
-      <div className="rounded-brand border border-warn/40 bg-warn/5 p-3 text-xs text-muted">
-        Per-brand M-Pesa <strong>config</strong>. Secret values (consumer key/secret, passkey, B2C credential) are
-        infra-managed and shown as status only. Note: live STK/B2C routing currently uses the platform-wide config;
-        per-brand payment routing ships with secret-ref resolution (docs/22 Task B).
-      </div>
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <label className="flex flex-col gap-1.5 text-sm"><span className="font-medium text-fg">Environment</span>
-          <select className="h-11 rounded-brand border border-border bg-surface-2 px-3 text-fg" value={form.mpesa_env} onChange={set('mpesa_env')}>
-            <option value="sandbox">sandbox</option><option value="production">production</option>
-          </select></label>
-        <Input label="Shortcode" name={`sc-${site.siteId}`} value={form.mpesa_shortcode} onChange={set('mpesa_shortcode')} />
-        <Input label="Callback base URL" name={`cb-${site.siteId}`} value={form.mpesa_callback_base} onChange={set('mpesa_callback_base')} hint="e.g. https://brand.com/mpesa" />
-        <Input label="B2C initiator" name={`b2c-${site.siteId}`} value={form.mpesa_b2c_initiator} onChange={set('mpesa_b2c_initiator')} />
-      </div>
-      <div className="flex flex-wrap gap-2">
-        {secret('Consumer key', site.hasMpesaConsumerKey)}{secret('Consumer secret', site.hasMpesaConsumerSecret)}
-        {secret('Passkey', site.hasMpesaPasskey)}{secret('B2C credential', site.hasMpesaB2cCredential)}
-      </div>
-      <SaveBar dirty={dirty} saving={update.isPending} onSave={() => update.mutate({ id: site.siteId, patch }, {
-        onSuccess: () => toast.push({ tone: 'success', title: 'M-Pesa config saved' }),
-        onError: (e) => toast.push({ tone: 'error', title: 'Save failed', description: (e as Error).message }),
-      })} onReset={() => setForm(init)} />
+    <div className="flex flex-col gap-3 rounded-brand border border-border bg-surface-2 p-4 text-sm">
+      <p>Which M-Pesa / gateway accounts this brand&apos;s deposits and withdrawals use — the System&apos;s, its platform&apos;s, or its own — is set on the Payment accounts page.</p>
+      <div><a href={`/platform/payment-accounts?scope=site:${site.siteId}`} className="font-medium text-accent hover:underline">Open payment accounts for {site.name} →</a></div>
     </div>
   );
 }
@@ -607,34 +575,23 @@ const DETAIL_TABS = [
   { id: 'economy', label: 'Economy' },
   { id: 'pool', label: 'Pool & payouts', ownerOnly: true },
   { id: 'payments', label: 'Payments' },
+  { id: 'addons', label: 'Add-ons' },
   { id: 'legal', label: 'Legal' },
   { id: 'players', label: 'Players' },
   { id: 'audit', label: 'Audit' },
 ] as const;
 type DetailTab = (typeof DETAIL_TABS)[number]['id'];
 
-export function ClientDetail({ site }: { site: SiteWithConfig }) {
-  const [tab, setTab] = useState<DetailTab>('identity');
+const DETAIL_TAB_IDS = DETAIL_TABS.map((t) => t.id) as DetailTab[];
+
+export function ClientDetail({ site, addons }: { site: SiteWithConfig; addons?: React.ReactNode }) {
+  // UI-C: the open tab lives in the URL (?tab=…), so it can be linked and survives a reload.
+  const [tab, setTab] = useTabParam<DetailTab>(DETAIL_TAB_IDS, 'identity');
   const ownerSettings = useCan('console.site.owner_settings');
   const tabs = DETAIL_TABS.filter((t) => !('ownerOnly' in t && t.ownerOnly) || ownerSettings);
   return (
     <div className="flex flex-col gap-4">
-      {/* Tab bar */}
-      <div className="table-wrapper overflow-x-auto">
-        <div className="flex min-w-max gap-1 border-b border-border">
-          {tabs.map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              onClick={() => setTab(t.id)}
-              aria-current={tab === t.id ? 'page' : undefined}
-              className={`shrink-0 border-b-2 px-3.5 py-2 text-sm font-medium transition ${tab === t.id ? 'border-accent text-fg' : 'border-transparent text-muted hover:text-fg'}`}
-            >
-              {t.label}
-            </button>
-          ))}
-        </div>
-      </div>
+      <PageTabs tabs={tabs} value={tab} onChange={setTab} label="Brand settings" />
 
       <div className="rounded-2xl border border-border bg-surface p-4">
         {tab === 'identity' ? <IdentitySection site={site} /> : null}
@@ -647,6 +604,7 @@ export function ClientDetail({ site }: { site: SiteWithConfig }) {
         ) : null}
         {tab === 'economy' ? <EconomySection site={site} /> : null}
         {tab === 'payments' ? <PaymentsSection site={site} /> : null}
+        {tab === 'addons' ? addons ?? null : null}
         {tab === 'legal' ? <LegalSection site={site} /> : null}
         {tab === 'players' ? <PlayersSection site={site} /> : null}
         {tab === 'audit' ? <AuditSection site={site} /> : null}

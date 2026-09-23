@@ -75,6 +75,7 @@ function instantiate(path: string, s: Seed): { url: string; body: unknown; seede
     if (/\/admin\/notifications\/:id/.test(path)) return String(s.notifA);
     if (/\/admin\/withdrawals\/:id/.test(path)) return s.withdrawalA;
     if (/\/admin\/affiliate\/advances\/:id/.test(path)) return s.advanceA;
+    if (/\/platform\/payment-scopes\//.test(path)) return SITE_A;   // PAY-1: brand A's payment scope
     if (/\/platform\/sites\/:id/.test(path)) return SITE_A;
     if (/\/platform\/(platforms|subscriptions)\/:id/.test(path)) return DEFAULT_PLATFORM;
     if (/\/support\/conversations\/:id/.test(path)) return s.convA;
@@ -82,7 +83,7 @@ function instantiate(path: string, s: Seed): { url: string; body: unknown; seede
     if (/\/addons\/requests\/:id/.test(path)) { seeded = false; return "1"; }
     seeded = false; return randomUUID();       // affiliate/commission payouts: not seedable in-memory
   })();
-  const url = path.replace(":id", id).replace(":uid", s.userA).replace(":userId", s.affA).replace(":code", "mpesa");
+  const url = path.replace(":type", "site").replace(":id", id).replace(":uid", s.userA).replace(":userId", s.affA).replace(":code", "mpesa");
   const tail = path.split("/").slice(-1)[0]!;
   const bodies: Record<string, unknown> = {
     suspend: { reason: "x" }, ban: { reason: "x" }, reactivate: { reason: "x" }, delete: {},
@@ -97,7 +98,8 @@ function instantiate(path: string, s: Seed): { url: string; body: unknown; seede
     impersonate: {}, theme: { tokens: { primary: "#000" } }, config: { house_edge: 0.05 }, owner: { ownerUserId: null },
     plan: { planKey: "enterprise" }, payment: { amountCents: 1 }, decide: { decision: "approve" },
     marketer: { siteId: SITE_B }, global: { enabled: true }, site: { siteId: SITE_A, enabled: true }, test: {},
-    revoke: {}, "make-default": {}, "clear-default": {},
+    revoke: {}, "make-default": {}, "clear-default": {}, activate: { payoutsEnabled: false }, deactivate: {}, remove: {},
+    ":code": { enabled: false, environment: "production", shortcode: "600111", consumer_key: "k", consumer_secret: "s" },
     ":id": { name: "pwned", phone: "0799000999" },   // PATCH /admin/marketers/:id, PATCH /platform/{sites,platforms}/:id
   };
   return { url, body: bodies[tail] ?? {}, seeded };

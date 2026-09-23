@@ -458,7 +458,7 @@ export class PgGameRepository implements GameRepository {
          from ledger_entries
         where user_id = $1
           and ($5::uuid is null or site_id = $5)
-          and ($2::timestamptz is null or (created_at, id) < ($2::timestamptz, $3::bigint))
+          and ($2::timestamptz is null or (created_at, id) < (coalesce((select k.created_at from ledger_entries k where k.id = $3::bigint and k.user_id = $1), $2::timestamptz), $3::bigint))
         order by created_at desc, id desc
         limit $4`,
       [userId, cur ? new Date(cur.tsMs).toISOString() : null, cur ? cur.id : null, limit + 1, siteId ?? null]);
@@ -478,7 +478,7 @@ export class PgGameRepository implements GameRepository {
         where user_id = $1
           and ($6::uuid is null or site_id = $6)
           and ($2::text is null or status = $2)
-          and ($3::timestamptz is null or (opened_at, id) < ($3::timestamptz, $4::uuid))
+          and ($3::timestamptz is null or (opened_at, id) < (coalesce((select k.opened_at from positions k where k.id = $4::uuid and k.user_id = $1), $3::timestamptz), $4::uuid))
         order by opened_at desc, id desc
         limit $5`,
       [userId, q.status ?? null, cur ? new Date(cur.tsMs).toISOString() : null, cur ? cur.id : null, limit + 1, siteId ?? null]);
@@ -494,7 +494,7 @@ export class PgGameRepository implements GameRepository {
          from positions
         where user_id = $1 and kind = 'digit'
           and ($4::uuid is null or site_id = $4)
-          and ($2::timestamptz is null or (opened_at, id) < ($2::timestamptz, $3::uuid))
+          and ($2::timestamptz is null or (opened_at, id) < (coalesce((select k.opened_at from positions k where k.id = $3::uuid and k.user_id = $1), $2::timestamptz), $3::uuid))
         order by opened_at desc, id desc
         limit $5`,
       [userId, cur ? new Date(cur.tsMs).toISOString() : null, cur ? cur.id : null, siteId ?? null, limit + 1]);

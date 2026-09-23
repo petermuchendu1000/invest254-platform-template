@@ -1,13 +1,14 @@
 'use client';
 import { useCan } from '@/lib/auth/can';
 
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import Link from 'next/link';
 import { PageHeader, Section } from '@/components/admin/ui';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
-import { useOnboardClient, useDomainStatus, useOnboardCapabilities, usePlatforms } from '@/lib/platform/hooks';
+import { useOnboardClient, useDomainStatus, useOnboardCapabilities } from '@/lib/platform/hooks';
 import { DomainImport } from '@/components/platform/DomainImport';
+import { OwnerPlatformPicker, DEFAULT_PLATFORM_ID } from '@/components/platform/OwnerPlatformPicker';
 import type { OnboardResult } from '@/lib/platform/endpoints';
 
 /**
@@ -16,7 +17,13 @@ import type { OnboardResult } from '@/lib/platform/endpoints';
  * API is configured; otherwise the exact nameservers to set are shown after creation.
  */
 export default function OnboardPage() {
-  const caps = useOnboardCapabilities();
+  // System owner may onboard directly into a chosen platform; a platform admin auto-scopes to its own.
+  // docs/42 UI-9: ONE choice at the top drives everything on the page — the capability banner, the
+  // registrar import (that platform's Namecheap) and the manual form — so they can never disagree.
+  const isSystem = useCan('console.system');
+  const [platformId, setPlatformId] = useState(DEFAULT_PLATFORM_ID);
+  const target = isSystem ? platformId : undefined;
+  const caps = useOnboardCapabilities(target);
   const onboard = useOnboardClient();
   const [slug, setSlug] = useState('');
   const [name, setName] = useState('');
@@ -29,11 +36,6 @@ export default function OnboardPage() {
   const provisionedDomain = result?.domain?.domain ?? null;
   const domainStatus = useDomainStatus(provisionedDomain);
 
-  // System owner may onboard directly into a chosen platform; a platform admin auto-scopes to its own.
-  const isSystem = useCan('console.system');
-  const platformsQ = usePlatforms(isSystem);   // docs/42 UI-6: owner-only endpoint — never called for a platform admin
-  const platforms = useMemo(() => (platformsQ.data?.platforms ?? []) as Array<{ platformId: string; slug: string; name: string }>, [platformsQ.data]);
-  const [platformId, setPlatformId] = useState('');
 
   const domainConfigured = caps.data?.domainConfigured ?? true;
   const registrarConfigured = caps.data?.registrarConfigured ?? false;
@@ -41,7 +43,9 @@ export default function OnboardPage() {
 
   return (
     <>
-      <PageHeader title="Onboard a client" subtitle="Create a brand, seed a feasible economy, and (optionally) provision its domain on Cloudflare." />
+      <PageHeader title="Onboard a brand" subtitle="Create a brand, seed a feasible economy, and (optionally) provision its domain on Cloudflare." />
+
+      <OwnerPlatformPicker value={platformId} onChange={setPlatformId} label="Onboard into platform" hint="New brands, the domain import and the registrar used all follow this choice." />
 
       {/* Honest, up-front statement of what will happen with the domain */}
       {caps.data ? (
@@ -63,7 +67,7 @@ export default function OnboardPage() {
         <p className="text-xs text-muted">To auto-point domains, <Link href="/platform/registrar" className="font-medium text-accent hover:underline">configure your Namecheap registrar</Link>. Until then, set nameservers manually after creating (or ask the system owner to register &amp; assign the domain).</p>
       ) : null}
 
-      {registrarConfigured ? <DomainImport /> : null}
+      {registrarConfigured ? <DomainImport platformId={target} /> : null}
 
       <Section title="Add one brand manually">
         <form
@@ -80,7 +84,7 @@ export default function OnboardPage() {
                 ...(email ? { supportEmail: email } : {}),
                 colors: { primary: colorPrimary },
                 provisionDomain: domainConfigured && provision && Boolean(dom),
-                ...(isSystem && platformId ? { platformId } : {}),
+                ...(target ? { platformId: target } : {}),
               },
               { onSuccess: (r) => setResult(r) },
             );
@@ -90,15 +94,6 @@ export default function OnboardPage() {
           <Input label="Slug" name="slug" value={slug} onChange={(e) => setSlug(e.target.value)} placeholder="shikafx" required />
           <Input label="Primary domain" name="primaryDomain" value={primaryDomain} onChange={(e) => setDomain(e.target.value)} placeholder="shikafx.com" optional />
           <Input label="Currency" name="currency" value={currency} onChange={(e) => setCurrency(e.target.value)} />
-          {isSystem ? (
-            <label className="flex flex-col gap-1.5 text-sm">
-              <span className="font-medium text-fg">Platform</span>
-              <select value={platformId} onChange={(e) => setPlatformId(e.target.value)} className="h-11 w-full rounded-brand border border-border bg-surface-2 px-3 text-fg">
-                <option value="">Default platform</option>
-                {platforms.map((p) => <option key={p.platformId} value={p.platformId}>{p.name} ({p.slug})</option>)}
-              </select>
-            </label>
-          ) : null}
           <Input label="Support email" name="supportEmail" type="email" value={supportEmail} onChange={(e) => setSupportEmail(e.target.value)} placeholder="support@shikafx.com" optional />
           <label className="flex flex-col gap-1.5 text-sm">
             <span className="font-medium text-fg">Seed colour</span>

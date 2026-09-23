@@ -2,15 +2,16 @@
 
 import { useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { PageHeader, StatCard, Section, TableWrap, Th, Td, Toolbar, FilterSelect } from '@/components/admin/ui';
+import { PageHeader, StatCard, Section, TableWrap, Th, Td, Toolbar, FilterSelect, SearchInput } from '@/components/admin/ui';
 import { Button } from '@/components/ui/Button';
-import { Input } from '@/components/ui/Input';
 import { usePlatformOverview, usePlatformSites, usePlatformPerformance, useDomainHealth } from '@/lib/platform/hooks';
 import { usePlatformLive } from '@/lib/platform/live';
 import type { SiteWithConfig, SiteKpis, SitePerformance } from '@/lib/platform/endpoints';
 import { downloadCsv } from '@/components/admin/BulkSelect';
+import { formatNumber } from '@/lib/format';
+import { formatKes } from '@invest254/shared/money';
 
-const money = (cents: number, cur = 'KES') => `${cur} ${(cents / 100).toLocaleString()}`;
+const money = (cents: number, _cur = 'KES') => formatKes(cents);
 
 /** Preset windows for the performance filters. `all` ⇒ use the all-time overview snapshot. */
 type RangePreset = 'all' | 'today' | 'yesterday' | '7d' | '30d' | 'custom';
@@ -159,18 +160,18 @@ export default function PlatformOverviewPage() {
     <>
       <PageHeader
         title="Overview"
-        subtitle="Every client brand at a glance — live players, live deposits, and performance by period."
-        actions={<Button size="sm" onClick={() => router.push('/platform/onboard')}>Onboard client</Button>}
+        subtitle="Every brand at a glance: live players, live deposits and performance for the period you pick."
+        actions={<Button size="sm" onClick={() => router.push('/platform/onboard')}>Onboard brand</Button>}
       />
 
       {/* Platform-wide KPIs */}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-7">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-7">
         <StatCard label="Brands" value={siteList.length} hint={`${kpis.filter((k) => k.status === 'active').length} active`} />
         {!live.denied ? <LiveOnlineCard total={live.totalOnline} connected={live.connected} /> : null}
-        <StatCard label="Players" value={totals.users.toLocaleString()} hint="registered" />
+        <StatCard label="Players" value={formatNumber(totals.users)} hint="registered" />
         <StatCard label={`Deposits · ${rangeLabel}`} money={windowTotals.deposits} tone="up" />
         <StatCard label={`GGR · ${rangeLabel}`} money={windowTotals.ggr} tone={windowTotals.ggr >= 0 ? 'up' : 'down'} />
-        <StatCard label="Open positions" value={totals.open.toLocaleString()} />
+        <StatCard label="Open positions" value={formatNumber(totals.open)} />
         <StatCard label="Needs setup" value={needsSetup} tone={needsSetup > 0 ? 'warn' : 'up'} hint="domain / M-Pesa incomplete" />
       </div>
 
@@ -179,9 +180,9 @@ export default function PlatformOverviewPage() {
       {!live.denied ? <LiveDeposits live={live} nameById={nameById} /> : null}
 
       {/* Clients table */}
-      <Section title="Clients">
+      <Section title="Brands">
         <Toolbar>
-          <Input name="search" placeholder="Search brand, slug or domain…" value={q} onChange={(e) => setQ(e.target.value)} className="w-56 max-w-full" />
+          <SearchInput placeholder="Search brand, slug or domain…" value={q} onChange={setQ} />
           <FilterSelect label="Status" value={status} onChange={setStatus} options={[{ value: 'all', label: 'All' }, { value: 'active', label: 'Active' }, { value: 'paused', label: 'Paused' }, { value: 'archived', label: 'Archived' }]} />
           {currencies.length > 1 ? (
             <FilterSelect label="Currency" value={currency} onChange={setCurrency}
@@ -232,11 +233,11 @@ export default function PlatformOverviewPage() {
                 <Td className="text-right"><LiveCount count={online} /></Td>
                 <Td><HealthPill r={r} /></Td>
                 <Td className="text-muted">{s.primaryDomain ?? '—'}</Td>
-                <Td className="text-right tabular-nums">{(k?.users ?? 0).toLocaleString()}</Td>
-                {rangeActive ? <Td className="text-right tabular-nums">{(m.newPlayers ?? 0).toLocaleString()}</Td> : null}
+                <Td className="text-right tabular-nums">{formatNumber(k?.users ?? 0)}</Td>
+                {rangeActive ? <Td className="text-right tabular-nums">{formatNumber(m.newPlayers ?? 0)}</Td> : null}
                 <Td className="text-right tabular-nums">{money(m.deposits, s.currency)}</Td>
                 <Td className="text-right tabular-nums">{money(m.ggr, s.currency)}</Td>
-                <Td className="text-right tabular-nums">{m.bets.toLocaleString()}</Td>
+                <Td className="text-right tabular-nums">{formatNumber(m.bets)}</Td>
               </tr>
             ))}
             {sorted.length === 0 ? <tr><Td className="text-muted">{sites.isLoading ? 'Loading…' : 'No brands match.'}</Td></tr> : null}
@@ -255,7 +256,7 @@ function LiveOnlineCard({ total, connected }: { total: number; connected: boolea
         <span className={`inline-block h-2 w-2 rounded-full ${connected ? 'bg-up animate-pulse' : 'bg-muted'}`} />
         Live now
       </span>
-      <span className="text-2xl font-bold tabular-nums text-fg">{total.toLocaleString()}</span>
+      <span className="text-2xl font-bold tabular-nums text-fg">{formatNumber(total)}</span>
       <span className="text-xs text-muted">{connected ? 'players online' : 'connecting…'}</span>
     </div>
   );
@@ -267,7 +268,7 @@ function LiveCount({ count }: { count: number }) {
   return (
     <span className="inline-flex items-center gap-1.5 tabular-nums text-fg">
       <span className="inline-block h-2 w-2 rounded-full bg-up animate-pulse" />
-      {count.toLocaleString()}
+      {formatNumber(count)}
     </span>
   );
 }
@@ -323,7 +324,7 @@ function Sortable({ label, k, sort, setSort, align }: {
       <button
         type="button"
         onClick={() => setSort({ key: k, dir: activeCol && sort.dir === 'desc' ? 'asc' : 'desc' })}
-        className={`inline-flex items-center gap-1 hover:text-fg ${activeCol ? 'text-fg' : ''}`}
+        className={`inline-flex items-center gap-1 uppercase tracking-wide hover:text-fg ${activeCol ? 'text-fg' : ''}`}
       >
         {label}<span className="text-[10px]">{arrow}</span>
       </button>

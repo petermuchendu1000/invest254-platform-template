@@ -43,13 +43,14 @@ export function useGrantAddon() {
   const t = useTok(); const qc = useQueryClient();
   return useMutation({
     mutationFn: (b: { site: string; category: string; key: string }) => addonApi.grant(t, b),
-    onSuccess: () => { void qc.invalidateQueries({ queryKey: ['addons'] }); },
+    // a chart / trade-UI grant also changes the brand's ACTIVE system (sites.chart_style / trade_ui)
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: ['addons'] }); void qc.invalidateQueries({ queryKey: ['platform', 'sites'] }); },
   });
 }
 export function useRevokeAddon() {
   const t = useTok(); const qc = useQueryClient();
   return useMutation({
     mutationFn: (b: { site: string; category: string; key: string }) => addonApi.revoke(t, b),
-    onSuccess: () => { void qc.invalidateQueries({ queryKey: ['addons'] }); },
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: ['addons'] }); void qc.invalidateQueries({ queryKey: ['platform', 'sites'] }); },
   });
 }

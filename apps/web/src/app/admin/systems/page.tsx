@@ -12,7 +12,7 @@ export default function AdminSystemsPage() {
   return (
     <>
       <PageHeader
-        title="Systems & gateways"
+        title="Add-ons & gateways"
         subtitle="Your brand's price chart, trade interface, and payment gateways. Locked systems can be requested from the system admin."
       />
       <Section title="Available systems">

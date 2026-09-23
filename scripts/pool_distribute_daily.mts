@@ -1,74 +1,56 @@
 /**
- * Scheduled DAILY dynamic pool distribution (#5 autonomy) — runs the demand-based allocator so each
- * brand's withdrawal-pool cap tracks demand with NO superadmin. Reuses the SAME engine path as the
- * console (PlatformService.distributePoolDynamic -> audited fn_platform_distribute_pool per_site).
+ * Scheduled DAILY automatic pool distribution (POOL-1, docs/46; docs/25 §15). For EVERY platform with an active
+ * brand, applies that platform's automatic distribution setting (pool_auto_settings, migration 0164):
+ *   - dynamic (THE DEFAULT when nothing is saved): demand-based water-fill over the platform's configured daily
+ *     total, or — when none is set — its CURRENT total (the sum of its brands' daily defaults). So the default
+ *     never budgets more money than the operator already set; it only moves it to where the demand is.
+ *   - equal: even split of the configured daily total.  - off: nothing.
+ * Every run is audited (platform_pool_distributions source='auto' + admin_actions) and its outcome recorded on
+ * the platform's settings, shown on /platform/pool.
  *
- * GUARDED + opt-in:
- *   - Does NOTHING unless POOL_DAILY_TOTAL_CENTS (the global envelope, integer cents) is set > 0.
- *     So the schedule stays inert until the operator deliberately configures the envelope — it can
- *     never spend money that wasn't explicitly allocated.
- *   - --dry-run computes + prints the allocation WITHOUT applying.
- *   - Fully audited (platform_pool_distributions + admin_actions), Σ alloc <= envelope by construction.
+ * --dry-run prints each platform's setting and demand preview without applying.
+ * Optional POOL_MIN_FLOOR_CENTS: absolute anti-starvation floor per brand (docs/25 §15.6).
  *
- * Run: DATABASE_URL=... POOL_DAILY_TOTAL_CENTS=... node --import tsx scripts/pool_distribute_daily.mts [--dry-run] [--lookback 14]
+ * Run: DATABASE_URL=... node --import tsx scripts/pool_distribute_daily.mts [--dry-run]
  */
 import { Pool } from "pg";
-import { PgPlatformRepository, PlatformService } from "@invest254/engine";
+import { PgPlatformRepository, PlatformService, PgPoolOpsRepository, PoolOpsService } from "@invest254/engine";
 
-function arg(name: string, def: string): string {
-  const i = process.argv.indexOf(`--${name}`);
-  return i >= 0 && process.argv[i + 1] ? process.argv[i + 1]! : def;
-}
 const DRY = process.argv.includes("--dry-run");
-const LOOKBACK = Number(arg("lookback", "14"));
-const BASELINE = Number(arg("baseline", "45"));
-// Anti-starvation absolute floor (docs/25 §15.2): every active brand is funded to at least
-// max(POOL_MIN_FLOOR_CENTS, targetRtp × outage-proof expected turnover), so a deposit/turnover dip
-// can never starve a brand's pool to ~zero again. 0 (unset) leaves only the demand-based floor.
 const MIN_FLOOR = Math.max(0, Math.floor(Number(process.env.POOL_MIN_FLOOR_CENTS ?? "0")) || 0);
-
 const url = process.env.DATABASE_URL;
 if (!url) { console.error("DATABASE_URL is required"); process.exit(2); }
-
-const total = Number(process.env.POOL_DAILY_TOTAL_CENTS ?? "0");
-if (!Number.isFinite(total) || total <= 0) {
-  // Guard: inert until the operator configures the envelope. Not an error — a clean no-op.
-  console.log("[pool-distribute] POOL_DAILY_TOTAL_CENTS unset/<=0 — skipping (schedule is inert until configured).");
-  process.exit(0);
-}
-
-const money = (c: number) => `KES ${(c / 100).toLocaleString()}`;
+const money = (c: number) => `KES ${Math.round(c / 100).toLocaleString("en-KE")}`;
 
 async function main() {
   const pool = new Pool({ connectionString: url, max: 2 });
   try {
-    const repo = new PgPlatformRepository({
-      query: (sql: string, params?: unknown[]) => pool.query(sql, (params ?? []) as unknown[]),
-    });
-    const svc = new PlatformService(repo);
-
-    if (DRY) {
-      const preview = await svc.poolDemand({ totalCents: total, lookbackDays: LOOKBACK, baselineDays: BASELINE, configuredFloorCents: MIN_FLOOR });
-      console.log(`[pool-distribute] DRY-RUN envelope=${money(total)} lookback=${LOOKBACK}d baseline=${BASELINE}d minFloor=${money(MIN_FLOOR)}`);
-      for (const r of preview.rows) {
-        console.log(`  ${r.slug.padEnd(14)} forecast/day=${money(r.forecastTurnoverCents).padEnd(14)} floor=${money(r.floorCents).padEnd(14)} required=${money(r.requiredCents).padEnd(14)} suggested=${money(r.suggestedCents)}`);
-      }
-      console.log(`  suggested total=${money(preview.suggestedTotalCents)} reserve=${money(preview.reserveCents)}`);
-      return;
-    }
-
+    const q = { query: (sql: string, params?: unknown[]) => pool.query(sql, (params ?? []) as unknown[]) };
+    const platform = new PlatformService(new PgPlatformRepository(q));
+    const ops = new PoolOpsService(new PgPoolOpsRepository(q), platform);
     const actor = (await pool.query("select id from profiles where role='platform_superadmin' order by created_at limit 1")).rows[0]?.id as string | undefined;
-    if (!actor) { console.error("[pool-distribute] no platform_superadmin actor found — cannot audit; aborting."); process.exit(3); }
-
-    const res = await svc.distributePoolDynamic(actor, "platform_superadmin", { totalCents: total, lookbackDays: LOOKBACK, baselineDays: BASELINE, configuredFloorCents: MIN_FLOOR });
-    console.log(`[pool-distribute] applied envelope=${money(total)} lookback=${LOOKBACK}d baseline=${BASELINE}d minFloor=${money(MIN_FLOOR)} — per-brand caps:`);
-    for (const r of res.preview.rows) {
-      console.log(`  ${r.slug.padEnd(14)} demand/day=${money(r.forecastTurnoverCents).padEnd(14)} floor=${money(r.floorCents).padEnd(14)} -> cap=${money(r.suggestedCents)}`);
+    if (!actor) { console.error("[pool-auto] no platform_superadmin actor found — cannot audit; aborting."); process.exit(3); }
+    const platforms = await ops.activePlatforms();
+    console.log(`[pool-auto] ${platforms.length} platform(s) with active brands${DRY ? " (dry run)" : ""}`);
+    let failed = 0;
+    for (const p of platforms) {
+      const s = await ops.settings(actor, "platform_superadmin", p);
+      if (DRY) {
+        const prev = s.mode === "dynamic"
+          ? await platform.poolDemand({ lookbackDays: s.lookbackDays, ...(s.dailyTotalCents != null ? { totalCents: s.dailyTotalCents } : {}), configuredFloorCents: MIN_FLOOR }, p)
+          : null;
+        console.log(`  ${p} mode=${s.mode}${s.isDefault ? " (default)" : ""} total=${s.dailyTotalCents == null ? "current" : money(s.dailyTotalCents)}` +
+          (prev ? ` -> ${prev.rows.map((r) => `${r.slug}=${money(r.suggestedCents)}`).join(", ")}` : ""));
+        continue;
+      }
+      const r = await ops.runAuto(actor, "platform_superadmin", p, "auto", { configuredFloorCents: MIN_FLOOR });
+      if (!r.ok) failed++;
+      console.log(`  ${p} mode=${r.mode} ${r.ok ? "ok" : "FAILED"}: ${r.message}`);
     }
-    console.log(`  distributed total=${money(res.preview.suggestedTotalCents)} reserve=${money(res.preview.reserveCents)} (mode=${res.mode})`);
+    if (failed) process.exitCode = 1;
   } finally {
     await pool.end();
   }
 }
 
-main().catch((e) => { console.error("[pool-distribute] FAILED:", e); process.exit(1); });
+main().catch((e) => { console.error("[pool-auto] FAILED:", e); process.exit(1); });

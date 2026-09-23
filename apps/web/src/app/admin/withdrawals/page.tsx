@@ -10,8 +10,8 @@ import { Money } from '@/components/ui/Money';
 import { StatusBadge } from '@/components/ui/Badge';
 import { ApiError } from '@/lib/api/client';
 import { useToast } from '@/lib/toast/ToastProvider';
-import { formatExact, formatRelativeTime } from '@/lib/format';
-import { PageHeader, StatCard, Section, TableWrap, Th, Td, Empty, Toolbar, FilterSelect, ConfirmButton, PasswordConfirmButton } from '@/components/admin/ui';
+import { formatExact, formatAgo } from '@/lib/format';
+import { PageHeader, TableWrap, Th, Td, Empty, Toolbar, FilterSelect, ConfirmButton, PasswordConfirmButton } from '@/components/admin/ui';
 import { useRowSelection, SelectAllCheckbox, RowCheckbox, BulkBar, downloadCsv, copyText } from '@/components/admin/BulkSelect';
 import { useWithdrawals, useWithdrawalAction, useWithdrawalsEnabled, useSetWithdrawalsEnabled, useBulkWithdrawals } from '@/lib/admin/hooks';
 import type { AdminWithdrawalRow } from '@/lib/admin/types';
@@ -37,20 +37,7 @@ const MARKPAYABLE = new Set(['pending', 'requested', 'processing']);
 /** Clickable player identity → user detail page. */
 function UserCell({ userId, username }: { userId: string; username: string }) {
   return (
-    <Link href={`/admin/users/${userId}`} className="group inline-flex flex-col leading-tight">
-      <span className="font-medium text-accent group-hover:underline">@{username || 'unknown'}</span>
-      <span className="font-mono text-[10px] text-muted">{userId.slice(0, 8)}…</span>
-    </Link>
-  );
-}
-
-/** Phone that dials on tap (mobile) and is copy-friendly on desktop. */
-function PhoneCell({ phone, receipt }: { phone: string; receipt: string | null }) {
-  return (
-    <span className="flex flex-col leading-tight">
-      <a href={`tel:${phone}`} className="tabular-nums text-fg hover:text-accent hover:underline">{phone}</a>
-      {receipt ? <span className="font-mono text-[10px] text-muted">{receipt}</span> : null}
-    </span>
+    <Link href={`/admin/users/${userId}`} className="font-medium text-accent hover:underline">@{username || 'unknown'}</Link>
   );
 }
 
@@ -60,18 +47,7 @@ function TimeCell({ ms }: { ms: number | null }) {
   return (
     <span className="flex flex-col leading-tight">
       <span className="whitespace-nowrap text-xs font-medium text-fg" title={formatExact(ms)}>{formatExact(ms)}</span>
-      <span className="text-[10px] text-muted">{formatRelativeTime(ms)} ago</span>
-    </span>
-  );
-}
-
-/** Lifetime money figure with a count / context hint underneath. */
-function StackCell({ cents, hint, tone }: { cents: number; hint: string; tone?: 'up' | 'down' }) {
-  const color = tone === 'up' ? 'text-up' : tone === 'down' ? 'text-down' : 'text-fg';
-  return (
-    <span className="flex flex-col items-end leading-tight text-right">
-      <span className={`text-sm font-semibold tabular-nums ${color}`}><Money cents={cents} /></span>
-      <span className="text-[10px] text-muted">{hint}</span>
+      <span className="text-[10px] text-muted">{formatAgo(ms)}</span>
     </span>
   );
 }
@@ -168,23 +144,30 @@ export default function WithdrawalsPage() {
     <>
       <PageHeader
         title="Withdrawals"
-        subtitle="Review and action player withdrawal requests with full context — identity, balance and lifetime deposit/withdrawal history. Approval dispatches the M-Pesa B2C payout; rejection reverses the hold. Select rows for bulk approve/reject, copy or export."
-        actions={
-          <Toolbar>
-            <WithdrawalAlertsToggle />
-            <FilterSelect label="Status" value={status} onChange={setStatus} options={STATUS_OPTIONS} />
-          </Toolbar>
-        }
+        subtitle="Approve to pay the player by M-Pesa, or reject to return the money to their balance."
+        actions={<WithdrawalAlertsToggle />}
       />
 
       <WithdrawalsSwitch />
 
+      <Toolbar>
+        <FilterSelect label="Status" value={status} onChange={setStatus} options={STATUS_OPTIONS} />
+        {rows.length > 0 ? (
+          <span className="text-sm text-muted">
+            {totals.awaitingCount > 0
+              ? <><b className="font-semibold text-warn">{totals.awaitingCount} awaiting review</b> · <Money cents={totals.awaitingAmount} /> held</>
+              : <>{totals.count} shown · <Money cents={totals.amount} /></>}
+            {q.hasNextPage ? ' (more below)' : ''}
+          </span>
+        ) : null}
+      </Toolbar>
+
       {q.isLoading ? (
         <Skeleton className="h-40 w-full" />
       ) : q.isError ? (
-        <Empty title="Couldn't load withdrawals" description="Try again shortly." />
+        <Empty title="Couldn't load withdrawals" description="Check your connection, then reload the page." />
       ) : rows.length === 0 ? (
-        <Empty title="Nothing here" description={status === 'pending' ? 'No withdrawals awaiting review.' : 'No withdrawals match this filter.'} />
+        <Empty title={status === 'pending' ? 'No withdrawals waiting' : 'Nothing here'} description={status === 'pending' ? 'New requests appear here as players ask to withdraw.' : 'No withdrawals match this filter.'} />
       ) : (
         <>
           {deepIntent ? (
@@ -209,37 +192,34 @@ export default function WithdrawalsPage() {
             </div>
           ) : null}
 
-          <Section title="Loaded on this page">
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-              <StatCard label="Withdrawals shown" value={totals.count} />
-              <StatCard label="Total value" money={totals.amount} />
-              <StatCard label="Awaiting review" value={totals.awaitingCount} tone={totals.awaitingCount > 0 ? 'warn' : 'default'} />
-              <StatCard label="Awaiting value" money={totals.awaitingAmount} tone={totals.awaitingCount > 0 ? 'warn' : 'default'} hint="held, pending payout" />
-            </div>
-          </Section>
-
-          <TableWrap>
-            <thead>
-              <tr className="border-b border-border">
-                <Th className="w-8"><SelectAllCheckbox allSelected={sel.allSelected} someSelected={sel.someSelected} onChange={sel.setAll} /></Th>
-                <Th>Player</Th>
-                <Th className="text-right">Amount</Th>
-                <Th>M-Pesa</Th>
-                <Th>Status</Th>
-                <Th className="text-right">Balance</Th>
-                <Th className="text-right">Deposits</Th>
-                <Th className="text-right">Withdrawals</Th>
-                <Th className="text-right">Net cash</Th>
-                <Th>Requested</Th>
-                <Th className="text-right">Action</Th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r) => (
-                <Row key={r.txId} r={r} checked={sel.isSelected(r.txId)} onToggle={() => sel.toggle(r.txId)} highlighted={r.txId === highlightId} />
-              ))}
-            </tbody>
-          </TableWrap>
+          {/* UI-C: desktop table with the actions pinned to the right edge (Reject / Mark paid were
+              cut off at 1440px), and a card list on phones (the table needed sideways scrolling to act). */}
+          <div className="hidden md:block">
+            <TableWrap>
+              <thead>
+                <tr className="border-b border-border">
+                  <Th className="w-8"><SelectAllCheckbox allSelected={sel.allSelected} someSelected={sel.someSelected} onChange={sel.setAll} /></Th>
+                  <Th>Player</Th>
+                  <Th numeric>Amount</Th>
+                  <Th>Status</Th>
+                  <Th numeric>Balance</Th>
+                  <Th numeric>Lifetime</Th>
+                  <Th>Requested</Th>
+                  <Th className="sticky right-0 bg-surface text-right shadow-[-8px_0_12px_-10px_rgba(0,0,0,0.6)]">Action</Th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r) => (
+                  <Row key={r.txId} r={r} checked={sel.isSelected(r.txId)} onToggle={() => sel.toggle(r.txId)} highlighted={r.txId === highlightId} />
+                ))}
+              </tbody>
+            </TableWrap>
+          </div>
+          <ul className="flex flex-col gap-3 md:hidden" aria-label="Withdrawals">
+            {rows.map((r) => (
+              <CardRow key={r.txId} r={r} checked={sel.isSelected(r.txId)} onToggle={() => sel.toggle(r.txId)} highlighted={r.txId === highlightId} />
+            ))}
+          </ul>
           {q.hasNextPage ? (
             <Button variant="outline" size="sm" onClick={() => q.fetchNextPage()} disabled={q.isFetchingNextPage}>
               {q.isFetchingNextPage ? 'Loading…' : 'Load more'}
@@ -282,43 +262,41 @@ function WithdrawalsSwitch() {
       onError: (e) => toast.push({ tone: 'error', title: "Couldn't change setting", description: e instanceof ApiError ? e.message : 'Try again.' }),
     });
 
+  // UI-C: a compact status row (it used to be a large banner bigger than the queue it controls).
   return (
-    <div className={`mb-4 flex items-center justify-between gap-3 rounded-2xl border p-4 ${enabled ? 'border-up/30 bg-up/5' : 'border-down/40 bg-down/10'}`}>
-      <div className="flex flex-col">
-        <span className="flex items-center gap-2 text-sm font-semibold text-fg">
-          <span className={`inline-flex h-2.5 w-2.5 rounded-full ${enabled ? 'bg-up' : 'bg-down'}`} />
-          {enabled ? 'Withdrawals are ENABLED' : 'Withdrawals are DISABLED'}
+    <div className={`flex items-center justify-between gap-3 rounded-xl border px-4 py-3 ${enabled ? 'border-border bg-surface' : 'border-down/40 bg-down/10'}`}>
+      <div className="flex min-w-0 flex-col">
+        <span className="flex items-center gap-2 text-sm font-medium text-fg">
+          <span className={`inline-flex h-2 w-2 shrink-0 rounded-full ${enabled ? 'bg-up' : 'bg-down'}`} />
+          {enabled ? 'Withdrawals are on for this brand' : 'Withdrawals are OFF for this brand'}
         </span>
-        <span className="mt-0.5 max-w-2xl text-xs text-muted">
+        <span className="mt-0.5 text-xs text-muted">
           {enabled
-            ? 'Payouts are processing normally. Turn OFF to immediately halt ALL withdrawals for this brand — player requests and marketer instant transfers — to override a malfunction or prevent payouts beyond the pool.'
-            : 'All new withdrawals are refused for this brand (players + marketers). Existing pending requests can still be reviewed manually. Turn ON to resume payouts.'}
+            ? 'Turn off to stop all new withdrawals (players and marketers) straight away.'
+            : 'New requests are refused. You can still review the pending ones below.'}
         </span>
       </div>
       <button
         type="button"
+        role="switch"
         onClick={flip}
         disabled={setEnabled.isPending}
-        aria-pressed={enabled}
-        aria-label={enabled ? 'Disable withdrawals' : 'Enable withdrawals'}
-        className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full transition disabled:opacity-50 ${enabled ? 'bg-up' : 'bg-down'}`}
+        aria-checked={enabled}
+        aria-label={enabled ? 'Turn withdrawals off' : 'Turn withdrawals on'}
+        className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition disabled:opacity-50 ${enabled ? 'bg-up' : 'bg-down'}`}
       >
-        <span className={`inline-block h-5 w-5 transform rounded-full bg-white transition ${enabled ? 'translate-x-6' : 'translate-x-1'}`} />
+        <span className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition ${enabled ? 'translate-x-5' : 'translate-x-0.5'}`} />
       </button>
     </div>
   );
 }
 
-function Row({ r, checked, onToggle, highlighted = false }: { r: AdminWithdrawalRow; checked: boolean; onToggle: () => void; highlighted?: boolean }) {
+/** Approve / reject / mark-paid for one withdrawal (shared by the table row and the phone card). */
+function useRowActions(r: AdminWithdrawalRow) {
   const action = useWithdrawalAction();
-  const rowRef = useRef<HTMLTableRowElement>(null);
-  useEffect(() => { if (highlighted) rowRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' }); }, [highlighted]);
   const toast = useToast();
   const canAct = ACTIONABLE.has(r.status.toLowerCase());
   const canMarkPaid = MARKPAYABLE.has(r.status.toLowerCase());
-  // Net cash the house is up on this player: lifetime deposits minus lifetime paid withdrawals.
-  const netCents = r.totalDepositsCents - r.totalWithdrawalsCents;
-
   function run(act: 'approve' | 'reject' | 'mark-paid', password?: string) {
     action.mutate(
       { id: r.txId, action: act, ...(password ? { password } : {}) },
@@ -336,56 +314,81 @@ function Row({ r, checked, onToggle, highlighted = false }: { r: AdminWithdrawal
       },
     );
   }
+  const node = canAct || canMarkPaid ? (
+    <span className="inline-flex flex-wrap items-center justify-end gap-1.5">
+      {canAct ? <PasswordConfirmButton label="Approve" confirmLabel="Authorize payout" variant="primary" busy={action.isPending} onConfirm={(pw) => run('approve', pw)} /> : null}
+      {canAct ? <ConfirmButton label="Reject" confirmLabel="Reject" variant="outline" busy={action.isPending} onConfirm={() => run('reject')} /> : null}
+      {canMarkPaid ? (
+        <PasswordConfirmButton label="Mark paid" confirmLabel="Confirm paid" variant={canAct ? 'ghost' : 'primary'} busy={action.isPending} onConfirm={(pw) => run('mark-paid', pw)} />
+      ) : null}
+    </span>
+  ) : <span className="text-xs text-muted">—</span>;
+  return node;
+}
 
+/** Lifetime cash for the player: deposited, paid out and the net (coloured only when it is not zero). */
+function Lifetime({ r }: { r: AdminWithdrawalRow }) {
+  const net = r.totalDepositsCents - r.totalWithdrawalsCents;
   return (
-    <tr ref={rowRef} aria-current={highlighted ? 'true' : undefined} className={`border-b border-border last:border-0 hover:bg-surface-2/50 ${checked ? 'bg-accent/5' : ''} ${highlighted ? 'outline outline-2 -outline-offset-2 outline-accent' : ''}`}>
+    <span className="flex flex-col items-end text-xs leading-5">
+      <span title={r.depositCount ? `${r.depositCount} deposit(s) since ${r.firstDepositAtMs ? formatExact(r.firstDepositAtMs).slice(0, 11) : '—'}` : 'never deposited'}>
+        <span className="text-muted">In </span><Money cents={r.totalDepositsCents} />
+      </span>
+      <span title={`${r.withdrawalCount} withdrawal(s) paid`}><span className="text-muted">Out </span><Money cents={r.totalWithdrawalsCents} /></span>
+      <span className={net > 0 ? 'text-up' : net < 0 ? 'text-down' : 'text-muted'} title={net >= 0 ? 'net depositor' : 'net winner'}>
+        <span className="text-muted">Net </span><Money cents={net} />
+      </span>
+    </span>
+  );
+}
+
+function PlayerCell({ r }: { r: AdminWithdrawalRow }) {
+  return (
+    <span className="flex flex-col leading-tight">
+      <UserCell userId={r.userId} username={r.username} />
+      <a href={`tel:${r.phone}`} className="mt-0.5 text-xs tabular-nums text-muted hover:text-accent hover:underline">{r.phone}</a>
+      {r.mpesaReceipt ? <span className="font-mono text-[10px] text-muted">{r.mpesaReceipt}</span> : null}
+    </span>
+  );
+}
+
+function CardRow({ r, checked, onToggle, highlighted = false }: { r: AdminWithdrawalRow; checked: boolean; onToggle: () => void; highlighted?: boolean }) {
+  const actions = useRowActions(r);
+  return (
+    <li className={`rounded-2xl border bg-surface p-4 ${highlighted ? 'border-accent' : checked ? 'border-accent/50' : 'border-border'}`}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex min-w-0 items-start gap-2">
+          <RowCheckbox checked={checked} onChange={onToggle} label={`Select ${r.username}`} />
+          <PlayerCell r={r} />
+        </div>
+        <div className="flex flex-col items-end gap-1">
+          <span className="text-lg font-semibold"><Money cents={r.amountCents} /></span>
+          <StatusBadge status={r.status} />
+        </div>
+      </div>
+      <div className="mt-3 flex items-end justify-between gap-3 border-t border-border pt-3">
+        <span className="text-xs text-muted">Balance <Money cents={r.balanceCents} className="text-fg" /><br />Requested {r.createdAtMs ? formatAgo(r.createdAtMs) : '—'}</span>
+        <Lifetime r={r} />
+      </div>
+      <div className="mt-3 flex justify-end">{actions}</div>
+    </li>
+  );
+}
+
+function Row({ r, checked, onToggle, highlighted = false }: { r: AdminWithdrawalRow; checked: boolean; onToggle: () => void; highlighted?: boolean }) {
+  const rowRef = useRef<HTMLTableRowElement>(null);
+  useEffect(() => { if (highlighted) rowRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' }); }, [highlighted]);
+  const actions = useRowActions(r);
+  return (
+    <tr ref={rowRef} aria-current={highlighted ? 'true' : undefined} className={`group border-b border-border last:border-0 hover:bg-surface-2/50 ${checked ? 'bg-accent/5' : ''} ${highlighted ? 'outline outline-2 -outline-offset-2 outline-accent' : ''}`}>
       <Td><RowCheckbox checked={checked} onChange={onToggle} label={`Select ${r.username}`} /></Td>
-      <Td><UserCell userId={r.userId} username={r.username} /></Td>
-      <Td className="text-right font-semibold tabular-nums"><Money cents={r.amountCents} /></Td>
-      <Td><PhoneCell phone={r.phone} receipt={r.mpesaReceipt} /></Td>
+      <Td><PlayerCell r={r} /></Td>
+      <Td numeric className="font-semibold"><Money cents={r.amountCents} /></Td>
       <Td><StatusBadge status={r.status} /></Td>
-      <Td className="text-right">
-        <StackCell cents={r.balanceCents} hint="current" />
-      </Td>
-      <Td className="text-right">
-        <StackCell
-          cents={r.totalDepositsCents}
-          tone="up"
-          hint={r.depositCount === 0
-            ? 'never funded'
-            : `${r.depositCount} dep · since ${r.firstDepositAtMs ? formatExact(r.firstDepositAtMs).slice(0, 10) : '—'}`}
-        />
-      </Td>
-      <Td className="text-right">
-        <StackCell cents={r.totalWithdrawalsCents} tone="down" hint={`${r.withdrawalCount} paid`} />
-      </Td>
-      <Td className="text-right">
-        <StackCell cents={netCents} tone={netCents >= 0 ? 'up' : 'down'} hint={netCents >= 0 ? 'net depositor' : 'net winner'} />
-      </Td>
+      <Td numeric><Money cents={r.balanceCents} /></Td>
+      <Td numeric><Lifetime r={r} /></Td>
       <Td><TimeCell ms={r.createdAtMs} /></Td>
-      <Td className="text-right">
-        {canAct || canMarkPaid ? (
-          <span className="inline-flex items-center justify-end gap-1.5">
-            {canAct ? (
-              <PasswordConfirmButton label="Approve" confirmLabel="Authorize payout" variant="primary" busy={action.isPending} onConfirm={(pw) => run('approve', pw)} />
-            ) : null}
-            {canAct ? (
-              <ConfirmButton label="Reject" confirmLabel="Reject" variant="outline" busy={action.isPending} onConfirm={() => run('reject')} />
-            ) : null}
-            {canMarkPaid ? (
-              <PasswordConfirmButton
-                label="Mark paid"
-                confirmLabel="Confirm paid"
-                variant={canAct ? 'outline' : 'primary'}
-                busy={action.isPending}
-                onConfirm={(pw) => run('mark-paid', pw)}
-              />
-            ) : null}
-          </span>
-        ) : (
-          <span className="text-xs text-muted">—</span>
-        )}
-      </Td>
+      <Td className="sticky right-0 bg-surface text-right shadow-[-8px_0_12px_-10px_rgba(0,0,0,0.6)] group-hover:bg-surface-2">{actions}</Td>
     </tr>
   );
 }

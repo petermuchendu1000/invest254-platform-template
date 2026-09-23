@@ -8,7 +8,7 @@ import { StatusBadge } from '@/components/ui/Badge';
 import { ApiError } from '@/lib/api/client';
 import { formatKes } from '@invest254/shared/money';
 import { useToast } from '@/lib/toast/ToastProvider';
-import { formatRelativeTime } from '@/lib/format';
+import { formatAgo } from '@/lib/format';
 import { StatCard, TableWrap, Th, Td, Empty, Toolbar, FilterSelect, ConfirmButton, PasswordConfirmButton } from '@/components/admin/ui';
 import { useRowSelection, SelectAllCheckbox, RowCheckbox, BulkBar, downloadCsv, copyText } from '@/components/admin/BulkSelect';
 import { RejectDialog } from '@/components/admin/RejectDialog';
@@ -215,7 +215,7 @@ function Row({ r, checked, onToggle, onReject }: { r: AdminPayoutRow; checked: b
       <Td className="tabular-nums">{r.phone}</Td>
       <Td><StatusBadge status={r.status} /></Td>
       <Td className="font-mono text-xs text-muted">{r.approvedBy ? `${r.approvedBy.slice(0, 8)}…` : '—'}</Td>
-      <Td className="whitespace-nowrap text-xs text-muted">{formatRelativeTime(r.createdAtMs)} ago</Td>
+      <Td className="whitespace-nowrap text-xs text-muted">{formatAgo(r.createdAtMs)}</Td>
       <Td className="text-right">
         {canAct ? (
           <span className="inline-flex items-center justify-end gap-1.5">

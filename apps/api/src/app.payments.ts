@@ -41,6 +41,11 @@ const DOMAIN_STATUS: Readonly<Record<string, number>> = {
   MEGAPAY_INITIATE_REJECTED: 502,
   MEGAPAY_VERIFY_PENDING: 409,   // callback arrived but status not yet final -> caller/retry + reconcile settles it
   MPESA_B2C_NOT_CONFIGURED: 503, // withdrawal payout attempted but Daraja B2C initiator/credential unset
+  // PAY-1 (docs/43): a brand on its own payment accounts
+  PAYOUT_PHONE_MISMATCH: 400,    // F-49 (0161): withdrawals are paid only to the registered number
+  GATEWAY_NOT_CONFIGURED: 503,   // the brand's payment owner has no complete account for this rail (never re-routed)
+  PAYBILL_NOT_AVAILABLE: 403,    // the manual Pay Bill is the System owner's; not offered on own accounts
+  INVALID_SCOPE: 500,
 };
 
 /** Technical/provider faults that must NEVER reach a client verbatim — they carry gateway payloads
@@ -353,7 +358,12 @@ export function registerProtectedRoutes(router: Router, deps: ApiDeps): void {
   });
 
   // Public: the Pay Bill display config (non-secret) for the deposit sheet's copy-paste card.
-  router.get(`${BASE}/deposits/paybill/info`, async () => deps.payments.paybillConfig());
+  // PAY-1: ?site=<brand> — a brand on its OWN payment accounts gets enabled:false (the paybill shown
+  // here is the System owner's; its players must never be told to pay it).
+  router.get(`${BASE}/deposits/paybill/info`, async (ctx: Ctx) => {
+    const s = ctx.query.get("site")?.trim();
+    return deps.payments.paybillConfig(s && /^[0-9a-f-]{36}$/i.test(s) ? s : undefined);
+  });
 
 
   const b2cResult = async (ctx: Ctx) => {

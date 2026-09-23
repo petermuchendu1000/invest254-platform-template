@@ -22,6 +22,11 @@ export interface NotificationTemplate {
   dismissible: boolean; category: string; resolvesCategory: string | null;
   defaultAudience: BroadcastAudience; description: string | null;
 }
+/** Edited announcement text (0162). Null/blank fields fall back to the template's own text. */
+export interface BroadcastText { title?: string | null; body?: string | null }
+export const BROADCAST_TITLE_MAX = 120;
+export const BROADCAST_BODY_MAX = 2000;
+
 /**
  * Audience filter for a broadcast. Keys mirror the SQL jsonb spec exactly so the value passes
  * straight to fn_notification_audience. All fields optional; {} = all active people-facing users.
@@ -81,7 +86,8 @@ export interface NotificationRepository {
   // Actor-scoped (migration 0141): the count is bounded to the caller's tenant (site admin -> own
   // site; platform admin -> its platform; system owner -> everyone).
   audienceCount(actorId: string, actorRole: string, audience: BroadcastAudience): Promise<number>;
-  broadcast(actorId: string, actorRole: string, templateKey: string, audience: BroadcastAudience | null): Promise<number>;
+  /** 0162: optional `text` overrides the template's title/body (blank = the template's own text). */
+  broadcast(actorId: string, actorRole: string, templateKey: string, audience: BroadcastAudience | null, text?: BroadcastText): Promise<number>;
   /** Clear an incident category across the actor's tenant — or, when `siteId` is given, ONLY that brand
    *  (and only if it is within the actor's permission set; migration 0156, Issue 1 / F-46). */
   resolveCategory(actorId: string, actorRole: string, category: string, siteId?: string): Promise<number>;
@@ -129,10 +135,14 @@ export class NotificationService {
   // ── Broadcast engine (migration 0106) ──
   listTemplates(): Promise<NotificationTemplate[]> { return this.repo.listTemplates(); }
   audienceCount(actorId: string, actorRole: string, audience: BroadcastAudience): Promise<number> { return this.repo.audienceCount(actorId, actorRole, audience ?? {}); }
-  broadcast(actorId: string, actorRole: string, templateKey: string, audience: BroadcastAudience | null): Promise<number> {
+  broadcast(actorId: string, actorRole: string, templateKey: string, audience: BroadcastAudience | null, text?: BroadcastText): Promise<number> {
     const key = String(templateKey ?? "").trim();
     if (!key) throw new Error("TEMPLATE_KEY_REQUIRED");
-    return this.repo.broadcast(actorId, actorRole, key, audience ?? null);
+    const title = text?.title?.trim() || null;
+    const body = text?.body?.trim() || null;
+    if (title && title.length > BROADCAST_TITLE_MAX) throw new Error("TITLE_TOO_LONG");
+    if (body && body.length > BROADCAST_BODY_MAX) throw new Error("BODY_TOO_LONG");
+    return this.repo.broadcast(actorId, actorRole, key, audience ?? null, title || body ? { title, body } : undefined);
   }
   resolveCategory(actorId: string, actorRole: string, category: string, siteId?: string): Promise<number> {
     const cat = String(category ?? "").trim();
@@ -196,7 +206,9 @@ export class InMemoryNotificationRepository implements NotificationRepository {
   // ── Broadcast engine (migration 0106): in-memory stubs (DB-backed in Pg; RPCs are e2e-tested) ──
   async listTemplates(): Promise<NotificationTemplate[]> { return []; }
   async audienceCount(_actorId: string, _actorRole: string, _audience: BroadcastAudience): Promise<number> { return 0; }
-  async broadcast(_actorId: string, _actorRole: string, _templateKey: string, _audience: BroadcastAudience | null): Promise<number> { return 0; }
+  /** Test seam: the last broadcast's custom text (the SQL is e2e-tested on the real schema). */
+  lastBroadcastText: BroadcastText | undefined;
+  async broadcast(_actorId: string, _actorRole: string, _templateKey: string, _audience: BroadcastAudience | null, text?: BroadcastText): Promise<number> { this.lastBroadcastText = text; return 0; }
   async resolveCategory(_actorId: string, _actorRole: string, _category: string, _siteId?: string): Promise<number> { return 0; }
 }
 
@@ -285,10 +297,10 @@ export class PgNotificationRepository implements NotificationRepository {
       [actorId, actorRole, JSON.stringify(audience ?? {})]);
     return Number(r.rows[0]?.n ?? 0);
   }
-  async broadcast(actorId: string, actorRole: string, templateKey: string, audience: BroadcastAudience | null): Promise<number> {
+  async broadcast(actorId: string, actorRole: string, templateKey: string, audience: BroadcastAudience | null, text?: BroadcastText): Promise<number> {
     const r = await this.q.query(
-      `select fn_broadcast_notification($1, $2, $3, $4::jsonb) as n`,
-      [actorId, actorRole, templateKey, audience == null ? null : JSON.stringify(audience)]);
+      `select fn_broadcast_notification($1, $2, $3, $4::jsonb, $5, $6) as n`,
+      [actorId, actorRole, templateKey, audience == null ? null : JSON.stringify(audience), text?.title ?? null, text?.body ?? null]);
     return Number(r.rows[0]?.n ?? 0);
   }
   async resolveCategory(actorId: string, actorRole: string, category: string, siteId?: string): Promise<number> {

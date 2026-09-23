@@ -11,11 +11,12 @@ import { StatusBadge } from '@/components/ui/Badge';
 import { cn } from '@/lib/cn';
 import { ApiError } from '@/lib/api/client';
 import { useToast } from '@/lib/toast/ToastProvider';
-import { formatDateTime, formatRelativeTime } from '@/lib/format';
+import { formatDateTime, formatAgo, formatNumber } from '@/lib/format';
 import { useCan } from '@/lib/auth/can';
 import { PageHeader, StatCard, Section, Empty, ConfirmButton, TableWrap, Th, Td, Toolbar, FilterSelect } from '@/components/admin/ui';
 import { useUser, useUserActivity, useSetUserStatus, useAdjustBalance, useClearBalance, useResetBalance, useSetCommissionRate, useSetUserRole, useDeleteUser, useSetDefaultMarketer, useUpdateUserDetails, useUserNotifications, useSendNotification, useResolveNotification, useUserOverrides, useSetOverrides, useGameConfig, useMarketerExpenses, useAddMarketerExpense } from '@/lib/admin/hooks';
 import type { AdminUserActivityRow, AdminNotificationRow, NotificationLevel, UserOverridePatch } from '@/lib/admin/types';
+import { formatKes } from '@invest254/shared/money';
 
 const ROLES = ['player', 'marketer', 'admin'] as const;
 
@@ -67,7 +68,7 @@ export default function UserDetailPage({ params }: { params: { id: string } }) {
               <StatCard label="Deposits" money={q.data.depositsCents} tone="up" />
               <StatCard label="Withdrawals" money={q.data.withdrawalsCents} tone="down" />
               <StatCard label="Net deposits" money={q.data.netDepositsCents} tone={q.data.netDepositsCents >= 0 ? 'up' : 'down'} />
-              <StatCard label="Settled bets" value={q.data.betCount.toLocaleString()} />
+              <StatCard label="Settled bets" value={formatNumber(q.data.betCount)} />
             </div>
           </Section>
 
@@ -208,7 +209,7 @@ function ActivityRow({ r }: { r: AdminUserActivityRow }) {
         <StatusBadge status={r.status} />
       </Td>
       <Td className="whitespace-nowrap text-right text-xs text-muted">
-        <span title={formatDateTime(r.createdAtMs)}>{formatRelativeTime(r.createdAtMs)} ago</span>
+        <span title={formatDateTime(r.createdAtMs)}>{formatAgo(r.createdAtMs)}</span>
       </Td>
     </tr>
   );
@@ -912,6 +913,46 @@ function OverridesPanel({ id }: { id: string }) {
     return { feasible, rtp, winRate: wr, maxMult: mm, required, pricing };
   })();
 
+  // UI-C: in the brand back office nobody can write overrides (owner-only at the API). Show the values as
+  // plain text with who manages them, instead of eight inputs that looked editable until you read the footnote.
+  if (!canWriteOverrides) {
+    const o = q.data;
+    const val = (v: number | null | undefined, fmt: (n: number) => string) => (v == null ? 'Brand default' : fmt(v));
+    const rows: Array<[string, string]> = [
+      ['Win rate', val(o?.winRate, (n) => `${(n * 100).toFixed(1)}%`)],
+      ['House edge', val(o?.houseEdge, (n) => `${(n * 100).toFixed(1)}%`)],
+      ['Max win multiplier', val(o?.maxWinMultiplier, (n) => `×${n}`)],
+      ['Auto-sell after', val(o?.tradeDurationS, (n) => `${n}s`)],
+      ['Min stake', val(o?.minStakeCents, (n) => formatKes(n))],
+      ['Max stake', val(o?.maxStakeCents, (n) => formatKes(n))],
+    ];
+    const custom = rows.some(([, v]) => v !== 'Brand default');
+    return (
+      <Section title="Player overrides">
+        <Card className="flex flex-col gap-3" data-testid="overrides-readonly">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-sm text-muted">
+              {custom ? 'This player has custom game settings.' : 'This player uses the brand’s game settings.'}
+            </p>
+            <span className="rounded-full bg-surface-2 px-2 py-0.5 text-xs font-medium text-muted">Managed in the console</span>
+          </div>
+          {q.isLoading ? <Skeleton className="h-20 w-full" /> : (
+            <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-3">
+              {rows.map(([k, v]) => (
+                <div key={k} className="flex flex-col">
+                  <dt className="text-xs text-muted">{k}</dt>
+                  <dd className={v === 'Brand default' ? 'text-muted' : 'font-medium text-fg'}>{v}</dd>
+                </div>
+              ))}
+            </dl>
+          )}
+          {o?.notes ? <p className="text-xs text-muted">Note: {o.notes}</p> : null}
+          <p className="text-xs text-muted">Your platform admin or the System owner can change these from the console.</p>
+        </Card>
+      </Section>
+    );
+  }
+
   return (
     <Section title="Player overrides">
       <Card className="flex flex-col gap-3">
@@ -963,7 +1004,7 @@ function OverridesPanel({ id }: { id: string }) {
         )}
         {q.data?.updatedAtMs ? (
           <p className="text-xs text-muted">
-            Last updated {formatRelativeTime(q.data.updatedAtMs)} ago{q.data.updatedBy ? ` by ${q.data.updatedBy.slice(0, 8)}…` : ''}.
+            Last updated {formatAgo(q.data.updatedAtMs)}{q.data.updatedBy ? ` by ${q.data.updatedBy.slice(0, 8)}…` : ''}.
           </p>
         ) : null}
       </Card>
@@ -1039,7 +1080,7 @@ function MarketerExpenses({ id }: { id: string }) {
                 <Td className="capitalize">{e.category.replace(/_/g, ' ')}</Td>
                 <Td className="text-muted">{e.note ?? '—'}</Td>
                 <Td className="text-right font-medium tabular-nums text-down">−<Money cents={e.amountCents} /></Td>
-                <Td className="text-right text-xs text-muted">{formatRelativeTime(e.createdAtMs)} ago</Td>
+                <Td className="text-right text-xs text-muted">{formatAgo(e.createdAtMs)}</Td>
               </tr>
             ))}
           </tbody>

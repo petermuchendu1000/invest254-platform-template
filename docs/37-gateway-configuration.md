@@ -69,3 +69,5 @@ reviewed opt-in rather than flipped automatically. See the PR description.
   edit merges (never drops the other secret)**, non-configurable provider rejected, network-free test route.
 - DB: migration + all RPC paths proven against live Supabase **inside a rolled-back transaction**
   (auth gate, masked read w/ no ciphertext leak, settings-only keep, clear, resolve, not-found).
+
+> **2026-09-23 — PAY-1:** gateway accounts can now also be set per platform or per brand, and live payments honour them. See docs/43 (payment scopes). The System-owner console lives at `/platform/payments` (GatewayDetail); platform/brand accounts at `/platform/payment-accounts`.

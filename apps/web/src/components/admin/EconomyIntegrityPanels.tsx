@@ -32,23 +32,23 @@ export function RealCashRtpPanel() {
             <thead>
               <tr>
                 <Th>Window</Th>
-                <Th>Real RTP</Th><Th>Real turnover</Th><Th>Real GGR</Th>
-                <Th>Marketer RTP</Th><Th>Marketer turnover</Th>
-                <Th>Deposits</Th><Th>Withdrawals</Th><Th>Net cash</Th>
+                <Th numeric>Real RTP</Th><Th numeric>Real turnover</Th><Th numeric>Real GGR</Th>
+                <Th numeric>Marketer RTP</Th><Th numeric>Marketer turnover</Th>
+                <Th numeric>Deposits</Th><Th numeric>Withdrawals</Th><Th numeric>Net cash</Th>
               </tr>
             </thead>
             <tbody>
               {q.data.windows.map((w) => (
                 <tr key={w.window}>
-                  <Td>{w.window}</Td>
-                  <Td>{pct(w.real.rtp)}</Td>
-                  <Td><Money cents={w.real.turnoverCents} /></Td>
-                  <Td className={w.real.ggrCents >= 0 ? 'text-emerald-600' : 'text-rose-600'}><Money cents={w.real.ggrCents} /></Td>
-                  <Td className="text-muted">{pct(w.demo.rtp)}</Td>
-                  <Td className="text-muted"><Money cents={w.demo.turnoverCents} /></Td>
-                  <Td><Money cents={w.cash.depositsCents} /></Td>
-                  <Td><Money cents={w.cash.withdrawalsCents} /></Td>
-                  <Td className={w.cash.netCashCents >= 0 ? 'text-emerald-600' : 'text-rose-600'}><Money cents={w.cash.netCashCents} /></Td>
+                  <Td className="capitalize">{w.window}</Td>
+                  <Td numeric>{pct(w.real.rtp)}</Td>
+                  <Td numeric><Money cents={w.real.turnoverCents} /></Td>
+                  <Td numeric className={w.real.ggrCents > 0 ? 'text-up' : w.real.ggrCents < 0 ? 'text-down' : 'text-muted'}><Money cents={w.real.ggrCents} /></Td>
+                  <Td numeric className="text-muted">{pct(w.demo.rtp)}</Td>
+                  <Td numeric className="text-muted"><Money cents={w.demo.turnoverCents} /></Td>
+                  <Td numeric><Money cents={w.cash.depositsCents} /></Td>
+                  <Td numeric><Money cents={w.cash.withdrawalsCents} /></Td>
+                  <Td numeric className={w.cash.netCashCents > 0 ? 'text-up' : w.cash.netCashCents < 0 ? 'text-down' : 'text-muted'}><Money cents={w.cash.netCashCents} /></Td>
                 </tr>
               ))}
             </tbody>
@@ -82,15 +82,15 @@ export function ConfigChangeReviewPanel() {
         <TableWrap>
           <table className="w-full text-sm">
             <thead>
-              <tr><Th>Version</Th><Th>When (EAT)</Th><Th>House edge</Th><Th>Win rate</Th><Th>Changed</Th><Th>Review</Th></tr>
+              <tr><Th>Version</Th><Th>When (EAT)</Th><Th numeric>House edge</Th><Th numeric>Win rate</Th><Th>Changed</Th><Th>Review</Th></tr>
             </thead>
             <tbody>
               {q.data.map((r) => (
                 <tr key={r.version} className={r.risk ? 'bg-amber-50 dark:bg-amber-950/40' : undefined}>
                   <Td>v{r.version}</Td>
                   <Td className="whitespace-nowrap">{fmtDate(r.createdAtMs)}</Td>
-                  <Td>{r.houseEdge}{r.prevHouseEdge != null && r.prevHouseEdge !== r.houseEdge && <span className="text-muted"> (was {r.prevHouseEdge})</span>}</Td>
-                  <Td>{r.targetWinRate}{r.prevTargetWinRate != null && r.prevTargetWinRate !== r.targetWinRate && <span className="text-muted"> (was {r.prevTargetWinRate})</span>}</Td>
+                  <Td numeric>{r.houseEdge}{r.prevHouseEdge != null && r.prevHouseEdge !== r.houseEdge && <span className="text-muted"> (was {r.prevHouseEdge})</span>}</Td>
+                  <Td numeric>{r.targetWinRate}{r.prevTargetWinRate != null && r.prevTargetWinRate !== r.targetWinRate && <span className="text-muted"> (was {r.prevTargetWinRate})</span>}</Td>
                   <Td className="text-muted">{r.changedFields.join(', ') || '—'}</Td>
                   <Td>
                     {r.risk

@@ -44,6 +44,7 @@ export const CAPABILITIES = {
   "console.site.owner_settings": OWNER,                  // chart style / trade UI, site owner & default marketer
   "console.performance": PLATFORM_TIER,                  // scoped to its own platform for a platform admin (UI-5)
   "console.live": PLATFORM_TIER,                         // engine feed scoped per platform (UI-5)
+  "console.payment_accounts": PLATFORM_TIER,             // PAY-1: own platform/brand gateway accounts (docs/43)
   // ── player-side earning (UI-12: operators are never affiliates — conflict of interest) ──────
   "earn.referrals": EARNERS,                             // invite code/link, 5% perk, commission payouts, apply to the programme
   "earn.marketer_dashboard": ["marketer"],               // marketer dashboard, payout & advance requests

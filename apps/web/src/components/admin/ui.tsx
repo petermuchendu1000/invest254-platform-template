@@ -13,12 +13,12 @@ export function PageHeader({
   actions?: React.ReactNode;
 }) {
   return (
-    <div className="flex flex-wrap items-end justify-between gap-3">
-      <div className="flex flex-col gap-0.5">
-        <h1 className="text-xl font-semibold tracking-tight">{title}</h1>
-        {subtitle ? <p className="text-sm text-muted">{subtitle}</p> : null}
+    <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-3">
+      <div className="flex min-w-0 flex-col gap-1">
+        <h1 className="text-xl font-semibold tracking-tight md:text-2xl">{title}</h1>
+        {subtitle ? <p className="max-w-3xl text-sm text-muted">{subtitle}</p> : null}
       </div>
-      {actions ? <div className="flex items-center gap-2">{actions}</div> : null}
+      {actions ? <div className="flex flex-wrap items-center gap-2">{actions}</div> : null}
     </div>
   );
 }
@@ -40,9 +40,10 @@ export function StatCard({
   const toneCls =
     tone === 'up' ? 'text-up' : tone === 'down' ? 'text-down' : tone === 'warn' ? 'text-warn' : 'text-fg';
   return (
-    <div className="flex flex-col gap-1 rounded-2xl border border-border bg-surface p-4">
+    <div className="flex min-w-0 flex-col gap-1 rounded-2xl border border-border bg-surface p-4">
       <span className="text-xs uppercase tracking-wide text-muted">{label}</span>
-      <span className={cn('text-2xl font-bold tabular-nums', toneCls)}>
+      {/* UI-B: values never wrap ("KES" on one line, the number on the next). */}
+      <span className={cn('truncate whitespace-nowrap text-xl font-bold tabular-nums sm:text-2xl', toneCls)}>
         {money !== undefined ? <Money cents={money} /> : value}
       </span>
       {hint ? <span className="text-xs text-muted">{hint}</span> : null}
@@ -67,19 +68,41 @@ export function TableWrap({ children }: { children: React.ReactNode }) {
     </div>
   );
 }
-export function Th({ children, className }: { children?: React.ReactNode; className?: string }) {
+/** Table header. `numeric` right-aligns (amounts, counts, rates) — numbers always align on the right (UI-B). */
+export function Th({ children, className, numeric }: { children?: React.ReactNode; className?: string; numeric?: boolean }) {
   return (
-    <th className={cn('px-3 py-2.5 text-left text-xs font-medium uppercase tracking-wide text-muted', className)}>
+    <th className={cn('whitespace-nowrap px-3 py-2.5 text-left text-xs font-medium uppercase tracking-wide text-muted', numeric && 'text-right', className)}>
       {children}
     </th>
   );
 }
-export function Td({ children, className }: { children?: React.ReactNode; className?: string }) {
-  return <td className={cn('px-3 py-2.5 align-middle', className)}>{children}</td>;
+export function Td({ children, className, numeric }: { children?: React.ReactNode; className?: string; numeric?: boolean }) {
+  return <td className={cn('px-3 py-2.5 align-middle', numeric && 'whitespace-nowrap text-right tabular-nums', className)}>{children}</td>;
 }
 
 export function Toolbar({ children }: { children: React.ReactNode }) {
   return <div className="flex flex-wrap items-center gap-2">{children}</div>;
+}
+
+/** Toolbar search field — same 36px height as FilterSelect and small buttons (UI-B: one control height per toolbar). */
+export function SearchInput({ value, onChange, placeholder, label, className }: {
+  value: string; onChange: (v: string) => void; placeholder: string; label?: string; className?: string;
+}) {
+  return (
+    <label className={cn('relative flex h-9 w-60 max-w-full items-center', className)}>
+      <span className="sr-only">{label ?? placeholder}</span>
+      <svg viewBox="0 0 24 24" className="pointer-events-none absolute left-2.5 h-4 w-4 text-muted" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden>
+        <circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" />
+      </svg>
+      <input
+        type="search"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="h-9 w-full rounded-lg border border-border bg-surface-2 pl-8 pr-2 text-sm text-fg outline-none placeholder:text-muted focus:border-accent"
+      />
+    </label>
+  );
 }
 
 /** Small select used for table filters. */
@@ -112,11 +135,13 @@ export function FilterSelect({
   );
 }
 
-export function Empty({ title, description }: { title: string; description?: string }) {
+/** One empty state for every list (UI-B): what is missing, why, and (optionally) what to do next. */
+export function Empty({ title, description, action }: { title: string; description?: string; action?: React.ReactNode }) {
   return (
-    <div className="flex flex-col items-center gap-1 rounded-2xl border border-dashed border-border p-8 text-center">
+    <div className="flex flex-col items-center gap-1 rounded-2xl border border-dashed border-border px-6 py-10 text-center">
       <p className="text-sm font-medium text-fg">{title}</p>
-      {description ? <p className="text-sm text-muted">{description}</p> : null}
+      {description ? <p className="max-w-md text-sm text-muted">{description}</p> : null}
+      {action ? <div className="mt-3">{action}</div> : null}
     </div>
   );
 }

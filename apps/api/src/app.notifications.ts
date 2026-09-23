@@ -139,8 +139,18 @@ export function registerNotificationRoutes(router: Router, deps: ApiDeps): void 
     const b = ctx.body && typeof ctx.body === "object" ? (ctx.body as Record<string, unknown>) : {};
     const templateKey = typeof b.templateKey === "string" ? b.templateKey.trim() : "";
     if (!templateKey) throw new ApiError("VALIDATION", "templateKey is required", 400);
+    // UI-C (0162): optional edited title/body. Blank = the template's own text.
+    const str = (v: unknown, name: string): string | null => {
+      if (v === undefined || v === null) return null;
+      if (typeof v !== "string") throw new ApiError("VALIDATION", `${name} must be text`, 400);
+      return v.trim() || null;
+    };
+    const title = str(b.title, "title"), body = str(b.body, "body");
+    if (title && title.length > 120) throw new ApiError("VALIDATION", "title must be at most 120 characters", 400);
+    if (body && body.length > 2000) throw new ApiError("VALIDATION", "body must be at most 2000 characters", 400);
     const recipients = await deps.notifications.broadcast(
-      ctx.claims!.userId, ctx.claims!.role ?? "player", templateKey, (await scopedAudience(ctx, templateKey)) as never);
+      ctx.claims!.userId, ctx.claims!.role ?? "player", templateKey, (await scopedAudience(ctx, templateKey)) as never,
+      title || body ? { title, body } : undefined);
     return { recipients };
   });
 

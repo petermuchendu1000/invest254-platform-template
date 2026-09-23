@@ -24,8 +24,9 @@ import { Modal } from '@/components/ui/Modal';
 import { useToast } from '@/lib/toast/ToastProvider';
 import {
   usePlatforms, usePlatformsOverview, useCreatePlatform, useUpdatePlatform,
-  useAssignSiteToPlatform, useAppointPlatformAdmin, useRevokePlatformAdmin, usePlatformSites,
+  useAssignSiteToPlatform, usePlatformSites,
 } from '@/lib/platform/hooks';
+import { PlatformAdminsPanel } from '@/components/platform/PlatformAdminsPanel';
 import type { PlatformKpisDto } from '@/lib/platform/endpoints';
 import { ApiError } from '@/lib/api/client';
 
@@ -46,8 +47,6 @@ export default function PlatformsPage() {
   const createMut = useCreatePlatform();
   const updateMut = useUpdatePlatform();
   const assignMut = useAssignSiteToPlatform();
-  const appointMut = useAppointPlatformAdmin();
-  const revokeMut = useRevokePlatformAdmin();
 
   const overview = useMemo(() => overviewQ.data?.platforms ?? [], [overviewQ.data]);
   const sites = useMemo(() => sitesQ.data?.sites ?? [], [sitesQ.data]);
@@ -63,9 +62,6 @@ export default function PlatformsPage() {
   const [editStatus, setEditStatus] = useState('active');
 
   const [adminsOpen, setAdminsOpen] = useState(false);
-  const [appointUserId, setAppointUserId] = useState('');
-  const [appointPlatformId, setAppointPlatformId] = useState('');
-  const [revokeUserId, setRevokeUserId] = useState('');
 
   const [assignOpen, setAssignOpen] = useState(false);
   const [assignSiteId, setAssignSiteId] = useState('');
@@ -85,16 +81,6 @@ export default function PlatformsPage() {
     try { await updateMut.mutateAsync({ id: edit.platformId, patch: { name: editName.trim(), status: editStatus } }); ok('Platform updated'); setEdit(null); }
     catch (e) { err(e); }
   }
-  async function appoint() {
-    if (!appointUserId.trim() || !appointPlatformId) return err(new Error('User id and platform are required.'));
-    try { await appointMut.mutateAsync({ userId: appointUserId.trim(), platformId: appointPlatformId }); ok('Platform admin appointed'); setAppointUserId(''); }
-    catch (e) { err(e); }
-  }
-  async function revoke() {
-    if (!revokeUserId.trim()) return err(new Error('User id is required.'));
-    try { await revokeMut.mutateAsync({ userId: revokeUserId.trim(), newRole: 'admin' }); ok('Platform admin revoked → site admin'); setRevokeUserId(''); }
-    catch (e) { err(e); }
-  }
   async function assign() {
     if (!assignSiteId || !assignPlatformId) return err(new Error('Pick a site and a platform.'));
     try { await assignMut.mutateAsync({ siteId: assignSiteId, platformId: assignPlatformId }); ok('Site re-parented'); setAssignOpen(false); }
@@ -107,7 +93,7 @@ export default function PlatformsPage() {
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Platforms"
-        subtitle="You are the System Admin. Platforms group sites; each Platform Admin manages only their own platform's sites and site-admins — fully isolated from other platforms."
+        subtitle="Each platform groups brands under one platform admin, who sees only its own brands."
         actions={
           <div className="flex gap-2">
             <Button variant="outline" onClick={() => setAssignOpen(true)}>Re-parent a site</Button>
@@ -134,7 +120,7 @@ export default function PlatformsPage() {
               <thead>
                 <tr>
                   <Th>Platform</Th><Th>Status</Th><Th className="text-right">Sites</Th>
-                  <Th className="text-right">Users</Th><Th className="text-right">Site admins</Th>
+                  <Th className="text-right">Users</Th><Th className="text-right">Brand admins</Th>
                   <Th className="text-right">Platform admins</Th><Th className="text-right">Actions</Th>
                 </tr>
               </thead>
@@ -204,26 +190,7 @@ export default function PlatformsPage() {
 
       {/* Platform admins */}
       <Modal open={adminsOpen} onClose={() => setAdminsOpen(false)} title="Platform admins" chrome>
-        <div className="flex flex-col gap-5">
-          <div className="rounded-xl border border-border bg-surface-2 p-3 text-xs leading-relaxed text-muted">
-            A Platform Admin runs ONE platform and can never see or touch another platform's sites, users, or finances.
-            Get a user's id from a brand's Users page. Appointing moves them out of any site role.
-          </div>
-          <div className="flex flex-col gap-3">
-            <h3 className="text-sm font-semibold">Appoint</h3>
-            <Input label="User id" placeholder="uuid" value={appointUserId} onChange={(e) => setAppointUserId(e.target.value)} />
-            <Select label="Platform" value={appointPlatformId} onChange={(e) => setAppointPlatformId(e.target.value)}>
-              <option value="">Select a platform…</option>
-              {platforms.map((p) => <option key={p.platformId} value={p.platformId}>{p.name} ({p.slug})</option>)}
-            </Select>
-            <div><Button onClick={appoint} disabled={appointMut.isPending}>Appoint platform admin</Button></div>
-          </div>
-          <div className="flex flex-col gap-3 border-t border-border pt-4">
-            <h3 className="text-sm font-semibold text-down">Revoke</h3>
-            <Input label="User id" placeholder="uuid" value={revokeUserId} onChange={(e) => setRevokeUserId(e.target.value)} hint="Demotes them back to site admin and clears their platform." />
-            <div><Button variant="down" onClick={revoke} disabled={revokeMut.isPending}>Revoke platform admin</Button></div>
-          </div>
-        </div>
+        <PlatformAdminsPanel platforms={platforms} />
       </Modal>
 
       {/* Re-parent a site */}

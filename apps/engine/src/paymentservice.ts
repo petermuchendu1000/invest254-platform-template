@@ -4,6 +4,7 @@ import type { DarajaClient } from "./daraja.js";
 import type { MegaPayClient } from "./megapay.js";
 import type { PayHeroClient } from "./payhero.js";
 import { PLAYER_DEPOSIT_RAILS } from "./gatewayschema.js";
+import { parseScope, type GatewayRouter, type OwnerScope, type PaymentScopeRef } from "./paymentscopes.js";
 
 /**
  * PaymentService orchestrates the deposit/withdrawal flows on top of the atomic RPCs
@@ -98,6 +99,12 @@ export interface PaymentServiceOptions {
   megapay?: MegaPayClient;
   /** PayHero (Lipwa) provider client — the third deposit rail. Absent => PayHero deposits refuse loudly. */
   payhero?: PayHeroClient;
+  /**
+   * PAY-1 (docs/43): per-platform / per-brand payment accounts. When present, every money flow of a brand
+   * uses its payment OWNER's accounts (site > platform > global), transactions are stamped with the scope,
+   * and verification/reconcile use the INITIATING scope. Absent => the global clients only (legacy).
+   */
+  gateways?: GatewayRouter;
   events?: PaymentEvents;
   verifyStkCallbacks?: boolean;
 }
@@ -117,6 +124,7 @@ export class PaymentService {
   private readonly entitledGatewaysForSite?: (siteId: string | undefined) => Promise<string[] | null>;
   private readonly megapay?: MegaPayClient;
   private readonly payhero?: PayHeroClient;
+  private readonly gateways?: GatewayRouter;
   private readonly events: PaymentEvents;
   private readonly verifyStk: boolean;
   constructor(private readonly repo: PaymentRepository, private readonly daraja: DarajaClient, opts: PaymentServiceOptions = {}) {
@@ -134,6 +142,7 @@ export class PaymentService {
     if (opts.entitledGatewaysForSite) this.entitledGatewaysForSite = opts.entitledGatewaysForSite;
     if (opts.megapay) this.megapay = opts.megapay;
     if (opts.payhero) this.payhero = opts.payhero;
+    if (opts.gateways) this.gateways = opts.gateways;
     this.events = opts.events ?? {};
     // Secure by default: a client can POST to the public STK callback URL, so a raw
     // resultCode=0 is NOT trusted — we re-check with Safaricom before crediting. Opt out only
@@ -149,11 +158,16 @@ export class PaymentService {
     const maxDep = await this.currentMaxDeposit();
     if (maxDep !== null && amountCents > maxDep) throw new Error("ABOVE_MAX");
     const msisdn = normalizeMsisdn(phoneRaw);
+    // PAY-1: the brand's payment owner decides WHOSE paybill receives this deposit (refused, not
+    // re-routed, when that owner has no complete M-Pesa account).
+    const owner = await this.ownerOf(siteId);
+    await this.assertRail(owner, "mpesa");
     const txId = await this.repo.createDeposit(userId, amountCents, msisdn, siteId);
+    await this.stamp(txId, owner.scope);
     // Site-aware AccountReference: show the depositing brand's account, not a hardcoded one. And
     // route through the brand's OWN Daraja client when it has registered its own paybill (else shared).
     const accountRef = await this.resolveAccountRef(siteId);
-    const client = await this.resolveDaraja(siteId);
+    const client = owner.scope === "global" ? await this.resolveDaraja(siteId) : await this.darajaForScope(owner.scope);
     const stk = await client.stkPush({ amountCents, msisdn, accountRef, desc: "Deposit" });
     await this.repo.attachStk(txId, stk.merchantRequestId, stk.checkoutRequestId);
     return { txId, checkoutRequestId: stk.checkoutRequestId };
@@ -168,18 +182,22 @@ export class PaymentService {
    * through the SAME idempotent credit RPC as Daraja. Returns the ids the client needs to poll/track.
    */
   async initiateMegaPayDeposit(userId: string, amountCents: number, phoneRaw: string, siteId?: string): Promise<{ txId: string; transactionRequestId: string; checkoutRequestId: string }> {
-    if (!this.megapay) throw new Error("MEGAPAY_NOT_CONFIGURED");
+    const owner = await this.ownerOf(siteId);
+    if (owner.scope === "global" && !this.megapay) throw new Error("MEGAPAY_NOT_CONFIGURED");
     if (!Number.isInteger(amountCents) || amountCents <= 0) throw new Error("INVALID_AMOUNT");
     const minDep = await this.currentMinDeposit();
     if (amountCents < minDep) throw new Error("BELOW_MIN");
     const maxDep = await this.currentMaxDeposit();
     if (maxDep !== null && amountCents > maxDep) throw new Error("ABOVE_MAX");
     const msisdn = normalizeMsisdn(phoneRaw);
+    await this.assertRail(owner, "megapay");
+    const client = await this.megapayForScope(owner.scope);
     const txId = await this.repo.createDepositProvider(userId, amountCents, msisdn, "megapay", siteId);
+    await this.stamp(txId, owner.scope);
     // The reference becomes the "Account no." shown to the payer — send the brand/site name in
     // UPPERCASE for a clean, consistent prompt (e.g. "Account no. TAMUTRADERS").
     const reference = (await this.resolveAccountRef(siteId)).toUpperCase();
-    const res = await this.megapay.initiateStk({ amountCents, msisdn, reference });
+    const res = await client.initiateStk({ amountCents, msisdn, reference });
     await this.repo.attachStk(txId, res.merchantRequestId, res.transactionRequestId);
     return { txId, transactionRequestId: res.transactionRequestId, checkoutRequestId: res.checkoutRequestId };
   }
@@ -192,8 +210,10 @@ export class PaymentService {
    * a verified 'Completed' credits, via the shared fn_complete_deposit keyed by transaction_request_id.
    */
   async handleMegaPayCallback(transactionRequestId: string, raw: unknown): Promise<CompleteResult> {
-    if (!this.megapay) throw new Error("MEGAPAY_NOT_CONFIGURED");
-    const q = await this.megapay.queryStatus(transactionRequestId);
+    // PAY-1: verify with the account the deposit was INITIATED on (its recorded scope).
+    const scope = this.gateways ? await this.repo.scopeOfCheckout(transactionRequestId) : null;
+    const client = await this.megapayForScope(scope);
+    const q = await client.queryStatus(transactionRequestId);
     if (q.processing || q.resultCode == null) {
       console.warn(`[payments] Mega Pay verify inconclusive for ${transactionRequestId} (processing); leaving pending for retry`);
       throw new Error("MEGAPAY_VERIFY_PENDING");
@@ -208,14 +228,14 @@ export class PaymentService {
    * arrived (or was inconclusive). Safe to run repeatedly; the credit RPC guards terminal states.
    */
   async reconcileMegaPayDeposits(opts: { olderThanMs?: number; limit?: number } = {}): Promise<{ scanned: number; settled: number; stillPending: number; errors: number }> {
-    if (!this.megapay) return { scanned: 0, settled: 0, stillPending: 0, errors: 0 };
+    if (!this.megapay && !this.gateways) return { scanned: 0, settled: 0, stillPending: 0, errors: 0 };
     const olderThanMs = opts.olderThanMs ?? 120_000;
     const limit = opts.limit ?? 25;
     const rows = await this.repo.listUnsettledDeposits(olderThanMs, limit, "megapay");
     let settled = 0, stillPending = 0, errors = 0;
     for (const d of rows) {
       try {
-        const q = await this.megapay.queryStatus(d.checkoutRequestId);
+        const q = await (await this.megapayForScope(d.paymentScope)).queryStatus(d.checkoutRequestId);
         if (q.processing || q.resultCode == null) { stillPending += 1; continue; }
         const res = await this.repo.completeDeposit(d.checkoutRequestId, q.resultCode, `reconciled:megapay:${q.resultCode}`, q.receipt, { reconciled: true, provider: "megapay", at: new Date().toISOString() });
         if (res.applied) settled += 1;
@@ -236,15 +256,19 @@ export class PaymentService {
    * the SAME idempotent credit RPC as every other rail.
    */
   async initiatePayHeroDeposit(userId: string, amountCents: number, phoneRaw: string, siteId?: string): Promise<{ txId: string; reference: string; checkoutRequestId: string }> {
-    if (!this.payhero) throw new Error("PAYHERO_NOT_CONFIGURED");
+    const owner = await this.ownerOf(siteId);
+    if (owner.scope === "global" && !this.payhero) throw new Error("PAYHERO_NOT_CONFIGURED");
     if (!Number.isInteger(amountCents) || amountCents <= 0) throw new Error("INVALID_AMOUNT");
     const minDep = await this.currentMinDeposit();
     if (amountCents < minDep) throw new Error("BELOW_MIN");
     const maxDep = await this.currentMaxDeposit();
     if (maxDep !== null && amountCents > maxDep) throw new Error("ABOVE_MAX");
     const msisdn = normalizeMsisdn(phoneRaw);
+    await this.assertRail(owner, "payhero");
+    const client = await this.payheroForScope(owner.scope);
     const txId = await this.repo.createDepositProvider(userId, amountCents, msisdn, "payhero", siteId);
-    const res = await this.payhero.initiateStk({ amountCents, msisdn, externalReference: txId });
+    await this.stamp(txId, owner.scope);
+    const res = await client.initiateStk({ amountCents, msisdn, externalReference: txId });
     // Store PayHero's `reference` in checkout_request_id (its status endpoint + reconcile query by it);
     // keep the ws_CO CheckoutRequestID in merchant_request_id for reference.
     await this.repo.attachStk(txId, res.checkoutRequestId, res.reference);
@@ -258,7 +282,7 @@ export class PaymentService {
    * via fn_complete_deposit. So a forged callback can't mint balance.
    */
   async handlePayHeroCallback(_raw: unknown): Promise<{ settled: number }> {
-    if (!this.payhero) throw new Error("PAYHERO_NOT_CONFIGURED");
+    if (!this.payhero && !this.gateways) throw new Error("PAYHERO_NOT_CONFIGURED");
     const r = await this.reconcilePayHeroDeposits({ olderThanMs: 0 });
     return { settled: r.settled };
   }
@@ -269,14 +293,14 @@ export class PaymentService {
    * arrived (or was inconclusive). Safe to run repeatedly; the credit RPC guards terminal states.
    */
   async reconcilePayHeroDeposits(opts: { olderThanMs?: number; limit?: number } = {}): Promise<{ scanned: number; settled: number; stillPending: number; errors: number }> {
-    if (!this.payhero) return { scanned: 0, settled: 0, stillPending: 0, errors: 0 };
+    if (!this.payhero && !this.gateways) return { scanned: 0, settled: 0, stillPending: 0, errors: 0 };
     const olderThanMs = opts.olderThanMs ?? 120_000;
     const limit = opts.limit ?? 25;
     const rows = await this.repo.listUnsettledDeposits(olderThanMs, limit, "payhero");
     let settled = 0, stillPending = 0, errors = 0;
     for (const d of rows) {
       try {
-        const q = await this.payhero.queryStatus(d.checkoutRequestId);
+        const q = await (await this.payheroForScope(d.paymentScope)).queryStatus(d.checkoutRequestId);
         if (q.processing || q.resultCode == null) { stillPending += 1; continue; }
         const res = await this.repo.completeDeposit(d.checkoutRequestId, q.resultCode, `reconciled:payhero:${q.resultCode}`, q.receipt, { reconciled: true, provider: "payhero", at: new Date().toISOString() });
         if (res.applied) settled += 1;
@@ -307,6 +331,13 @@ export class PaymentService {
           if (ent && ent.length) { const allow = new Set(ent); rails = rails.filter((p) => allow.has(p.code)); }
         } catch { /* fail-open */ }
       }
+      // PAY-1: a brand on its OWN accounts shows only the rails those accounts can serve — never the
+      // System owner's M-Pesa as a fallback (its deposits would land in someone else's paybill).
+      const owner = await this.ownerOf(siteId);
+      if (owner.scope !== "global" && this.gateways) {
+        const ready = await this.gateways.depositRails(owner.scope as Exclude<PaymentScopeRef, "global">);
+        return rails.filter((p) => ready.has(p.code));
+      }
       if (!rails.length) return [{ code: "mpesa", displayName: "M-Pesa" }];
       return rails;
     } catch (err) {
@@ -326,6 +357,44 @@ export class PaymentService {
     }
     const clean = ref.replace(/[^A-Za-z0-9]/g, "").slice(0, 12);
     return clean.length > 0 ? clean : "Invest254";
+  }
+
+  // ── PAY-1 scope routing (docs/43) ──────────────────────────────────────────────────────────────
+  /** The brand's payment owner. No router => global. A router failure REFUSES (never guesses an owner). */
+  private async ownerOf(siteId?: string | null): Promise<OwnerScope> {
+    if (!this.gateways) return { scope: "global", payoutsEnabled: true };
+    return this.gateways.ownerScope(siteId ?? undefined);
+  }
+  /** Refuse a rail the brand's (non-global) owner has no complete account for — never fall back to another owner. */
+  private async assertRail(owner: OwnerScope, rail: string): Promise<void> {
+    if (owner.scope === "global" || !this.gateways) return;
+    const rails = await this.gateways.depositRails(owner.scope as Exclude<PaymentScopeRef, "global">);
+    if (!rails.has(rail)) throw new Error("GATEWAY_NOT_CONFIGURED");
+  }
+  private async stamp(txId: string, scope: PaymentScopeRef): Promise<void> {
+    if (this.gateways) await this.repo.setPaymentScope(txId, scope);
+  }
+  /** Clients of a recorded scope (a transaction's): null/legacy/'global' => the global clients. */
+  private async scopedClients(scope: string | null | undefined) {
+    if (!this.gateways) return null;
+    const p = parseScope(scope ?? null);
+    if (p.type === "global") return null;
+    return this.gateways.clients(scope as Exclude<PaymentScopeRef, "global">);
+  }
+  private async darajaForScope(scope: string | null | undefined): Promise<DarajaClient> {
+    return (await this.scopedClients(scope))?.daraja ?? this.daraja;
+  }
+  private async megapayForScope(scope: string | null | undefined): Promise<MegaPayClient> {
+    const c = await this.scopedClients(scope);
+    if (c) return c.megapay;
+    if (!this.megapay) throw new Error("MEGAPAY_NOT_CONFIGURED");
+    return this.megapay;
+  }
+  private async payheroForScope(scope: string | null | undefined): Promise<PayHeroClient> {
+    const c = await this.scopedClients(scope);
+    if (c) return c.payhero;
+    if (!this.payhero) throw new Error("PAYHERO_NOT_CONFIGURED");
+    return this.payhero;
   }
 
   /** Resolve the brand's Daraja client (own paybill) or fall back to the shared platform client. */
@@ -348,7 +417,9 @@ export class PaymentService {
     let code = resultCode;
     let desc = resultDesc;
     if (resultCode === 0 && this.verifyStk) {
-      const q = await this.daraja.stkPushQuery(checkoutRequestId);
+      // PAY-1: verify on the account the deposit was INITIATED on (never "whatever is live now").
+      const scope = this.gateways ? await this.repo.scopeOfCheckout(checkoutRequestId) : null;
+      const q = await (await this.darajaForScope(scope)).stkPushQuery(checkoutRequestId);
       if (q.processing || q.resultCode == null) {
         console.warn(`[payments] STK verify inconclusive for ${checkoutRequestId} (processing=${q.processing}); leaving pending for retry`);
         throw new Error("STK_VERIFY_PENDING");
@@ -375,7 +446,7 @@ export class PaymentService {
     let settled = 0, stillPending = 0, errors = 0;
     for (const d of rows) {
       try {
-        const q = await this.daraja.stkPushQuery(d.checkoutRequestId);
+        const q = await (await this.darajaForScope(d.paymentScope)).stkPushQuery(d.checkoutRequestId);
         if (q.processing || q.resultCode == null) { stillPending += 1; continue; }
         const res = await this.repo.completeDeposit(d.checkoutRequestId, q.resultCode, `reconciled:${q.resultCode}`, null, { reconciled: true, at: new Date().toISOString() });
         if (res.applied) settled += 1;
@@ -491,6 +562,22 @@ export class PaymentService {
   }
   /** Finance admin approves: flips to processing and dispatches the B2C payment. */
   async approveWithdrawal(txId: string, adminId: string): Promise<{ approved: boolean; conversationId?: string }> {
+    // PAY-1: payouts follow the brand's payment OWNER. Decide (and refuse) BEFORE the approval flips the
+    // row to 'processing', so a missing payout account never strands a withdrawal mid-flight.
+    let payoutScope: PaymentScopeRef = "global";
+    let payoutClient: DarajaClient = this.daraja;
+    if (this.gateways) {
+      const tx = await this.repo.getTransaction(txId);
+      if (tx && tx.kind === "withdrawal" && tx.provider !== "internal") {
+        const owner = await this.ownerOf(tx.siteId);
+        if (owner.scope !== "global") {
+          const sc = owner.scope as Exclude<PaymentScopeRef, "global">;
+          if (!owner.payoutsEnabled || !(await this.gateways.payoutsReady(sc))) throw new Error("MPESA_B2C_NOT_CONFIGURED");
+          payoutScope = owner.scope;
+          payoutClient = (await this.gateways.clients(sc)).daraja;
+        }
+      }
+    }
     const ap = await this.repo.approveWithdrawal(txId, adminId);
     if (!ap.approved || ap.amountCents === null) return { approved: false };
     if (ap.provider === "internal") {
@@ -500,7 +587,8 @@ export class PaymentService {
       return { approved: true };
     }
     if (ap.phone === null) return { approved: false };
-    const b2c = await this.daraja.b2cPayment({ amountCents: ap.amountCents, msisdn: ap.phone, remarks: "Withdrawal", resultId: txId });
+    await this.stamp(txId, payoutScope);
+    const b2c = await payoutClient.b2cPayment({ amountCents: ap.amountCents, msisdn: ap.phone, remarks: "Withdrawal", resultId: txId });
     return { approved: true, conversationId: b2c.conversationId };
   }
   /** Finance admin rejects a pending withdrawal: reverses the hold. */
@@ -550,10 +638,17 @@ export class PaymentService {
    * `not_found` when the code hasn't been confirmed to us yet (the client should ask them to retry
    * shortly — Safaricom's confirmation can lag a few seconds).
    */
-  claimPaybillDeposit(userId: string, code: string, siteId?: string): Promise<ClaimResult> {
-    if (!code || !code.trim()) return Promise.reject(new Error("INVALID_CODE"));
+  async claimPaybillDeposit(userId: string, code: string, siteId?: string): Promise<ClaimResult> {
+    if (!code || !code.trim()) throw new Error("INVALID_CODE");
+    // PAY-1 (docs/43 §3.6): the manual Pay Bill is the System owner's paybill. A brand on its own
+    // accounts must not tell players to pay it — and must not claim payments made to it.
+    if ((await this.ownerOf(siteId)).scope !== "global") throw new Error("PAYBILL_NOT_AVAILABLE");
     return this.repo.claimC2bDeposit(userId, code.trim(), siteId);
   }
-  /** The current (non-secret) Pay Bill display config for the deposit sheet. */
-  paybillConfig(): Promise<PaybillConfig> { return this.repo.getPaybillConfig(); }
+  /** The current (non-secret) Pay Bill display config for the deposit sheet (disabled for brands on their own accounts). */
+  async paybillConfig(siteId?: string): Promise<PaybillConfig> {
+    const cfg = await this.repo.getPaybillConfig();
+    if (siteId && (await this.ownerOf(siteId)).scope !== "global") return { ...cfg, enabled: false };
+    return cfg;
+  }
 }

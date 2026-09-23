@@ -4,7 +4,7 @@ import { RequireCapability } from '@/components/auth/RequireCapability';
 import { useMemo } from 'react';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { Button } from '@/components/ui/Button';
-import { formatRelativeTime } from '@/lib/format';
+import { formatAgo } from '@/lib/format';
 import { PageHeader, Section, TableWrap, Th, Td, Empty } from '@/components/admin/ui';
 import { useAudit } from '@/lib/admin/hooks';
 import type { AdminAuditRow } from '@/lib/admin/types';
@@ -71,7 +71,7 @@ function AuditPageInner() {
 function Row({ r }: { r: AdminAuditRow }) {
   return (
     <tr className="border-b border-border last:border-0 align-top">
-      <Td className="whitespace-nowrap text-xs text-muted">{formatRelativeTime(r.createdAtMs)} ago</Td>
+      <Td className="whitespace-nowrap text-xs text-muted">{formatAgo(r.createdAtMs)}</Td>
       <Td className="whitespace-nowrap">
         <span className="font-mono text-xs">{r.actorId.slice(0, 8)}…</span>
         <span className="ml-1.5 text-xs capitalize text-muted">{r.actorRole}</span>

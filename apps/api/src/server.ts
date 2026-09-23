@@ -8,6 +8,8 @@ import {
   makeMegaPayClient,
   ConfiguredMegaPayClient,
   ConfiguredPayHeroClient,
+  PaymentScopeService, PgPaymentScopeRepository, loadDarajaConfigFromDb, type GlobalCallbacks,
+  C2bConfigService, PgC2bConfigRepository, systemDarajaCredentials, PoolOpsService, PgPoolOpsRepository,
   verifyPassword,
   type GameRepository, type EngagementRepository, type PaymentRepository,
   type Querier, type FairnessRecord, type ListenClient,
@@ -18,7 +20,8 @@ import { BrandOriginAllowlist } from "./cors.js";
 import { makePgMarketerRepo } from "./marketers.pg.js";
 import { makePgReferralRepo } from "./referral.pg.js";
 import { makePgSupportDeps } from "./support.pg.js";
-import { makeDomainProvisioner, type DomainProvisioner } from "./domains.js";
+import { makeDomainProvisioner, type DomainProvisioner, type RegistrarClient } from "./domains.js";
+import { resolveProvisioner } from "./provisionerfor.js";
 import { RegistrarConfigService } from "./registrarconfig.js";
 import { refuseForeignReonboard, refuseDomainClash, assertDomainInPlatform, platformDomainSet } from "./onboardscope.js";
 import { AddonService } from "./addonservice.js";
@@ -183,6 +186,46 @@ async function buildDeps(): Promise<ApiDeps> {
     return over;
   });
   log.info("payhero client ready", { dbConfigLayered: true });
+
+  // PAY-1 (docs/43): per-platform / per-brand payment accounts. Scoped clients are built ONLY from their
+  // own scope's encrypted config (never env, never the System's accounts); they reuse the System's own
+  // callback endpoints so every result still lands here. Owner/client caches are invalidated by NOTIFY
+  // (payment_scopes_changed / payment_providers_changed) with a 30 s TTL backstop.
+  let cbCache: { at: number; v: GlobalCallbacks } | null = null;
+  const globalCallbacks = async (): Promise<GlobalCallbacks> => {
+    if (cbCache && Date.now() - cbCache.at < 60_000) return cbCache.v;
+    const db = await loadDarajaConfigFromDb(q);
+    const ph = await platform.resolveDecryptedConfig("payhero", null).catch(() => null);
+    const env = process.env;
+    const v: GlobalCallbacks = {
+      stkCallbackUrl: db.stkCallbackUrl ?? env.MPESA_STK_CALLBACK_URL ?? "",
+      b2cResultUrl: db.b2cResultUrl ?? env.MPESA_B2C_RESULT_URL ?? "",
+      b2cTimeoutUrl: db.b2cTimeoutUrl ?? env.MPESA_B2C_TIMEOUT_URL ?? "",
+      payheroCallbackUrl: ph?.settings.callback_url || env.PAYHERO_CALLBACK_URL || undefined,
+    };
+    cbCache = { at: Date.now(), v };
+    return v;
+  };
+  const paymentScopes = new PaymentScopeService(new PgPaymentScopeRepository(q), { callbacks: globalCallbacks });
+  const armScopeListener = async (): Promise<void> => {
+    try {
+      const c = (await listenPool.connect()) as unknown as ListenClient;
+      c.on("notification", () => { paymentScopes.invalidate(); cbCache = null; });
+      c.on("error", (err: Error) => {
+        console.error("[api] payment scope listener:", err.message);
+        try { c.release?.(true); } catch { /* gone */ }
+        setTimeout(() => { void armScopeListener(); }, 5_000).unref?.();
+      });
+      await c.query("listen payment_scopes_changed");
+      await c.query("listen payment_providers_changed");
+      await c.query("listen mpesa_config_changed");
+    } catch (err) {
+      console.error("[api] payment scope listener connect:", (err as Error).message);
+      setTimeout(() => { void armScopeListener(); }, 5_000).unref?.();
+    }
+  };
+  void armScopeListener();
+  log.info("payment scopes ready", { ttlMs: 30_000 });
 
   // Site-aware minimum withdrawal (multi-tenant). GET /game/config serves each brand its own
   // `site_game_config.min_withdrawal` (via gameConfigForSite below), so the browser validates
@@ -486,6 +529,8 @@ async function buildDeps(): Promise<ApiDeps> {
     // forged Mega Pay callbacks can't mint balance either.
     megapay,
     payhero,
+    // PAY-1: every money flow of a brand uses its payment OWNER's accounts (docs/43).
+    gateways: paymentScopes,
     // Site-aware STK AccountReference (multi-tenant): "Account no. <Brand>" per depositing brand.
     accountRefForSite: (siteId) => siteAccountRef(siteId),
     // Per-brand entitled gateways (Issue 2): a brand only surfaces deposit rails it OWNS (mpesa always).
@@ -556,7 +601,7 @@ async function buildDeps(): Promise<ApiDeps> {
         return claims;
       })
     : null;
-  const affiliate = new AffiliateService(identity, daraja);
+  const affiliate = new AffiliateService(identity, daraja, paymentScopes);
   const admin = new AdminService(new PgAdminRepository(q));
   // platform service constructed earlier (drives Mega Pay DB-config layering + gateway config store)
   const notifications = new NotificationService(new PgNotificationRepository(q));
@@ -571,19 +616,14 @@ async function buildDeps(): Promise<ApiDeps> {
   if (envProvisioner) console.log(`[api] domain provisioning enabled (Cloudflare Pages project '${envProvisioner.pagesProject}')`);
   // Resolve the registrar PER PLATFORM (Issue 1 #3): a platform admin uses its OWN Namecheap; the
   // system owner / default platform falls back to the global env registrar. Cloudflare stays shared.
-  const DEFAULT_PLATFORM_ID = "10000000-0000-0000-0000-000000000001";
-  const provisionerFor = async (platformId: string | null): Promise<DomainProvisioner | null> => {
-    if (!envProvisioner) return null;                 // no Cloudflare -> no provisioning at all
-    // The env NAMECHEAP creds belong to the SYSTEM OWNER (the default platform). They are used ONLY for
-    // the system owner acting globally (null) or the owner's OWN default platform. Every OTHER platform
-    // must use its OWN configured registrar and NEVER borrow the owner's — doing so both charged domains
-    // to the owner's Namecheap AND exposed the owner's domain list to a platform admin (bug). Until a
-    // platform configures its registrar, provisioning is Cloudflare-only (manual nameservers); or the
-    // owner registers the domain in their Namecheap and assigns the resulting site to that platform.
-    if (!platformId || platformId === DEFAULT_PLATFORM_ID) return envProvisioner;
-    const reg = await registrarConfig.buildRegistrar(platformId);
-    return makeDomainProvisioner(reg ?? null);        // own registrar, else NO registrar (never the owner's)
-  };
+  // docs/42 UI-9: resolution rules live in provisionerfor.ts (tested) — own registrar, else the env
+  // registrar for the DEFAULT platform only, else none. Cloudflare stays shared.
+  const provisionerFor = (platformId: string | null): Promise<DomainProvisioner | null> =>
+    resolveProvisioner<DomainProvisioner, RegistrarClient>(platformId, {
+      envProvisioner,
+      buildRegistrar: (pid) => registrarConfig.buildRegistrar(pid),
+      make: (reg) => makeDomainProvisioner(reg),
+    });
   const platformOnboard: PlatformOnboardDeps = {
     domainConfigured: Boolean(envProvisioner),
     registrarConfigured: envProvisioner?.registrarConfigured ?? false,
@@ -911,6 +951,10 @@ async function buildDeps(): Promise<ApiDeps> {
     ...(support ? { support } : {}),
     platformOnboard,
     registrarConfig,
+    paymentScopes,
+    // PAY-2 (docs/45): Pay Bill settings + Safaricom C2B URL registration with the System Daraja app.
+    c2b: new C2bConfigService(new PgC2bConfigRepository(q), { darajaConfig: systemDarajaCredentials(q) }),
+    poolOps: new PoolOpsService(new PgPoolOpsRepository(q), platform),
     addons,
   };
 }

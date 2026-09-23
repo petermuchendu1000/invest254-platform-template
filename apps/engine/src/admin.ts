@@ -88,6 +88,15 @@ export interface AdminAuditRow {
   id: string; actorId: string; actorRole: string; action: string;
   targetType: string; targetId: string | null; detail: unknown; createdAtMs: number;
 }
+/** docs/42 UI-10: an audit row in the platform-wide view — which brand, and who (by name). */
+export interface PlatformAuditRow extends AdminAuditRow {
+  siteId: string | null; siteName: string | null; actorUsername: string | null;
+}
+export interface PlatformAuditQuery extends PageQuery {
+  /** null = every brand (System owner only; the API pins a platform admin to its own platform). */
+  platformId: string | null;
+  siteId?: string | null;
+}
 /** One persisted system-log line (docs/36) surfaced to the owner-only System logs UI. */
 export interface AdminSystemLogRow {
   id: string; tMs: number; app: string | null; level: string; msg: string;
@@ -330,6 +339,8 @@ export interface AdminRepository {
   /** Unified deposits + withdrawals feed for the Finance transactions explorer (newest-first, keyset). */
   listTransactions(q: AdminTransactionListQuery): Promise<Page<AdminTransactionRow>>;
   listAudit(q: PageQuery, siteId?: string): Promise<Page<AdminAuditRow>>;
+  /** docs/42 UI-10: audit across a platform's brands (brand-attributed rows only), newest first. */
+  listPlatformAudit(q: PlatformAuditQuery): Promise<Page<PlatformAuditRow>>;
   /** Owner-only: the persisted system logs (docs/36), newest-first, filterable + cursor-paginated. */
   listSystemLogs(q: AdminSystemLogQuery): Promise<Page<AdminSystemLogRow>>;
   adjustBalance(actorId: string, actorRole: string, targetId: string, amountCents: Cents, reason: string): Promise<AdjustBalanceResult>;
@@ -469,12 +480,15 @@ interface MpesaInternal {
   shortcode: string; consumerKey: string; consumerSecret: string; passkey: string;
   stkCallbackUrl: string; b2cInitiator: string; b2cSecurityCredential: string;
   b2cResultUrl: string; b2cTimeoutUrl: string;
+  transactionType: "paybill" | "till"; tillNumber: string; b2cShortcode: string;
+  b2cCommandId: "BusinessPayment" | "SalaryPayment" | "PromotionPayment";
   updatedBy: string | null; updatedAtMs: number;
 }
 function defaultMpesaInternal(): MpesaInternal {
   return {
     environment: "sandbox", shortcode: "", consumerKey: "", consumerSecret: "", passkey: "",
     stkCallbackUrl: "", b2cInitiator: "", b2cSecurityCredential: "", b2cResultUrl: "", b2cTimeoutUrl: "",
+    transactionType: "paybill", tillNumber: "", b2cShortcode: "", b2cCommandId: "BusinessPayment",
     updatedBy: null, updatedAtMs: Date.now(),
   };
 }
@@ -484,7 +498,7 @@ function maskMpesaInternal(m: MpesaInternal): MpesaConfigRow {
     b2cInitiator: m.b2cInitiator, b2cResultUrl: m.b2cResultUrl, b2cTimeoutUrl: m.b2cTimeoutUrl,
     hasConsumerKey: m.consumerKey !== "", hasConsumerSecret: m.consumerSecret !== "",
     hasPasskey: m.passkey !== "", hasSecurityCredential: m.b2cSecurityCredential !== "",
-    transactionType: "paybill", tillNumber: "", b2cShortcode: "", b2cCommandId: "BusinessPayment",
+    transactionType: m.transactionType, tillNumber: m.tillNumber, b2cShortcode: m.b2cShortcode, b2cCommandId: m.b2cCommandId,
     updatedBy: m.updatedBy, updatedAtMs: m.updatedAtMs,
   };
 }
@@ -681,7 +695,7 @@ export class PgAdminRepository implements AdminRepository {
           and (p.status <> 'deleted' or $2 = 'deleted')
           and ($13::uuid is null or p.site_id = $13)
           and ($3::text is null or p.username ilike '%'||$3||'%' or p.phone ilike '%'||$3||'%')
-          and ($4::timestamptz is null or (p.created_at, p.id) < ($4::timestamptz, $5::uuid))
+          and ($4::timestamptz is null or (p.created_at, p.id) < (coalesce((select k.created_at from profiles k where k.id = $5::uuid), $4::timestamptz), $5::uuid))
           and ($7::bigint  is null or coalesce(w.real_balance,0) >= $7)
           and ($8::bigint  is null or coalesce(w.real_balance,0) <= $8)
           and ($9::bigint  is null or coalesce(td.deposits,0)    >= $9)
@@ -771,7 +785,12 @@ export class PgAdminRepository implements AdminRepository {
             from ledger_entries l
            where l.user_id = $1 and l.type = 'adjustment' and ($2::text is null or $2 = 'adjustment')
        ) a
-       where ($3::timestamptz is null or (a.created_at, a.id) < ($3::timestamptz, $4::text))
+       where ($3::timestamptz is null or (a.created_at, a.id) < (coalesce(
+               -- the cursor row's EXACT time (the ms cursor alone skipped rows sharing its millisecond — PAGE-1)
+               (select k.created_at from transactions k where k.user_id = $1 and k.id = (case when $4 ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then $4::uuid end)),
+               (select k.opened_at from positions k where k.user_id = $1 and k.id = (case when $4 ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then $4::uuid end)),
+               (select k.created_at from ledger_entries k where k.user_id = $1 and k.id = (case when $4 ~ '^[0-9]{1,18}$' then $4::bigint end)),
+               $3::timestamptz), $4::text))
        order by a.created_at desc, a.id desc
        limit $5`,
       [userId, kind, cur ? new Date(cur.tsMs).toISOString() : null, cur ? cur.id : null, limit + 1]);
@@ -854,7 +873,7 @@ export class PgAdminRepository implements AdminRepository {
           -- (migration 0108): the moderation queue must show their pending requests too.
           and ($1::text is null or t.status = $1)
           and ($5::uuid is null or t.site_id = $5)
-          and ($2::timestamptz is null or (t.created_at, t.id) < ($2::timestamptz, $3::uuid))
+          and ($2::timestamptz is null or (t.created_at, t.id) < (coalesce((select k.created_at from transactions k where k.id = $3::uuid), $2::timestamptz), $3::uuid))
         order by t.created_at desc, t.id desc
         limit $4`,
       [q.status ?? null, cur ? new Date(cur.tsMs).toISOString() : null, cur ? cur.id : null, limit + 1, q.siteId ?? null]);
@@ -886,7 +905,7 @@ export class PgAdminRepository implements AdminRepository {
           and t.user_id not in (select user_id from marketer_account_ids)
           and ($7::uuid is null or t.site_id = $7)
           and ($3::text is null or p.username ilike '%'||$3||'%' or t.phone ilike '%'||$3||'%' or t.mpesa_receipt ilike '%'||$3||'%')
-          and ($4::timestamptz is null or (t.created_at, t.id) < ($4::timestamptz, $5::uuid))
+          and ($4::timestamptz is null or (t.created_at, t.id) < (coalesce((select k.created_at from transactions k where k.id = $5::uuid), $4::timestamptz), $5::uuid))
         order by t.created_at desc, t.id desc
         limit $6`,
       [q.kind ?? null, q.status ?? null, q.q ?? null, cur ? new Date(cur.tsMs).toISOString() : null, cur ? cur.id : null, limit + 1, q.siteId ?? null]);
@@ -899,7 +918,7 @@ export class PgAdminRepository implements AdminRepository {
     const cur = decodeKeyset(q.cursor);
     const r = await this.q.query(
       `select id, actor_id, actor_role, action, target_type, target_id, detail, created_at from admin_actions
-        where ($1::timestamptz is null or (created_at, id) < ($1::timestamptz, $2::bigint))
+        where ($1::timestamptz is null or (created_at, id) < (coalesce((select k.created_at from admin_actions k where k.id = $2::bigint), $1::timestamptz), $2::bigint))
           and ($4::uuid is null or site_id = $4)
         order by created_at desc, id desc
         limit $3`,
@@ -911,13 +930,38 @@ export class PgAdminRepository implements AdminRepository {
     return pageFrom(rows, limit, (a) => `${a.createdAtMs}:${a.id}`);
   }
 
+  async listPlatformAudit(q: PlatformAuditQuery): Promise<Page<PlatformAuditRow>> {
+    const limit = clampLimit(q.limit);
+    const cur = decodeKeyset(q.cursor);
+    const r = await this.q.query(
+      `select a.id, a.actor_id, a.actor_role, pa.username as actor_username, a.action, a.target_type, a.target_id,
+              a.detail, a.created_at, a.site_id, s.name as site_name
+         from admin_actions a
+         join sites s on s.id = a.site_id
+         left join profiles pa on pa.id = a.actor_id
+        -- PAGE-1: compare with the cursor row's EXACT time (the cursor carries only milliseconds).
+        where ($1::timestamptz is null or (a.created_at, a.id) < (coalesce((select k.created_at from admin_actions k where k.id = $2::bigint), $1::timestamptz), $2::bigint))
+          and ($4::uuid is null or s.platform_id = $4::uuid)
+          and ($5::uuid is null or a.site_id = $5::uuid)
+        order by a.created_at desc, a.id desc
+        limit $3`,
+      [cur ? new Date(cur.tsMs).toISOString() : null, cur ? Number(cur.id) : null, limit + 1, q.platformId ?? null, q.siteId ?? null]);
+    const rows: PlatformAuditRow[] = r.rows.map((x) => ({
+      id: String(x.id), actorId: String(x.actor_id), actorRole: String(x.actor_role), action: String(x.action),
+      targetType: String(x.target_type), targetId: x.target_id == null ? null : String(x.target_id), detail: x.detail, createdAtMs: ms(x.created_at),
+      siteId: x.site_id == null ? null : String(x.site_id), siteName: x.site_name == null ? null : String(x.site_name),
+      actorUsername: x.actor_username == null ? null : String(x.actor_username),
+    }));
+    return pageFrom(rows, limit, (a) => `${a.createdAtMs}:${a.id}`);
+  }
+
   async listSystemLogs(query: AdminSystemLogQuery): Promise<Page<AdminSystemLogRow>> {
     const limit = clampLimit(query.limit);
     const cur = decodeKeyset(query.cursor);
     const r = await this.q.query(
       `select id, t, level, msg, request_id, method, path, status, duration_ms, ip, user_id, role, site_id, fields, app
          from system_logs
-        where ($1::timestamptz is null or (t, id) < ($1::timestamptz, $2::bigint))
+        where ($1::timestamptz is null or (t, id) < (coalesce((select k.t from system_logs k where k.id = $2::bigint), $1::timestamptz), $2::bigint))
           and ($4::text is null or level = $4)
           and ($5::int  is null or status = $5)
           and ($6::text is null or request_id = $6)
@@ -999,7 +1043,7 @@ export class PgAdminRepository implements AdminRepository {
         where t.kind = 'deposit'
           and ($1::text is null or t.status = $1)
           and ($5::uuid is null or t.site_id = $5)
-          and ($2::timestamptz is null or (t.created_at, t.id) < ($2::timestamptz, $3::uuid))
+          and ($2::timestamptz is null or (t.created_at, t.id) < (coalesce((select k.created_at from transactions k where k.id = $3::uuid), $2::timestamptz), $3::uuid))
         order by t.created_at desc, t.id desc
         limit $4`,
       [q.status ?? null, cur ? new Date(cur.tsMs).toISOString() : null, cur ? cur.id : null, limit + 1, q.siteId ?? null]);
@@ -1340,7 +1384,7 @@ export class PgAdminRepository implements AdminRepository {
          from affiliate_payouts ap join profiles pr on pr.id = ap.affiliate_id
         where ($1::text is null or ap.status = $1)
           and ($5::uuid is null or ap.site_id = $5)
-          and ($2::timestamptz is null or (ap.created_at, ap.id) < ($2::timestamptz, $3::uuid))
+          and ($2::timestamptz is null or (ap.created_at, ap.id) < (coalesce((select k.created_at from affiliate_payouts k where k.id = $3::uuid), $2::timestamptz), $3::uuid))
         order by ap.created_at desc, ap.id desc limit $4`,
       [q.status ?? null, cur ? new Date(cur.tsMs).toISOString() : null, cur ? cur.id : null, limit + 1, q.siteId ?? null]);
     const rows: AdminPayoutRow[] = r.rows.map((x) => ({
@@ -1764,6 +1808,10 @@ export class InMemoryAdminRepository implements AdminRepository {
     }));
     return memKeyset(rows, q);
   }
+  /** In-memory audit rows carry no brand, so the platform-wide view is empty here (see the pg test). */
+  async listPlatformAudit(_q: PlatformAuditQuery): Promise<Page<PlatformAuditRow>> {
+    return { items: [], nextCursor: null };
+  }
   // System logs are only persisted by the DB-backed sink (docs/36); the in-memory harness has none.
   async listSystemLogs(_q: AdminSystemLogQuery): Promise<Page<AdminSystemLogRow>> {
     return { items: [], nextCursor: null };
@@ -2075,6 +2123,10 @@ export class InMemoryAdminRepository implements AdminRepository {
     if (patch.b2cInitiator !== undefined) m.b2cInitiator = patch.b2cInitiator;
     if (patch.b2cResultUrl !== undefined) m.b2cResultUrl = patch.b2cResultUrl;
     if (patch.b2cTimeoutUrl !== undefined) m.b2cTimeoutUrl = patch.b2cTimeoutUrl;
+    if (patch.transactionType !== undefined) m.transactionType = patch.transactionType;
+    if (patch.tillNumber !== undefined) m.tillNumber = patch.tillNumber;
+    if (patch.b2cShortcode !== undefined) m.b2cShortcode = patch.b2cShortcode;
+    if (patch.b2cCommandId !== undefined) m.b2cCommandId = patch.b2cCommandId;
     if (patch.consumerKey) m.consumerKey = patch.consumerKey;
     if (patch.consumerSecret) m.consumerSecret = patch.consumerSecret;
     if (patch.passkey) m.passkey = patch.passkey;

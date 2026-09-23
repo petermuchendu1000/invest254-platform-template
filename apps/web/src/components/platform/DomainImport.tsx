@@ -14,8 +14,10 @@ type RowState = { status: 'idle' | 'queued' | 'working' | 'done' | 'error'; mess
  * live per-row progress. Each domain reuses the proven POST /platform/onboard path (brand + economy +
  * Cloudflare zone/DNS/Pages/SSL + registrar nameservers), so results are consistent and idempotent.
  */
-export function DomainImport() {
-  const { data, isLoading, isError, error, refetch, isFetching } = useRegistrarDomains();
+export function DomainImport({ platformId }: { platformId?: string | undefined } = {}) {
+  // docs/42 UI-9: the System admin imports from the CHOSEN platform's registrar into that platform
+  // (was: always the default platform's registrar, brands created without a platform).
+  const { data, isLoading, isError, error, refetch, isFetching } = useRegistrarDomains(true, platformId);
   const token = useSession((s) => s.token) as string;
   const qc = useQueryClient();
 
@@ -61,6 +63,7 @@ export function DomainImport() {
         try {
           const r = await platformApi.onboard(token, {
             slug: slugOf(d), name: d.suggestedName, primaryDomain: d.domain, provisionDomain: provision,
+            ...(platformId ? { platformId } : {}),
           });
           const dm = r.domain;
           const msg = !dm ? 'Brand created' : dm.nameserversUpdated ? 'Live — nameservers set' : `Set NS: ${dm.nameServers.join(', ')}`;

@@ -5,6 +5,7 @@ import type {
 } from "./identity.js";
 import type { Page, PageQuery } from "./paging.js";
 import type { DarajaClient } from "./daraja.js";
+import type { GatewayRouter, PaymentScopeRef } from "./paymentscopes.js";
 
 /**
  * AffiliateService (Issue I1+) — the marketer/affiliate domain seam the HTTP API binds to.
@@ -27,7 +28,7 @@ export class AffiliateService {
    *               read-only/enrollment surface works without payments wired; `approvePayout`
    *               throws B2C_UNAVAILABLE if it's missing.
    */
-  constructor(private readonly repo: AffiliateRepository, private readonly daraja?: DarajaClient) {}
+  constructor(private readonly repo: AffiliateRepository, private readonly daraja?: DarajaClient, private readonly gateways?: GatewayRouter) {}
 
   /** Idempotently enroll the caller as a marketer and return their referral terms. Throws USER_NOT_FOUND. */
   async enroll(userId: string): Promise<AffiliateEnrollment> {
@@ -76,10 +77,22 @@ export class AffiliateService {
    * approved:false and no B2C call). Throws B2C_UNAVAILABLE if no provider is wired.
    */
   async approvePayout(payoutId: string, adminId: string): Promise<{ approved: boolean; conversationId?: string }> {
+    // PAY-1 (docs/43): the payout is paid from the brand's payment OWNER — decided before approval so a
+    // missing payout account never strands an approved payout.
+    let client: DarajaClient | undefined = this.daraja;
+    if (this.gateways) {
+      const site = await this.repo.siteOfPayout(payoutId);
+      const owner = await this.gateways.ownerScope(site ?? undefined);
+      if (owner.scope !== "global") {
+        const sc = owner.scope as Exclude<PaymentScopeRef, "global">;
+        if (!owner.payoutsEnabled || !(await this.gateways.payoutsReady(sc))) throw new Error("MPESA_B2C_NOT_CONFIGURED");
+        client = (await this.gateways.clients(sc)).daraja;
+      }
+    }
     const ap = await this.repo.approvePayout(payoutId, adminId);
     if (!ap.approved || ap.amountCents === null || ap.phone === null) return { approved: false };
-    if (!this.daraja) throw new Error("B2C_UNAVAILABLE");
-    const b2c = await this.daraja.b2cPayment({ amountCents: ap.amountCents, msisdn: ap.phone, remarks: "Affiliate payout" });
+    if (!client) throw new Error("B2C_UNAVAILABLE");
+    const b2c = await client.b2cPayment({ amountCents: ap.amountCents, msisdn: ap.phone, remarks: "Affiliate payout" });
     return { approved: true, conversationId: b2c.conversationId };
   }
 

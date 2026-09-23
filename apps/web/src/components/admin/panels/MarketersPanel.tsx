@@ -29,6 +29,7 @@ import {
 } from '@/lib/admin/hooks';
 import { useRowSelection, SelectAllCheckbox, RowCheckbox, BulkBar, downloadCsv, copyText } from '@/components/admin/BulkSelect';
 import type { AdminMarketerRow } from '@/lib/admin/types';
+import { formatKes } from '@invest254/shared/money';
 
 /*
  * MarketersPanel — full marketer wallet management, ported verbatim from the former standalone
@@ -389,7 +390,7 @@ function WalletActions({ m }: { m: AdminMarketerRow }) {
           toast.push({
             tone: 'success',
             title: r.idempotent ? 'Already recorded' : 'Withdrawal recorded',
-            description: `New balance: KES ${(r.balance_cents / 100).toLocaleString()}.`,
+            description: `New balance: ${formatKes(r.balance_cents)}.`,
           });
           setWdAmount('');
         },
@@ -602,7 +603,7 @@ function BulkCreditModal({ open, marketerIds, onClose, onDone }: { open: boolean
           toast.push({
             tone: res.failCount ? 'error' : 'success',
             title: `Credited ${res.okCount}/${res.total}`,
-            description: res.failCount ? `${res.failCount} failed.` : `KES ${(cents / 100).toLocaleString()} to each marketer.`,
+            description: res.failCount ? `${res.failCount} failed.` : `${formatKes(cents)} to each marketer.`,
           });
           setAmount('');
           setRef('');
@@ -624,7 +625,7 @@ function BulkCreditModal({ open, marketerIds, onClose, onDone }: { open: boolean
         <div className="flex justify-end gap-2">
           <Button variant="ghost" onClick={onClose} disabled={bulk.isPending}>Cancel</Button>
           <Button onClick={submit} disabled={bulk.isPending || !cents || marketerIds.length === 0}>
-            {bulk.isPending ? 'Crediting…' : `Credit ${cents ? `KES ${(cents / 100).toLocaleString()}` : ''} each`}
+            {bulk.isPending ? 'Crediting…' : `Credit ${cents ? formatKes(cents) : ''} each`}
           </Button>
         </div>
       </div>

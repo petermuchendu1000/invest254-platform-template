@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { InMemoryNotificationRepository, NotificationService } from "@invest254/engine";
 import assert from "node:assert/strict";
 import { startTestApi, type TestApi } from "./testutil.js";
 
@@ -146,4 +147,22 @@ test("broadcast: a non-admin token is forbidden on every broadcast route", async
   } finally {
     await api.close();
   }
+});
+
+test("UI-C (0162): an announcement's edited title/body reach the broadcast; bad text is refused", async () => {
+  const repo = new InMemoryNotificationRepository();
+  const api = await startTestApi({ depsOverrides: { notifications: new NotificationService(repo) } });
+  const A = "admin-1:admin:00000000-0000-0000-0000-000000000001";
+  try {
+    const ok = await req(api, "POST", "/api/v1/admin/notifications/broadcast",
+      { token: A, body: { templateKey: "announcement", audience: {}, title: "  Weekend bonus ", body: "Deposit and get 10% extra." } });
+    assert.equal(ok.status, 200);
+    assert.deepEqual(repo.lastBroadcastText, { title: "Weekend bonus", body: "Deposit and get 10% extra." });
+    await req(api, "POST", "/api/v1/admin/notifications/broadcast", { token: A, body: { templateKey: "security_notice", audience: {} } });
+    assert.equal(repo.lastBroadcastText, undefined, "no text = the template's own text");
+    assert.equal((await req(api, "POST", "/api/v1/admin/notifications/broadcast",
+      { token: A, body: { templateKey: "announcement", title: "t".repeat(121) } })).status, 400);
+    assert.equal((await req(api, "POST", "/api/v1/admin/notifications/broadcast",
+      { token: A, body: { templateKey: "announcement", body: 5 } })).status, 400);
+  } finally { await api.close(); }
 });

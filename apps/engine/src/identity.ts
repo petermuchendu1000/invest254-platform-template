@@ -326,7 +326,7 @@ export class PgIdentityRepository implements IdentityRepository, AffiliateReposi
                     where c.affiliate_id = r.affiliate_id and c.referred_user = r.referred_user),0) as lifetime_ggr
          from referrals r join profiles pr on pr.id = r.referred_user
         where r.affiliate_id = $1
-          and ($2::timestamptz is null or (r.created_at, r.id) < ($2::timestamptz, $3::bigint))
+          and ($2::timestamptz is null or (r.created_at, r.id) < (coalesce((select k.created_at from referrals k where k.id = $3::bigint and k.affiliate_id = $1), $2::timestamptz), $3::bigint))
         order by r.created_at desc, r.id desc
         limit $4`,
       [userId, cur ? new Date(cur.tsMs).toISOString() : null, cur ? cur.id : null, limit + 1]);
@@ -344,7 +344,7 @@ export class PgIdentityRepository implements IdentityRepository, AffiliateReposi
       `select c.period, c.ggr, c.commission, c.status, c.created_at, c.id
          from affiliate_commissions c
         where c.affiliate_id = $1
-          and ($2::timestamptz is null or (c.created_at, c.id) < ($2::timestamptz, $3::bigint))
+          and ($2::timestamptz is null or (c.created_at, c.id) < (coalesce((select k.created_at from affiliate_commissions k where k.id = $3::bigint and k.affiliate_id = $1), $2::timestamptz), $3::bigint))
         order by c.created_at desc, c.id desc
         limit $4`,
       [userId, cur ? new Date(cur.tsMs).toISOString() : null, cur ? cur.id : null, limit + 1]);

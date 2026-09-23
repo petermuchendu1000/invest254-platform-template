@@ -529,3 +529,14 @@ export interface AdminBulkResult {
   failCount: number;
   results: AdminBulkResultRow[];
 }
+
+/** PAY-2 (docs/45): C2B (Pay Bill / Till) settings + Safaricom URL registration state. */
+export interface C2bConfigRow {
+  enabled: boolean; shortcode: string; accountNumber: string; businessName: string; instructions: string;
+  confirmationUrl: string; validationUrl: string; responseType: 'Completed' | 'Cancelled';
+  registeredAtMs: number | null; registeredShortcode: string | null; registeredConfirmationUrl: string | null;
+  lastRegisterAtMs: number | null; lastRegisterOk: boolean | null; lastRegisterMessage: string | null;
+  received7d: number; unclaimed: number; lastReceivedAtMs: number | null; updatedAtMs: number | null;
+  registrationCurrent: boolean;
+}
+export type C2bConfigPatch = Partial<Pick<C2bConfigRow, 'enabled' | 'shortcode' | 'accountNumber' | 'businessName' | 'instructions' | 'confirmationUrl' | 'validationUrl' | 'responseType'>>;

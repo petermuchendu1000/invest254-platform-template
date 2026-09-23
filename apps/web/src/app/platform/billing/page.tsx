@@ -18,6 +18,8 @@ import { usePlatforms } from '@/lib/platform/hooks';
 import { usePlans, useSubscription, useMySubscription, useSetPlan, useSetSubStatus, useRecordPayment } from '@/lib/ops/hooks';
 import type { PlatformSubscription, PlatformUsage } from '@/lib/ops/endpoints';
 import { ApiError } from '@/lib/api/client';
+import { formatDate } from '@/lib/format';
+import { formatKes } from '@invest254/shared/money';
 
 const SUB_STATUS: Record<string, string> = {
   trial: 'border-accent/40 bg-accent/10 text-accent', active: 'border-up/40 bg-up/10 text-up',
@@ -25,8 +27,8 @@ const SUB_STATUS: Record<string, string> = {
   suspended: 'border-down/40 bg-down/10 text-down', cancelled: 'border-border bg-surface-2 text-muted',
 };
 const badge = (s: string) => <span className={`inline-flex rounded-full border px-2 py-0.5 text-xs font-medium ${SUB_STATUS[s] ?? 'border-border bg-surface-2 text-muted'}`}>{s.replace('_', ' ')}</span>;
-const kes = (cents: number | null | undefined) => (cents == null ? 'Custom' : `KES ${(cents / 100).toLocaleString()}`);
-const when = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString() : '—');
+const kes = (cents: number | null | undefined) => (cents == null ? 'Custom' : formatKes(cents));
+const when = (iso: string | null) => (iso ? formatDate(iso) : '—');
 
 function UsageMeter({ label, used, max }: { label: string; used: number; max: number | null }) {
   const pct = max == null ? 0 : Math.min(100, Math.round((used / Math.max(1, max)) * 100));
@@ -43,7 +45,7 @@ export default function BillingPage() {
   const isSystem = useCan('console.system');   // docs/42: token role via the shared capability list
   return (
     <div className="flex flex-col gap-6">
-      <PageHeader title="Billing & subscriptions" subtitle={isSystem ? 'Manage every platform\'s plan, status and payments.' : 'Your platform\'s plan, status and usage.'} />
+      <PageHeader title="Billing" subtitle={isSystem ? 'Manage every platform\'s plan, status and payments.' : 'Your platform\'s plan, status and usage.'} />
       {isSystem ? <SystemBilling /> : <MyBilling />}
     </div>
   );
@@ -60,8 +62,8 @@ function MyBilling() {
   const off = sub.status === 'suspended' || sub.status === 'cancelled';
   return (
     <div className="flex flex-col gap-4">
-      {dunning ? <Card><div className="border-l-4 border-warn p-4 text-sm"><b>Payment needed.</b> Your subscription is {sub.status.replace('_', ' ')}. Settle with your System admin before {when(sub.graceEndsAt ?? sub.currentPeriodEnd)} to avoid suspension.</div></Card> : null}
-      {off ? <Card><div className="border-l-4 border-down p-4 text-sm"><b>Platform {sub.status}.</b> Your brands are offline to players. Contact your System admin to reactivate.</div></Card> : null}
+      {dunning ? <Card><div className="border-l-4 border-warn p-4 text-sm"><b>Payment needed.</b> Your subscription is {sub.status.replace('_', ' ')}. Settle with the System owner before {when(sub.graceEndsAt ?? sub.currentPeriodEnd)} to avoid suspension.</div></Card> : null}
+      {off ? <Card><div className="border-l-4 border-down p-4 text-sm"><b>Platform {sub.status}.</b> Your brands are offline to players. Contact the System owner to reactivate.</div></Card> : null}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <StatCard label="Plan" value={plan?.name ?? sub.planKey} hint={kes(sub.customPriceCents ?? plan?.priceCents) + (plan?.priceCents || sub.customPriceCents ? '/mo' : '')} />
         <StatCard label="Status" value={sub.status.replace('_', ' ')} tone={sub.status === 'active' ? 'up' : off ? 'down' : dunning ? 'warn' : 'default'} />

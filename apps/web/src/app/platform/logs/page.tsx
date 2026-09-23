@@ -4,8 +4,8 @@ import { RequireCapability } from '@/components/auth/RequireCapability';
 import { useEffect, useMemo, useState } from 'react';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { Button } from '@/components/ui/Button';
-import { formatRelativeTime, formatExact } from '@/lib/format';
-import { PageHeader, Section, TableWrap, Th, Td, Empty, Toolbar, FilterSelect } from '@/components/admin/ui';
+import { formatExact, formatAgo } from '@/lib/format';
+import { PageHeader, Section, TableWrap, Th, Td, Empty, Toolbar, FilterSelect, SearchInput } from '@/components/admin/ui';
 import { useSystemLogs } from '@/lib/admin/hooks';
 import type { AdminSystemLogRow } from '@/lib/admin/types';
 
@@ -58,13 +58,7 @@ function SystemLogsPageInner() {
         <Toolbar>
           <FilterSelect label="Service" value={app} onChange={setApp} options={APPS} />
           <FilterSelect label="Level" value={level} onChange={setLevel} options={LEVELS} />
-          <input
-            value={qInput}
-            onChange={(e) => setQInput(e.target.value)}
-            placeholder="Search message or path…"
-            aria-label="Search logs"
-            className="h-9 w-full max-w-xs rounded-lg border border-border bg-surface-2 px-3 text-sm text-fg outline-none focus:border-accent"
-          />
+          <SearchInput value={qInput} onChange={setQInput} placeholder="Search message or path…" label="Search logs" />
           <Button variant="outline" size="sm" onClick={() => query.refetch()} disabled={query.isFetching}>
             {query.isFetching ? 'Refreshing…' : 'Refresh'}
           </Button>
@@ -113,7 +107,7 @@ function Row({ r }: { r: AdminSystemLogRow }) {
   const statusTone = r.status == null ? 'text-muted' : r.status >= 500 ? 'text-down' : r.status >= 400 ? 'text-warn' : 'text-up';
   return (
     <tr className="border-b border-border last:border-0 align-top">
-      <Td className="whitespace-nowrap text-xs text-muted"><span title={formatExact(r.tMs)}>{formatRelativeTime(r.tMs)} ago</span></Td>
+      <Td className="whitespace-nowrap text-xs text-muted"><span title={formatExact(r.tMs)}>{formatAgo(r.tMs)}</span></Td>
       <Td>
         <span className={`rounded-md px-1.5 py-0.5 text-[10px] font-semibold uppercase ${levelBadge(r.level)}`}>{r.level}</span>
       </Td>

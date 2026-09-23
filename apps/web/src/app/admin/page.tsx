@@ -6,7 +6,7 @@ import { Skeleton } from '@/components/ui/Skeleton';
 import { Money } from '@/components/ui/Money';
 import { useCan } from '@/lib/auth/can';
 import { PageHeader, StatCard, Section, TableWrap, Th, Td, Empty } from '@/components/admin/ui';
-import { KpiCard, kesCompact, type Point } from '@/components/admin/charts';
+import { KpiCard, kesCompact, trendDelta, type Point } from '@/components/admin/charts';
 import { useOverview, useRtp, useReportDaily } from '@/lib/admin/hooks';
 import { RealCashRtpPanel, ConfigChangeReviewPanel } from '@/components/admin/EconomyIntegrityPanels';
 
@@ -107,10 +107,10 @@ export default function AdminOverviewPage() {
               <thead>
                 <tr className="border-b border-border">
                   <Th>Window</Th>
-                  <Th>Trades</Th>
-                  <Th>Turnover</Th>
-                  <Th>Payout</Th>
-                  <Th>Realised RTP</Th>
+                  <Th numeric>Trades</Th>
+                  <Th numeric>Turnover</Th>
+                  <Th numeric>Payout</Th>
+                  <Th numeric>Realised RTP</Th>
                 </tr>
               </thead>
               <tbody>
@@ -120,14 +120,14 @@ export default function AdminOverviewPage() {
                   return (
                     <tr key={w.window} className="border-b border-border last:border-0">
                       <Td className="font-medium capitalize">{w.window}</Td>
-                      <Td className="tabular-nums">{w.settledPositions}</Td>
-                      <Td className="tabular-nums">
+                      <Td numeric>{w.settledPositions}</Td>
+                      <Td numeric>
                         <Money cents={w.turnoverCents} />
                       </Td>
-                      <Td className="tabular-nums">
+                      <Td numeric>
                         <Money cents={w.payoutCents} />
                       </Td>
-                      <Td className={'tabular-nums font-medium ' + (drift ? 'text-down' : 'text-fg')}>
+                      <Td numeric className={'font-medium ' + (drift ? 'text-down' : 'text-fg')}>
                         {w.realisedRtp === null ? '—' : pct(w.realisedRtp)}
                       </Td>
                     </tr>
@@ -175,15 +175,10 @@ function TrendsSection() {
   const sum = (pts: Point[]) => pts.reduce((s, p) => s + p.value, 0);
   const ggrTotal = sum(ggr);
 
-  // Trend delta: second half vs first half of the window (a quick "is it growing?" signal).
-  const deltaPct = (pts: Point[]): number | null => {
-    if (pts.length < 4) return null;
-    const mid = Math.floor(pts.length / 2);
-    const a = sum(pts.slice(0, mid));
-    const b = sum(pts.slice(mid));
-    if (a === 0) return b > 0 ? 100 : null;
-    return ((b - a) / Math.abs(a)) * 100;
-  };
+  // Trend delta: last 15 days vs the 15 before (a quick "is it growing?" signal). UI-C: when the earlier
+  // half had nothing, a percentage is undefined — the old code showed a fake "▲100%"; now it says "New".
+  const trend = (pts: Point[]) => trendDelta(pts.map((p) => p.value));
+  const deltaHint = 'last 15 days vs the 15 days before';
 
   return (
     <Section title="Trends — last 30 days">
@@ -197,10 +192,10 @@ function TrendsSection() {
         <div className="flex flex-col gap-3">
           {/* KPI sparkline row — the four numbers an owner scans first, mobile-first (2-up, then 4-up). */}
           <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-            <KpiCard label="Deposits" value={kesCompact(sum(deposits))} series={deposits} tone="up" deltaPct={deltaPct(deposits)} />
-            <KpiCard label="Withdrawals" value={kesCompact(sum(withdrawals))} series={withdrawals} tone="down" deltaPct={deltaPct(withdrawals)} />
-            <KpiCard label="Turnover" value={kesCompact(sum(turnover))} series={turnover} tone="accent" deltaPct={deltaPct(turnover)} />
-            <KpiCard label="Net revenue (GGR)" value={kesCompact(ggrTotal)} series={ggr} tone={ggrTotal >= 0 ? 'up' : 'down'} deltaPct={deltaPct(ggr)} />
+            <KpiCard label="Deposits" value={kesCompact(sum(deposits))} series={deposits} tone="up" {...trend(deposits)} deltaHint={deltaHint} />
+            <KpiCard label="Withdrawals" value={kesCompact(sum(withdrawals))} series={withdrawals} tone="down" goodWhen="neutral" {...trend(withdrawals)} deltaHint={deltaHint} />
+            <KpiCard label="Turnover" value={kesCompact(sum(turnover))} series={turnover} tone="accent" {...trend(turnover)} deltaHint={deltaHint} />
+            <KpiCard label="Net revenue (GGR)" value={kesCompact(ggrTotal)} series={ggr} tone={ggrTotal >= 0 ? 'up' : 'down'} {...trend(ggr)} deltaHint={deltaHint} />
           </div>
 
           {/* Full daily cash-flow + GGR charts and per-day/per-player breakdowns live on Reports —

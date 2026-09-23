@@ -7,7 +7,7 @@ import { PaymentsIndex } from '@/components/platform/PaymentsIndex';
 export default function PaymentsPage() {
   return (
     <>
-      <PageHeader title="Payments" subtitle="Configure each deposit gateway — credentials, environment, availability, and a safe connection test. Each gateway has its own page." />
+      <PageHeader title="Gateways" subtitle="The payment gateways the System accounts accept, and whether players are offered each one." />
       <PaymentsIndex />
     </>
   );

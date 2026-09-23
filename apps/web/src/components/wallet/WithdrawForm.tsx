@@ -65,7 +65,6 @@ export function WithdrawForm() {
     : limit(USD_LIMITS.minWithdrawal, serverMinWithdrawalCents);
   const sanitizeAmount = (v: string) => (isForeign ? v.replace(/[^0-9.]/g, '').replace(/(\..*)\./g, '$1') : digitsOnly(v));
   const [amount, setAmount] = useState('');
-  const [editingPhone, setEditingPhone] = useState(false);
   const [phone, setPhone] = useState('');
   const [errors, setErrors] = useState<Record<string, string | undefined>>({});
   const [serverError, setServerError] = useState<string | null>(null);
@@ -74,7 +73,7 @@ export function WithdrawForm() {
   const [paidAmountKes, setPaidAmountKes] = useState(0);
 
   const realCents = wallet?.real ?? 0;
-  const effectivePhone = editingPhone || !accountPhone ? phone : accountPhone;
+  const effectivePhone = accountPhone ?? phone;   // F-49: the registered number whenever we know it
 
   const parsedAmount = Number.parseFloat(amount);
   const amountCents = isForeign
@@ -210,22 +209,17 @@ export function WithdrawForm() {
       {/* Destination */}
       <div className="flex flex-col gap-1.5">
         <span className="text-sm font-medium text-fg">M-Pesa number</span>
-        {accountPhone && !editingPhone ? (
+        {accountPhone ? (
           <div className="flex items-center gap-3 rounded-xl border border-border bg-surface-2 px-3.5 py-3">
             <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-up/15 text-up">
               <MpesaIcon />
             </span>
             <div className="min-w-0 flex-1">
               <div className="text-sm font-semibold tabular-nums text-fg">{maskMsisdn(accountPhone)}</div>
-              <div className="text-xs text-muted">Your account number</div>
+              {/* F-49 (BUGLOG #64): withdrawals are paid ONLY to the account's registered number — a stolen
+                  password can never redirect a player's money to another phone. */}
+              <div className="text-xs text-muted">Withdrawals are paid to your registered number only</div>
             </div>
-            <button
-              type="button"
-              onClick={() => { setEditingPhone(true); setPhone(''); }}
-              className="shrink-0 text-sm font-semibold text-accent hover:underline"
-            >
-              Change
-            </button>
           </div>
         ) : (
           <Input
