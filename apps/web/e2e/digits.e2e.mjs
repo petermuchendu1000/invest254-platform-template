@@ -53,6 +53,33 @@ try {
     check('desktop: Over 7 pays 375.00% (2 winning digits of 10)', /375\.00%/.test(over), over);
     await page.getByRole('button', { name: 'Even / Odd' }).click();
 
+    // DERIV-UI: Markets picker (category rail, search, favourites) and the Trade types sheet
+    await page.getByRole('button', { name: /Volatility \d+ (\(1s\) )?Index/ }).first().click();
+    const mp = page.getByRole('dialog', { name: 'Markets' });
+    check('markets: picker opens with Favorites + Synthetic indices and 12 indices', await mp.isVisible()
+      && await mp.getByRole('navigation', { name: 'Market categories' }).getByText('Favorites').isVisible()
+      && (await mp.getByRole('option').count()) === 12);
+    await mp.getByLabel('Search markets').fill('250');
+    check('markets: search narrows the list', (await mp.getByRole('option').count()) === 1);
+    await mp.getByRole('button', { name: /Add Volatility 250 \(1s\) Index to favorites/ }).click();
+    await mp.getByLabel('Search markets').fill('');
+    await mp.getByRole('navigation', { name: 'Market categories' }).getByRole('button', { name: /Favorites/ }).click();
+    check('markets: a starred index is listed under Favorites', (await mp.getByRole('option').count()) === 1 && /250/.test(await mp.getByRole('option').first().innerText()));
+    await mp.getByRole('option').first().click();
+    check('markets: picking an index switches the chart', await page.getByRole('button', { name: /Volatility 250 \(1s\) Index/ }).first().isVisible() && !(await mp.isVisible()));
+    await page.getByRole('button', { name: 'All trade types' }).filter({ visible: true }).first().click();
+    const tt = page.getByRole('dialog', { name: 'Trade types' });
+    check('trade types: sheet lists Multipliers + the three Digits types', /Multipliers[\s\S]*Matches\/Differs[\s\S]*Even\/Odd[\s\S]*Over\/Under/.test(await tt.innerText()));
+    check('trade types: Multipliers is Demo-only on a real account', await tt.getByRole('button', { name: /Multipliers/ }).isDisabled());
+    await tt.getByRole('tab', { name: 'Options' }).click();
+    check('trade types: the Options chip hides Multipliers', (await tt.getByRole('button', { name: /Multipliers/ }).count()) === 0);
+    await tt.getByRole('button', { name: /Over\/Under/ }).click();
+    check('trade types: picking Over/Under switches the console', await page.getByText('Select digit').isVisible());
+    await page.getByRole('button', { name: 'Even / Odd' }).click();
+    await page.getByRole('button', { name: /Volatility 250 \(1s\) Index/ }).first().click();
+    await page.getByRole('dialog', { name: 'Markets' }).getByLabel('Search markets').fill('10 (1s)');
+    await page.getByRole('dialog', { name: 'Markets' }).getByRole('option').first().click();
+
     // chart tools
     await page.getByRole('button', { name: 'Area chart' }).click();
     check('desktop: chart tool switches to area', (await page.getByRole('button', { name: 'Area chart' }).getAttribute('aria-pressed')) === 'true');
@@ -64,9 +91,13 @@ try {
 
     // manual trade → open → result → closed
     await page.getByRole('button', { name: /^Buy Even/ }).click();
-    await page.waitForTimeout(300);
-    const openTab = await rail.getByRole('tab', { name: /Open/ }).innerText();
-    const sawOpen = /\(1\)/.test(openTab) || (await rail.getByText('settling…').count()) > 0;
+    // poll: the contract is open for ~1 tick, so sample every 50 ms rather than once
+    let sawOpen = false, openTab = '';
+    for (let t = 0; t < 60 && !sawOpen; t++) {
+      openTab = await rail.getByRole('tab', { name: /Open/ }).innerText();
+      sawOpen = /\(1\)/.test(openTab) || (await rail.getByText('settling…').count()) > 0 || (await page.getByText(/Even · /).count()) > 0;
+      if (!sawOpen) await page.waitForTimeout(50);
+    }
     const modal = page.getByRole('dialog', { name: /You won|Trade lost/ });
     await modal.waitFor({ timeout: 10000 }).catch(() => {});
     check('desktop: a manual trade shows as open while it settles', sawOpen, openTab);

@@ -2,7 +2,8 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { cn } from '@/lib/cn';
-import { INSTRUMENTS, type Instrument } from '@/lib/game/instruments';
+import { type Instrument } from '@/lib/game/instruments';
+import { MarketsPanel, IndexBadge } from '@/components/game/digits/MarketsPicker';
 
 function BarsGlyph({ className }: { className?: string }) {
   return (
@@ -28,8 +29,8 @@ function IndexLabel({ inst }: { inst: Instrument }) {
 }
 
 /**
- * Deriv-style Volatility Index picker. The trigger shows the current instrument, its live price and
- * change; the dropdown lists every index with a chart glyph and a selected marker.
+ * Deriv-style market trigger. It shows the current instrument, its live price and change, and opens
+ * the Markets picker (MarketsPicker.tsx): a popover on desktop, a bottom sheet on phones.
  */
 export function VolatilitySelector({
   instrument,
@@ -46,6 +47,7 @@ export function VolatilitySelector({
   wide?: boolean;
 }) {
   const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -57,6 +59,17 @@ export function VolatilitySelector({
     return () => document.removeEventListener('mousedown', onDoc);
   }, [open]);
 
+  // Desktop popover: anchored under the trigger, kept inside the viewport (the chart can be narrower
+  // than the panel). Phones use a bottom sheet instead.
+  const toggle = () => {
+    if (!open && rootRef.current) {
+      const r = rootRef.current.getBoundingClientRect();
+      const W = 640;
+      setPos({ left: Math.max(12, Math.min(r.left, window.innerWidth - W - 12)), top: r.bottom + 8 });
+    }
+    setOpen((v) => !v);
+  };
+
   const chgPos = changePct >= 0;
   const leaf = instrument.short.replace(/^Vol\s*/, ''); // e.g. "10 (1s)"
 
@@ -65,8 +78,8 @@ export function VolatilitySelector({
       {wide ? (
         <button
           type="button"
-          onClick={() => setOpen((v) => !v)}
-          aria-haspopup="listbox"
+          onClick={toggle}
+          aria-haspopup="dialog"
           aria-expanded={open}
           title={instrument.label}
           className={cn(
@@ -74,9 +87,7 @@ export function VolatilitySelector({
             open ? 'border-accent' : 'border-border hover:border-accent/60',
           )}
         >
-          <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-accent/15 text-accent">
-            <BarsGlyph className="h-3 w-3" />
-          </span>
+          <IndexBadge inst={instrument} size="sm" />
           <span className="flex min-w-0 flex-col leading-tight">
             <span className="truncate text-[12.5px] font-bold text-fg">
               <IndexLabel inst={instrument} />
@@ -96,8 +107,8 @@ export function VolatilitySelector({
       ) : (
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
-        aria-haspopup="listbox"
+        onClick={toggle}
+        aria-haspopup="dialog"
         aria-expanded={open}
         title={price != null ? `${instrument.label} · ${price.toFixed(2)}` : instrument.label}
         className={cn(
@@ -121,34 +132,16 @@ export function VolatilitySelector({
       )}
 
       {open ? (
-        <div
-          role="listbox"
-          className="absolute left-0 top-[calc(100%+6px)] z-40 max-h-[min(60vh,22rem)] w-72 max-w-[85vw] overflow-y-auto overscroll-contain rounded-xl border border-border bg-surface-2 p-1 shadow-2xl"
-        >
-          {INSTRUMENTS.map((inst) => {
-            const active = inst.id === instrument.id;
-            return (
-              <button
-                key={inst.id}
-                type="button"
-                role="option"
-                aria-selected={active}
-                onClick={() => { onSelect(inst); setOpen(false); }}
-                className={cn(
-                  'flex w-full items-center gap-3 rounded-lg px-2.5 py-2 text-left transition',
-                  active ? 'bg-accent/15' : 'hover:bg-white/5',
-                )}
-              >
-                <span className={cn('flex h-6 w-6 shrink-0 items-center justify-center rounded-md', active ? 'bg-accent/20 text-accent' : 'bg-white/5 text-muted')}>
-                  <BarsGlyph className="h-3.5 w-3.5" />
-                </span>
-                <span className={cn('min-w-0 truncate text-sm', active ? 'text-fg' : 'text-muted')}>
-                  <IndexLabel inst={inst} />
-                </span>
-              </button>
-            );
-          })}
-        </div>
+        <>
+          {/* phone backdrop */}
+          <button type="button" aria-label="Close markets" onClick={() => setOpen(false)} className="fixed inset-0 z-40 bg-black/50 lg:hidden" />
+          <div role="dialog" aria-label="Markets"
+            style={pos ? ({ '--mp-left': `${pos.left}px`, '--mp-top': `${pos.top}px` } as React.CSSProperties) : undefined}
+            className="fixed inset-x-0 bottom-0 z-50 h-[82vh] overflow-hidden rounded-t-2xl border border-border bg-surface shadow-2xl
+                       lg:inset-auto lg:left-[var(--mp-left)] lg:top-[var(--mp-top)] lg:h-[min(470px,calc(100vh-var(--mp-top)-16px))] lg:w-[640px] lg:rounded-2xl">
+            <MarketsPanel current={instrument} onSelect={onSelect} onClose={() => setOpen(false)} />
+          </div>
+        </>
       ) : null}
     </div>
   );

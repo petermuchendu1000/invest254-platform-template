@@ -5,6 +5,30 @@ entry: what, evidence, root cause, impact, and resolution.
 
 ---
 
+## #81 — Digits screen: Markets picker, Trade types sheet and scanner list to the mock; Multipliers built but never reachable — FIXED (branch `ui/deriv-markets-tradetypes`, web only; engine untouched)
+- **What (owner's Deriv mocks):**
+  - The instrument menu was a plain list: no categories, search or favourites.
+  - There was no "Trade types" view.
+  - The Entry Scanner list did not match the mock.
+  - `MultipliersPanel` and the engine's `open_multiplier` existed, but no screen rendered them.
+- **Fix:**
+  - **Markets picker:** on desktop, a popover with a category rail (Favorites, Synthetic indices → Volatility (1s) / Volatility), search, grouped rows with a volatility badge, and favourite stars saved per device. On phones, the same content as a bottom sheet with category chips.
+  - **Only tradable markets are listed.** Forex, stock indices, crypto and commodities from the mock are left out: the engine cannot price or settle them, and TradingView offers chart widgets, not a feed trades can settle on.
+  - **Trade types sheet:** chips All / Multipliers / Options, then Multipliers and Digits (Matches/Differs, Even/Odd, Over/Under). It opens from the ⊞ button on phones and from "All trade types" in the desktop console.
+  - **Tab rows:** the phone row scrolls to keep the active type in view. The desktop console shows the types as a grid.
+  - **Entry Scanner:** the list is restyled to the mock. Its scope is unchanged: digits only.
+  - **Multipliers:** the console now shows the existing panel. Its first stake is the brand's minimum stake; it was KES 200, which was refused against KES 250.
+- **Why Multipliers is Demo-only (found during the work):**
+  - Every active brand runs in pool mode, and mpesapap now uses the digits screen.
+  - In pool mode the engine decides a real-money multiplier's result when it opens. It then draws a scripted P/L path to that result ("green feint" before a decided loss). Stop loss, deal cancellation and closing early are switched off.
+  - On a real account the P/L a player watched would therefore not follow the chart. The Close button would also fail with CLOSE_DISABLED.
+  - The Demo path prices it from the quote. So the sheet shows Multipliers on real accounts as "Demo account" and does not let it be picked.
+- **Verification:**
+  - Digits e2e 42/42 (new checks: picker, search, favourites, switching index, the sheet, the chip filter, Demo-only lock, picking a type).
+  - Account e2e 49/49 (new: a demo multiplier opens and closes, and only the demo balance moves).
+  - Roles e2e 198/198, `npm test` 1182 pass, and the hooks lint is clean.
+  - Phones have no horizontal scroll.
+
 ## #80 — Figures cut off with "…" in KPI cards and on phones; demo notices trimmed; player two-factor switched off — FIXED (branch `ui/trim-demo-2fa-figures`, no migration)
 - **Reported (owner, with screenshot):** on the console Overview, "Deposits · today" and "House revenue · today" showed "KES 14…" and "KES 13…". The demo banner and the switcher's disclaimer were too much text. Player two-factor should be off until SMS codes (Africa's Talking) are ready.
 - **Root cause (figures):** `StatCard` values used `truncate`. On wide screens the console shows seven tiles in one row, about 150px each, so any KES figure longer than about seven characters was cut off. Checking every page with large amounts turned up three more cases:

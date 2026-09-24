@@ -7,6 +7,8 @@ import { cn } from '@/lib/cn';
 import { DigitHeatmap } from '@/components/game/digits/DigitHeatmap';
 import { DerivChart } from '@/components/game/digits/DerivChart';
 import { VolatilitySelector } from '@/components/game/digits/VolatilitySelector';
+import { MultipliersPanel } from '@/components/game/digits/MultipliersPanel';
+import { TradeTypesSheet, type TradeTypeId } from '@/components/game/digits/TradeTypes';
 import { EntryScanner, type ScanSuggestion } from '@/components/game/digits/EntryScanner';
 import { DigitResultModal, type DigitResult } from '@/components/game/digits/DigitResultModal';
 import { InsufficientBalanceModal, type InsufficientFundsInfo } from '@/components/game/digits/InsufficientBalanceModal';
@@ -129,6 +131,9 @@ export function DigitsTradeScreen() {
   const maxStakeCents = gameConfig?.maxStakeCents;
 
   const [market, setMarket] = useState<Market>('evenodd');
+  // DERIV-UI: Multipliers sits beside the digits contracts (Demo account only — see TradeTypes.tsx).
+  const [multi, setMulti] = useState(false);
+  const [typesOpen, setTypesOpen] = useState(false);
   const [mode, setMode] = useState<'auto' | 'manual'>('manual');
   const [barrier, setBarrier] = useState(5); // Over/Under
   const [pick, setPick] = useState(0); // Matches/Differs
@@ -221,6 +226,8 @@ export function DigitsTradeScreen() {
 
   // Subscribe the socket to the selected instrument's authoritative feed (re-subscribes on change).
   useEffect(() => { subscribeInstrument(instId); }, [instId, subscribeInstrument]);
+  const isDemo = wallet?.mode === 'demo';
+  useEffect(() => { if (!isDemo && multi) setMulti(false); }, [isDemo, multi]);
 
   // Close the timeframe menu on outside click.
   useEffect(() => {
@@ -421,6 +428,7 @@ export function DigitsTradeScreen() {
   const applyScan = useCallback((s: ScanSuggestion) => {
     if (running) setRunning(false);
     setInstId(s.instrumentId);
+    setMulti(false);
     setMarket(s.market as Market);
     if (s.market === 'overunder' && s.digit != null) setBarrier(s.digit);
     if (s.market === 'matchesdiffers' && s.digit != null) setPick(s.digit);
@@ -438,24 +446,52 @@ export function DigitsTradeScreen() {
   const bal = spendable;
   const readout = amountMode === 'payout' ? stakeCents : payoutForStake(stakeCents, primaryProb, PAYOUT_FACTOR);
 
-  // ── Market tabs (phones: full-width row above the chart; desktop: pills in the console) ──
+  // ── Trade types (phones: a scrollable row above the chart; desktop: pills in the console). The
+  //    grid button opens the full "Trade types" sheet (owner's mock). ──
+  const pickType = (id: TradeTypeId) => {
+    if (running) setRunning(false);
+    if (id === 'multipliers') { setMulti(true); return; }
+    setMulti(false); setMarket(id);
+  };
+  const tabs: { id: TradeTypeId; label: string; console: string }[] = [
+    ...MARKETS.map((m) => ({ id: m.id as TradeTypeId, label: m.label, console: m.label.replace('Matches/Differs', 'Match / Differ').replace('Even/Odd', 'Even / Odd').replace('Over/Under', 'Over / Under') })),
+    ...(isDemo ? [{ id: 'multipliers' as TradeTypeId, label: 'Multipliers', console: 'Multipliers' }] : []),
+  ];
+  const currentType: TradeTypeId = multi ? 'multipliers' : market;
+  // Phones: keep the active trade type visible in the scrolling tab row (e.g. after picking from the sheet).
+  const topTabsRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const row = topTabsRef.current;
+    const el = row?.querySelector<HTMLElement>('[aria-pressed="true"]');
+    if (row && el) row.scrollTo({ left: Math.max(0, el.offsetLeft - row.offsetLeft - 8), behavior: 'smooth' });
+  }, [currentType, tabs.length]);
   const marketTabs = (variant: 'top' | 'console') => (
     <div className={cn('flex items-center', variant === 'top' ? 'gap-1.5 lg:hidden' : 'hidden gap-2 lg:flex')}>
-      {MARKETS.map((m) => (
-        <button
-          key={m.id}
-          type="button"
-          aria-pressed={market === m.id}
-          onClick={() => { setMarket(m.id); if (running) setRunning(false); }}
-          className={cn(
-            'min-w-0 flex-1 truncate border font-medium transition',
-            variant === 'top' ? 'rounded-xl py-2 text-[clamp(11px,3.3vw,13px)]' : 'rounded-lg py-2 text-[12px]',
-            market === m.id ? 'border-accent bg-accent/10 text-fg' : 'border-border text-muted hover:text-fg',
-          )}
-        >
-          {variant === 'console' ? m.label.replace('Matches/Differs', 'Match / Differ').replace('Even/Odd', 'Even / Odd').replace('Over/Under', 'Over / Under') : m.label}
+      {variant === 'top' ? (
+        <button type="button" onClick={() => setTypesOpen(true)} aria-label="All trade types" title="All trade types"
+          className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-border text-muted transition hover:text-fg">
+          <DIcon name="apps" className="h-4 w-4" />
         </button>
-      ))}
+      ) : null}
+      <div ref={variant === 'top' ? topTabsRef : undefined} className={cn('min-w-0 flex-1 gap-1.5',
+        variant === 'top' ? cn('flex', tabs.length > 3 && 'overflow-x-auto [scrollbar-width:none]') : cn('grid', tabs.length > 3 ? 'grid-cols-2' : 'grid-cols-3'))}>
+        {tabs.map((m) => (
+          <button
+            key={m.id}
+            type="button"
+            aria-pressed={currentType === m.id}
+            onClick={() => pickType(m.id)}
+            className={cn(
+              'border font-medium transition',
+              tabs.length > 3 && variant === 'top' ? 'shrink-0 px-3' : 'min-w-0 flex-1 truncate',
+              variant === 'top' ? 'rounded-xl py-2 text-[clamp(11px,3.3vw,13px)]' : 'rounded-lg py-2 text-[12px]',
+              currentType === m.id ? 'border-accent bg-accent/10 text-fg' : 'border-border text-muted hover:text-fg',
+            )}
+          >
+            {variant === 'console' ? m.console : m.label}
+          </button>
+        ))}
+      </div>
     </div>
   );
 
@@ -563,7 +599,7 @@ export function DigitsTradeScreen() {
           </div>
         </div>
 
-        <DigitHeatmap freqs={snap.freqs} current={snap.digit} />
+        {!multi ? <DigitHeatmap freqs={snap.freqs} current={snap.digit} /> : null}
       </div>
 
       {/* Right: trading console */}
@@ -572,8 +608,13 @@ export function DigitsTradeScreen() {
           <span className="text-[11px] font-medium uppercase tracking-[0.16em] text-muted">Trading mode</span>
           <span className="text-[10px] tabular-nums text-muted">Bal {amt.prefix}{amt.num(bal)}</span>
         </div>
+        <button type="button" onClick={() => setTypesOpen(true)} aria-label="All trade types"
+          className="hidden items-center gap-2 self-start text-[12px] font-semibold text-accent hover:underline lg:flex">
+          <DIcon name="apps" className="h-3.5 w-3.5" />All trade types
+        </button>
 
 
+{!multi ? (<>
         {/* AUTO / MANUAL */}
         <div className="flex rounded-xl border border-border bg-bg/60 p-1">
           {(['auto', 'manual'] as const).map((m) => (
@@ -586,7 +627,12 @@ export function DigitsTradeScreen() {
           ))}
         </div>
 
+</>) : null}
         {marketTabs('console')}
+
+        {multi ? (
+          <MultipliersPanel getLastTick={getLastInstrumentTick} resetKey={instId} instrumentId={instId} minStakeCents={minStakeCents} />
+        ) : (<>
 
         {/* SELECT DIGIT — barrier (Over/Under) or prediction (Match/Differ) */}
         {needsDigit ? (
@@ -744,9 +790,11 @@ export function DigitsTradeScreen() {
             );
           })}
         </div>
+        </>)}
       </div>
 
       <EntryScanner currentInstrumentId={instId} busy={running} onApply={applyScan} />
+      {typesOpen ? <TradeTypesSheet value={currentType} demo={isDemo} onPick={pickType} onClose={() => setTypesOpen(false)} /> : null}
       <DigitResultModal result={result} onClose={() => setResult(null)} />
       <InsufficientBalanceModal
         info={needFunds}

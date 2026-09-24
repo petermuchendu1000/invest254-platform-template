@@ -212,7 +212,7 @@ export function EntryScanner({
               <Icon path="M6 9l6 6 6-6" className={cn('ml-auto h-4 w-4 text-muted transition-transform', ddOpen ? 'rotate-180' : '')} />
             </button>
             {ddOpen ? (
-              <div role="listbox" className="absolute left-0 top-[calc(100%+6px)] z-10 w-full overflow-hidden rounded-xl border border-border bg-surface-2 shadow-2xl">
+              <div role="listbox" className="absolute left-0 top-[calc(100%+6px)] z-10 w-full overflow-hidden rounded-xl border border-border bg-surface-2 py-1 shadow-2xl">
                 {MARKET_OPTIONS.map((o) => (
                   <button
                     key={o.id}
@@ -220,10 +220,9 @@ export function EntryScanner({
                     role="option"
                     aria-selected={o.id === market}
                     onClick={() => { setMarket(o.id); setDdOpen(false); }}
-                    className={cn('flex w-full items-center px-3.5 py-2.5 text-left text-[15px] font-medium transition', o.id === market ? 'text-fg' : 'text-muted hover:bg-white/5 hover:text-fg')}
+                    className={cn('flex w-full items-center px-3.5 py-3 text-left text-[15px] font-medium transition', o.id === market ? 'bg-white/10 text-fg' : 'text-fg/80 hover:bg-white/5 hover:text-fg')}
                   >
                     {o.label}
-                    {o.id === market ? <Icon path="M5 13l4 4L19 7" className="ml-auto h-4 w-4 text-accent" /> : null}
                   </button>
                 ))}
               </div>

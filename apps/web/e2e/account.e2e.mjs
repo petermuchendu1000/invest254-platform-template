@@ -92,6 +92,18 @@ try {
   const rail = page.locator('aside').first();
   await rail.getByRole('tab', { name: /Closed/ }).click();
   check('demo: the closed trade carries a DEMO tag', /DEMO/.test(await rail.innerText()));
+  // Multipliers (demo only): open Up, close, only the demo balance moves
+  await page.getByRole('button', { name: 'All trade types' }).filter({ visible: true }).first().click();
+  await page.getByRole('dialog', { name: 'Trade types' }).getByRole('button', { name: /Multipliers/ }).click();
+  const wm0 = (await api('/wallet', TOKEN)).body;
+  await page.getByRole('button', { name: /^Up/ }).click();
+  const mClose = page.getByRole('button', { name: /^Close [+-]/ });
+  check('multipliers (demo): a contract opens', await until(() => mClose.isVisible(), 8000));
+  await page.waitForTimeout(1500);
+  await mClose.click();
+  check('multipliers (demo): closing settles it', await until(async () => /Closed|Stopped out/.test(await page.locator('body').innerText()), 8000));
+  const wm1 = (await api('/wallet', TOKEN)).body;
+  check('multipliers (demo): only the demo balance moved', wm1.realBalance === wm0.realBalance && wm1.demoBalance !== wm0.demoBalance, `${JSON.stringify(wm0)} -> ${JSON.stringify(wm1)}`);
   await pill.click();
   await sw.getByRole('menuitemradio', { name: /Real Account/ }).click();
   check('demo: switching back returns to Real and closes the switcher', await until(async () => /^Real account/.test(await pill.getAttribute('aria-label'))) && (await api('/wallet', TOKEN)).body.mode === 'real' && !(await sw.isVisible()));

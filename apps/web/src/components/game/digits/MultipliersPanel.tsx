@@ -28,7 +28,7 @@ type CloseReason = 'manual' | 'tp' | 'sl' | 'stopout' | 'cancel';
 const num = (s: string) => { const n = Number.parseFloat(s); return Number.isFinite(n) ? n : 0; };
 const dcFeeCents = (stakeCents: number, min: number) => (min <= 0 ? 0 : Math.round(stakeCents * 0.02 * Math.sqrt(min)));
 
-export function MultipliersPanel({ getLastTick, resetKey, instrumentId }: { getLastTick: () => InstrumentTick | null; resetKey: string; instrumentId: string }) {
+export function MultipliersPanel({ getLastTick, resetKey, instrumentId, minStakeCents = 0 }: { getLastTick: () => InstrumentTick | null; resetKey: string; instrumentId: string; minStakeCents?: number }) {
   const { fmt, symbol, isForeign, toKesCents } = useDisplayMoney();
   const token = useSession((s) => s.token);
   const openDeposit = useDepositUi((s) => s.openDeposit);
@@ -36,7 +36,8 @@ export function MultipliersPanel({ getLastTick, resetKey, instrumentId }: { getL
   const { openMultiplier, closeMultiplier, onMultiplier } = useGameSocket();
   const spendable = (wallet?.real ?? 0) + (wallet?.bonus ?? 0);
 
-  const [stake, setStake] = useState<string>(String(isForeign ? 10 : 200));
+  // Start at the brand's minimum stake (at least KES 250-ish), so the first trade is never refused.
+  const [stake, setStake] = useState<string>(String(isForeign ? 10 : Math.max(200, Math.ceil(minStakeCents / 100))));
   const [multiplier, setMultiplier] = useState(100);
   const [tpOn, setTpOn] = useState(false);
   const [tp, setTp] = useState(isForeign ? '5' : '500');
@@ -100,7 +101,7 @@ export function MultipliersPanel({ getLastTick, resetKey, instrumentId }: { getL
   }, [getLastTick]);
 
   const stepStake = (d: 1 | -1) => {
-    const s = Math.max(0, num(stake) + d * (isForeign ? 1 : 50));
+    const s = Math.max(isForeign ? 0 : minStakeCents / 100, num(stake) + d * (isForeign ? 1 : 50));
     setStake(isForeign ? String(Math.round(s * 100) / 100) : String(Math.round(s)));
   };
 

@@ -23,3 +23,10 @@ The owner supplied desktop and phone mocks for the digits (Deriv-style) trade sc
 
 ## Tests
 `apps/web/e2e/digits.e2e.mjs` runs against a real local stack (API, engine and web; the brand needs `trade_ui='digits'`). It has 34 checks covering both layouts, a real trade from open to settle, the history modal, the account menu, Auto start/stop and the phone layout rules.
+
+## Markets picker and trade types (BUGLOG #81)
+
+- **Markets picker** (`MarketsPicker.tsx`): on desktop, a popover with a category rail, search, grouped rows and favourite stars. Favourites are saved per device (`pp:fav-instruments`). On phones it is a bottom sheet. It lists only markets the engine can trade: today the 12 Volatility indices.
+- **Trade types** (`TradeTypes.tsx`): All / Multipliers / Options chips, then Multipliers and Digits. Multipliers can be picked on the Demo account only; on real accounts it is shown as "Demo account", because pool mode scripts the multiplier P/L path (see BUGLOG #81).
+- **Entry Scanner:** restyled list; its scope is still digits only.
+
