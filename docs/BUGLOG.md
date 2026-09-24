@@ -5,6 +5,22 @@ entry: what, evidence, root cause, impact, and resolution.
 
 ---
 
+## #80 — Figures cut off with "…" in KPI cards and on phones; demo notices trimmed; player two-factor switched off — FIXED (branch `ui/trim-demo-2fa-figures`, no migration)
+- **Reported (owner, with screenshot):** on the console Overview, "Deposits · today" and "House revenue · today" showed "KES 14…" and "KES 13…". The demo banner and the switcher's disclaimer were too much text. Player two-factor should be off until SMS codes (Africa's Talking) are ready.
+- **Root cause (figures):** `StatCard` values used `truncate`. On wide screens the console shows seven tiles in one row, about 150px each, so any KES figure longer than about seven characters was cut off. Checking every page with large amounts turned up three more cases:
+  - At 1024–1279px the digits desktop header pushed the balance, Deposit and the account menu off-screen.
+  - At 390px or narrower the phone header pushed the bell or Deposit off-screen when the balance was large.
+  - The phone payout on the buy cards ran into the "Even/Odd" label.
+- **Fix:**
+  - **Figures always shown in full:** a new `FitText` component scales a figure down to fit its card instead of cutting it off. It wraps only as a last resort. It is used by every `StatCard`, the trend cards, Live now, the trade result tiles, the buy-card payouts and the marketer's available balance.
+  - **Overview layout:** on wide screens the row now has 9 columns, and each money tile spans two, so the figure shows at full size. On phones the money tiles take the full row.
+  - **Digits header:** from 1024 to 1279px the nav shows icons only (labels return at 1280px). The balance steps down a size only when it is long. On phones under 360px the speaker moves into the menu, where there is also a Sound row. When a player is signed in on a phone under 420px, the clipped wordmark is hidden.
+  - **Demo:** the demo banner on the trade screen and the switcher's disclaimer are removed. The "D" badge and the DEMO label on the pill remain.
+  - **Two-factor:** it is off for players and marketers. Two-Factor Auth is hidden from the account menu and the account page, and the API refuses enrolment with `PLAYER_MFA_DISABLED` unless `PLAYER_MFA_ENABLED=1`. Staff two-factor is unchanged. No player or marketer had enrolled in production (checked), and the sign-in code step remains in case one ever does.
+- **Verification:**
+  - A new sweep inflates every money figure from the API to KES 14.5M and checks 13 pages at 320–1920px: no figure is cut off or off-screen. The only cut-off text left is the instrument name at 320px, which is a label, not a figure.
+  - Account e2e 46/46 (it now checks: no banner, no disclaimer, 2FA not offered, the API refuses enrolment, sign-in has no code step). Digits e2e 34/34. Roles e2e 198/198. `npm test` passes with 1182 tests, including a new API test for the switched-off player 2FA. The hooks lint is clean.
+
 ## #79 — Opening the sign-in window crashed the whole app (found in e2e before merge) — FIXED (branch `feat/demo-sound-chat-account`)
 - **Found by:** the new `apps/web/e2e/account.e2e.mjs`. After signing out, tapping "Log in" replaced the page with "The app failed to load". The browser console showed React error #310 ("rendered more hooks than during the previous render").
 - **Root cause:** the new two-factor step in `AuthModal` declared its three `useState` hooks after the component's `if (!open) return null`. The first render with the window open ran more hooks than the closed render before it. Every brand's sign-in would have broken. Nothing reached production.

@@ -1,5 +1,6 @@
 'use client';
 
+import { FitText } from '@/components/ui/FitText';
 import { useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { PageHeader, StatCard, Section, TableWrap, Th, Td, Toolbar, FilterSelect, SearchInput } from '@/components/admin/ui';
@@ -164,12 +165,14 @@ export default function PlatformOverviewPage() {
       />
 
       {/* Platform-wide KPIs */}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-7">
+      {/* One row on wide screens: 9 tracks, the two money tiles take two each so a long KES figure fits
+          at full size; phones/tablets wrap to 2-4 columns and the money tiles span the row on phones. */}
+      <div className="grid grid-flow-row-dense grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-9">
         <StatCard label="Brands" value={siteList.length} hint={`${kpis.filter((k) => k.status === 'active').length} active`} />
         {!live.denied ? <LiveOnlineCard total={live.totalOnline} connected={live.connected} /> : null}
         <StatCard label="Players" value={formatNumber(totals.users)} hint="registered" />
-        <StatCard label={`Deposits · ${rangeLabel}`} money={windowTotals.deposits} tone="up" />
-        <StatCard label={`House revenue · ${rangeLabel}`} money={windowTotals.ggr} tone={windowTotals.ggr >= 0 ? 'up' : 'down'} />
+        <StatCard label={`Deposits · ${rangeLabel}`} money={windowTotals.deposits} tone="up" className="col-span-2 sm:col-span-1 2xl:col-span-2" />
+        <StatCard label={`House revenue · ${rangeLabel}`} money={windowTotals.ggr} tone={windowTotals.ggr >= 0 ? 'up' : 'down'} className="col-span-2 sm:col-span-1 2xl:col-span-2" />
         <StatCard label="Open positions" value={formatNumber(totals.open)} />
         <StatCard label="Needs setup" value={needsSetup} tone={needsSetup > 0 ? 'warn' : 'up'} hint="website address not live yet" />
       </div>
@@ -250,12 +253,12 @@ export default function PlatformOverviewPage() {
 /** Live online-players KPI with a pulsing connection dot. */
 function LiveOnlineCard({ total, connected }: { total: number; connected: boolean }) {
   return (
-    <div className="flex flex-col gap-1 rounded-2xl border border-border bg-surface p-4">
+    <div className="flex min-w-0 flex-col gap-1 rounded-2xl border border-border bg-surface p-4">
       <span className="flex items-center gap-1.5 text-xs uppercase tracking-wide text-muted">
         <span className={`inline-block h-2 w-2 rounded-full ${connected ? 'bg-up animate-pulse' : 'bg-muted'}`} />
         Live now
       </span>
-      <span className="text-2xl font-bold tabular-nums text-fg">{formatNumber(total)}</span>
+      <FitText className="text-xl font-bold tabular-nums text-fg sm:text-2xl">{formatNumber(total)}</FitText>
       <span className="text-xs text-muted">{connected ? 'players online' : 'connecting…'}</span>
     </div>
   );

@@ -182,3 +182,23 @@ test("a player account never gets mfaSetupRequired", async () => {
     assert.equal(me.mfaSetupRequired, false);
   } finally { await api.close(); }
 });
+
+test("player/marketer two-factor is switched off (enrol + confirm refused); staff are unaffected", async () => {
+  for (const role of ["player", "marketer"]) {
+    const api = await startTestApi();
+    try {
+      const { token } = await makeAdmin(api, role);
+      const e = await req(api, "POST", "/api/v1/auth/mfa/enroll", { token });
+      assert.equal(e.status, 403, `${role} enrol refused`);
+      assert.equal((await json(e)).error.code, "PLAYER_MFA_DISABLED");
+      const c = await req(api, "POST", "/api/v1/auth/mfa/confirm", { token, body: { code: "123456" } });
+      assert.equal(c.status, 403, `${role} confirm refused`);
+    } finally { await api.close(); }
+  }
+  // staff enrolment still works (covered in depth above)
+  const api = await startTestApi();
+  try {
+    const { token } = await makeAdmin(api);
+    assert.equal((await req(api, "POST", "/api/v1/auth/mfa/enroll", { token })).status, 200);
+  } finally { await api.close(); }
+});

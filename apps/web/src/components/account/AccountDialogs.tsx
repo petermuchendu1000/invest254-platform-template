@@ -7,7 +7,7 @@ import { api } from '@/lib/api/endpoints';
 import { ApiError } from '@/lib/api/client';
 import { useSession } from '@/lib/auth/session';
 import { useToast } from '@/lib/toast/ToastProvider';
-import { useAccountUi, useMyKyc, useSubmitKyc, DOC_LABEL } from '@/lib/account/accountUi';
+import { useAccountUi, useMyKyc, useSubmitKyc, DOC_LABEL, PLAYER_TWO_FACTOR } from '@/lib/account/accountUi';
 import { compressImage } from '@/lib/chat/liveChat';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { MfaEnrollDto } from '@/lib/api/types';
@@ -194,5 +194,5 @@ export function VerifyIdentityDialog() {
 /** Mounts whichever account dialog is open. */
 export function AccountDialogs() {
   const d = useAccountUi((s) => s.dialog);
-  return d === 'twofactor' ? <TwoFactorDialog /> : d === 'verify' ? <VerifyIdentityDialog /> : null;
+  return d === 'twofactor' && PLAYER_TWO_FACTOR ? <TwoFactorDialog /> : d === 'verify' ? <VerifyIdentityDialog /> : null;
 }

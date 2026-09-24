@@ -19,6 +19,9 @@ export interface KycStaffRow {
   reviewedAt: string | null; reviewerName: string | null; reviewNote: string | null;
   files?: { front: string | null; back: string | null; selfie: string | null };
 }
+/** Player two-factor (authenticator app) is switched off until SMS codes via Africa's Talking are ready.
+ *  Staff two-factor is unaffected. The sign-in code step stays, so nobody already enrolled is locked out. */
+export const PLAYER_TWO_FACTOR = false;
 export const DOC_LABEL: Record<string, string> = { national_id: 'National ID', passport: 'Passport', driving_licence: 'Driving licence' };
 
 export function useMyKyc(enabled = true) {

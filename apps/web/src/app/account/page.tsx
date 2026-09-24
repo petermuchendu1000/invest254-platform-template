@@ -1,6 +1,6 @@
 'use client';
 
-import { useAccountUi, useMyKyc } from '@/lib/account/accountUi';
+import { useAccountUi, useMyKyc, PLAYER_TWO_FACTOR } from '@/lib/account/accountUi';
 
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
@@ -78,11 +78,13 @@ function PlayerSecurityCard() {
   const label = st === 'approved' ? 'Verified' : st === 'pending' ? 'In review' : st === 'rejected' ? 'Not approved' : 'Not verified';
   return (
     <Card className="flex flex-col gap-3">
-      <h2 className="text-sm font-semibold text-fg">Security &amp; identity</h2>
-      <div className="flex items-center justify-between gap-3 text-sm">
-        <span className="text-muted">Two-factor authentication</span>
-        <Button variant="secondary" size="sm" onClick={() => open('twofactor')}>Manage</Button>
-      </div>
+      <h2 className="text-sm font-semibold text-fg">{PLAYER_TWO_FACTOR ? 'Security & identity' : 'Identity'}</h2>
+      {PLAYER_TWO_FACTOR ? (
+        <div className="flex items-center justify-between gap-3 text-sm">
+          <span className="text-muted">Two-factor authentication</span>
+          <Button variant="secondary" size="sm" onClick={() => open('twofactor')}>Manage</Button>
+        </div>
+      ) : null}
       <div className="flex items-center justify-between gap-3 text-sm">
         <span className="text-muted">Identity · <span className={st === 'approved' ? 'text-up' : st === 'rejected' ? 'text-down' : 'text-fg'}>{label}</span></span>
         <Button variant="secondary" size="sm" onClick={() => open('verify')}>{st === 'approved' ? 'View' : 'Verify'}</Button>

@@ -1,5 +1,6 @@
 'use client';
 
+import { FitText } from '@/components/ui/FitText';
 import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { formatKes } from '@invest254/shared/money';
@@ -216,7 +217,7 @@ export function MarketerDashboardView() {
           {/* Hero: available to withdraw + payout request (deposit-commission balance) */}
           <section className="rounded-2xl border border-up/30 bg-gradient-to-br from-up/10 to-transparent p-4">
             <p className="text-[11px] font-medium uppercase tracking-wide text-muted">Available to withdraw</p>
-            <p className="mt-1 text-3xl font-black tabular-nums text-up">{formatKes(availableCents)}</p>
+            <FitText className="mt-1 text-3xl font-black tabular-nums text-up">{formatKes(availableCents)}</FitText>
             <button
               onClick={requestPayout}
               disabled={payout.isPending || availableCents < minPayoutCents}
@@ -417,7 +418,7 @@ export function MarketerDashboardView() {
                       {pageSlice(advRows, page, LEDGER_PAGE_SIZE).map((a) => (
                         <li key={a.id} className="flex items-center gap-3 rounded-xl border border-border bg-surface-2 px-3 py-2">
                           <span className="flex min-w-0 flex-1 flex-col leading-tight">
-                            <span className="truncate text-sm font-medium tabular-nums text-fg">{formatKes(a.amountCents)}</span>
+                            <span className="shrink-0 whitespace-nowrap text-sm font-medium tabular-nums text-fg">{formatKes(a.amountCents)}</span>
                             <span className="truncate text-[11px] text-muted">
                               {a.reason ?? '—'} · {new Date(a.createdAtMs).toLocaleDateString('en-KE')}
                               {a.decisionNote ? ` · ${a.decisionNote}` : ''}

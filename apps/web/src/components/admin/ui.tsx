@@ -1,7 +1,8 @@
 import * as React from 'react';
 import { cn } from '@/lib/cn';
 import { Button } from '@/components/ui/Button';
-import { Money } from '@/components/ui/Money';
+import { FitText } from '@/components/ui/FitText';
+import { formatKes } from '@invest254/shared/money';
 
 export function PageHeader({
   title,
@@ -30,22 +31,26 @@ export function StatCard({
   money,
   hint,
   tone,
+  className,
 }: {
   label: string;
   value?: string | number;
   money?: number;
   hint?: string;
   tone?: 'default' | 'up' | 'down' | 'warn';
+  /** e.g. a column span, so money tiles get the room a long figure needs */
+  className?: string;
 }) {
   const toneCls =
     tone === 'up' ? 'text-up' : tone === 'down' ? 'text-down' : tone === 'warn' ? 'text-warn' : 'text-fg';
   return (
-    <div className="flex min-w-0 flex-col gap-1 rounded-2xl border border-border bg-surface p-4">
+    <div className={cn('flex min-w-0 flex-col gap-1 rounded-2xl border border-border bg-surface p-4', className)}>
       <span className="text-xs uppercase tracking-wide text-muted">{label}</span>
-      {/* UI-B: values never wrap ("KES" on one line, the number on the next). */}
-      <span className={cn('truncate whitespace-nowrap text-xl font-bold tabular-nums sm:text-2xl', toneCls)}>
-        {money !== undefined ? <Money cents={money} /> : value}
-      </span>
+      {/* Figures are always shown in full: the size shrinks to fit the card instead of cutting the
+          number off with "…" (BUGLOG #80). Wrapping ("KES" / number) is the last resort only. */}
+      <FitText className={cn('text-xl font-bold tabular-nums sm:text-2xl', money !== undefined && 'font-mono', toneCls)}>
+        {money !== undefined ? formatKes(money) : value}
+      </FitText>
       {hint ? <span className="text-xs text-muted">{hint}</span> : null}
     </div>
   );

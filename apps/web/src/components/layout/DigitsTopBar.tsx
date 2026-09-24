@@ -18,6 +18,7 @@ import { useMyNotifications, useDismissNotification } from '@/lib/notifications/
 import { DIcon, type IconName } from '@/components/game/digits/icons';
 import { AccountMenu, AccountPill } from '@/components/layout/DigitsAccount';
 import { SoundToggle } from '@/components/layout/SoundToggle';
+import { useSound } from '@/lib/sound/sound';
 
 /** Brand wordmark in two tones (first word light, the rest in the accent), e.g. "Tamu" + "Traders". */
 function Wordmark({ text, className }: { text: string; className?: string }) {
@@ -35,15 +36,31 @@ function NavButton({ icon, label, onClick, variant = 'plain' }: { icon?: IconNam
     <button
       type="button"
       onClick={onClick}
+      aria-label={label}
+      title={label}
       className={cn(
-        'flex h-9 items-center gap-1.5 whitespace-nowrap rounded-lg px-3 text-[13px] font-medium transition',
+        'flex h-9 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg px-2.5 text-[13px] font-medium transition xl:px-3',
         variant === 'plain' && 'text-muted hover:text-fg',
         variant === 'pill' && 'border border-border text-fg hover:border-accent/50',
         variant === 'accent' && 'bg-accent font-semibold text-accent-fg shadow-[0_0_18px_-6px_var(--pp-accent)] hover:brightness-105',
       )}
     >
       {icon ? <DIcon name={icon} className="h-4 w-4" /> : null}
-      {label}
+      {/* 1024–1279px: icons only, so the balance, Deposit and the account menu never run off-screen */}
+      <span className={icon && variant !== 'accent' ? 'hidden xl:inline' : undefined}>{label}</span>
+    </button>
+  );
+}
+
+/** Phone drawer row: sound on / off (the header speaker is hidden on the narrowest phones). */
+function SoundMenuRow() {
+  const muted = useSound((s) => s.muted);
+  const toggle = useSound((s) => s.toggle);
+  return (
+    <button type="button" role="switch" aria-checked={!muted} onClick={toggle}
+      className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm font-semibold text-muted transition hover:bg-surface-2 hover:text-fg">
+      <DIcon name={muted ? 'mute' : 'volume'} className="h-5 w-5" />Sound
+      <span className={cn('ml-auto text-xs font-semibold', muted ? 'text-muted' : 'text-up')}>{muted ? 'Off' : 'On'}</span>
     </button>
   );
 }
@@ -142,23 +159,23 @@ export function DigitsTopBar() {
       <header className="sticky top-0 z-30 border-b border-border bg-surface/95 backdrop-blur">
         {/* ── Desktop ── */}
         <div className="hidden h-[72px] items-center gap-2 px-4 lg:flex">
-          <Link href="/" aria-label={`${brand.name} home`}><Wordmark text={wordmark} className="text-[19px]" /></Link>
+          <Link href="/" aria-label={`${brand.name} home`} className="shrink-0"><Wordmark text={wordmark} className="text-[19px]" /></Link>
           <Link href="/" aria-label="Trade" className="ml-4 grid h-10 w-10 place-items-center rounded-xl border border-accent/40 bg-accent/10 text-accent">
             <DIcon name="trend" className="h-5 w-5" />
           </Link>
-          <Link href="/" className="ml-2 px-2 text-[14px] font-semibold text-fg">Trader’s Hub</Link>
+          <Link href="/" className="ml-2 hidden whitespace-nowrap px-2 text-[14px] font-semibold text-fg xl:inline">Trader’s Hub</Link>
           <NavButton icon="deposit" label="Deposit" onClick={needAuth(() => openDeposit())} />
           <NavButton icon="withdraw" label="Withdraw" onClick={needAuth(openWithdraw)} />
           <NavButton icon="history" label="History" onClick={needAuth(() => setHistoryOpen(true))} />
           <NavButton icon="sparkles" label="AI" variant="accent" onClick={() => openScanner(true)} />
-          <span className="relative"><NavButton icon="chat" label="Live Chat" variant="pill" onClick={() => setSupportOpen(true)} />{chatUnread ? <span className="absolute -right-1 -top-1 grid h-4 min-w-4 place-items-center rounded-full bg-down px-1 text-[9px] font-bold text-white">{chatUnread}</span> : null}</span>
+          <span className="relative"><NavButton icon="chat" label="Live Chat" variant="pill" onClick={() => setSupportOpen(true)} />{chatUnread ? <span data-badge="chat" className="absolute -right-1 -top-1 grid h-4 min-w-4 place-items-center rounded-full bg-down px-1 text-[9px] font-bold text-white">{chatUnread}</span> : null}</span>
           <NavButton icon="book" label="How to Trade" variant="pill" onClick={() => setHowToOpen(true)} />
 
-          <div className="ml-auto flex items-center gap-3">
+          <div className="ml-auto flex min-w-0 items-center gap-3">
             {authed ? (
               <>
-                <AccountPill />
-                <button type="button" onClick={() => openDeposit()} className="h-10 rounded-lg bg-accent px-5 text-[14px] font-semibold text-accent-fg shadow-[0_0_18px_-6px_var(--pp-accent)] transition hover:brightness-105">Deposit</button>
+                <div className="min-w-0"><AccountPill /></div>
+                <button type="button" onClick={() => openDeposit()} className="h-10 shrink-0 whitespace-nowrap rounded-lg bg-accent px-5 text-[14px] font-semibold text-accent-fg shadow-[0_0_18px_-6px_var(--pp-accent)] transition hover:brightness-105">Deposit</button>
                 <SoundToggle />
                 <Bell />
                 <AccountMenu />
@@ -177,12 +194,15 @@ export function DigitsTopBar() {
           <button type="button" onClick={() => setMenuOpen(true)} aria-label="Open menu" className="grid h-9 w-9 shrink-0 place-items-center rounded-lg text-fg hover:bg-surface-2">
             <DIcon name="menu" className="h-5 w-5" />
           </button>
-          <Link href="/" aria-label={`${brand.name} home`} className="min-w-0 truncate"><Wordmark text={wordmark} className="text-[15px]" /></Link>
+          {/* signed in on a narrow phone, the balance matters more than a clipped "Ta…" wordmark */}
+          <Link href="/" aria-label={`${brand.name} home`} className={cn('min-w-0 truncate', authed && 'hidden min-[420px]:block')}><Wordmark text={wordmark} className="text-[15px]" /></Link>
+          {/* the balance keeps its full width; the wordmark gives way on narrow phones */}
           {authed ? <div className="ml-1 shrink-0"><AccountPill compact /></div> : null}
           <div className="ml-auto flex shrink-0 items-center gap-1">
             {authed ? (
               <>
-                <SoundToggle className="h-9 w-9" />
+                {/* under 360px the speaker moves into the menu so Deposit and the bell stay visible */}
+                <SoundToggle className="hidden h-9 w-9 min-[360px]:grid" />
                 <button type="button" onClick={() => openDeposit()} className="h-9 rounded-lg bg-accent px-3 text-[13px] font-semibold text-accent-fg">Deposit</button>
                 <Bell />
               </>
@@ -218,6 +238,7 @@ export function DigitsTopBar() {
                   </li>
                 );
               })}
+              <li><SoundMenuRow /></li>
             </ul>
             <div className="mt-auto border-t border-border pt-3">
               {authed ? (

@@ -6,10 +6,10 @@
  *
  * Registers a FRESH player on the brand every run (so it can be re-run), then walks:
  *   WhatsApp number set in the console → shown in the player's menu and chat greeting;
- *   Real/Demo switch → refresh demo balance → a demo trade moves only the demo balance, labelled DEMO → back to Real;
+ *   Real/Demo switch (no banner, no disclaimer) → refresh demo balance → a demo trade moves only the demo balance → back to Real;
  *   sound toggle (state + persisted across reloads);
  *   live chat: player text + photo → agent inbox → agent reply ("Support") + unread badge → resolve;
- *   Two-Factor Auth set-up → sign out → sign-in asks for the code → signed in;
+ *   player two-factor is off (not in the menu, API refuses) → sign out → sign in with phone + password;
  *   Verify Identity submit → back office approves on Identity checks → player sees "verified".
  */
 import { chromium } from 'playwright-core';
@@ -22,16 +22,6 @@ const b64u = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
 const jwt = (sub, c) => { const h = b64u({ alg: 'HS256', typ: 'JWT' }); const p = b64u({ sub, iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 3600, ...c }); return `${h}.${p}.${createHmac('sha256', JWT_SECRET).update(`${h}.${p}`).digest('base64url')}`; };
 const ADMIN_TOKEN = jwt(ADMIN, { role: 'admin', site: SITE });
 const OWNER_TOKEN = jwt(OWNER, { role: 'platform_superadmin', site: '00000000-0000-0000-0000-000000000001' });
-
-// RFC 6238 TOTP (SHA-1, 30 s, 6 digits) — what an authenticator app computes from the shown secret.
-function totp(secretB32) {
-  const alpha = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'; let bits = '';
-  for (const ch of secretB32.replace(/=+$/, '').toUpperCase()) bits += alpha.indexOf(ch).toString(2).padStart(5, '0');
-  const key = Buffer.from(bits.match(/.{8}/g).map((b) => parseInt(b, 2)));
-  const ctr = Buffer.alloc(8); ctr.writeBigUInt64BE(BigInt(Math.floor(Date.now() / 30000)));
-  const h = createHmac('sha1', key).update(ctr).digest(); const o = h[h.length - 1] & 15;
-  return String((h.readUInt32BE(o) & 0x7fffffff) % 1_000_000).padStart(6, '0');
-}
 
 const results = [];
 const check = (name, ok, info = '') => { results.push({ name, ok }); console.log(`  [${ok ? 'PASS' : 'FAIL'}] ${name}${ok || !info ? '' : `  -- ${String(info).slice(0, 240)}`}`); };
@@ -83,10 +73,11 @@ try {
   check('demo: switch menu lists Real Account and Demo Account', await sw.getByRole('menuitemradio', { name: /Real Account/ }).isVisible() && await sw.getByRole('menuitemradio', { name: /Demo Account/ }).isVisible());
   await sw.getByRole('menuitemradio', { name: /Demo Account/ }).click();
   check('demo: the pill switches to Demo', await until(async () => /^Demo account/.test(await pill.getAttribute('aria-label'))));
-  check('demo: a demo banner explains play money', await until(() => page.getByRole('note').filter({ hasText: /play money that can.t be withdrawn/ }).isVisible()));
+  check('demo: no demo banner on the trade screen', await until(async () => (await page.getByRole('note').filter({ hasText: /play money/i }).count()) === 0));
   const w0 = (await api('/wallet', TOKEN)).body;
   check('demo: the API reports demo mode', w0.mode === 'demo', JSON.stringify(w0));
   await pill.click();
+  check('demo: the switcher has no disclaimer paragraph', !/can.t be withdrawn|can differ/i.test(await sw.innerText()));
   await page.getByRole('button', { name: 'Refresh demo balance' }).click();
   const w1ok = await until(async () => (await api('/wallet', TOKEN)).body.demoBalance >= 1_000_000);
   const w1 = (await api('/wallet', TOKEN)).body;
@@ -120,7 +111,7 @@ try {
   await page.getByRole('button', { name: 'Account menu' }).click();
   const menu = page.getByRole('menu').last();
   const menuText = await menu.innerText();
-  check('menu: Two-Factor Auth, Verify Identity, Live Chat and WhatsApp Care are listed', ['Two-Factor Auth', 'Verify Identity', 'Live Chat', 'WhatsApp Care · +254712345678'].every((x) => menuText.includes(x)), menuText);
+  check('menu: Verify Identity, Live Chat and WhatsApp Care are listed', ['Verify Identity', 'Live Chat', 'WhatsApp Care · +254712345678'].every((x) => menuText.includes(x)), menuText);
   check('menu: WhatsApp opens wa.me in a new tab', (await menu.getByRole('link', { name: /WhatsApp Care/ }).getAttribute('href')) === 'https://wa.me/254712345678');
   await page.keyboard.press('Escape');
 
@@ -151,7 +142,7 @@ try {
   await conv.getByRole('button', { name: 'Send' }).click();
   check('agent: the reply appears in the thread', await until(() => conv.getByText('We are checking it now').isVisible()));
 
-  const badge = page.locator('header span.relative', { has: page.getByRole('button', { name: 'Live Chat' }) }).locator('span');
+  const badge = page.locator('header [data-badge="chat"]');
   check('chat: the player gets an unread badge on Live Chat', await until(async () => (await badge.count()) > 0 && /^\d+$/.test((await badge.first().innerText()).trim()), 30000));
   await header.getByRole('button', { name: 'Live Chat' }).first().click();
   check('chat: the reply shows from "Support" (agent name hidden)', await until(async () => await chat.getByText('We are checking it now').isVisible() && /Support/.test(await chat.innerText()) && !/siteadmin/.test(await chat.innerText())));
@@ -197,38 +188,23 @@ try {
   check('kyc: the player menu shows Verify Identity · verified', await until(async () => /Verify Identity · verified/.test(await page.getByRole('menu').last().innerText())));
   await page.keyboard.press('Escape');
 
-  // ── 7. Two-Factor Auth ──
+  // ── 7. Two-factor is switched off for players (SMS codes come later); sign-in has no code step ──
   await page.getByRole('button', { name: 'Account menu' }).click();
-  await page.getByRole('menu').last().getByRole('button', { name: 'Two-Factor Auth' }).click();
-  const tf = page.getByRole('dialog', { name: 'Two-Factor Auth' });
-  await tf.getByRole('button', { name: 'Set up two-factor' }).click();
-  await tf.locator('svg').first().waitFor();
-  const secret = (await tf.locator('code').first().innerText()).trim();
-  check('2fa: set-up shows a QR code, the secret and recovery codes', /^[A-Z2-7]{16,}$/.test(secret) && /Save these recovery codes/.test(await tf.innerText()), secret.length);
-  await tf.getByLabel('Code from your app').fill(totp(secret));
-  await tf.getByLabel('I saved my recovery codes').check();
-  await tf.getByRole('button', { name: 'Turn on two-factor' }).click();
-  check('2fa: two-factor turns on', await until(async () => (await api('/auth/mfa', TOKEN)).body.enabled === true));
-  await tf.getByRole('button', { name: 'Close' }).last().click().catch(() => {});
+  check('2fa off: Two-Factor Auth is not in the player menu', !/Two-Factor/.test(await page.getByRole('menu').last().innerText()));
   await page.keyboard.press('Escape');
-
+  const enr = await api('/auth/mfa/enroll', TOKEN, { method: 'POST' });
+  check('2fa off: the API refuses player enrolment', enr.status === 403 && enr.body?.error?.code === 'PLAYER_MFA_DISABLED', JSON.stringify(enr));
   await page.getByRole('button', { name: 'Account menu' }).click();
   await page.getByRole('menu').last().getByRole('button', { name: 'Sign Out' }).click();
   await until(() => header.getByRole('button', { name: 'Log in' }).first().isVisible());
   await header.getByRole('button', { name: 'Log in' }).first().click();
-  await until(() => page.getByPlaceholder('07XX XXX XXX').isVisible());
+  check('sign-in: the window opens without crashing', await until(() => page.getByPlaceholder('07XX XXX XXX').isVisible()));
   const auth = page.locator('form', { has: page.getByPlaceholder('07XX XXX XXX') });
   await auth.getByPlaceholder('07XX XXX XXX').fill(`07${suffix}`);
   await auth.locator('input[type=password]').first().fill(PASSWORD);
   await auth.getByRole('button', { name: 'Log in', exact: true }).last().click();
-  check('2fa: sign-in asks for the authentication code', await until(() => auth.getByLabel('Authentication code').isVisible()));
-  await auth.getByLabel('Authentication code').fill('000000');
-  await auth.getByRole('button', { name: 'Log in', exact: true }).last().click();
-  check('2fa: a wrong code is refused with a message', await until(async () => /code/i.test(await auth.getByRole('alert').first().innerText().catch(() => ''))));
-  await page.waitForTimeout(1200);
-  await auth.getByLabel('Authentication code').fill(totp(secret));
-  await auth.getByRole('button', { name: 'Log in', exact: true }).last().click();
-  check('2fa: the right code signs the player in', await until(() => page.getByRole('button', { name: 'Account menu' }).isVisible(), 10000));
+  check('sign-in: phone + password signs the player straight in (no code step)', await until(() => page.getByRole('button', { name: 'Account menu' }).isVisible(), 10000)
+    && (await page.getByLabel('Authentication code').count()) === 0);
   check('player: no page errors', player.errors.length === 0, player.errors.join(' | '));
   await player.ctx.close();
 

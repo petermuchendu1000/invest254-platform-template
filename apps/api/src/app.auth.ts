@@ -216,10 +216,21 @@ export function registerAuthRoutes(router: Router, deps: ApiDeps): void {
     domain(() => deps.auth.mfaStatus(ctx.claims!.userId)));
 
   /** Returns the secret, otpauth:// QR URI and recovery codes ONCE. MFA is inactive until confirm. */
-  router.post(`${BASE}/auth/mfa/enroll`, auth, mfaLimit, async (ctx: Ctx) =>
-    domain(() => deps.auth.beginMfaEnrolment(ctx.claims!.userId)));
+  // Player / marketer two-factor is OFF until SMS codes (Africa's Talking) replace the authenticator app.
+  // Staff are unaffected. Turning it off never locks anyone out: disable and the sign-in check still work.
+  const customerMfaOff = (ctx: Ctx): boolean =>
+    process.env.PLAYER_MFA_ENABLED !== "1" && (ctx.claims!.role === "player" || ctx.claims!.role === "marketer");
+  const refuseCustomerMfa = (): never => {
+    throw new ApiError("PLAYER_MFA_DISABLED", "Two-factor sign-in for player accounts is not available yet.", 403);
+  };
+
+  router.post(`${BASE}/auth/mfa/enroll`, auth, mfaLimit, async (ctx: Ctx) => {
+    if (customerMfaOff(ctx)) refuseCustomerMfa();
+    return domain(() => deps.auth.beginMfaEnrolment(ctx.claims!.userId));
+  });
 
   router.post(`${BASE}/auth/mfa/confirm`, auth, mfaLimit, async (ctx: Ctx) => {
+    if (customerMfaOff(ctx)) refuseCustomerMfa();
     const code = requireString(asObject(ctx.body), "code");
     return domain(() => deps.auth.confirmMfa(ctx.claims!.userId, code));
   });

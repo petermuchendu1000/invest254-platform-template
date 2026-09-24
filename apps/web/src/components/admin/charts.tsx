@@ -1,5 +1,6 @@
 'use client';
 
+import { FitText } from '../ui/FitText';
 import * as React from 'react';
 
 export type Point = { label: string; value: number };
@@ -192,7 +193,7 @@ export function KpiCard({
           </span>
         ) : null}
       </div>
-      <span className="whitespace-nowrap text-xl font-bold tabular-nums text-fg sm:text-2xl">{value}</span>
+      <FitText className="text-xl font-bold tabular-nums text-fg sm:text-2xl">{value}</FitText>
       <Sparkline points={series} tone={tone} />
     </div>
   );

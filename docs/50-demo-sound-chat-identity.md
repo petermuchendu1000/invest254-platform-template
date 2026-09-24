@@ -9,7 +9,7 @@ This change adds five things players and brands asked for: a Real/Demo switch, g
 | Where | The balance pill (top bar, desktop and phone). The chevron opens **Switch account**, which lists Real Account and Demo Account with their balances. |
 | Switching | `POST /wallet/mode {mode}`. Switching is refused while a contract is open or Auto is running (`OPEN_POSITIONS`). A marketer account is demo-only (`MODE_LOCKED`). The switcher closes after a switch. |
 | Play money | `POST /wallet/demo/topup` refills the demo balance to KES 10,000 ("Refresh demo balance"). It can't be withdrawn. |
-| Labels | Demo mode shows a "D" badge, a DEMO label on the pill, a banner saying results can differ from real-money play, and DEMO tags on positions and history. |
+| Labels | Demo mode shows a "D" badge and a DEMO label on the pill, and DEMO tags on positions and history. The trade-screen banner and the switcher disclaimer were removed at the owner's request (BUGLOG #80). |
 | Engine | An account in demo mode is handled like a marketer demo account: separate balance and no pool. This is the only engine change and it was authorised by the owner. The mode is read on every trade, and if the check fails the trade takes the real path. |
 
 ## Game sounds (SOUND-1)
@@ -24,9 +24,9 @@ Kenney "Interface Sounds" (CC0, public domain; `apps/web/public/sounds/LICENSE.t
 - **Storage:** attachments are stored in Postgres and served only through HMAC-signed links that expire after one hour. They are deleted after `CHAT_MEDIA_RETENTION_DAYS` (default 90) by the API's 6-hourly job.
 - **Polling:** every 3 s while the chat is open, 20 s while it is closed, and 5 s for the inbox.
 
-## Two-factor sign-in (ACCT-1)
+## Two-factor sign-in (ACCT-1) — currently OFF for players
 
-Account menu → **Two-Factor Auth**. The dialog shows a QR code and key for any authenticator app, plus 8 recovery codes. It turns on only after the player confirms they saved the codes and enters a valid code. From then on, sign-in asks for the 6-digit code, or a recovery code ("Lost your phone?"). Players can turn it off with a current code. The existing `/auth/mfa*` API is used unchanged.
+**Switched off** (BUGLOG #80) until SMS codes via Africa's Talking are ready: hidden in the web (`PLAYER_TWO_FACTOR` in `lib/account/accountUi.ts`), and the API refuses player and marketer enrolment unless `PLAYER_MFA_ENABLED=1`. Staff two-factor is unchanged. When it is on: Account menu → **Two-Factor Auth**. The dialog shows a QR code and key for any authenticator app, plus 8 recovery codes. It turns on only after the player confirms they saved the codes and enters a valid code. From then on, sign-in asks for the 6-digit code, or a recovery code ("Lost your phone?"). Players can turn it off with a current code. The existing `/auth/mfa*` API is used unchanged.
 
 ## Identity checks (ACCT-1, migration 0168)
 

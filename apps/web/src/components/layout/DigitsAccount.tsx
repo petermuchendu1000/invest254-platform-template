@@ -13,7 +13,7 @@ import { useDepositUi } from '@/lib/wallet/depositUi';
 import { useAmountText } from '@/lib/game/useAmountText';
 import { useDigitSession } from '@/lib/game/digitSession';
 import { useLiveChat } from '@/lib/chat/liveChat';
-import { useAccountUi, useMyKyc } from '@/lib/account/accountUi';
+import { useAccountUi, useMyKyc, PLAYER_TWO_FACTOR } from '@/lib/account/accountUi';
 import { useToast } from '@/lib/toast/ToastProvider';
 import { DIcon, type IconName } from '@/components/game/digits/icons';
 
@@ -38,6 +38,12 @@ function useDismiss(open: boolean, close: () => void) {
  * while a contract is open (the server enforces it too). While AUTO is running on a phone, the pill
  * shows "Auto · <side>" instead.
  */
+/** Balance text size by length: whole figure always visible, smaller only when it is long. */
+function balanceSize(text: string, compact: boolean): string {
+  if (compact) return text.length <= 10 ? 'text-[12px]' : text.length <= 13 ? 'text-[11px]' : 'text-[10px]';
+  return text.length <= 14 ? 'text-[13px]' : 'text-[12px]';
+}
+
 export function AccountPill({ compact = false }: { compact?: boolean }) {
   const { data } = useWallet();
   const amt = useAmountText();
@@ -102,10 +108,12 @@ export function AccountPill({ compact = false }: { compact?: boolean }) {
         ) : (
           <span className="flex flex-col items-start leading-none">
             <span className={cn('text-[9px] font-semibold uppercase tracking-wider', demo ? 'text-warn' : 'text-muted')}>{demo ? 'Demo' : 'Real'}</span>
-            <span className={cn('mt-0.5 font-mono font-bold tabular-nums text-fg', compact ? 'text-[12px]' : 'text-[13px]')}>{amt.prefix}{amt.num(spend)}</span>
+            {/* The full balance, never cut off: long figures step down a size so the phone header
+                (menu, pill, Deposit, bell) still fits at 320px (BUGLOG #80). */}
+            <span className={cn('mt-0.5 whitespace-nowrap font-mono font-bold tabular-nums text-fg', balanceSize(`${amt.prefix}${amt.num(spend)}`, compact))}>{amt.prefix}{amt.num(spend)}</span>
           </span>
         )}
-        <DIcon name="chevronDown" className="h-3.5 w-3.5 text-muted" />
+        <DIcon name="chevronDown" className={cn('h-3.5 w-3.5 text-muted', compact && 'hidden min-[360px]:block')} />
       </button>
       {open ? (
         <div className="absolute left-0 top-[calc(100%+8px)] z-50 w-72 rounded-xl border border-border bg-surface p-2 shadow-2xl sm:left-auto sm:right-0" role="dialog" aria-label="Switch account">
@@ -115,7 +123,6 @@ export function AccountPill({ compact = false }: { compact?: boolean }) {
             <Row mode="demo" label="Demo Account" cents={demoB} dot="bg-down" />
           </div>
           {bonusB > 0 ? <p className="px-3 pt-1 text-[11px] text-muted">Real includes {amt.prefix}{amt.num(bonusB)} bonus (play only).</p> : null}
-          <p className="px-3 pt-2 text-[11px] leading-snug text-muted">Demo uses play money that can’t be withdrawn. Demo results can differ from real-money play.</p>
           <button type="button" disabled={topup.isPending}
             onClick={() => topup.mutate(undefined, {
               onSuccess: (r) => toast.push({ tone: 'success', title: 'Demo balance refreshed', description: `${amt.text(r.demoBalance)} play money.` }),
@@ -181,7 +188,7 @@ export function AccountMenu() {
           <div className="py-1">
             <Item icon="user" label="Profile" href="/account" />
             <Item icon="lock" label="Change Password" onClick={() => setPw(true)} />
-            <Item icon="shield" label="Two-Factor Auth" onClick={() => openDialog('twofactor')} />
+            {PLAYER_TWO_FACTOR ? <Item icon="shield" label="Two-Factor Auth" onClick={() => openDialog('twofactor')} /> : null}
             <Item icon="idcard" label={`Verify Identity${kyc.data?.status === 'approved' ? ' · verified' : kyc.data?.status === 'pending' ? ' · in review' : ''}`} onClick={() => openDialog('verify')} />
             <Item icon="gift" label="Referrals" href="/account" />
           </div>

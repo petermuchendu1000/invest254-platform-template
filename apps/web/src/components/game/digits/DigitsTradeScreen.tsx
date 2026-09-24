@@ -1,5 +1,6 @@
 'use client';
 
+import { FitText } from '@/components/ui/FitText';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { cn } from '@/lib/cn';
@@ -572,14 +573,6 @@ export function DigitsTradeScreen() {
           <span className="text-[10px] tabular-nums text-muted">Bal {amt.prefix}{amt.num(bal)}</span>
         </div>
 
-        {wallet?.mode === 'demo' ? (
-          <div role="note" className="flex items-center gap-2 rounded-xl border border-warn/40 bg-warn/10 px-3 py-1.5 text-[11px] leading-snug text-warn lg:items-start lg:py-2 lg:text-[12px]">
-            <span className="grid h-4 w-4 shrink-0 place-items-center rounded-full bg-warn text-[9px] font-bold text-black lg:mt-0.5">D</span>
-            {/* phone: one line, so the buy buttons stay above the fold */}
-            <span className="min-w-0 truncate lg:hidden"><b>Demo</b> · play money · results can differ from real play</span>
-            <span className="hidden lg:inline"><b>Demo account</b> — play money that can’t be withdrawn. Results can differ from real-money play.</span>
-          </div>
-        ) : null}
 
         {/* AUTO / MANUAL */}
         <div className="flex rounded-xl border border-border bg-bg/60 p-1">
@@ -730,20 +723,20 @@ export function DigitsTradeScreen() {
                   <span className={cn('grid h-10 w-10 shrink-0 place-items-center rounded-xl', isUp ? 'bg-up/20 text-up' : 'bg-down/20 text-down')}>
                     <DIcon name={isUp ? 'grid' : 'triangle'} className="h-5 w-5" />
                   </span>
-                  <span className={cn('flex-1 text-[19px] font-bold', isUp ? 'text-up' : 'text-down')}>{o.label}</span>
-                  <span className="text-right">
-                    <span className="block font-mono text-[13px] font-semibold tabular-nums text-fg">{amt.text(meta.ret)}</span>
+                  <span className={cn('shrink-0 text-[19px] font-bold', isUp ? 'text-up' : 'text-down')}>{o.label}</span>
+                  <span className="min-w-0 flex-1 text-right">
+                    <FitText minPx={10} className="font-mono text-[13px] font-semibold tabular-nums text-fg">{amt.text(meta.ret)}</FitText>
                     <span className={cn('block font-mono text-[15px] font-bold tabular-nums', isUp ? 'text-up' : 'text-down')}>{meta.profitPct.toFixed(2)}%</span>
                   </span>
                 </span>
                 {/* phone card */}
-                <span className="flex items-center justify-between px-3.5 py-3 lg:hidden">
-                  <span>
+                <span className="flex items-center justify-between gap-2 px-3.5 py-3 lg:hidden">
+                  <span className="shrink-0">
                     <span className={cn('block text-[17px] font-bold leading-tight', isUp ? 'text-up' : 'text-down')}>{o.label}</span>
                     <span className="block text-[11px] font-medium tabular-nums text-muted">{meta.profitPct.toFixed(2)}%</span>
                   </span>
-                  <span className="text-right">
-                    <span className="block font-mono text-[15px] font-bold tabular-nums text-fg">{amt.prefix}{amt.num(meta.ret)}</span>
+                  <span className="min-w-0 flex-1 text-right">
+                    <FitText minPx={10} className="font-mono text-[15px] font-bold tabular-nums text-fg">{`${amt.prefix}${amt.num(meta.ret)}`}</FitText>
                     <span className="block text-[11px] text-muted">Payout</span>
                   </span>
                 </span>
