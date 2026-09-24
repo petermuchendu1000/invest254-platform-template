@@ -52,7 +52,7 @@ export function getImpersonatingBrand(): ImpersonatedBrand | null {
 }
 
 /** Stash the platform token, activate the brand token, and enter the brand admin console. */
-export function startImpersonation(res: ImpersonateResult): void {
+export function startImpersonation(res: ImpersonateResult, next = '/admin'): void {
   const current = useSession.getState().token;
   let activeToken: string;
   try {
@@ -62,7 +62,8 @@ export function startImpersonation(res: ImpersonateResult): void {
     return;
   }
   useSession.getState().setToken(activeToken);
-  window.location.assign('/admin');
+  // UI-F: land on a specific back-office page (e.g. one player) — only ever inside /admin.
+  window.location.assign(/^\/admin(\/[\w\-/]*)?$/.test(next) ? next : '/admin');
 }
 
 /** Leave the brand: restore this tab's stashed console token; in a tab without a stash, exchange the

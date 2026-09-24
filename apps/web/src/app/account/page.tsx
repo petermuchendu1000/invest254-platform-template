@@ -1,5 +1,7 @@
 'use client';
 
+import { useAccountUi, useMyKyc } from '@/lib/account/accountUi';
+
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Skeleton } from '@/components/ui/Skeleton';
@@ -51,6 +53,9 @@ export default function AccountPage() {
       {/* Referral link + code, right under the username (item 3) — players and marketers only (UI-12) */}
       {mayEarn ? <ReferralInviteCard /> : null}
 
+      {/* ACCT-1: player security + identity (operators manage 2FA in the card below). */}
+      {user.role === 'player' || user.role === 'marketer' ? <PlayerSecurityCard /> : null}
+
       {/* Admin/operator security controls (2FA management) — hidden for players. */}
       <SecurityCard />
     </section>
@@ -63,5 +68,25 @@ function Row({ label, value }: { label: string; value: string }) {
       <span className="text-muted">{label}</span>
       <span className="font-medium text-fg">{value}</span>
     </div>
+  );
+}
+
+function PlayerSecurityCard() {
+  const open = useAccountUi((s) => s.open);
+  const kyc = useMyKyc();
+  const st = kyc.data?.status ?? 'none';
+  const label = st === 'approved' ? 'Verified' : st === 'pending' ? 'In review' : st === 'rejected' ? 'Not approved' : 'Not verified';
+  return (
+    <Card className="flex flex-col gap-3">
+      <h2 className="text-sm font-semibold text-fg">Security &amp; identity</h2>
+      <div className="flex items-center justify-between gap-3 text-sm">
+        <span className="text-muted">Two-factor authentication</span>
+        <Button variant="secondary" size="sm" onClick={() => open('twofactor')}>Manage</Button>
+      </div>
+      <div className="flex items-center justify-between gap-3 text-sm">
+        <span className="text-muted">Identity · <span className={st === 'approved' ? 'text-up' : st === 'rejected' ? 'text-down' : 'text-fg'}>{label}</span></span>
+        <Button variant="secondary" size="sm" onClick={() => open('verify')}>{st === 'approved' ? 'View' : 'Verify'}</Button>
+      </div>
+    </Card>
   );
 }

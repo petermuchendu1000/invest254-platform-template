@@ -84,6 +84,8 @@ export interface DigitHistoryRow {
   stakeCents: Cents; entryRate: number; exitRate: number | null; settleDigit: number | null;
   payoutCents: Cents | null; pnlCents: Cents | null; result: string | null; status: string;
   openedAtMs: number; settledAtMs: number | null;
+  /** DEMO-1: staked from the demo (play-money) account. */
+  demo?: boolean;
 }
 
 export interface GameRepository {
@@ -124,6 +126,8 @@ interface MemPos {
   siteId: string | null;
   exitRate: number | null; multiplier: number | null; payout: Cents | null; pnl: Cents | null;
   result: string | null; settledAtMs: number | null;
+  /** DEMO-1: the bucket debited at open (settlement routes by this, like positions.demo). */
+  demo?: boolean;
 }
 interface MemLedger {
   id: number; userId: string; type: string; amount: Cents; balanceKind: string;
@@ -148,6 +152,8 @@ export class InMemoryGameRepository implements GameRepository {
   private demo = new Map<string, Cents>();
   /** Marketer (demo) accounts — the repo is authoritative for money routing, exactly like the DB RPC. */
   private marketers = new Set<string>();
+  /** DEMO-1: players whose wallet is in demo mode (mirrors wallets.account_mode = 'demo'). */
+  private demoMode = new Set<string>();
   private positions = new Map<string, MemPos>();
   private contractMeta = new Map<string, { kind: string; contract: unknown }>();
   private days = new Map<string, MemDay>();
@@ -168,7 +174,10 @@ export class InMemoryGameRepository implements GameRepository {
   markMarketer(userId: string): void { this.marketers.add(userId); }
   /** Seed a marketer's non-withdrawable demo balance. */
   seedDemo(userId: string, amount: Cents): void { this.demo.set(userId, assertCents(amount)); this.pushLedger(userId, "seed", amount, "demo", null, "seed"); }
-  private isMarketer(userId: string): boolean { return this.marketers.has(userId); }
+  /** DEMO-1: switch a player's account mode (mirrors fn_set_account_mode; marketers are always demo). */
+  setDemoMode(userId: string, on: boolean): void { if (on) this.demoMode.add(userId); else this.demoMode.delete(userId); }
+  /** Demo bucket? Marketer OR wallet in demo mode (mirrors fn_account_is_demo, migration 0123). */
+  private isMarketer(userId: string): boolean { return this.marketers.has(userId) || this.demoMode.has(userId); }
   /** The account's spendable game balance: demo for marketers, real for players (mirrors getBalance SQL). */
   async getBalance(userId: string): Promise<Cents> {
     return (this.isMarketer(userId) ? this.demo.get(userId) : this.balances.get(userId)) ?? 0;
@@ -208,7 +217,7 @@ export class InMemoryGameRepository implements GameRepository {
       direction: a.direction, durationS: a.durationS, openedAtMs: a.openedAtMs,
       entryRate: a.entryRate, gameDayId: a.gameDayId, nonce: a.nonce,
       configVersion: a.configVersion ?? null, seq: ++this.posSeq, siteId: a.siteId ?? null,
-      exitRate: null, multiplier: null, payout: null, pnl: null, result: null, settledAtMs: null,
+      exitRate: null, multiplier: null, payout: null, pnl: null, result: null, settledAtMs: null, demo: marketer,
     });
     this.pushLedger(a.userId, "stake", -a.stakeCents, kind, "positions", id, null, a.siteId ?? null);
     return { positionId: id, newBalance: next };
@@ -230,7 +239,7 @@ export class InMemoryGameRepository implements GameRepository {
     p.exitRate = a.exitRate; p.multiplier = a.multiplier; p.payout = a.payoutCents;
     p.pnl = a.payoutCents - p.stake; p.result = a.result; p.settledAtMs = this.now();
     // Marketer payouts credit the demo bucket ONLY — a demo win can never become real cash (migration 0084).
-    const marketer = this.isMarketer(p.userId);
+    const marketer = p.demo ?? this.isMarketer(p.userId); // route by the bucket stored at open (0123)
     const book = marketer ? this.demo : this.balances;
     const kind = marketer ? "demo" : "real";
     let bal = book.get(p.userId) ?? 0;
@@ -375,13 +384,14 @@ export class PgGameRepository implements GameRepository {
     // Spendable game balance: the demo bucket for marketer/demo accounts, real_balance otherwise
     // (migration 0084). fn_is_marketer_account is the one canonical predicate, shared with the money RPCs.
     const r = await this.q.query(
-      "select case when fn_is_marketer_account(user_id) then demo_balance else real_balance end as bal from wallets where user_id = $1",
+      // DEMO-1: demo bucket for marketers AND players in demo mode (fn_account_is_demo, migration 0123).
+      "select case when fn_is_marketer_account(user_id) or account_mode = 'demo' then demo_balance else real_balance end as bal from wallets where user_id = $1",
       [userId]);
     return r.rows.length ? toCents(r.rows[0].bal) : 0;
   }
   async getWalletSnapshot(userId: string): Promise<WalletSnapshot> {
     const r = await this.q.query(
-      "select real_balance, bonus_balance, demo_balance, currency, fn_is_marketer_account(user_id) as is_marketer from wallets where user_id = $1",
+      "select real_balance, bonus_balance, demo_balance, currency, (fn_is_marketer_account(user_id) or account_mode = 'demo') as is_marketer from wallets where user_id = $1",
       [userId],
     );
     if (!r.rows.length) return { real: 0, bonus: 0, currency: "KES" };
@@ -389,7 +399,8 @@ export class PgGameRepository implements GameRepository {
     // Marketer/demo accounts spend the demo bucket; surface it as `real` so the client shows the
     // one spendable game balance (migration 0084). Their real_balance is 0 and non-withdrawable anyway.
     const spendable = row.is_marketer === true ? toCents(row.demo_balance) : toCents(row.real_balance);
-    return { real: spendable, bonus: toCents(row.bonus_balance), currency: (row.currency as string) ?? "KES" };
+    // DEMO-1: in demo mode the bonus bucket is not spendable (demo stakes never touch it).
+    return { real: spendable, bonus: row.is_marketer === true ? 0 : toCents(row.bonus_balance), currency: (row.currency as string) ?? "KES" };
   }
   async openPosition(a: OpenArgs): Promise<OpenResult> {
     // matches migration 0047: fn_open_position(user,stake,direction,entry_rate,duration_s,game_day,nonce,opened_at,config_version,site_id)
@@ -490,7 +501,7 @@ export class PgGameRepository implements GameRepository {
     const limit = clampLimit(q.limit);
     const cur = decodeKeyset(q.cursor);
     const r = await this.q.query(
-      `select id, stake, entry_rate, exit_rate, payout, pnl, result, status, opened_at, settled_at, contract
+      `select id, stake, entry_rate, exit_rate, payout, pnl, result, status, opened_at, settled_at, contract, demo
          from positions
         where user_id = $1 and kind = 'digit'
           and ($4::uuid is null or site_id = $4)
@@ -503,7 +514,7 @@ export class PgGameRepository implements GameRepository {
       stake: toCents(x.stake), entryRate: Number(x.entry_rate), exitRate: x.exit_rate == null ? null : Number(x.exit_rate),
       payout: x.payout == null ? null : toCents(x.payout), pnl: x.pnl == null ? null : toCents(x.pnl),
       result: x.result ?? null, status: String(x.status), openedAtMs: toMs(x.opened_at),
-      settledAtMs: x.settled_at ? toMs(x.settled_at) : null,
+      settledAtMs: x.settled_at ? toMs(x.settled_at) : null, demo: x.demo === true,
     }));
     return pageFrom(rows, limit, (d) => encodeKeysetToken(d.openedAtMs, d.id));
   }
@@ -550,7 +561,7 @@ function encodeKeysetToken(tsMs: number, id: string | number): string { return `
 /** Build a DigitHistoryRow from a position's stored fields + its `contract` params. The settled digit
  *  is the last pip of the (persisted) exit spot, so it is correct for BOTH the pool and statistical
  *  paths without any extra column. */
-function digitRow(o: { id: string; contract: Record<string, unknown>; stake: Cents; entryRate: number; exitRate: number | null; payout: Cents | null; pnl: Cents | null; result: string | null; status: string; openedAtMs: number; settledAtMs: number | null }): DigitHistoryRow {
+function digitRow(o: { id: string; contract: Record<string, unknown>; stake: Cents; entryRate: number; exitRate: number | null; payout: Cents | null; pnl: Cents | null; result: string | null; status: string; openedAtMs: number; settledAtMs: number | null; demo?: boolean }): DigitHistoryRow {
   const num = (v: unknown): number | null => (typeof v === "number" ? v : typeof v === "string" && v.trim() !== "" ? Number(v) : null);
   return {
     id: o.id,
@@ -562,6 +573,6 @@ function digitRow(o: { id: string; contract: Record<string, unknown>; stake: Cen
     stakeCents: o.stake, entryRate: o.entryRate, exitRate: o.exitRate,
     settleDigit: o.exitRate == null ? null : lastDigit(o.exitRate),
     payoutCents: o.payout, pnlCents: o.pnl, result: o.result, status: o.status,
-    openedAtMs: o.openedAtMs, settledAtMs: o.settledAtMs,
+    openedAtMs: o.openedAtMs, settledAtMs: o.settledAtMs, demo: o.demo === true,
   };
 }

@@ -233,6 +233,13 @@ export function AuthModal() {
     };
   }, [open, isReset, phone, brand.slug]);
 
+  // ACCT-1: second step for accounts with two-factor authentication. Declared before the early
+  // return below: hooks must run on every render (BUGLOG #79).
+  const [needsCode, setNeedsCode] = useState(false);
+  const [useRecovery, setUseRecovery] = useState(false);
+  const [code, setCode] = useState('');
+  useEffect(() => { if (!open || mode !== 'login') { setNeedsCode(false); setUseRecovery(false); setCode(''); } }, [open, mode]);
+
   const copy = useMemo(() => {
     if (isReset) return { title: 'Reset password', sub: 'Set a new password for your account.', cta: 'Update password' };
     if (isRegister) return { title: 'Create account', sub: 'Start trading in under a minute.', cta: 'Create account' };
@@ -289,11 +296,15 @@ export function AuthModal() {
           /* ignore */
         }
       } else {
-        await login(phone, password);
+        await login(phone, password, needsCode ? (useRecovery ? { recoveryCode: code.trim() } : { totp: code.trim() }) : undefined);
       }
       close();
       if (resumeAfterAuth) resumeDeposit();
     } catch (err) {
+      // ACCT-1: an account with two-factor turned on asks for its code after the password.
+      const code2 = (err as { code?: string })?.code;
+      if (!isRegister && !isReset && code2 === 'MFA_REQUIRED') { setNeedsCode(true); setServerError(null); return; }
+      if (code2 === 'MFA_INVALID') { setServerError(useRecovery ? 'That recovery code is not valid.' : 'That code is wrong or expired. Try the newest code in your app.'); return; }
       setServerError(authErrorMessage(err));
     } finally {
       setBusy(false);
@@ -512,6 +523,25 @@ export function AuthModal() {
             </svg>
             <span>{serverError}</span>
           </p>
+        ) : null}
+
+        {needsCode && !isRegister && !isReset ? (
+          <div className="flex flex-col gap-1.5 rounded-xl border border-accent/40 bg-accent/5 p-3">
+            <Input
+              label={useRecovery ? 'Recovery code' : 'Authentication code'}
+              name="totp"
+              inputMode={useRecovery ? 'text' : 'numeric'}
+              autoComplete="one-time-code"
+              autoFocus
+              placeholder={useRecovery ? 'XXXX-XXXX' : '123456'}
+              value={code}
+              onChange={(e) => setCode(useRecovery ? e.target.value.slice(0, 32) : e.target.value.replace(/[^0-9]/g, '').slice(0, 6))}
+            />
+            <p className="text-xs text-muted">{useRecovery ? 'Use one of the recovery codes you saved when you turned on two-factor.' : 'Two-factor is on for this account. Enter the 6-digit code from your authenticator app.'}</p>
+            <button type="button" onClick={() => { setUseRecovery((v) => !v); setCode(''); }} className="self-start text-xs font-medium text-accent hover:underline">
+              {useRecovery ? 'Use the app code instead' : 'Lost your phone? Use a recovery code'}
+            </button>
+          </div>
         ) : null}
 
         <Button type="submit" size="lg" fullWidth disabled={busy} className="mt-1 font-semibold">

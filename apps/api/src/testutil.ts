@@ -1,3 +1,5 @@
+import { InMemoryLiveChatStore } from "./app.livechat.js";
+import { InMemoryKycStore } from "./app.kyc.js";
 import type { AddressInfo } from "node:net";
 import { DEFAULT_CONFIG, normalizeHost, type Cents } from "@invest254/shared";
 import {
@@ -6,7 +8,7 @@ import {
   SubscriptionService, InMemorySubscriptionRepository, TicketService, InMemoryTicketRepository,
   NotificationService, InMemoryNotificationRepository,
   PushService, InMemoryPushSubscriptionRepository,
-  PaymentScopeService, InMemoryPaymentScopeRepository,
+  PaymentScopeService, InMemoryPaymentScopeRepository, BillingService, InMemoryBillingRepository,
   type PushSubscriptionRow, type PushSendResult, type WithdrawalRequestedEvent,
   type FairnessRecord, type AuthClaims, type Verifier,
 } from "@invest254/engine";
@@ -612,6 +614,16 @@ export async function startTestApi(opts: TestApiOptions = {}): Promise<TestApi> 
     async decideRequest(_a, _r, id, decision) { return { id, status: `${decision}d` }; },
     async grant(_a, _r, site, category, key) { return { site_id: site, category, key, entitled: true }; },
     async revoke(_a, _r, site, category, key) { return { site_id: site, category, key, entitled: false }; },
+    // ADDON-1 (scope/rules proven by e2e_addon_marketplace.py): no request is seeded here, so a cancel of
+    // an unknown id is refused like the RPC does.
+    async update(_a, role, category, key, patch) { if (role !== "platform_superadmin") throw new Error("NOT_AUTHORIZED"); return { category, key, ...patch }; },
+    async cancelRequest() { throw new Error("REQUEST_NOT_FOUND"); },
+    async activate(_a, _r, site, category, key) {
+      if (category !== "chart" && category !== "trade_ui") throw new Error("NOT_SWITCHABLE");
+      if (key !== "line" && key !== "classic") throw new Error("NOT_ENTITLED");
+      return { site_id: site, category, key, active: true };
+    },
+    async brands() { return []; },
   };
 
   const referralRepo = makeInMemoryReferralRepo();
@@ -722,6 +734,9 @@ export async function startTestApi(opts: TestApiOptions = {}): Promise<TestApi> 
     positionDetail: (userId, id, siteId) => gameRepo.getPositionDetail(userId, id, siteId),
     transactions: (userId, q, siteId) => payRepo.listTransactions(userId, q, siteId),
     support: support.deps,
+    // CHAT-1 / ACCT-1: in-memory live chat + identity verification (so the F-44 matrix attacks their routes).
+    liveChat: { store: new InMemoryLiveChatStore(), mediaSecret: "test-media" },
+    kyc: { store: new InMemoryKycStore(), mediaSecret: "test-media" },
     platformOnboard: onboardDeps,
     registrarConfig,
     addons,
@@ -729,6 +744,8 @@ export async function startTestApi(opts: TestApiOptions = {}): Promise<TestApi> 
     paymentScopes: new PaymentScopeService(new InMemoryPaymentScopeRepository(), {
       callbacks: async () => ({ stkCallbackUrl: "", b2cResultUrl: "", b2cTimeoutUrl: "" }),
     }),
+    // BILL-1: scope-enforcing in-memory billing (money logic is proven against Postgres).
+    billing: new BillingService(new InMemoryBillingRepository(), { daraja: () => new StubDarajaClient() }),
     ...opts.depsOverrides,
   };
 

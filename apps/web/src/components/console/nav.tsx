@@ -17,6 +17,8 @@ export interface NavItem {
   cap?: Capability;
   /** Hint shown in the command palette. */
   hint?: string;
+  /** CHAT-1: show a live count next to the label ('chat' = unread player chats). */
+  badge?: 'chat';
 }
 export interface NavGroup { id: string; label?: string; items: NavItem[] }
 
@@ -56,10 +58,11 @@ export function brandAdminNav(role: string | null | undefined): NavGroup[] {
     ] },
     { id: 'players', label: 'Players', items: [
       { href: '/admin/users', label: 'Users', icon: Icons.users, hint: 'Players, marketers and staff' },
+      { href: '/admin/identity', label: 'Identity checks', icon: Icons.identity, hint: 'Review ID documents' },
       { href: '/admin/announcements', label: 'Announcements', icon: Icons.announcements, hint: 'Notify players' },
     ] },
     { id: 'support', label: 'Support', items: [
-      { href: '/admin/support', label: 'Player chats', icon: Icons.chats, hint: 'Conversations from players' },
+      { href: '/admin/support', label: 'Player chats', icon: Icons.chats, hint: 'Conversations from players', badge: 'chat' },
       { href: '/admin/tickets', label: 'Platform tickets', icon: Icons.tickets, hint: 'Ask your platform for help' },
     ] },
     { id: 'brand', label: 'Brand', items: [
@@ -82,14 +85,15 @@ export function consoleNav(isSystem: boolean): NavGroup[] {
   const registrar: NavItem = { href: '/platform/registrar', label: 'Domain registrar', icon: Icons.registrar, hint: 'Namecheap connection' };
   const accounts: NavItem = { href: '/platform/payment-accounts', label: 'Payment accounts', icon: Icons.accounts, hint: 'Your own M-Pesa and gateway accounts' };
   const pool: NavItem = { href: '/platform/pool', label: 'Withdrawal pool', icon: Icons.pool, hint: 'Daily payout budget per brand' };
-  const billing: NavItem = { href: '/platform/billing', label: 'Billing', icon: Icons.billing, hint: 'Plans and subscriptions' };
+  const billing: NavItem = { href: '/platform/billing', label: 'Billing', icon: Icons.billing, hint: 'Invoices, plans and payments' };
   if (!isSystem) {
     return [
       { id: 'home', items: [overview, tickets] },
-      { id: 'brands', label: 'Brands', items: [onboard, registrar] },
+      { id: 'brands', label: 'Brands', items: [onboard, registrar,
+        { href: '/platform/addons', label: 'Add-ons', icon: Icons.addons, hint: 'Charts, trade screens and gateways for your brands' }] },
       { id: 'money', label: 'Money', items: [accounts, pool] },
       { id: 'oversight', label: 'Oversight', items: [
-        { href: '/platform/activity', label: 'Audit log', icon: Icons.audit, hint: 'Who did what, on which brand' },
+        { href: '/platform/audit', label: 'Audit log', icon: Icons.audit, hint: 'Who did what, on which brand' },
       ] },
       { id: 'account', label: 'Account', items: [billing] },
     ];
@@ -104,13 +108,12 @@ export function consoleNav(isSystem: boolean): NavGroup[] {
     ] },
     { id: 'money', label: 'Money', items: [
       accounts,
-      { href: '/platform/payments', label: 'Gateways', icon: Icons.gateways, hint: 'Gateway catalogue and credentials' },
-      { href: '/platform/mpesa', label: 'M-Pesa defaults', icon: Icons.mpesa, hint: 'The System M-Pesa account' },
+      { href: '/platform/payments', label: 'Gateways', icon: Icons.gateways, hint: 'M-Pesa and every gateway: set-up and who is offered it', also: (p: string) => p.startsWith('/platform/mpesa') },
       pool,
     ] },
     { id: 'commercial', label: 'Commercial', items: [
       billing,
-      { href: '/platform/addons', label: 'Add-ons & requests', icon: Icons.addons, hint: 'Prices and brand requests' },
+      { href: '/platform/addons', label: 'Add-ons', icon: Icons.addons, hint: 'Catalog, prices and brand requests' },
     ] },
     { id: 'system', label: 'System', items: [
       { href: '/platform/config', label: 'Controls & economy', icon: Icons.controls, hint: 'Kill switches, economy, limits' },

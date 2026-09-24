@@ -937,11 +937,14 @@ export class PgAdminRepository implements AdminRepository {
       `select a.id, a.actor_id, a.actor_role, pa.username as actor_username, a.action, a.target_type, a.target_id,
               a.detail, a.created_at, a.site_id, s.name as site_name
          from admin_actions a
-         join sites s on s.id = a.site_id
+         left join sites s on s.id = a.site_id
          left join profiles pa on pa.id = a.actor_id
         -- PAGE-1: compare with the cursor row's EXACT time (the cursor carries only milliseconds).
         where ($1::timestamptz is null or (a.created_at, a.id) < (coalesce((select k.created_at from admin_actions k where k.id = $2::bigint), $1::timestamptz), $2::bigint))
-          and ($4::uuid is null or s.platform_id = $4::uuid)
+          -- UI-F (one audit log): platform-level actions (no brand) are included — for a platform, only those
+          -- that target the platform itself (plan, billing, pool settings); with no platform (owner), all of them.
+          and ($4::uuid is null or s.platform_id = $4::uuid
+               or (a.site_id is null and a.target_type = 'platform' and a.target_id = $4::text))
           and ($5::uuid is null or a.site_id = $5::uuid)
         order by a.created_at desc, a.id desc
         limit $3`,

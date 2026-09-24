@@ -1,7 +1,7 @@
 'use client';
 
 import { PageTabs, useTabParam } from '@/components/admin/Tabs';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { formatKes, kesToCents } from '@invest254/shared/money';
 import { PageHeader, Section, TableWrap, Th, Td, Toolbar, FilterSelect, Empty, PasswordConfirmButton } from '@/components/admin/ui';
 import { Button } from '@/components/ui/Button';
@@ -200,6 +200,11 @@ function Expenses() {
   const marketersQ = useMarketers();
   const marketers = marketersQ.data ?? [];
   const [marketerId, setMarketerId] = useState('');
+  // UI-F: a marketer's user page links here with ?marketer=<id> so expenses have one home.
+  useEffect(() => {
+    const m = new URLSearchParams(window.location.search).get('marketer');
+    if (m) setMarketerId(m);
+  }, []);
   const expenses = useMarketerExpenses(marketerId);
   const add = useAddMarketerExpense(marketerId);
   const [category, setCategory] = useState('advance');

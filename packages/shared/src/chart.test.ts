@@ -83,3 +83,14 @@ test("bollinger: mid is the SMA, bands are symmetric around it", () => {
   assert.ok(last.upper > last.mid && last.lower < last.mid);
   assert.ok(Math.abs((last.upper - last.mid) - (last.mid - last.lower)) < 1e-9);
 });
+
+test("ADDON-1: every sold chart system reaches the player, and unknown values fall back to the free line", async () => {
+  const { chartStyleOf, tradingViewTypeOf } = await import("./chart.js");
+  assert.equal(chartStyleOf("area"), "area");
+  assert.equal(chartStyleOf("bars"), "bars");
+  assert.equal(chartStyleOf("baseline"), "baseline");
+  assert.equal(chartStyleOf("candlestick"), "candlestick");
+  assert.equal(chartStyleOf("hologram"), "line");
+  assert.equal(chartStyleOf(null), "line");
+  assert.deepEqual(["line", "area", "candlestick", "bars", "baseline"].map((s) => tradingViewTypeOf(chartStyleOf(s))), [null, "area", "candles", "bars", "baseline"]);
+});

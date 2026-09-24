@@ -96,7 +96,7 @@ export default function PlatformsPage() {
         subtitle="Each platform groups brands under one platform admin, who sees only its own brands."
         actions={
           <div className="flex gap-2">
-            <Button variant="outline" onClick={() => setAssignOpen(true)}>Re-parent a site</Button>
+            <Button variant="outline" onClick={() => setAssignOpen(true)}>Move a brand</Button>
             <Button variant="outline" onClick={() => setAdminsOpen(true)}>Platform admins</Button>
             <Button onClick={() => setCreateOpen(true)}>New platform</Button>
           </div>
@@ -105,7 +105,7 @@ export default function PlatformsPage() {
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <StatCard label="Platforms" value={overview.length} />
-        <StatCard label="Sites (all platforms)" value={totalSites} />
+        <StatCard label="Brands (all platforms)" value={totalSites} />
         <StatCard label="Platform admins" value={totalPlatformAdmins} tone={totalPlatformAdmins > 0 ? 'up' : 'default'} />
       </div>
 
@@ -119,7 +119,7 @@ export default function PlatformsPage() {
             <table className="w-full text-sm">
               <thead>
                 <tr>
-                  <Th>Platform</Th><Th>Status</Th><Th className="text-right">Sites</Th>
+                  <Th>Platform</Th><Th>Status</Th><Th className="text-right">Brands</Th>
                   <Th className="text-right">Users</Th><Th className="text-right">Brand admins</Th>
                   <Th className="text-right">Platform admins</Th><Th className="text-right">Actions</Th>
                 </tr>
@@ -180,11 +180,11 @@ export default function PlatformsPage() {
         <div className="flex flex-col gap-4">
           <Input label="Name" value={editName} onChange={(e) => setEditName(e.target.value)} />
           <Select label="Status" value={editStatus} onChange={(e) => setEditStatus(e.target.value)}>
-            <option value="active">active</option>
-            <option value="suspended">suspended</option>
-            <option value="archived">archived</option>
+            <option value="active">Active</option>
+            {editStatus === 'suspended' ? <option value="suspended">Flagged for review</option> : null}
+            <option value="archived">Archived</option>
           </Select>
-          <p className="text-xs text-muted">Suspending a platform is a scope-wide action — its brands stay live but the platform is flagged for review.</p>
+          <p className="text-xs text-muted">Archiving hides the platform from the console. To stop a platform&apos;s brands for non-payment, change its subscription on <Link className="text-accent hover:underline" href="/platform/billing?tab=subscriptions">Billing</Link>.</p>
         </div>
       </Modal>
 
@@ -197,19 +197,19 @@ export default function PlatformsPage() {
       <Modal
         open={assignOpen}
         onClose={() => setAssignOpen(false)}
-        title="Re-parent a site"
+        title="Move a brand to another platform"
         chrome
         footer={
           <>
             <Button variant="outline" onClick={() => setAssignOpen(false)}>Cancel</Button>
-            <Button onClick={assign} disabled={assignMut.isPending}>Re-parent</Button>
+            <Button onClick={assign} disabled={assignMut.isPending}>Move brand</Button>
           </>
         }
       >
         <div className="flex flex-col gap-4">
           <p className="text-xs text-muted">Move a brand into a platform. Its data moves with it — the platform's admin will then see it, and other platforms will not.</p>
-          <Select label="Site" value={assignSiteId} onChange={(e) => setAssignSiteId(e.target.value)}>
-            <option value="">Select a site…</option>
+          <Select label="Brand" value={assignSiteId} onChange={(e) => setAssignSiteId(e.target.value)}>
+            <option value="">Select a brand…</option>
             {sites.map((s) => <option key={s.siteId} value={s.siteId}>{s.name} ({s.slug})</option>)}
           </Select>
           <Select label="Platform" value={assignPlatformId} onChange={(e) => setAssignPlatformId(e.target.value)}>
@@ -219,7 +219,7 @@ export default function PlatformsPage() {
         </div>
       </Modal>
 
-      <p className="text-xs text-muted">Isolation is enforced in the database (RLS + SECURITY DEFINER RPCs) and the API — see <Link className="underline" href="/platform">Overview</Link>. Design: docs/38.</p>
+      <p className="text-xs text-muted">A platform admin only ever sees the brands of its own platform.</p>
     </div>
   );
 }

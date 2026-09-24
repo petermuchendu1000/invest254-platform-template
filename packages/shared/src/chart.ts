@@ -122,3 +122,18 @@ export function bollinger(
   }
   return out;
 }
+
+/**
+ * ADDON-1: the sellable price-chart systems (sites.chart_style, 0147). Every value except `line` renders on the
+ * TradingView engine with that series type; `line` is the lightweight canvas curve. Unknown values fall back to
+ * `line` (the free default), never to a paid system.
+ */
+export const CHART_STYLES = ["line", "area", "candlestick", "bars", "baseline"] as const;
+export type ChartStyle = (typeof CHART_STYLES)[number];
+export function chartStyleOf(v: unknown): ChartStyle {
+  return (CHART_STYLES as readonly unknown[]).includes(v) ? (v as ChartStyle) : "line";
+}
+/** The TradingView series a chart system opens with (null = the canvas line curve). */
+export function tradingViewTypeOf(style: ChartStyle): "candles" | "bars" | "area" | "baseline" | null {
+  return style === "candlestick" ? "candles" : style === "line" ? null : style;
+}

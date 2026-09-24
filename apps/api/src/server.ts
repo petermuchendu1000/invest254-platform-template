@@ -1,3 +1,4 @@
+import { createHash, randomBytes } from "node:crypto";
 import {
   PgGameRepository, PgEngagementRepository, PgPaymentRepository, PgIdentityRepository,
   PaymentService, AuthService, AffiliateService, AdminService, PgAdminRepository, PlatformService, PgPlatformRepository, DarajaConfigStore, makeVerifier,
@@ -9,13 +10,16 @@ import {
   ConfiguredMegaPayClient,
   ConfiguredPayHeroClient,
   PaymentScopeService, PgPaymentScopeRepository, loadDarajaConfigFromDb, type GlobalCallbacks,
-  C2bConfigService, PgC2bConfigRepository, systemDarajaCredentials, PoolOpsService, PgPoolOpsRepository,
+  C2bConfigService, PgC2bConfigRepository, systemDarajaCredentials, PoolOpsService, PgPoolOpsRepository, BillingService, PgBillingRepository,
   verifyPassword,
   type GameRepository, type EngagementRepository, type PaymentRepository,
   type Querier, type FairnessRecord, type ListenClient,
 } from "@invest254/engine";
+import { makeWalletModeDeps } from "./demo.pg.js";
+import { makePgLiveChatStore } from "./livechat.pg.js";
+import { makePgKycStore } from "./kyc.pg.js";
 import { createApp, type ApiDeps, type WalletBalance, type BonusStatus, type Brand } from "./app.js";
-import { normalizeHost, PlatformGate, enforcedValue, createLogger, effectiveMinWithdrawalCents, type VersionedGameConfig, type Cents } from "@invest254/shared";
+import { normalizeHost, PlatformGate, enforcedValue, createLogger, effectiveMinWithdrawalCents, chartStyleOf, type VersionedGameConfig, type Cents } from "@invest254/shared";
 import { BrandOriginAllowlist } from "./cors.js";
 import { makePgMarketerRepo } from "./marketers.pg.js";
 import { makePgReferralRepo } from "./referral.pg.js";
@@ -115,6 +119,19 @@ async function buildDeps(): Promise<ApiDeps> {
     const t = setInterval(prune, LOG_PRUNE_MS); t.unref();
     setTimeout(prune, 60_000).unref();
   }
+  // CHAT-1 / ACCT-1 retention: chat attachments older than CHAT_MEDIA_RETENTION_DAYS (default 90) and
+  // identity uploads never used in a submission (older than two days). Runs every 6 h; non-fatal.
+  const CHAT_KEEP_DAYS = Number(process.env.CHAT_MEDIA_RETENTION_DAYS ?? 90);
+  const pruneMedia = (): void => {
+    if (Number.isFinite(CHAT_KEEP_DAYS) && CHAT_KEEP_DAYS > 0) {
+      void q.query("select public.fn_chat_prune_attachments($1) as n", [CHAT_KEEP_DAYS])
+        .then((r: { rows?: Array<{ n?: number }> }) => { const n = Number(r.rows?.[0]?.n ?? 0); if (n > 0) dbLog.info("chat attachments pruned", { pruned: n, keepDays: CHAT_KEEP_DAYS }); })
+        .catch(() => { /* non-fatal (e.g. migration not yet applied) */ });
+    }
+    void q.query("select public.fn_kyc_prune_uploads() as n", []).catch(() => { /* non-fatal */ });
+  };
+  setInterval(pruneMedia, 6 * 60 * 60 * 1000).unref();
+  setTimeout(pruneMedia, 90_000).unref();
 
   // Live game configuration for the public GET /game/config. Same store the WS engine uses,
   // so the limits the browser validates against are the limits the engine enforces.
@@ -154,6 +171,10 @@ async function buildDeps(): Promise<ApiDeps> {
   // the superadmin switches it on (payment_providers), so this client stays dormant until then.
   // Platform service (also drives the encrypted gateway-config store, migration 0130). Constructed
   // here (not later) so the Mega Pay client can layer superadmin-saved DB config OVER env at deposit time.
+  // CHAT-1 / ACCT-1: signed file links use a key derived from an existing server secret (no new secret);
+  // a random per-process key is the dev fallback.
+  const chatMediaSecret = createHash("sha256").update(`chat-media:${process.env.SUPABASE_JWT_SECRET ?? process.env.PAYMENTS_CONFIG_ENC_KEY ?? randomBytes(32).toString("hex")}`).digest("hex");
+  const walletMode = makeWalletModeDeps(q);
   const platform = new PlatformService(new PgPlatformRepository(q));
   const subscriptions = new SubscriptionService(new PgSubscriptionRepository(q));
   const tickets = new TicketService(new PgTicketRepository(q));
@@ -864,7 +885,7 @@ async function buildDeps(): Promise<ApiDeps> {
       if (!h) return null;
       const r = await q.query(
         `select id, slug, name, wordmark_text, logo_url, favicon_url, color_primary, color_bg,
-                color_accent, theme, currency, locale, chart_style, trade_ui, licence_line, support_email, theme_tokens
+                color_accent, theme, currency, locale, chart_style, trade_ui, licence_line, support_email, support_whatsapp, theme_tokens
            from sites
           where status = 'active'
             and (lower(slug) = $1
@@ -888,11 +909,12 @@ async function buildDeps(): Promise<ApiDeps> {
         colorPrimary: String(x.color_primary), colorBg: String(x.color_bg), colorAccent: String(x.color_accent),
         theme: String(x.theme) as "dark" | "light" | "auto",
         currency, locale: String(x.locale),
-        chartStyle: (x.chart_style === "candlestick" ? "candlestick" : "line"),
+        chartStyle: chartStyleOf(x.chart_style),   // ADDON-1: area / bars / baseline reach players (were coerced to "line")
         tradeUi: (x.trade_ui === "digits" ? "digits" : "classic"),
         fxRateFromKes,
         licenceLine: (x.licence_line as string | null) ?? null,
         supportEmail: (x.support_email as string | null) ?? null,
+        supportWhatsapp: (x.support_whatsapp as string | null) ?? null,
         themeTokens: (x.theme_tokens as Record<string, string> | null) ?? null,
       };
     },
@@ -915,15 +937,9 @@ async function buildDeps(): Promise<ApiDeps> {
       // ['wallet'] — e.g. the invalidation fired by a withdrawal — then clobbered the live balance
       // with 0 until a full refresh re-seeded it from the socket. Surfacing demo as `real` here
       // makes the REST wallet authoritative and consistent with the socket.
-      const r = await q.query(
-        `select case when fn_is_marketer_account(user_id) then demo_balance else real_balance end as real_balance,
-                bonus_balance, currency
-           from wallets where user_id = $1 and ($2::uuid is null or site_id = $2)`,
-        [userId, siteId ?? null]);
+      // DEMO-1: a player in demo mode (0123) spends the demo bucket too; every bucket is returned.
+      const base: WalletBalance = await walletMode.balances(userId, siteId);
       const toCents = (v: unknown): number => (typeof v === "string" ? Number(v) : (v as number)) || 0;
-      const base = !r.rows.length
-        ? { real: 0, bonus: 0, currency: "KES" }
-        : { real: toCents(r.rows[0].real_balance), bonus: toCents(r.rows[0].bonus_balance), currency: String(r.rows[0].currency ?? "KES") };
       // Active deposit bonuses with wagering progress (migration 0037). Fail-open: if the
       // RPC is not yet deployed the wallet still returns balances without bonus detail.
       try {
@@ -941,6 +957,9 @@ async function buildDeps(): Promise<ApiDeps> {
         return base;
       }
     },
+    // DEMO-1: switch accounts / refresh demo (demo.pg.ts; refused while a contract is open).
+    setAccountMode: walletMode.setMode,
+    topupDemo: walletMode.topupDemo,
     ledger: (userId, qy, siteId) => repo.listLedger(userId, qy, siteId),
     positions: (userId, qy, siteId) => repo.listPositions(userId, qy, siteId),
     digitHistory: (userId, qy, siteId) => repo.listDigitHistory(userId, qy, siteId),
@@ -949,12 +968,26 @@ async function buildDeps(): Promise<ApiDeps> {
     // Support chat (docs/11, migration 0057): enabled only when the free embedder + LLM creds
     // are configured; otherwise the /support routes stay unregistered (unchanged behaviour).
     ...(support ? { support } : {}),
+    // CHAT-1 (0167): human live chat. Media links are signed with a key derived from an existing
+    // server secret (no new secret to manage); a random per-process key is the dev fallback.
+    kyc: { store: makePgKycStore(q), mediaSecret: chatMediaSecret },
+    liveChat: {
+      store: makePgLiveChatStore(q),
+      mediaSecret: chatMediaSecret,
+    },
     platformOnboard,
     registrarConfig,
     paymentScopes,
     // PAY-2 (docs/45): Pay Bill settings + Safaricom C2B URL registration with the System Daraja app.
     c2b: new C2bConfigService(new PgC2bConfigRepository(q), { darajaConfig: systemDarajaCredentials(q) }),
     poolOps: new PoolOpsService(new PgPoolOpsRepository(q), platform),
+    // BILL-1 (docs/47): invoices + Pay now. Money always goes to the SYSTEM Daraja account (the live-reloaded
+    // store), and every result is verified with STKPushQuery before an invoice is marked paid.
+    billing: new BillingService(new PgBillingRepository(q), {
+      daraja: () => daraja,
+      verify: process.env.BILLING_VERIFY_STK !== "false",
+      log: (m: string) => log.warn(m),
+    }),
     addons,
   };
 }
@@ -1001,4 +1034,18 @@ if (Number.isFinite(RECONCILE_MS) && RECONCILE_MS > 0) {
       .catch((err: unknown) => recLog.error("payhero reconcile sweep failed", err as Error));
   }, RECONCILE_MS);
   payheroTimer.unref();
+}
+
+// BILL-1: settle invoice Pay-now payments whose STK callback never arrived (Safaricom's STKPushQuery decides),
+// and close reservations that never reached Safaricom. Every 2 minutes; 0 disables.
+const BILLING_RECONCILE_MS = Number(process.env.BILLING_RECONCILE_INTERVAL_MS ?? 120_000);
+if (deps.billing && Number.isFinite(BILLING_RECONCILE_MS) && BILLING_RECONCILE_MS > 0) {
+  const billing = deps.billing;
+  const billLog = (deps.logger ?? log).child({ module: "billing.reconcile" });
+  const billTimer = setInterval(() => {
+    void billing.reconcile()
+      .then((r) => { if (r.settled || r.errors) billLog.info("billing reconcile sweep", r); })
+      .catch((err: unknown) => billLog.error("billing reconcile sweep failed", err as Error));
+  }, BILLING_RECONCILE_MS);
+  billTimer.unref();
 }

@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { PageHeader, StatCard, Section, TableWrap, Th, Td } from '@/components/admin/ui';
+import { PageHeader, Section } from '@/components/admin/ui';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
@@ -10,7 +10,6 @@ import { useGlobalConfig, useSetGlobalConfig, usePlatformSites } from '@/lib/pla
 import type { GlobalConfigDto } from '@/lib/platform/endpoints';
 import Link from 'next/link';
 import { CohortEconomySection, PaymentsEconomySection } from '@/components/platform/GlobalEconomy';
-import { formatDateTime } from '@/lib/format';
 import { formatKes } from '@invest254/shared/money';
 
 const money = (cents: number, _cur = 'KES') => formatKes(cents);
@@ -102,7 +101,7 @@ export default function GlobalConfigPage() {
       {/* ── Maintenance banner ── */}
       <Section title="Maintenance banner">
         <Card className="flex flex-col gap-3">
-          <p className="text-xs text-muted">Shown to every brand&apos;s users (via <code>/config</code>). Leave empty to clear.</p>
+          <p className="text-xs text-muted">Shown to every player of every brand. Leave empty to remove it.</p>
           <Input
             value={bannerValue}
             onChange={(e) => setBannerDraft(e.target.value)}

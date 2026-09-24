@@ -46,7 +46,11 @@ export interface HandlerResult { status?: number; body: unknown; }
 export type Handler = (ctx: Ctx) => Promise<HandlerResult | unknown> | HandlerResult | unknown;
 export type Middleware = (ctx: Ctx) => Promise<void> | void;
 
-interface Route { method: string; path: string; regex: RegExp; keys: string[]; chain: Array<Middleware | Handler>; }
+interface Route { method: string; path: string; regex: RegExp; keys: string[]; chain: Array<Middleware | Handler>; rawMax?: number; }
+
+/** CHAT-1: a handler may answer with bytes (e.g. a chat attachment) instead of JSON. */
+export interface RawResult { raw: Buffer; contentType: string; cacheSeconds?: number; }
+const isRaw = (r: unknown): r is RawResult => !!r && typeof r === "object" && Buffer.isBuffer((r as RawResult).raw);
 
 /**
  * Role hierarchy — higher rank satisfies any lower minimum (see docs/05 §7, docs/38). Five tiers:
@@ -224,11 +228,14 @@ export class Router {
     this.log = (opts.logger ?? createLogger()).child({ module: "http" });
   }
 
-  private add(method: string, path: string, chain: Array<Middleware | Handler>): this {
+  private add(method: string, path: string, chain: Array<Middleware | Handler>, rawMax?: number): this {
     const { regex, keys } = compile(path);
-    this.routes.push({ method, path, regex, keys, chain });
+    this.routes.push({ method, path, regex, keys, chain, ...(rawMax ? { rawMax } : {}) });
     return this;
   }
+
+  /** CHAT-1: a POST whose body is raw bytes (ctx.body is a Buffer), capped at `maxBytes`. */
+  upload(path: string, maxBytes: number, ...chain: Array<Middleware | Handler>): this { return this.add("POST", path, chain, maxBytes); }
 
   /** Read-only listing of every registered route (method + path pattern). Used by the scope
    *  registry guard (Issue 1 / F-44) so a new id-addressed operator route cannot ship unclassified. */
@@ -281,7 +288,7 @@ export class Router {
         ctx = {
           req, res, method, path, params, query: url.searchParams, requestId,
           log: this.log.child({ requestId, method, path }),
-          body: method === "GET" || method === "HEAD" ? null : await readJson(req),
+          body: method === "GET" || method === "HEAD" ? null : route.rawMax ? await readRaw(req, route.rawMax) : await readJson(req),
         };
 
         let result: unknown;
@@ -325,6 +332,18 @@ export class Router {
   }
 }
 
+async function readRaw(req: IncomingMessage, max: number): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const c of req) {
+    const buf = c as Buffer;
+    size += buf.length;
+    if (size > max) throw new ApiError("PAYLOAD_TOO_LARGE", "file too large", 413);
+    chunks.push(buf);
+  }
+  return Buffer.concat(chunks);
+}
+
 async function readJson(req: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
   let size = 0;
@@ -342,6 +361,17 @@ async function readJson(req: IncomingMessage): Promise<unknown> {
 }
 
 function writeResult(res: ServerResponse, result: unknown): number {
+  if (isRaw(result)) {
+    if (res.headersSent) return 200;
+    res.writeHead(200, {
+      "content-type": result.contentType, "content-length": String(result.raw.length),
+      "cache-control": `private, max-age=${result.cacheSeconds ?? 0}`,
+      "content-security-policy": "default-src 'none'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'; sandbox",
+      "cross-origin-resource-policy": "cross-origin",
+    });
+    res.end(result.raw);
+    return 200;
+  }
   if (result && typeof result === "object" && "body" in (result as HandlerResult)) {
     const r = result as HandlerResult;
     const status = r.status ?? 200;

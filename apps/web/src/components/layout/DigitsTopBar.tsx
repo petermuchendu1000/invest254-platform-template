@@ -1,51 +1,121 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
+import { cn } from '@/lib/cn';
 import { useBrand } from '@/lib/brand/BrandProvider';
 import { brandWordmark } from '@/lib/brand/brand';
-import { BalancePill } from '@/components/wallet/BalancePill';
 import { useDepositUi } from '@/lib/wallet/depositUi';
 import { useAuthUi } from '@/lib/auth/ui';
 import { useSession } from '@/lib/auth/session';
+import { useAuthActions } from '@/lib/auth/useAuthActions';
 import { useHydrated } from '@/lib/useHydrated';
+import { useDigitSession } from '@/lib/game/digitSession';
+import { useEntryScanner } from '@/lib/game/entryScannerUi';
+import { useLiveChat } from '@/lib/chat/liveChat';
+import { useLiveChatUnread } from '@/components/chat/LiveChatPanel';
+import { useMyNotifications, useDismissNotification } from '@/lib/notifications/hooks';
+import { DIcon, type IconName } from '@/components/game/digits/icons';
+import { AccountMenu, AccountPill } from '@/components/layout/DigitsAccount';
+import { SoundToggle } from '@/components/layout/SoundToggle';
 
-function Icon({ path, className = 'h-5 w-5' }: { path: string; className?: string }) {
+/** Brand wordmark in two tones (first word light, the rest in the accent), e.g. "Tamu" + "Traders". */
+function Wordmark({ text, className }: { text: string; className?: string }) {
+  const i = text.indexOf(' ');
+  const [a, b] = i > 0 ? [text.slice(0, i), text.slice(i + 1)] : [text, ''];
   return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden>
-      <path d={path} />
-    </svg>
+    <span className={cn('whitespace-nowrap font-extrabold leading-none tracking-tight', className)}>
+      <span className="text-fg">{a}</span>{b ? <span className="text-accent">{b}</span> : null}
+    </span>
   );
 }
 
-/** Nav destinations that the digits shell moves into the hamburger drawer (the bottom nav on the
- *  digits trade surface is Live Chat / AI / Positions, so primary nav lives here). */
-const NAV = [
-  { href: '/', label: 'Trade', path: 'M3 12l4-4 4 4 6-6M17 6h4v4' },
-  { href: '/wallet', label: 'Wallet', path: 'M3 7h15a2 2 0 012 2v6a2 2 0 01-2 2H3zM16 12h.01' },
-  { href: '/history', label: 'History', path: 'M12 8v4l3 2M21 12a9 9 0 11-9-9' },
-  { href: '/account', label: 'Account', path: 'M12 8a4 4 0 100-8 4 4 0 000 8zM4 20a8 8 0 0116 0' },
-  { href: '/legal', label: 'Legal', path: 'M12 3l8 4v5c0 4-3.5 7-8 9-4.5-2-8-5-8-9V7z' },
-] as const;
+function NavButton({ icon, label, onClick, variant = 'plain' }: { icon?: IconName; label: string; onClick: () => void; variant?: 'plain' | 'pill' | 'accent' }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        'flex h-9 items-center gap-1.5 whitespace-nowrap rounded-lg px-3 text-[13px] font-medium transition',
+        variant === 'plain' && 'text-muted hover:text-fg',
+        variant === 'pill' && 'border border-border text-fg hover:border-accent/50',
+        variant === 'accent' && 'bg-accent font-semibold text-accent-fg shadow-[0_0_18px_-6px_var(--pp-accent)] hover:brightness-105',
+      )}
+    >
+      {icon ? <DIcon name={icon} className="h-4 w-4" /> : null}
+      {label}
+    </button>
+  );
+}
+
+/** Notices from the brand (the same ones shown as banners), with a count badge. */
+function Bell() {
+  const { data } = useMyNotifications();
+  const dismiss = useDismissNotification();
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [open]);
+  const items = data?.items ?? [];
+  return (
+    <div ref={ref} className="relative">
+      <button type="button" onClick={() => setOpen((v) => !v)} aria-label={`Notifications${items.length ? ` (${items.length})` : ''}`}
+        className="relative grid h-10 w-10 place-items-center rounded-full text-fg transition hover:bg-surface-2">
+        <DIcon name="bell" className="h-[18px] w-[18px]" />
+        {items.length ? <span className="absolute right-1.5 top-1.5 grid h-4 min-w-4 place-items-center rounded-full bg-down px-1 text-[9px] font-bold text-white">{items.length}</span> : null}
+      </button>
+      {open ? (
+        <div className="absolute right-0 top-[calc(100%+8px)] z-50 w-72 rounded-xl border border-border bg-surface p-1.5 shadow-2xl">
+          <div className="px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-muted">Notifications</div>
+          {items.length === 0 ? <p className="px-3 pb-3 text-[13px] text-muted">You’re all caught up.</p> : (
+            <ul className="max-h-80 overflow-y-auto">
+              {items.map((n) => (
+                <li key={n.id} className="flex items-start gap-2 rounded-lg px-3 py-2 hover:bg-surface-2">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[13px] font-semibold text-fg">{n.title}</div>
+                    {n.body ? <div className="text-[12px] text-muted">{n.body}</div> : null}
+                  </div>
+                  {n.dismissible ? (
+                    <button type="button" aria-label="Dismiss" onClick={() => dismiss.mutate(n.id)} className="text-muted hover:text-fg"><DIcon name="close" className="h-3.5 w-3.5" /></button>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 /**
- * Digits-brand top bar (matches the digits broker mock): hamburger nav drawer, brand wordmark,
- * balance pill and Deposit CTA. Only rendered for brands
- * whose `trade_ui = 'digits'`; every other brand keeps the standard TopBar. Reuses the existing
- * wallet / auth / session stores so all behaviour is preserved.
+ * Digits-brand top bar (digits broker mock).
+ *  - Desktop: wordmark · home · Trader's Hub · Deposit · Withdraw · History · AI · Live Chat ·
+ *    How to Trade, then the balance pill, Deposit, notifications and the account menu.
+ *  - Phone: menu · wordmark · balance pill (shows "Auto · <side>" while Auto runs) · Deposit · bell;
+ *    the nav lives in the drawer.
+ * Reuses the wallet / auth / session stores, so behaviour is unchanged.
  */
 export function DigitsTopBar() {
   const brand = useBrand();
   const wordmark = brandWordmark(brand);
   const hydrated = useHydrated();
   const token = useSession((s) => s.token);
-  const reset = useSession((s) => s.reset);
+  const { logout } = useAuthActions();
   const openDeposit = useDepositUi((s) => s.openDeposit);
+  const openWithdraw = useDepositUi((s) => s.openWithdraw);
   const openAuth = useAuthUi((s) => s.openAuth);
-
+  const openScanner = useEntryScanner((s) => s.setOpen);
+  const setSupportOpen = useLiveChat((s) => s.setOpen);
+  const chatUnread = useLiveChatUnread();
+  const setHistoryOpen = useDigitSession((s) => s.setHistoryOpen);
+  const setHowToOpen = useDigitSession((s) => s.setHowToOpen);
   const [menuOpen, setMenuOpen] = useState(false);
 
-  // Lock body scroll while the drawer is open.
   useEffect(() => {
     if (!menuOpen) return;
     const prev = document.body.style.overflow;
@@ -54,84 +124,111 @@ export function DigitsTopBar() {
   }, [menuOpen]);
 
   const authed = hydrated && !!token;
+  const needAuth = (fn: () => void) => () => (authed ? fn() : openAuth('login'));
+
+  const drawer: { icon: IconName; label: string; onClick?: () => void; href?: string }[] = [
+    { icon: 'trend', label: "Trader's Hub", href: '/' },
+    { icon: 'deposit', label: 'Deposit', onClick: needAuth(() => openDeposit()) },
+    { icon: 'withdraw', label: 'Withdraw', onClick: needAuth(openWithdraw) },
+    { icon: 'history', label: 'History', onClick: needAuth(() => setHistoryOpen(true)) },
+    { icon: 'chat', label: 'Live Chat', onClick: () => setSupportOpen(true) },
+    { icon: 'book', label: 'How to Trade', onClick: () => setHowToOpen(true) },
+    { icon: 'user', label: 'Account', href: '/account' },
+    { icon: 'shield', label: 'Legal', href: '/legal' },
+  ];
 
   return (
     <>
       <header className="sticky top-0 z-30 border-b border-border bg-surface/95 backdrop-blur">
-        <div className="mx-auto flex h-14 w-full max-w-app items-center gap-2 px-3 sm:px-4">
-          <button
-            type="button"
-            onClick={() => setMenuOpen(true)}
-            aria-label="Open menu"
-            className="flex h-9 w-9 items-center justify-center rounded-lg text-fg transition hover:bg-surface-2"
-          >
-            <Icon path="M3 6h18M3 12h18M3 18h18" />
-          </button>
-
-          <Link href="/" aria-label={`${brand.name} home`} className="text-[17px] font-extrabold leading-none tracking-tight text-fg">
-            {wordmark}
+        {/* ── Desktop ── */}
+        <div className="hidden h-[72px] items-center gap-2 px-4 lg:flex">
+          <Link href="/" aria-label={`${brand.name} home`}><Wordmark text={wordmark} className="text-[19px]" /></Link>
+          <Link href="/" aria-label="Trade" className="ml-4 grid h-10 w-10 place-items-center rounded-xl border border-accent/40 bg-accent/10 text-accent">
+            <DIcon name="trend" className="h-5 w-5" />
           </Link>
+          <Link href="/" className="ml-2 px-2 text-[14px] font-semibold text-fg">Trader’s Hub</Link>
+          <NavButton icon="deposit" label="Deposit" onClick={needAuth(() => openDeposit())} />
+          <NavButton icon="withdraw" label="Withdraw" onClick={needAuth(openWithdraw)} />
+          <NavButton icon="history" label="History" onClick={needAuth(() => setHistoryOpen(true))} />
+          <NavButton icon="sparkles" label="AI" variant="accent" onClick={() => openScanner(true)} />
+          <span className="relative"><NavButton icon="chat" label="Live Chat" variant="pill" onClick={() => setSupportOpen(true)} />{chatUnread ? <span className="absolute -right-1 -top-1 grid h-4 min-w-4 place-items-center rounded-full bg-down px-1 text-[9px] font-bold text-white">{chatUnread}</span> : null}</span>
+          <NavButton icon="book" label="How to Trade" variant="pill" onClick={() => setHowToOpen(true)} />
 
-          {authed ? <div className="ml-1"><BalancePill /></div> : null}
-
-          <div className="ml-auto flex items-center gap-1.5 sm:gap-2">
+          <div className="ml-auto flex items-center gap-3">
             {authed ? (
-              <button
-                type="button"
-                onClick={() => openDeposit()}
-                className="rounded-full bg-accent px-4 py-2 text-sm font-bold text-accent-fg shadow-[0_0_0_1px_color-mix(in_srgb,var(--pp-accent)_25%,transparent)] transition hover:brightness-105"
-              >
-                Deposit
-              </button>
+              <>
+                <AccountPill />
+                <button type="button" onClick={() => openDeposit()} className="h-10 rounded-lg bg-accent px-5 text-[14px] font-semibold text-accent-fg shadow-[0_0_18px_-6px_var(--pp-accent)] transition hover:brightness-105">Deposit</button>
+                <SoundToggle />
+                <Bell />
+                <AccountMenu />
+              </>
             ) : (
               <>
-                <button type="button" onClick={() => openAuth('login')} className="rounded-full px-3 py-2 text-sm font-semibold text-muted transition hover:text-fg">Login</button>
-                <button type="button" onClick={() => openAuth('register')} className="rounded-full bg-accent px-4 py-2 text-sm font-bold text-accent-fg transition hover:brightness-105">Sign Up</button>
+                <button type="button" onClick={() => openAuth('login')} className="h-10 rounded-lg px-4 text-[14px] font-semibold text-muted hover:text-fg">Log in</button>
+                <button type="button" onClick={() => openAuth('register')} className="h-10 rounded-lg bg-accent px-5 text-[14px] font-semibold text-accent-fg">Sign up</button>
+              </>
+            )}
+          </div>
+        </div>
+
+        {/* ── Phone / tablet ── */}
+        <div className="flex h-14 items-center gap-1.5 px-2 lg:hidden">
+          <button type="button" onClick={() => setMenuOpen(true)} aria-label="Open menu" className="grid h-9 w-9 shrink-0 place-items-center rounded-lg text-fg hover:bg-surface-2">
+            <DIcon name="menu" className="h-5 w-5" />
+          </button>
+          <Link href="/" aria-label={`${brand.name} home`} className="min-w-0 truncate"><Wordmark text={wordmark} className="text-[15px]" /></Link>
+          {authed ? <div className="ml-1 shrink-0"><AccountPill compact /></div> : null}
+          <div className="ml-auto flex shrink-0 items-center gap-1">
+            {authed ? (
+              <>
+                <SoundToggle className="h-9 w-9" />
+                <button type="button" onClick={() => openDeposit()} className="h-9 rounded-lg bg-accent px-3 text-[13px] font-semibold text-accent-fg">Deposit</button>
+                <Bell />
+              </>
+            ) : (
+              <>
+                <button type="button" onClick={() => openAuth('login')} className="h-9 rounded-lg px-2.5 text-[13px] font-semibold text-muted">Log in</button>
+                <button type="button" onClick={() => openAuth('register')} className="h-9 rounded-lg bg-accent px-3.5 text-[13px] font-semibold text-accent-fg">Sign up</button>
               </>
             )}
           </div>
         </div>
       </header>
 
-      {/* Hamburger nav drawer */}
       {menuOpen ? (
-        <div className="fixed inset-0 z-50 flex" role="dialog" aria-modal="true">
+        <div className="fixed inset-0 z-50 flex lg:hidden" role="dialog" aria-modal="true" aria-label="Menu">
           <button aria-label="Close menu" className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setMenuOpen(false)} />
           <nav className="relative flex h-full w-72 max-w-[80vw] flex-col border-r border-border bg-surface p-4 shadow-2xl">
             <div className="mb-4 flex items-center justify-between">
-              <span className="text-[17px] font-extrabold tracking-tight text-fg">{wordmark}</span>
-              <button type="button" onClick={() => setMenuOpen(false)} aria-label="Close" className="flex h-8 w-8 items-center justify-center rounded-lg text-muted hover:bg-surface-2 hover:text-fg">
-                <Icon path="M6 6l12 12M18 6L6 18" className="h-4 w-4" />
+              <Wordmark text={wordmark} className="text-[17px]" />
+              <button type="button" onClick={() => setMenuOpen(false)} aria-label="Close" className="grid h-8 w-8 place-items-center rounded-lg text-muted hover:bg-surface-2 hover:text-fg">
+                <DIcon name="close" className="h-4 w-4" />
               </button>
             </div>
             <ul className="flex flex-col gap-1">
-              {NAV.map((n) => (
-                <li key={n.href}>
-                  <Link
-                    href={n.href}
-                    onClick={() => setMenuOpen(false)}
-                    className="flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-semibold text-muted transition hover:bg-surface-2 hover:text-fg"
-                  >
-                    <Icon path={n.path} className="h-5 w-5" />
-                    {n.label}
-                  </Link>
-                </li>
-              ))}
+              {drawer.map((n) => {
+                const cls = 'flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm font-semibold text-muted transition hover:bg-surface-2 hover:text-fg';
+                const inner = <><DIcon name={n.icon} className="h-5 w-5" />{n.label}</>;
+                return (
+                  <li key={n.label}>
+                    {n.href
+                      ? <Link href={n.href} onClick={() => setMenuOpen(false)} className={cls}>{inner}</Link>
+                      : <button type="button" onClick={() => { setMenuOpen(false); n.onClick?.(); }} className={cls}>{inner}</button>}
+                  </li>
+                );
+              })}
             </ul>
             <div className="mt-auto border-t border-border pt-3">
               {authed ? (
-                <button
-                  type="button"
-                  onClick={() => { reset(); setMenuOpen(false); }}
-                  className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-semibold text-down transition hover:bg-down/10"
-                >
-                  <Icon path="M15 12H3M9 8l-4 4 4 4M13 4h6a1 1 0 011 1v14a1 1 0 01-1 1h-6" className="h-5 w-5" />
-                  Log out
+                <button type="button" onClick={() => { setMenuOpen(false); void logout(); }}
+                  className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-semibold text-down transition hover:bg-down/10">
+                  <DIcon name="logout" className="h-5 w-5" />Sign out
                 </button>
               ) : (
                 <div className="flex gap-2">
-                  <button type="button" onClick={() => { openAuth('login'); setMenuOpen(false); }} className="flex-1 rounded-lg border border-border py-2.5 text-sm font-semibold text-fg hover:border-accent/60">Login</button>
-                  <button type="button" onClick={() => { openAuth('register'); setMenuOpen(false); }} className="flex-1 rounded-lg bg-accent py-2.5 text-sm font-bold text-accent-fg">Sign Up</button>
+                  <button type="button" onClick={() => { openAuth('login'); setMenuOpen(false); }} className="flex-1 rounded-lg border border-border py-2.5 text-sm font-semibold text-fg">Log in</button>
+                  <button type="button" onClick={() => { openAuth('register'); setMenuOpen(false); }} className="flex-1 rounded-lg bg-accent py-2.5 text-sm font-bold text-accent-fg">Sign up</button>
                 </div>
               )}
             </div>

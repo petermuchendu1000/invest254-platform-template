@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
 import type { InstrumentTick } from '@/lib/game/useInstrument';
 
 function readVar(cs: CSSStyleDeclaration, name: string, fallback: string): string {
@@ -29,9 +29,11 @@ function safeChartLocale(): string {
   return 'en-US';
 }
 
+type Marker = { time: number; kind: 'entry' | 'win' | 'loss'; text?: string };
+
 /** Map our semantic entry/settle markers to lightweight-charts series markers, resolving brand
  *  colours from CSS vars. Sorted ascending by time (the library requires it). */
-function buildLcMarkers(markers: Array<{ time: number; kind: 'entry' | 'win' | 'loss'; text?: string }>): any[] {
+function buildLcMarkers(markers: Marker[]): any[] {
   const cs = getComputedStyle(document.documentElement);
   const accent = readVar(cs, '--pp-accent', '#3B82F6');
   const up = readVar(cs, '--pp-up', '#22C55E');
@@ -50,21 +52,21 @@ function buildLcMarkers(markers: Array<{ time: number; kind: 'entry' | 'win' | '
     });
 }
 
-/**
- * Deriv-style price chart: an area/line series with a real RIGHT price axis, a bottom TIME axis
- * (HH:MM:SS), a live last-price tag + dashed price line, autoscale, crosshair, and wheel/pinch zoom
- * with a follow-live reset. Built on TradingView lightweight-charts (v5), fed by the per-instrument
- * client stream. Purely presentational.
- */
-export function DerivChart({
-  getTicks,
-  getLastTick,
-  resetKey,
-  precision = 2,
-  paused = false,
-  barSpacing,
-  markers = [],
-}: {
+/** DIGITS-UI: chart controls driven by the toolbar around the chart (zoom, follow, draw, export). */
+export interface DerivChartHandle {
+  zoomIn: () => void;
+  zoomOut: () => void;
+  /** Fit the whole buffered range (stops following live). */
+  fit: () => void;
+  /** Reset zoom and follow the live price again. */
+  followLive: () => void;
+  /** Download the chart as a PNG. */
+  download: (fileName: string) => void;
+  /** Remove every horizontal line the player drew. */
+  clearLines: () => void;
+}
+
+interface DerivChartProps {
   getTicks: () => InstrumentTick[];
   getLastTick: () => InstrumentTick | null;
   resetKey: string;
@@ -74,21 +76,67 @@ export function DerivChart({
   /** Timeframe/zoom (1T etc.): pixels per bar on the time scale. Undefined keeps the default. */
   barSpacing?: number;
   /** Entry/settle markers for the current contract — mapped to brand colours + shapes on the series. */
-  markers?: Array<{ time: number; kind: 'entry' | 'win' | 'loss'; text?: string }>;
-}) {
+  markers?: Marker[];
+  /** 'line' (thin light line, the mock default) or 'area' (accent line with a soft fill). */
+  variant?: 'line' | 'area';
+  /** When true, a click on the chart drops a horizontal price line at that price. */
+  drawMode?: boolean;
+  onLineDrawn?: () => void;
+}
+
+/**
+ * Deriv-style price chart on TradingView lightweight-charts (v5), fed by the per-instrument client
+ * stream: a right price axis, an HH:MM:SS time axis, a dashed live-price line that starts at a dot
+ * on the left edge and ends in an outlined price tag on the right (HTML overlay, positioned from the
+ * series every frame), autoscale, crosshair and wheel/pinch zoom. Toolbar controls are exposed via
+ * the imperative handle. Purely presentational.
+ */
+export const DerivChart = forwardRef<DerivChartHandle, DerivChartProps>(function DerivChart(
+  { getTicks, getLastTick, resetKey, precision = 2, paused = false, barSpacing, markers = [], variant = 'line', drawMode = false, onLineDrawn },
+  ref,
+) {
   const hostRef = useRef<HTMLDivElement | null>(null);
+  const tagRef = useRef<HTMLDivElement | null>(null);
+  const dotRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<import('lightweight-charts').IChartApi | null>(null);
   const seriesRef = useRef<import('lightweight-charts').ISeriesApi<'Area'> | null>(null);
+  const linesRef = useRef<import('lightweight-charts').IPriceLine[]>([]);
   const markersApiRef = useRef<{ setMarkers: (m: unknown[]) => void } | null>(null);
   const markersPropRef = useRef(markers);
   markersPropRef.current = markers;
+  const drawRef = useRef({ drawMode, onLineDrawn });
+  drawRef.current = { drawMode, onLineDrawn };
+  const variantRef = useRef(variant);
+  variantRef.current = variant;
   const followRef = useRef(true);
   const lastTRef = useRef(0);
-  const resetKeyRef = useRef(resetKey);
+  const lastRateRef = useRef<number | null>(null);
+
+  const seriesStyle = (v: 'line' | 'area') => {
+    const cs = getComputedStyle(document.documentElement);
+    const accent = readVar(cs, '--pp-accent', '#3B82F6');
+    const fg = readVar(cs, '--pp-fg', '#E6EDF3');
+    return v === 'area'
+      ? { lineColor: accent, topColor: `${accent}40`, bottomColor: `${accent}04`, lineWidth: 2 as const }
+      : { lineColor: fg, topColor: 'rgba(0,0,0,0)', bottomColor: 'rgba(0,0,0,0)', lineWidth: 1 as const };
+  };
+
+  /** Place the live price tag + start dot on the series' last value (DOM writes, no React render). */
+  const placeOverlay = () => {
+    const s = seriesRef.current; const c = chartRef.current;
+    const tag = tagRef.current; const dot = dotRef.current;
+    const rate = lastRateRef.current;
+    if (!s || !c || !tag || !dot || rate == null) return;
+    const y = s.priceToCoordinate(rate);
+    if (y == null) { tag.style.opacity = '0'; dot.style.opacity = '0'; return; }
+    tag.style.opacity = '1'; dot.style.opacity = '1';
+    tag.style.transform = `translateY(${Math.round(y) - 12}px)`;
+    tag.textContent = rate.toFixed(precision);
+    dot.style.transform = `translateY(${Math.round(y) - 4}px)`;
+  };
 
   // Re-seed the series when the instrument changes (new stream buffer).
   useEffect(() => {
-    resetKeyRef.current = resetKey;
     const s = seriesRef.current;
     if (!s) return;
     const seen = new Set<number>();
@@ -99,6 +147,7 @@ export function DerivChart({
     if (data.length) {
       s.setData(data);
       lastTRef.current = getLastTick()?.t ?? 0;
+      lastRateRef.current = data[data.length - 1]!.value;
       chartRef.current?.timeScale().scrollToRealTime();
     }
   }, [resetKey, getTicks, getLastTick]);
@@ -119,21 +168,17 @@ export function DerivChart({
       const { createChart, AreaSeries, ColorType, CrosshairMode, LineStyle, createSeriesMarkers } = lc;
       if (disposed) return;
       const cs = getComputedStyle(document.documentElement);
-      const accent = readVar(cs, '--pp-accent', '#3B82F6');
-      const bg = readVar(cs, '--pp-surface', readVar(cs, '--pp-bg', '#0B0E11'));
+      const bg = readVar(cs, '--pp-bg', readVar(cs, '--pp-surface', '#0B0E11'));
       const text = readVar(cs, '--pp-muted', '#8B97A7');
       const border = readVar(cs, '--pp-border', '#2A323D');
 
       const chart = createChart(host, {
         autoSize: true,
-        // Pin a VALIDATED locale so the time-axis tick formatter never calls Date.toLocaleString with
-        // an invalid tag (navigator.language can be '' / 'en-US@posix' on some webviews). That
-        // RangeError otherwise fires every tick and aborts React commits — breaking toasts + taps.
         localization: { locale: safeChartLocale() },
-        layout: { background: { type: ColorType.Solid, color: bg }, textColor: text, fontSize: 10, attributionLogo: false },
-        grid: { vertLines: { color: border, style: LineStyle.Dotted }, horzLines: { color: border, style: LineStyle.Dotted } },
-        rightPriceScale: { borderColor: border, scaleMargins: { top: 0.12, bottom: 0.12 } },
-        timeScale: { borderColor: border, timeVisible: true, secondsVisible: true, rightOffset: 4, barSpacing: barSpacing ?? 7 },
+        layout: { background: { type: ColorType.Solid, color: bg }, textColor: text, fontSize: 9, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', attributionLogo: false },
+        grid: { vertLines: { color: `${border}88`, style: LineStyle.Solid }, horzLines: { color: `${border}88`, style: LineStyle.Solid } },
+        rightPriceScale: { borderVisible: false, scaleMargins: { top: 0.12, bottom: 0.12 } },
+        timeScale: { borderVisible: false, timeVisible: true, secondsVisible: true, rightOffset: 6, barSpacing: barSpacing ?? 7 },
         crosshair: { mode: CrosshairMode.Normal },
         handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false },
         handleScale: { mouseWheel: true, pinch: true, axisPressedMouseMove: { time: true, price: false } },
@@ -141,29 +186,36 @@ export function DerivChart({
       chartRef.current = chart;
 
       const series = chart.addSeries(AreaSeries, {
-        lineColor: accent,
-        topColor: `${accent}44`,
-        bottomColor: `${accent}05`,
-        lineWidth: 2,
+        ...seriesStyle(variantRef.current),
         priceLineVisible: true,
         priceLineStyle: LineStyle.Dashed,
-        lastValueVisible: true,
+        priceLineWidth: 1,
+        priceLineColor: text,
+        lastValueVisible: false, // the outlined HTML tag replaces the solid axis label
         priceFormat: { type: 'price', precision, minMove: 1 / 10 ** precision },
       });
       seriesRef.current = series;
 
-      // Entry/settle marker layer (v5 plugin). Apply any markers already set for the current contract.
       const markersApi = createSeriesMarkers(series, []);
       markersApiRef.current = markersApi as unknown as { setMarkers: (m: unknown[]) => void };
       markersApi.setMarkers(buildLcMarkers(markersPropRef.current) as never);
 
-      // Initial data from the current buffer.
+      // Click-to-draw a horizontal price line (pencil tool).
+      chart.subscribeClick((p) => {
+        if (!drawRef.current.drawMode || !p.point) return;
+        const price = series.coordinateToPrice(p.point.y);
+        if (price == null) return;
+        const accent = readVar(getComputedStyle(document.documentElement), '--pp-accent', '#3B82F6');
+        linesRef.current.push(series.createPriceLine({ price: Number(price), color: accent, lineWidth: 1, lineStyle: LineStyle.Solid, axisLabelVisible: true, title: '' }));
+        drawRef.current.onLineDrawn?.();
+      });
+
       const seen = new Set<number>();
       const data = getTicks()
         .map((t) => ({ time: secOf(t.t), value: t.rate }))
         .filter((d) => (seen.has(d.time) ? false : (seen.add(d.time), true)))
         .map((d) => ({ time: d.time as unknown as import('lightweight-charts').UTCTimestamp, value: d.value }));
-      if (data.length) series.setData(data);
+      if (data.length) { series.setData(data); lastRateRef.current = data[data.length - 1]!.value; }
       lastTRef.current = getLastTick()?.t ?? 0;
       chart.timeScale().scrollToRealTime();
 
@@ -175,10 +227,18 @@ export function DerivChart({
           if (tk.t > lastTRef.current) {
             series.update({ time: secOf(tk.t) as unknown as import('lightweight-charts').UTCTimestamp, value: tk.rate });
             lastTRef.current = tk.t;
+            lastRateRef.current = tk.rate;
             plottedAny = true;
           }
         }
-        if (plottedAny && followRef.current) chart.timeScale().scrollToRealTime();
+        if (plottedAny && followRef.current) {
+          // Until the buffer is wide enough to fill the chart, stretch it edge to edge (no empty
+          // band on the left on big screens); after that, follow the live edge at the chosen zoom.
+          const r = chart.timeScale().getVisibleLogicalRange();
+          if (r && r.from < 0) chart.timeScale().fitContent();
+          else chart.timeScale().scrollToRealTime();
+        }
+        placeOverlay();
         raf = window.setTimeout(loop, 200) as unknown as number;
       };
       loop();
@@ -194,53 +254,73 @@ export function DerivChart({
       chartRef.current = null;
       seriesRef.current = null;
       markersApiRef.current = null;
+      linesRef.current = [];
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Timeframe / zoom (1T presets): re-apply bar spacing live when it changes.
   useEffect(() => {
     const c = chartRef.current;
     if (!c || barSpacing == null) return;
     c.timeScale().applyOptions({ barSpacing });
   }, [barSpacing]);
 
-  // Entry/settle markers: re-apply whenever the current contract's markers change.
+  useEffect(() => { seriesRef.current?.applyOptions(seriesStyle(variant)); }, [variant]);
+
   useEffect(() => {
     if (markersApiRef.current) markersApiRef.current.setMarkers(buildLcMarkers(markers) as never);
   }, [markers]);
 
-  // Historical View: when paused, stop following live and fit the buffered range so the user can
-  // scroll back through it; when resumed, follow the live edge again. No new data source needed.
   useEffect(() => {
     const c = chartRef.current;
     if (!c) return;
-    if (paused) {
-      followRef.current = false;
-      c.timeScale().fitContent();
-    } else {
-      followRef.current = true;
-      c.timeScale().scrollToRealTime();
-    }
+    if (paused) { followRef.current = false; c.timeScale().fitContent(); }
+    else { followRef.current = true; c.timeScale().scrollToRealTime(); }
   }, [paused]);
 
-  const resetZoom = () => {
-    followRef.current = true;
-    const c = chartRef.current;
-    if (c) { c.timeScale().resetTimeScale(); c.timeScale().scrollToRealTime(); }
-  };
+  useImperativeHandle(ref, () => {
+    const zoom = (factor: number) => {
+      const c = chartRef.current; if (!c) return;
+      const cur = c.timeScale().options().barSpacing;
+      c.timeScale().applyOptions({ barSpacing: Math.min(60, Math.max(1, cur * factor)) });
+      if (followRef.current) c.timeScale().scrollToRealTime();
+    };
+    return {
+      zoomIn: () => zoom(1.35),
+      zoomOut: () => zoom(1 / 1.35),
+      fit: () => { followRef.current = false; chartRef.current?.timeScale().fitContent(); },
+      followLive: () => {
+        followRef.current = true;
+        const c = chartRef.current; if (!c) return;
+        c.timeScale().applyOptions({ barSpacing: barSpacing ?? 7 });
+        c.timeScale().scrollToRealTime();
+      },
+      download: (fileName: string) => {
+        const c = chartRef.current; if (!c) return;
+        const canvas = c.takeScreenshot();
+        const a = document.createElement('a');
+        a.href = canvas.toDataURL('image/png');
+        a.download = fileName;
+        a.click();
+      },
+      clearLines: () => {
+        const s = seriesRef.current; if (!s) return;
+        for (const l of linesRef.current) s.removePriceLine(l);
+        linesRef.current = [];
+      },
+    };
+  }, [barSpacing]);
 
   return (
-    <div className="relative h-full w-full">
+    <div className={`relative h-full w-full ${drawMode ? 'cursor-crosshair' : ''}`}>
       <div ref={hostRef} className="h-full w-full" />
-      <button
-        type="button"
-        onClick={resetZoom}
-        className="absolute right-2 top-2 rounded-md border border-border bg-surface-2/80 px-2 py-1 text-[11px] font-semibold text-muted backdrop-blur hover:text-fg"
-        aria-label="Reset zoom and follow live price"
-      >
-        Reset
-      </button>
+      {/* live price: start dot on the left edge + outlined tag over the price axis */}
+      <div ref={dotRef} aria-hidden className="pointer-events-none absolute left-3 top-0 z-10 h-2 w-2 rounded-full bg-fg opacity-0" />
+      <div
+        ref={tagRef}
+        aria-hidden
+        className="pointer-events-none absolute right-1 top-0 z-10 rounded-md border border-accent bg-bg px-2 py-[3px] font-mono text-[11px] font-bold tabular-nums text-fg opacity-0 shadow-[0_0_12px_-4px_var(--pp-accent)]"
+      />
     </div>
   );
-}
+});

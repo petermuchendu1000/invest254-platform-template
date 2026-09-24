@@ -6,6 +6,8 @@ import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Money } from '@/components/ui/Money';
 import { PageHeader, Section, StatCard, TableWrap, Th, Td, Empty, Toolbar } from '@/components/admin/ui';
+import { PageTabs, useTabParam } from '@/components/admin/Tabs';
+import { GameHealth } from '@/components/admin/GameHealth';
 import { useReportDaily, useReportUsers, useReportDay } from '@/lib/admin/hooks';
 import type { DailyReportRow, UserReportRow, AdminDayReport } from '@/lib/admin/types';
 
@@ -24,7 +26,13 @@ function shiftDay(iso: string, delta: number): string {
   return d.toISOString().slice(0, 10);
 }
 
-type Tab = 'day' | 'daily' | 'users';
+type Tab = 'day' | 'daily' | 'users' | 'health';
+const REPORT_TABS: { id: Tab; label: string; hint: string }[] = [
+  { id: 'day', label: 'One day', hint: 'Everything about a single day' },
+  { id: 'daily', label: 'Daily trend', hint: 'Day by day over a date range' },
+  { id: 'users', label: 'Top players', hint: 'Per-player totals over a date range' },
+  { id: 'health', label: 'Game health', hint: 'Return to player against the target' },
+];
 
 /** Build + trigger a client-side CSV download. */
 function downloadCsv(filename: string, header: string[], rows: (string | number)[][]) {
@@ -42,7 +50,7 @@ function downloadCsv(filename: string, header: string[], rows: (string | number)
 }
 
 export default function ReportsPage() {
-  const [tab, setTab] = useState<Tab>('day');
+  const [tab, setTab] = useTabParam<Tab>(['day', 'daily', 'users', 'health'], 'day');
   const [from, setFrom] = useState(isoDaysAgo(30));
   const [to, setTo] = useState(isoDaysAgo(0));
   // Top-players ranking direction: 'losers' = GGR desc (most net revenue to the house, i.e. biggest
@@ -85,7 +93,7 @@ export default function ReportsPage() {
         title="Reports"
         subtitle="Pick a single day for a full breakdown, or scope a date range for trends and per-player totals. Export to CSV for accounting."
         actions={
-          tab === 'day' ? undefined : (
+          tab === 'day' || tab === 'health' ? undefined : (
             <Toolbar>
               <div className="w-36">
                 <Input type="date" label="From" value={from} onChange={(e) => setFrom(e.target.value)} />
@@ -98,23 +106,9 @@ export default function ReportsPage() {
         }
       />
 
-      <div className="flex items-center justify-between gap-2">
-        <div className="inline-flex rounded-xl border border-border bg-surface p-0.5">
-          {(['day', 'daily', 'users'] as Tab[]).map((t) => (
-            <button
-              key={t}
-              onClick={() => setTab(t)}
-              className={
-                tab === t
-                  ? 'rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-accent-fg'
-                  : 'rounded-lg px-3 py-1.5 text-sm font-medium text-muted hover:text-fg'
-              }
-            >
-              {t === 'day' ? 'Day explorer' : t === 'daily' ? 'Daily trend' : 'Top players'}
-            </button>
-          ))}
-        </div>
-        {tab !== 'day' ? (
+      <PageTabs tabs={REPORT_TABS} value={tab} onChange={setTab} label="Report" />
+      <div className="flex items-center justify-end gap-2">
+        {tab === 'daily' || tab === 'users' ? (
           <div className="flex items-center gap-2">
             {tab === 'users' ? (
               <div className="inline-flex rounded-lg border border-border bg-surface p-0.5">
@@ -139,6 +133,8 @@ export default function ReportsPage() {
 
       {tab === 'day' ? (
         <DayExplorer />
+      ) : tab === 'health' ? (
+        <GameHealth />
       ) : (
         <Section>
           {active.isLoading ? (
@@ -267,12 +263,6 @@ function DayBody({ d }: { d: AdminDayReport }) {
         <b> not</b> a deposit. <b>Deposits</b> below is real cash in via M‑Pesa. A day can show GGR with
         zero deposits when players trade an existing balance.
       </ReportNote>
-      {/* Headline: the three numbers an operator scans first. */}
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-        <StatCard label="Net revenue (GGR)" money={d.ggrCents} tone={d.ggrCents >= 0 ? 'up' : 'down'} hint="turnover − payouts" />
-        <StatCard label="Net cash flow" money={netCashCents} tone={netCashCents >= 0 ? 'up' : 'down'} hint="deposits − withdrawals" />
-        <StatCard label="New registrants" value={d.newRegistrants} hint={`${d.firstTimeDepositors} first deposits`} />
-      </div>
 
       <Section title="Players">
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -284,15 +274,9 @@ function DayBody({ d }: { d: AdminDayReport }) {
       </Section>
 
       <Section title="Cash">
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <StatCard label="Deposits" money={d.deposits.amountCents} tone="up" hint={`${d.deposits.count} txns`} />
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+          <StatCard label="Deposits" money={d.deposits.amountCents} tone="up" hint={`${d.deposits.count} deposits`} />
           <StatCard label="Withdrawals" money={d.withdrawals.amountCents} tone="down" hint={`${d.withdrawals.count} paid`} />
-          <StatCard
-            label="Pending withdrawals"
-            money={d.pendingWithdrawals.amountCents}
-            tone={d.pendingWithdrawals.count > 0 ? 'warn' : 'default'}
-            hint={`${d.pendingWithdrawals.count} awaiting`}
-          />
           <StatCard label="Net cash flow" money={netCashCents} tone={netCashCents >= 0 ? 'up' : 'down'} />
         </div>
       </Section>
@@ -301,14 +285,14 @@ function DayBody({ d }: { d: AdminDayReport }) {
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           <StatCard label="Turnover" money={d.turnoverCents} hint={`${d.settledPositions} trades`} />
           <StatCard label="Payouts" money={d.payoutCents} tone="down" hint="winnings credited" />
-          <StatCard label="Net revenue (GGR)" money={d.ggrCents} tone={d.ggrCents >= 0 ? 'up' : 'down'} />
+          <StatCard label="House revenue" money={d.ggrCents} tone={d.ggrCents >= 0 ? 'up' : 'down'} hint="staked − paid back" />
           <StatCard label="Player win rate" value={winRate} hint={`${d.winningPositions}/${d.settledPositions} won`} />
         </div>
       </Section>
 
       <Section title="Withdrawal pool & commission">
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <StatCard label="Pool budget" money={d.poolBudgetCents} hint="all brands" />
+          <StatCard label="Pool budget" money={d.poolBudgetCents} hint="this brand, this day" />
           <StatCard label="Pool paid" money={d.poolPaidCents} hint="winnings committed" />
           <StatCard
             label="Pool used"
@@ -331,7 +315,7 @@ function DailyTable({ rows }: { rows: DailyReportRow[] }) {
           <Th className="text-right">Deposits</Th>
           <Th className="text-right">Withdrawals</Th>
           <Th className="text-right">Turnover</Th>
-          <Th className="text-right">GGR</Th>
+          <Th className="text-right">House revenue</Th>
         </tr>
       </thead>
       <tbody>
@@ -358,7 +342,7 @@ function UsersTable({ rows }: { rows: UserReportRow[] }) {
           <Th className="text-right">Deposits</Th>
           <Th className="text-right">Withdrawals</Th>
           <Th className="text-right">Turnover</Th>
-          <Th className="text-right">GGR</Th>
+          <Th className="text-right">House revenue</Th>
         </tr>
       </thead>
       <tbody>

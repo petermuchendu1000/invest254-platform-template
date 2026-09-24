@@ -16,11 +16,10 @@ const fmtDate = (ms: number) => new Date(ms).toLocaleString('en-KE', { timeZone:
 export function RealCashRtpPanel() {
   const q = useRealCashRtp();
   return (
-    <Section title="Real-cash RTP (committed money)">
+    <Section title="Return to player — real money">
       <p className="mb-2 text-xs text-muted">
-        True cash exposure from the ledger. <strong>Real players</strong> is withdrawable money;{' '}
-        <strong>Marketer (demo)</strong> is non-withdrawable funny money, shown separately. This is
-        distinct from the virtual-curve RTP monitor above.{q.data?.rtpTarget != null && <> Target RTP: <strong>{pct(q.data.rtpTarget)}</strong>.</>}
+        How much of the money players really staked came back to them, from the ledger. <strong>Real players</strong> are
+        withdrawable money; <strong>Marketer (demo)</strong> balances can&apos;t be withdrawn and are shown separately.{q.data?.rtpTarget != null && <> Target: <strong>{pct(q.data.rtpTarget)}</strong>.</>}
       </p>
       {q.isLoading ? (
         <Skeleton className="h-32 w-full" />
@@ -69,8 +68,8 @@ export function ConfigChangeReviewPanel() {
   return (
     <Section title="Economy change review">
       <p className="mb-2 text-xs text-muted">
-        Recent economy-config changes with risk flags. Rapid churn is also capped (6/hour) and versions
-        are append-only, so provable-fairness provenance can never be pruned.
+        Recent changes to this brand&apos;s economy, with risky ones flagged. At most 6 changes an hour are allowed, and every
+        version is kept for good.
       </p>
       {q.isLoading ? (
         <Skeleton className="h-32 w-full" />
@@ -89,8 +88,8 @@ export function ConfigChangeReviewPanel() {
                 <tr key={r.version} className={r.risk ? 'bg-amber-50 dark:bg-amber-950/40' : undefined}>
                   <Td>v{r.version}</Td>
                   <Td className="whitespace-nowrap">{fmtDate(r.createdAtMs)}</Td>
-                  <Td numeric>{r.houseEdge}{r.prevHouseEdge != null && r.prevHouseEdge !== r.houseEdge && <span className="text-muted"> (was {r.prevHouseEdge})</span>}</Td>
-                  <Td numeric>{r.targetWinRate}{r.prevTargetWinRate != null && r.prevTargetWinRate !== r.targetWinRate && <span className="text-muted"> (was {r.prevTargetWinRate})</span>}</Td>
+                  <Td numeric>{pct(r.houseEdge)}{r.prevHouseEdge != null && r.prevHouseEdge !== r.houseEdge && <span className="text-muted"> (was {pct(r.prevHouseEdge)})</span>}</Td>
+                  <Td numeric>{pct(r.targetWinRate)}{r.prevTargetWinRate != null && r.prevTargetWinRate !== r.targetWinRate && <span className="text-muted"> (was {pct(r.prevTargetWinRate)})</span>}</Td>
                   <Td className="text-muted">{r.changedFields.join(', ') || '—'}</Td>
                   <Td>
                     {r.risk

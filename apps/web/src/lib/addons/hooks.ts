@@ -2,7 +2,7 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSession } from '@/lib/auth/session';
-import { addonApi } from '@/lib/addons/endpoints';
+import { addonApi, type AddonPatch } from '@/lib/addons/endpoints';
 
 function useTok(): string { return useSession((s) => s.token) as string; }
 
@@ -53,4 +53,23 @@ export function useRevokeAddon() {
     mutationFn: (b: { site: string; category: string; key: string }) => addonApi.revoke(t, b),
     onSuccess: () => { void qc.invalidateQueries({ queryKey: ['addons'] }); void qc.invalidateQueries({ queryKey: ['platform', 'sites'] }); },
   });
+}
+
+// ── ADDON-1 ──
+function useAll() { const qc = useQueryClient(); return () => { void qc.invalidateQueries({ queryKey: ['addons'] }); void qc.invalidateQueries({ queryKey: ['platform', 'sites'] }); void qc.invalidateQueries({ queryKey: ['billing'] }); }; }
+export function useAddonBrands(enabled = true) {
+  const t = useTok();
+  return useQuery({ queryKey: ['addons', 'brands'], queryFn: () => addonApi.brands(t), enabled: !!t && enabled });
+}
+export function useUpdateAddon() {
+  const t = useTok(); const inv = useAll();
+  return useMutation({ mutationFn: (v: { category: string; key: string; patch: AddonPatch }) => addonApi.update(t, v.category, v.key, v.patch), onSuccess: inv });
+}
+export function useCancelAddonRequest() {
+  const t = useTok(); const inv = useAll();
+  return useMutation({ mutationFn: (id: number) => addonApi.cancel(t, id), onSuccess: inv });
+}
+export function useActivateAddon() {
+  const t = useTok(); const inv = useAll();
+  return useMutation({ mutationFn: (b: { site?: string; category: string; key: string }) => addonApi.activate(t, b), onSuccess: inv });
 }

@@ -2,7 +2,7 @@
  * gatewayschema.ts — the SINGLE SOURCE OF TRUTH for every deposit-gateway's configurable fields.
  *
  * Grounded in each provider's official API docs (verified 2026-09):
- *   • Mega Pay   — megapay.co.ke/backend/v2 ; body carries {api_key,email}. (apps/engine/src/megapay.ts)
+ *   • Mega Pay   — megapay.co.ke/backend/v1 (production) · /backend/v2 (sandbox); body carries {api_key,email}. (apps/engine/src/megapay.ts)
  *   • Paystack   — https://api.paystack.co ; `Authorization: Bearer <secret_key>`; keys are prefixed
  *                  sk_test_/sk_live_ + pk_test_/pk_live_. (docs-v2.paystack.com/docs/api/authentication)
  *   • Binance Pay— https://bpay.binanceapi.com ; merchant apiKey + secretKey, HMAC-SHA512 signing.
@@ -68,10 +68,10 @@ export const GATEWAY_SCHEMAS: Record<string, GatewaySchema> = {
     playerAvailable: true,
     blurb: "M-Pesa STK deposit rail via Mega Pay. Both the API key and the account email travel in every request.",
     fields: [
-      { key: "env", label: "Environment", kind: "select", secret: false, required: true, default: "sandbox", options: ENV_SANDBOX_PROD, help: "Production sends real STK prompts and moves real money." },
+      { key: "env", label: "Environment", kind: "select", secret: false, required: true, default: "sandbox", options: ENV_SANDBOX_PROD, help: "Production sends real STK prompts and moves real money. Live Mega Pay keys only work in Production." },
       { key: "email", label: "Account email", kind: "email", secret: false, required: true, placeholder: "billing@yourbrand.co.ke", help: "The email registered on your Mega Pay merchant account." },
       { key: "api_key", label: "API key", kind: "secret", secret: true, required: true, placeholder: "MGPY…", help: "Mega Pay API key. Stored encrypted; only the last 4 are ever shown." },
-      { key: "api_base", label: "API base URL", kind: "url", secret: false, required: false, default: "https://megapay.co.ke/backend/v2", help: "Override only if Mega Pay gives you a different host." },
+      { key: "api_base", label: "API base URL", kind: "url", secret: false, required: false, placeholder: "Automatic (follows Environment)", help: "Leave blank: Production uses megapay.co.ke/backend/v1, Sandbox uses /backend/v2. Override only if Mega Pay gives you a different host." },
       { key: "callback_allowed_cidrs", label: "Callback allow-list (CIDRs)", kind: "text", secret: false, required: false, placeholder: "e.g. 41.90.0.0/16, 197.248.0.0/16", help: "Optional. Restrict which IPs may hit the webhook. Comma-separated." },
     ],
   },

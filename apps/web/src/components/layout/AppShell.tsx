@@ -6,16 +6,20 @@ import { TopBar } from '@/components/layout/TopBar';
 import { BottomNav } from '@/components/layout/BottomNav';
 import { DigitsTopBar } from '@/components/layout/DigitsTopBar';
 import { DigitsBottomNav } from '@/components/layout/DigitsBottomNav';
+import { PositionsSheet } from '@/components/game/digits/PositionsSheet';
+import { TransactionHistoryModal } from '@/components/game/digits/TransactionHistoryModal';
+import { HowToTradeModal } from '@/components/game/digits/HowToTradeModal';
+import { SoundBootstrap } from '@/components/layout/SoundToggle';
+import { LiveChatPanel, LiveChatLauncher } from '@/components/chat/LiveChatPanel';
+import { AccountDialogs } from '@/components/account/AccountDialogs';
 import { Footer } from '@/components/layout/Footer';
 import { AuthModal } from '@/components/auth/AuthModal';
 import { WalletModal } from '@/components/wallet/WalletModal';
 import { SessionBootstrap } from '@/components/auth/SessionBootstrap';
 import { NotificationBanners } from '@/components/notifications/NotificationBanners';
 import { RegisterSW } from '@/components/RegisterSW';
-import { SupportWidget } from '@/components/support/SupportWidget';
 import { MarketerHUD } from '@/components/marketer/MarketerHUD';
 import { useBrand } from '@/lib/brand/BrandProvider';
-import { env } from '@/lib/env';
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -47,15 +51,20 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <div className="flex h-dvh flex-col overflow-hidden">
         <DigitsTopBar />
         <NotificationBanners />
-        <main className="relative mx-auto flex w-full min-h-0 max-w-app flex-1 flex-col px-2 pb-[calc(4.75rem+env(safe-area-inset-bottom))] pt-2 sm:px-3">
+        <main className="relative flex w-full min-h-0 flex-1 flex-col px-2 pb-[calc(5.25rem+env(safe-area-inset-bottom))] pt-2 sm:px-3 lg:p-0">
           {children}
         </main>
         <DigitsBottomNav />
+        <PositionsSheet />
+        <TransactionHistoryModal />
+        <HowToTradeModal />
+        <SoundBootstrap />
+        <LiveChatPanel />
+        <AccountDialogs />
         <SessionBootstrap />
         <AuthModal />
         <WalletModal />
         <RegisterSW />
-        {env.supportChatEnabled && <SupportWidget />}
         <MarketerHUD />
       </div>
     );
@@ -74,7 +83,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <AuthModal />
         <WalletModal />
         <RegisterSW />
-        {env.supportChatEnabled && <SupportWidget />}
+        <LiveChatLauncher />
+        <LiveChatPanel />
+        <AccountDialogs />
         <MarketerHUD />
       </div>
     );
@@ -93,7 +104,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <AuthModal />
       <WalletModal />
       <RegisterSW />
-      {env.supportChatEnabled && <SupportWidget />}
+      <LiveChatLauncher />
+      <LiveChatPanel />
+        <AccountDialogs />
       <MarketerHUD />
     </div>
   );

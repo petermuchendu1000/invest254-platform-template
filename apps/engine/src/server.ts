@@ -1,3 +1,4 @@
+import { makeDemoAccountResolver } from "./demoresolver.js";
 import { type IncomingMessage } from "node:http";
 import {
   InMemoryGameRepository, PgGameRepository, type GameRepository, type Querier,
@@ -121,22 +122,13 @@ if (usingDb) {
   // Canonical "is this a demo/marketer account?" (migration 0084: fn_is_marketer_account). One source
   // of truth for the pool exemption AND the money layer's demo routing, so they can never diverge. A
   // short TTL cache keeps it off the trade hot path (marketer status changes rarely).
-  const marketerCache = new Map<string, { v: boolean; exp: number }>();
-  loadIsMarketer = async (userId: string): Promise<boolean> => {
-    const now = Date.now();
-    const hit = marketerCache.get(userId);
-    if (hit && hit.exp > now) return hit.v;
-    try {
-      const r = await q.query("select fn_is_marketer_account($1) as m", [userId]);
-      const v = r.rows[0]?.m === true;
-      marketerCache.set(userId, { v, exp: now + 60_000 });
-      return v;
-    } catch {
-      // On a lookup failure, DON'T treat a real player as a marketer (fail toward the real path, which
-      // the DB RPC still guards); and don't cache the miss.
-      return hit?.v ?? false;
-    }
-  };
+  //
+  // DEMO-1 (owner-authorised 2026-09-24): a PLAYER whose wallet is in demo mode (migration 0123) is a
+  // demo account too — the money RPCs already debit demo_balance for them (fn_account_is_demo), so the
+  // pool exemption must agree or demo trades would spend the REAL payout pool. Marketer status is
+  // cached (rarely changes); the wallet's account mode is read fresh on every trade because a player
+  // can switch it at any time (the API refuses a switch while a contract is open).
+  loadIsMarketer = makeDemoAccountResolver(q);
 
   // Each brand gets its own live store: a poll fallback + INSTANT push via the ONE shared LISTEN
   // connection (siteConfigListener) — no per-brand session connection (BUGLOG #35). Historical

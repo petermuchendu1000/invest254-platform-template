@@ -8,6 +8,7 @@ import { useSidebarCollapsed } from '@/lib/useSidebarCollapsed';
 import { roleLabel } from '@/lib/roles';
 import { Glyph } from './icons';
 import { currentHref, type NavGroup, type NavItem } from './nav';
+import { useChatUnread } from '@/lib/chat/liveChat';
 
 /**
  * UI-A — the shared operator shell for every admin tier (brand back office + platform/System console).
@@ -65,7 +66,7 @@ export function ConsoleShell(props: ConsoleShellProps) {
     <div className="flex min-h-dvh bg-bg">
       <aside
         className={cn(
-          'sticky top-0 hidden h-dvh shrink-0 flex-col border-r border-border bg-surface transition-[width] duration-200 md:flex',
+          'sticky top-0 hidden h-dvh shrink-0 flex-col border-r border-border bg-surface transition-[width] duration-200 md:flex print:!hidden',
           collapsed ? 'w-[68px]' : 'w-64',
         )}
       >
@@ -74,7 +75,7 @@ export function ConsoleShell(props: ConsoleShellProps) {
 
       <div className="flex min-w-0 flex-1 flex-col">
         {/* Phone top bar: names the current page, opens the drawer. */}
-        <header className="sticky top-0 z-30 flex h-14 items-center gap-2 border-b border-border bg-surface/95 px-2 backdrop-blur md:hidden">
+        <header className="sticky top-0 z-30 flex h-14 items-center gap-2 border-b border-border bg-surface/95 px-2 backdrop-blur md:hidden print:hidden">
           <button
             type="button"
             onClick={() => setDrawer(true)}
@@ -96,7 +97,7 @@ export function ConsoleShell(props: ConsoleShellProps) {
           ) : null}
         </header>
 
-        <main className="min-w-0 flex-1 px-4 py-5 md:px-8 md:py-7">
+        <main className="min-w-0 flex-1 px-4 py-5 md:px-8 md:py-7 print:p-0">
           <div className={cn('mx-auto flex w-full flex-col gap-6', contentWidth)}>{children}</div>
         </main>
       </div>
@@ -293,7 +294,20 @@ function NavLink({ item, active, collapsed }: { item: NavItem; active: boolean; 
       {active ? <span aria-hidden className="absolute inset-y-1.5 left-0 w-[3px] rounded-r-full bg-accent" /> : null}
       <span className={cn('shrink-0 transition-colors', active ? 'text-accent' : 'text-muted group-hover:text-fg')}>{item.icon}</span>
       {!collapsed ? <span className="truncate">{item.label}</span> : null}
+      {item.badge === 'chat' ? <ChatBadge collapsed={collapsed} /> : null}
     </Link>
+  );
+}
+
+/** CHAT-1: unread player chats next to "Player chats" (polls the brand-scoped count). */
+function ChatBadge({ collapsed }: { collapsed: boolean }) {
+  const q = useChatUnread();
+  const n = q.data?.count ?? 0;
+  if (!n) return null;
+  return (
+    <span aria-label={`${n} unread`} className={cn('grid h-4 min-w-4 place-items-center rounded-full bg-accent px-1 text-[10px] font-bold text-accent-fg', collapsed ? 'absolute right-1 top-0.5' : 'ml-auto')}>
+      {n > 99 ? '99+' : n}
+    </span>
   );
 }
 

@@ -86,3 +86,21 @@ with current page + Log out + Escape, no sideways scroll) — 15 failed before, 
   - A single-option environment is shown as read-only text.
   - The M-Pesa labels are plain: Deposit type, Payout shortcode, Initiator name, Payout type. The shared engine schema changed only its labels; the keys are unchanged.
 - **Tests:** role e2e +3, plus the payment-accounts readiness check updated (142/142 pass).
+
+## UI-E / UI-F — focused pages (owner request, 2026-09-24)
+
+The rule is that each job has one home, and every other page links to it. Research basis: the task-oriented IA used by Stripe and Shopify admin, where each object page is the single place to change that object and summaries elsewhere link to it rather than copying controls, and the two-level scope switchers of multi-tenant consoles (org → project).
+
+| Job | Its one home | Places that now only link |
+|---|---|---|
+| Pool mode and today's budget | Withdrawal pool (owner "Adjust…") | Brand → Economy (a note) |
+| Gateway on/off, per brand | Gateway page (only brands that own the add-on) | Gateways list (state only), brand page |
+| Audit | `/platform/audit` (owner: any platform; platform admin: its own) | Brand header "Audit log", `/platform/activity` (redirect) |
+| Brand admins | Console → brand → People | Back-office user page (a note) |
+| Player status, balance, notices | Back office → user page | Console People ("Manage in back office") |
+| Player overrides | Console → brand → People | Back-office user page (read-only) |
+| Marketer expenses, advances, demo wallets | Back office → Marketer payouts | User page (deep links, `?marketer=`) |
+| Return to player and game health | Back office → Reports → Health | Overview "Needs attention" |
+| Choosing a brand to work on (owner) | Brand back office: platform, then brand | — |
+
+Copy was rewritten in plain words: "House revenue" instead of GGR, "Return to player" instead of RTP, and "Price trend" and "Price movement" instead of drift and volatility. Audit actions are shown in words, with the raw record in a disclosure.

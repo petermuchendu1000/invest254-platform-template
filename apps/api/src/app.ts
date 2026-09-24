@@ -26,11 +26,14 @@ import type { TelegramClient, PayoutAlert, PayoutDecisionRecord } from "./telegr
 import { registerMarketerRoutes, type MarketerRepo } from "./app.marketers.js";
 import { registerReferralRoutes, type ReferralRepo } from "./app.referral.js";
 import { registerSupportRoutes, type SupportDeps } from "./app.support.js";
+import { registerLiveChatRoutes, type LiveChatDeps } from "./app.livechat.js";
+import { registerKycRoutes, type KycDeps } from "./app.kyc.js";
 import { registerSubscriptionRoutes } from "./app.subscriptions.js";
 import { registerAddonRoutes, type AddonDeps } from "./app.addons.js";
 import { registerTicketRoutes } from "./app.tickets.js";
 import { registerPaymentScopeRoutes } from "./app.paymentscopes.js";
 import { registerC2bRoutes } from "./app.c2b.js";
+import { registerBillingRoutes } from "./app.billing.js";
 import type { PlatformOnboardDeps, RegistrarConfigDeps } from "./app.platform.js";
 import type { Server } from "node:http";
 
@@ -42,7 +45,21 @@ import type { Server } from "node:http";
  * this interface — E1 ships the public surface (health, game config, fairness).
  */
 export interface BonusStatus { bonusId: string; amount: Cents; wageringX: number; wagered: Cents; required: Cents; remaining: Cents; status: string; createdAt: string; }
-export interface WalletBalance { real: Cents; bonus: Cents; currency: string; bonuses?: BonusStatus[]; }
+export interface WalletBalance {
+  /** Spendable game balance in the ACTIVE account (demo balance while in demo mode). */
+  real: Cents;
+  /** Spendable bonus (0 in demo mode — demo stakes never touch it). */
+  bonus: Cents;
+  currency: string;
+  bonuses?: BonusStatus[];
+  /** DEMO-1: the active account and every bucket, for the Real/Demo switch. */
+  mode?: "real" | "demo";
+  /** Marketers are always demo (the switch is locked). */
+  modeLocked?: boolean;
+  realBalance?: Cents;
+  bonusBalance?: Cents;
+  demoBalance?: Cents;
+}
 
 /**
  * Public brand identity for one site (docs/22 Task E). Served by `GET /site/brand?host=` and
@@ -64,10 +81,12 @@ export interface Brand {
   locale: string;
   licenceLine?: string | null;
   supportEmail?: string | null;
+  /** CHAT-1: WhatsApp support number (E.164 digits), shown in live chat and the account menu. */
+  supportWhatsapp?: string | null;
   /** Full per-brand design-token palette (docs/22): overrides the fixed --pp-* tokens end-to-end. */
   themeTokens?: Record<string, string> | null;
-  /** Per-brand price chart style (migration 0111): 'line' (default) or 'candlestick'. Presentation only. */
-  chartStyle?: "line" | "candlestick";
+  /** Per-brand price chart system (0111/0147, ADDON-1): line (free default), area, candlestick, bars, baseline. Presentation only. */
+  chartStyle?: import("@invest254/shared").ChartStyle;
   /** Per-brand trade UI layout (migration 0112): 'classic' (default) or 'digits'. Presentation only. */
   tradeUi?: "classic" | "digits";
   /**
@@ -249,6 +268,14 @@ export interface ApiDeps {
   scopeNames?: ((siteId: string | null, platformId: string | null) => Promise<{ siteName: string | null; platformName: string | null }>) | undefined;
   /** Wallet balances (real + bonus) for the authenticated player, scoped to their brand. */
   walletBalance(userId: string, siteId?: string): Promise<WalletBalance>;
+  /** DEMO-1: switch the caller's active account (migration 0123). Refused while a contract is open. */
+  setAccountMode?: ((userId: string, siteId: string | undefined, mode: "real" | "demo") => Promise<"real" | "demo">) | undefined;
+  /** DEMO-1: refill the demo balance to its starting amount (no-op when already at/above it). */
+  topupDemo?: ((userId: string, siteId: string | undefined) => Promise<Cents>) | undefined;
+  /** CHAT-1: human live chat (migration 0167). Absent = chat routes not registered. */
+  liveChat?: LiveChatDeps | undefined;
+  /** ACCT-1: player identity verification (migration 0168). */
+  kyc?: KycDeps | undefined;
 
   // ── F2: player history reads (each scoped to the caller's own userId AND site) ──
   ledger(userId: string, q: PageQuery, siteId?: string): Promise<Page<LedgerEntry>>;
@@ -276,6 +303,8 @@ export interface ApiDeps {
   c2b?: import("@invest254/engine").C2bConfigService | undefined;
   /** POOL-1 (docs/46): per-brand pool overview + automatic distribution. */
   poolOps?: import("@invest254/engine").PoolOpsService | undefined;
+  /** BILL-1 (docs/47): invoices, payments (M-Pesa Pay now + manual), charges, plans, billing settings. */
+  billing?: import("@invest254/engine").BillingService | undefined;
   /** Per-platform domain-registrar (Namecheap) configuration service (Issue 1 #3). */
   registrarConfig?: RegistrarConfigDeps;
   /** Add-on catalog / entitlements / requests service (Issue 2). */
@@ -397,10 +426,13 @@ export function createRouter(deps: ApiDeps): Router {
   registerProtectedRoutes(router, deps);
   registerHistoryRoutes(router, deps);
   registerSupportRoutes(router, deps);
+  registerLiveChatRoutes(router, deps);
+  registerKycRoutes(router, deps);
   registerSubscriptionRoutes(router, deps);
   registerAddonRoutes(router, deps);
   registerPaymentScopeRoutes(router, deps);
   registerC2bRoutes(router, deps);
+  registerBillingRoutes(router, deps);
   registerTicketRoutes(router, deps);
   return router;
 }

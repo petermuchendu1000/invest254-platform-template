@@ -27,8 +27,8 @@ export interface Brand {
   theme: "dark" | "light" | "auto";
   currency: string;
   locale: string;
-  /** Per-brand price chart style (migration 0111): 'line' (default) or 'candlestick'. */
-  chartStyle?: "line" | "candlestick";
+  /** Per-brand price chart system (0111/0147, ADDON-1): line (default), area, candlestick, bars, baseline. */
+  chartStyle?: "line" | "area" | "candlestick" | "bars" | "baseline";
   /**
    * Per-brand trade UI layout: 'classic' (default rise/fall curve terminal) or 'digits' (the
    * Deriv-style binary/digits broker interface). Presentation/product-shell only; the money of
@@ -43,6 +43,8 @@ export interface Brand {
   fxRateFromKes?: number;
   licenceLine?: string | null;
   supportEmail?: string | null;
+  /** CHAT-1: WhatsApp support number (E.164 digits). */
+  supportWhatsapp?: string | null;
   /** Full per-brand design-token palette; maps to every --pp-* token (docs/22). */
   themeTokens?: Record<string, string> | null;
   /**

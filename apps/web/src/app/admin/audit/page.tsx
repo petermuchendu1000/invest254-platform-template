@@ -1,11 +1,8 @@
 'use client';
 
-import { useEffect } from 'react';
-import { useRouter } from 'next/navigation';
+import { MovedToConsole } from '@/components/admin/MovedToConsole';
 
-/** docs/42 UI-2: owner governance moved to the system console — this old back-office URL forwards there. */
+/** docs/42 UI-2: this old back-office URL moved to the system console. */
 export default function Moved() {
-  const router = useRouter();
-  useEffect(() => { router.replace('/platform/audit'); }, [router]);
-  return null;
+  return <MovedToConsole to="/platform/audit" />;
 }

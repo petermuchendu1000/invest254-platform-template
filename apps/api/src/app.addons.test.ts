@@ -53,3 +53,30 @@ test("addons API: reads/requests are admin+, writes are system-only, chart assig
     assert.equal(guarded.status, 403, "platform admin blocked from assigning chart_style");
   } finally { await api.close(); }
 });
+
+test("ADDON-1 API: catalog edits are owner-only and shaped; brands switch owned systems; matrix is platform tier", async () => {
+  const api = await startTestApi();
+  try {
+    const path = "/api/v1/addons/catalog/chart/candlestick";
+    for (const t of [SITE_ADMIN, PA]) assert.equal((await reqf(api, "PATCH", path, t, { priceCents: 1 })).status, 403);
+    const ok = await reqf(api, "PATCH", path, SYS, { billingType: "monthly", priceCents: "800000", setupFeeCents: 0, description: "  Pro  ", active: true });
+    assert.equal(ok.status, 200);
+    assert.deepEqual(await json(ok), { category: "chart", key: "candlestick", billingType: "monthly", priceCents: 800000, setupFeeCents: 0, description: "Pro", active: true });
+    assert.equal((await reqf(api, "PATCH", path, SYS, { billingType: "weekly" })).status, 400, "unknown pricing model");
+    assert.equal((await reqf(api, "PATCH", path, SYS, { priceCents: -5 })).status, 400, "negative price");
+    assert.equal((await reqf(api, "PATCH", path, SYS, { active: "yes" })).status, 400);
+    assert.equal((await reqf(api, "PATCH", path, SYS, {})).status, 400, "nothing to update");
+    assert.equal((await reqf(api, "PATCH", "/api/v1/addons/catalog/weapons/x", SYS, { priceCents: 1 })).status, 404);
+
+    assert.equal((await reqf(api, "POST", "/api/v1/addons/activate", SITE_ADMIN, { category: "chart", key: "line" })).status, 200, "own brand, owned system");
+    const nope = await reqf(api, "POST", "/api/v1/addons/activate", SITE_ADMIN, { category: "chart", key: "candlestick" });
+    assert.equal(nope.status, 409); assert.match((await json(nope)).error.message, /request it first/);
+    assert.equal((await reqf(api, "POST", "/api/v1/addons/activate", SITE_ADMIN, { site: "00000000-0000-0000-0000-0000000000bb", category: "chart", key: "line" })).status, 403, "another brand");
+    assert.equal((await reqf(api, "POST", "/api/v1/addons/activate", PLAYER, { category: "chart", key: "line" })).status, 403);
+
+    assert.equal((await reqf(api, "POST", "/api/v1/addons/requests/7/cancel", SITE_ADMIN)).status, 404);
+    assert.equal((await reqf(api, "POST", "/api/v1/addons/requests/abc/cancel", SITE_ADMIN)).status, 400);
+    assert.equal((await reqf(api, "GET", "/api/v1/addons/brands", SITE_ADMIN)).status, 403, "brand admins get no matrix");
+    assert.equal((await reqf(api, "GET", "/api/v1/addons/brands", PA)).status, 200);
+  } finally { await api.close(); }
+});

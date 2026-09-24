@@ -69,11 +69,38 @@ export interface MegaPayConfig {
   env: "sandbox" | "production";
   apiKey: string;
   email: string;
-  /** API base (no trailing slash). Sandbox + production both verified at .../backend/v2; override via env. */
+  /** API base (no trailing slash). Production = /backend/v1, sandbox = /backend/v2 (see megapayDefaultBase). */
   baseUrl: string;
 }
 
-const DEFAULT_BASE = "https://megapay.co.ke/backend/v2";
+/**
+ * Mega Pay has two hosts (verified 2026-09-24 against the live API and megapay.co.ke/documentation):
+ *   • /backend/v1 — PRODUCTION. Real merchant API keys + the account's registered email. The only host
+ *     in Mega Pay's public documentation.
+ *   • /backend/v2 — a SANDBOX that accepts only Mega Pay's public test key + test email; any real key is
+ *     answered "Invalid Api Key. Use Test Api Key: …".
+ * The base therefore follows the environment. The old code defaulted to v2 for both, so any production
+ * config saved in the console (which layers over env) would have failed every deposit (BUGLOG #73).
+ */
+export const MEGAPAY_PRODUCTION_BASE = "https://megapay.co.ke/backend/v1";
+export const MEGAPAY_SANDBOX_BASE = "https://megapay.co.ke/backend/v2";
+
+/** The API base for an environment. */
+export function megapayDefaultBase(env: "sandbox" | "production"): string {
+  return env === "production" ? MEGAPAY_PRODUCTION_BASE : MEGAPAY_SANDBOX_BASE;
+}
+
+/**
+ * A base URL typed or saved in the console, made safe for its environment: blank ⇒ the environment's
+ * default; a PRODUCTION config pointing at the sandbox host (the old form default) ⇒ the production host,
+ * because the sandbox can never accept a live key. Anything else (a genuinely different host) is kept.
+ */
+export function normalizeMegapayBase(base: string | undefined | null, env: "sandbox" | "production"): string {
+  const b = (base ?? "").trim().replace(/\/+$/, "");
+  if (!b) return megapayDefaultBase(env);
+  if (env === "production" && b === MEGAPAY_SANDBOX_BASE) return MEGAPAY_PRODUCTION_BASE;
+  return b;
+}
 
 /**
  * Real Mega Pay client. No OAuth — the api_key + email travel in each JSON body. Network errors
@@ -142,11 +169,22 @@ export class UnconfiguredMegaPayClient implements MegaPayClient {
 
 /** Resolve Mega Pay config from env (DB per-brand overrides can layer on later, like Daraja). */
 export function resolveMegaPayConfig(over: Partial<MegaPayConfig> = {}, env: NodeJS.ProcessEnv = process.env): MegaPayConfig {
+  const envEnv = env.MEGAPAY_ENV === "production" || env.MEGAPAY_ENV === "sandbox" ? env.MEGAPAY_ENV : undefined;
+  const resolvedEnv: MegaPayConfig["env"] = over.env ?? envEnv ?? "sandbox";
+  // Base precedence (BUGLOG #73):
+  //  1. a base saved/typed in the console — normalised for its environment;
+  //  2. the deployment's MEGAPAY_API_BASE, used VERBATIM (unchanged production behaviour) unless the
+  //     console chose a DIFFERENT environment than the deployment's, where the env host would be wrong;
+  //  3. the environment's default host (production → v1, sandbox → v2).
+  let baseUrl: string;
+  if (over.baseUrl) baseUrl = normalizeMegapayBase(over.baseUrl, resolvedEnv);
+  else if (env.MEGAPAY_API_BASE && (!over.env || over.env === envEnv)) baseUrl = env.MEGAPAY_API_BASE;
+  else baseUrl = megapayDefaultBase(resolvedEnv);
   return {
-    env: over.env ?? (env.MEGAPAY_ENV as MegaPayConfig["env"]) ?? "sandbox",
+    env: resolvedEnv,
     apiKey: over.apiKey ?? env.MEGAPAY_API_KEY ?? "",
     email: over.email ?? env.MEGAPAY_EMAIL ?? "",
-    baseUrl: over.baseUrl ?? env.MEGAPAY_API_BASE ?? DEFAULT_BASE,
+    baseUrl,
   };
 }
 

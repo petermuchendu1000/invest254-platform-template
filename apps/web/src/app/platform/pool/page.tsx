@@ -14,6 +14,10 @@ import {
 } from '@/lib/platform/hooks';
 import type { PoolAutoMode, PoolOverviewRowDto } from '@/lib/platform/endpoints';
 import { useCan } from '@/lib/auth/can';
+import { useQueryClient } from '@tanstack/react-query';
+import { Modal } from '@/components/ui/Modal';
+import { Switch } from '@/components/platform/PaymentsIndex';
+import { useUpdateGameConfig, useSetWithdrawalPool } from '@/lib/admin/hooks';
 import { DEFAULT_PLATFORM_ID } from '@/components/platform/OwnerPlatformPicker';
 import { formatAgo, formatDateTime } from '@/lib/format';
 import { formatKes } from '@invest254/shared/money';
@@ -88,6 +92,8 @@ export default function PlatformPoolPage() {
 
 /* ── 1. Today, per brand ─────────────────────────────────────────────────────────────────────── */
 function TodaySection({ loading, error, rows, showPlatform }: { loading: boolean; error: boolean; rows: PoolOverviewRowDto[]; showPlatform: boolean }) {
+  const isOwner = useCan('console.system');
+  const [edit, setEdit] = useState<PoolOverviewRowDto | null>(null);
   const on = rows.filter((r) => r.poolMode);
   const t = on.reduce((a, r) => ({ budget: a.budget + r.todayCents, paid: a.paid + r.paidCents, reserved: a.reserved + r.reservedCents,
     avail: a.avail + r.availableCents, pend: a.pend + r.pendingCount, pendC: a.pendC + r.pendingCents, def: a.def + r.defaultCents, p7: a.p7 + r.paid7dCents }),
@@ -111,7 +117,7 @@ function TodaySection({ loading, error, rows, showPlatform }: { loading: boolean
             <thead>
               <tr className="border-b border-border">
                 <Th>Brand</Th><Th numeric>Daily default</Th><Th numeric>Budget today</Th><Th numeric>Paid</Th><Th numeric>Reserved</Th>
-                <Th numeric>Available</Th><Th className="w-40">Used</Th><Th numeric>Pending</Th><Th numeric>Paid (7 days)</Th>
+                <Th numeric>Available</Th><Th className="w-40">Used</Th><Th numeric>Pending</Th><Th numeric>Paid (7 days)</Th>{isOwner ? <Th className="w-px" /> : null}
               </tr>
             </thead>
             <tbody>
@@ -125,7 +131,7 @@ function TodaySection({ loading, error, rows, showPlatform }: { loading: boolean
                         <span className="flex flex-wrap gap-1 pt-0.5 text-[11px] text-muted">
                           {showPlatform && r.platformName ? `${r.platformName} · ` : ''}{r.slug}
                           {!r.poolMode ? <span className="rounded bg-surface-2 px-1.5">pool off</span> : null}
-                          {!r.withdrawalsEnabled ? <span className="rounded bg-down/15 px-1.5 text-down">withdrawals off</span> : null}
+                          {!r.withdrawalsEnabled ? <span className="rounded bg-down/15 px-1.5 text-down" title="Switched off on the brand's Withdrawals page (back office)">withdrawals off</span> : null}
                         </span>
                       </div>
                     </Td>
@@ -144,20 +150,55 @@ function TodaySection({ loading, error, rows, showPlatform }: { loading: boolean
                     </Td>
                     <Td numeric>{r.pendingCount ? <span className="text-warn">{r.pendingCount} · {kes(r.pendingCents)}</span> : '—'}</Td>
                     <Td numeric>{kes(r.paid7dCents)}</Td>
+                    {isOwner ? <Td><Button size="sm" variant="outline" onClick={() => setEdit(r)} aria-label={`Adjust ${r.name}`}>Adjust…</Button></Td> : null}
                   </tr>
                 );
               })}
               <tr className="border-t border-border bg-surface-2/40 font-medium">
                 <Td>Total (pool on)</Td><Td numeric>{kes(t.def)}</Td><Td numeric>{kes(t.budget)}</Td><Td numeric>{kes(t.paid)}</Td>
                 <Td numeric>{t.reserved ? kes(t.reserved) : '—'}</Td><Td numeric>{kes(t.avail)}</Td><Td><span className="text-xs text-muted">{usedPct}%</span></Td>
-                <Td numeric>{t.pend || '—'}</Td><Td numeric>{kes(t.p7)}</Td>
+                <Td numeric>{t.pend || '—'}</Td><Td numeric>{kes(t.p7)}</Td>{isOwner ? <Td /> : null}
               </tr>
             </tbody>
           </TableWrap>
-          <p className="text-xs text-muted">“Daily default” is what each new day starts with. “Reserved” is held for payouts being processed. Figures refresh every minute.</p>
+          <p className="text-xs text-muted">“Daily default” is what each new day starts with. “Reserved” is held for payouts being processed. Figures refresh every minute.
+            {isOwner ? ' “Adjust…” switches a brand between pool payouts and the fixed win rate, or sets today’s budget.' : ''}</p>
         </div>
       )}
+      <BrandPoolDialog row={edit} onClose={() => setEdit(null)} />
     </Section>
+  );
+}
+
+/** UI-F: the ONE place for a brand's pool mode and today's budget (they used to live on the brand page). Owner only. */
+function BrandPoolDialog({ row, onClose }: { row: PoolOverviewRowDto | null; onClose: () => void }) {
+  const updateCfg = useUpdateGameConfig(row?.siteId);
+  const setPool = useSetWithdrawalPool(row?.siteId);
+  const qc = useQueryClient();
+  const toast = useToast();
+  const [today, setToday] = useState('');
+  React.useEffect(() => { setToday(row ? String(row.todayCents / 100) : ''); }, [row]);
+  if (!row) return null;
+  const done = (title: string) => { void qc.invalidateQueries({ queryKey: ['platform', 'pool-overview'] }); toast.push({ tone: 'success', title }); };
+  const fail = (title: string) => (e: unknown) => toast.push({ tone: 'error', title, description: e instanceof ApiError ? e.message : 'Try again.' });
+  const cents = Math.round(Number(today) * 100);
+  return (
+    <Modal open onClose={onClose} size="sm" title={`Adjust ${row.name}`}>
+      <div className="flex flex-col gap-5 text-sm">
+        <div className="flex items-center justify-between gap-3">
+          <span><span className="font-medium">Pay winnings from the pool</span>
+            <span className="block text-xs text-muted">{row.poolMode ? 'On: wins are paid within today’s budget.' : 'Off: this brand uses its fixed win rate.'}</span></span>
+          <Switch checked={row.poolMode} label="Pay winnings from the pool" disabled={updateCfg.isPending}
+            onChange={(on) => updateCfg.mutate({ poolMode: on }, { onSuccess: () => { done(`Pool ${on ? 'on' : 'off'} for ${row.name}`); onClose(); }, onError: fail('Not changed') })} />
+        </div>
+        <div className="flex flex-col gap-2 border-t border-border pt-4">
+          <Input label="Budget for today only (KES)" inputMode="decimal" value={today} onChange={(e) => setToday(e.target.value)}
+            hint={`Paid so far ${kes(row.paidCents)}. The daily default (${kes(row.defaultCents)}) is set in the sections below.`} />
+          <Button size="sm" className="w-fit" disabled={!today || !Number.isFinite(cents) || cents < 0 || cents === row.todayCents || setPool.isPending}
+            onClick={() => setPool.mutate({ amountCents: cents }, { onSuccess: () => { done(`Today’s budget set for ${row.name}`); onClose(); }, onError: fail('Budget not set') })}>Set today’s budget</Button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 

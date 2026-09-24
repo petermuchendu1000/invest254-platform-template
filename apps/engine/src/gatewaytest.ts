@@ -3,7 +3,7 @@
  *
  * Every probe hits a NON-mutating endpoint so pressing "Test" in the console can NEVER move money or
  * fire an STK prompt:
- *   • Mega Pay  — POST /transactionstatus with a sentinel id (status query only).
+ *   • Mega Pay  — POST /transactionstatus with a sentinel id (status query only; host follows env).
  *   • Paystack  — GET  /balance                (read-only; validates the secret key).
  *   • PayHero   — GET  /payment_channels        (read-only; validates the Basic token).
  *   • Binance   — POST /binancepay/openapi/v2/order/query with a sentinel id (query only; the HMAC
@@ -15,6 +15,7 @@
  */
 import { createHmac, randomBytes } from "node:crypto";
 import { getSchema } from "./gatewayschema";
+import { normalizeMegapayBase } from "./megapay";
 
 export type ConnStatus = "valid" | "invalid" | "unreachable" | "not_configured";
 export interface ConnResult { ok: boolean; status: ConnStatus; detail: string }
@@ -26,23 +27,46 @@ const missing = (fields: string[]) => ({ ok: false, status: "not_configured" as 
 
 async function safeJson(res: Response): Promise<any> { try { return await res.json(); } catch { return {}; } }
 
-/** Mega Pay: a status query with a sentinel id. "Invalid Api Key" in the body ⇒ bad key. */
+/**
+ * Mega Pay: a status query for a sentinel id (never moves money). Both hosts answer HTTP 200 with
+ * {ResultCode:"102", errorMessage} for a failed query, so the MESSAGE says what was wrong (recorded
+ * against the live API, 2026-09-24):
+ *   production /backend/v1: "Api Key does not exist!" · "Email does not exist!" ·
+ *                           "Transaction request does not exist!"  ⇐ key + email ACCEPTED
+ *   sandbox    /backend/v2: "Invalid Api Key. Use Test Api Key: …" · "Invalid email. Use Test Email: …"
+ * The old probe only looked for "invalid … key": on production it reported a wrong key or email as
+ * "valid", and on the sandbox (the old default host) a correct live key as "rejected" (BUGLOG #73).
+ */
 async function testMegapay(cfg: Record<string, string>, f: Fetch): Promise<ConnResult> {
   const need = ["api_key", "email"].filter((k) => !cfg[k]);
   if (need.length) return missing(need);
-  const base = stripSlash(cfg.api_base || "https://megapay.co.ke/backend/v2");
+  const env = cfg.env === "production" ? "production" : "sandbox";
+  const base = normalizeMegapayBase(cfg.api_base, env);
+  const where = env === "production" ? "production" : "sandbox";
   try {
     const res = await f(`${base}/transactionstatus`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ api_key: cfg.api_key, email: cfg.email, transaction_request_id: "connectivity-probe" }),
     });
     const j = await safeJson(res);
-    const errMsg = String(j.errorMessage ?? j.ResultDesc ?? "");
-    if (/invalid\s*api\s*key/i.test(errMsg) || /invalid.*key/i.test(errMsg)) {
-      return { ok: false, status: "invalid", detail: "Mega Pay rejected the API key." };
+    const msg = String(j.errorMessage ?? j.ResultDesc ?? "").split(String(cfg.api_key)).join("…");
+    if (/use test api key/i.test(msg)) {
+      return { ok: false, status: "invalid", detail: "Mega Pay's sandbox only accepts its public test key. For a live key, set Environment to Production." };
+    }
+    if (/use test email/i.test(msg)) {
+      return { ok: false, status: "invalid", detail: "Mega Pay's sandbox only accepts its public test email. For a live account, set Environment to Production." };
+    }
+    if (/api\s*key\s*does\s*not\s*exist|invalid\s*api\s*key/i.test(msg)) {
+      return { ok: false, status: "invalid", detail: `Mega Pay (${where}) does not recognise this API key.` };
+    }
+    if (/email\s*does\s*not\s*exist|invalid\s*email/i.test(msg)) {
+      return { ok: false, status: "invalid", detail: `Mega Pay (${where}) does not recognise this email — use the email the Mega Pay account is registered with.` };
     }
     if (!res.ok) return { ok: false, status: "unreachable", detail: `Mega Pay HTTP ${res.status}` };
-    return { ok: true, status: "valid", detail: "Mega Pay accepted the credentials (status endpoint reachable)." };
+    if (/transaction\s*request\s*does\s*not\s*exist/i.test(msg) || j.TransactionStatus != null || String(j.ResultCode ?? "") === "200") {
+      return { ok: true, status: "valid", detail: `Mega Pay (${where}) accepted the API key and email.` };
+    }
+    return { ok: false, status: "invalid", detail: msg ? `Mega Pay answered: ${msg.slice(0, 160)}` : "Mega Pay gave an unexpected answer." };
   } catch (e) { return { ok: false, status: "unreachable", detail: `Mega Pay unreachable: ${String((e as Error).message).slice(0, 120)}` }; }
 }
 

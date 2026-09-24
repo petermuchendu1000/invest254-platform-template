@@ -73,7 +73,7 @@ export const api = {
 
   // Auth & profile
   register: (body: RegisterInput) => apiFetch<AuthResult>('/auth/register', { method: 'POST', body }),
-  login: (body: { phone: string; password: string; site?: string }) =>
+  login: (body: { phone: string; password: string; site?: string; totp?: string; recovery_code?: string }) =>
     apiFetch<AuthResult>('/auth/login', { method: 'POST', body }),
   /**
    * Unified operator sign-in (Issue 1). Identity-based (NOT brand-scoped): resolves the account
@@ -125,6 +125,12 @@ export const api = {
 
   // Wallet & history
   wallet: (token: string) => apiFetch<WalletDto>('/wallet', { token }),
+  /** DEMO-1: switch the active account (Real / Demo). */
+  setAccountMode: (token: string, mode: 'real' | 'demo') =>
+    apiFetch<{ mode: 'real' | 'demo'; wallet: WalletDto }>('/wallet/mode', { method: 'POST', token, body: { mode } }),
+  /** DEMO-1: refill the demo balance to its starting amount. */
+  topupDemo: (token: string) =>
+    apiFetch<{ demoBalance: number; wallet: WalletDto }>('/wallet/demo/topup', { method: 'POST', token }),
   ledger: (token: string, p: PageParams = {}) =>
     apiFetch<Paginated<LedgerEntryDto>>('/wallet/ledger', {
       token,

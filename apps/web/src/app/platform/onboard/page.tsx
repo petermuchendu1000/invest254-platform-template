@@ -43,7 +43,7 @@ export default function OnboardPage() {
 
   return (
     <>
-      <PageHeader title="Onboard a brand" subtitle="Create a brand, seed a feasible economy, and (optionally) provision its domain on Cloudflare." />
+      <PageHeader title="Onboard a brand" subtitle="Create a brand with a working starting economy and, if you like, set up its domain automatically." />
 
       <OwnerPlatformPicker value={platformId} onChange={setPlatformId} label="Onboard into platform" hint="New brands, the domain import and the registrar used all follow this choice." />
 
@@ -107,10 +107,10 @@ export default function OnboardPage() {
           </label>
           <div className="sm:col-span-2 md:col-span-3">
             <Button type="submit" disabled={onboard.isPending || !slug.trim() || !name.trim()}>
-              {onboard.isPending ? 'Creating…' : 'Create client'}
+              {onboard.isPending ? 'Creating…' : 'Create brand'}
             </Button>
             {onboard.isError ? <span className="ml-3 text-sm text-down">{(onboard.error as Error).message}</span> : null}
-            {result ? <span className="ml-3 text-sm text-up">{result.brand.name} is live (site {result.brand.siteId.slice(0, 8)}).</span> : null}
+            {result ? <span className="ml-3 text-sm text-up">{result.brand.name} is created. <Link href={`/platform/clients/${result.brand.siteId}`} className="text-accent hover:underline">Open its page</Link></span> : null}
           </div>
         </form>
       </Section>
@@ -150,7 +150,7 @@ export default function OnboardPage() {
             <div className="rounded-2xl border border-amber-500/30 bg-amber-500/5 p-4 text-sm">
               <p className="text-fg">Brand created, but the domain was <b>not</b> provisioned{domainConfigured ? '' : ' (Cloudflare not configured)'}.</p>
               <p className="mt-1 text-xs text-muted">
-                Point <span className="font-mono text-fg">{result.brand.primaryDomain}</span> (apex + www) at the Cloudflare Pages project as a proxied CNAME, or enable provisioning and recreate.
+                Point <span className="font-mono text-fg">{result.brand.primaryDomain}</span> and its www address at the website (a proxied CNAME to the Cloudflare Pages project), or turn on automatic domain set-up and create it again.
               </p>
             </div>
           )}
@@ -161,8 +161,8 @@ export default function OnboardPage() {
           <div className="flex flex-col gap-2 rounded-2xl border border-border bg-surface p-4 text-sm text-fg">
             <p>Brand created. It ships with the <b>Line chart</b>, <b>Classic</b> interface and <b>M-Pesa</b> deposits.</p>
             <ul className="list-disc pl-5 text-muted">
-              <li>Create the brand&rsquo;s admin: have them register on the domain, then promote them under the client&rsquo;s Users.</li>
-              <li>Other charts, interfaces and gateways are paid add-ons &mdash; request them from the client&rsquo;s <b>Systems &amp; gateways</b>.</li>
+              <li>Appoint the brand&rsquo;s admin: have them sign up on the brand&rsquo;s site, then appoint them on the brand page under <b>People</b>.</li>
+              <li>Other price charts, trade screens and gateways are add-ons &mdash; on the brand page under <b>Add-ons</b>.</li>
               <li>To auto-point domains, <Link href="/platform/registrar" className="text-accent hover:underline">configure your Namecheap</Link> (else set the nameservers manually above).</li>
             </ul>
           </div>

@@ -57,9 +57,20 @@ const TICKET = { id: 't-1', platformId: PLATFORM, siteId: SITE, createdBy: 'u-ad
   body: 'B2C failing', urgency: 'high', status: 'open', escalationLevel: 0, assigneeRole: 'platform_admin', slaDueAtMs: Date.now() + 3600e3,
   firstResponseAtMs: null, resolvedAtMs: null, resolvedBy: null, closedAtMs: null, createdAtMs: 1, updatedAtMs: 1 };
 const ADDONS = [
-  { category: 'chart', key: 'classic', display_name: 'Classic chart', price_cents: 0, is_default: true, entitled: true, active: true, pending: false },
-  { category: 'chart', key: 'pro', display_name: 'Pro chart', price_cents: 500000, is_default: false, entitled: false, active: false, pending: false },
-  { category: 'trade_ui', key: 'deriv', display_name: 'Deriv UI', price_cents: 0, is_default: false, entitled: true, active: false, pending: false },
+  { category: 'chart', key: 'classic', display_name: 'Classic chart', description: 'The free line.', price_cents: 0, billing_type: 'free', setup_fee_cents: 0, is_default: true, offered: true, entitled: true, granted_at: null, active: true, pending: false, request_id: null, requested_at: null, request_note: null },
+  { category: 'chart', key: 'pro', display_name: 'Pro chart', description: 'Candles for pros.', price_cents: 500000, billing_type: 'one_off', setup_fee_cents: 0, is_default: false, offered: true, entitled: false, granted_at: null, active: false, pending: false, request_id: null, requested_at: null, request_note: null },
+  { category: 'chart', key: 'area', display_name: 'Area graph', description: 'A filled area.', price_cents: 300000, billing_type: 'monthly', setup_fee_cents: 100000, is_default: false, offered: true, entitled: false, granted_at: null, active: false, pending: true, request_id: 9, requested_at: new Date().toISOString(), request_note: 'Players asked' },
+  { category: 'trade_ui', key: 'deriv', display_name: 'Deriv UI', description: 'Digits.', price_cents: 0, billing_type: 'free', setup_fee_cents: 0, is_default: false, offered: true, entitled: true, granted_at: null, active: false, pending: false, request_id: null, requested_at: null, request_note: null },
+];
+const ADDON_REQ = { id: 9, site_id: SITE, slug: 'tamu', name: 'Tamu Traders', platform_id: PLATFORM, platform_name: 'Alpha Platform', category: 'chart', key: 'area',
+  display_name: 'Area graph', status: 'requested', price_cents: 300000, billing_type: 'monthly', setup_fee_cents: 100000, note: 'Players asked',
+  decision_note: null, created_at: new Date().toISOString(), requested_by: 'u-admin', requested_by_name: 'siteadmin', decided_by: null, decided_by_name: null, decided_at: null };
+const CATALOG = [
+  { category: 'chart', key: 'classic', display_name: 'Classic chart', description: 'The free line.', price_cents: 0, billing_type: 'free', setup_fee_cents: 0, is_default: true, active: true, sort_order: 1, brands: 2, in_use: 1, pending: 0 },
+  { category: 'chart', key: 'pro', display_name: 'Pro chart', description: 'Candles for pros.', price_cents: 500000, billing_type: 'one_off', setup_fee_cents: 0, is_default: false, active: true, sort_order: 2, brands: 1, in_use: 1, pending: 0 },
+  { category: 'chart', key: 'area', display_name: 'Area graph', description: 'A filled area.', price_cents: 300000, billing_type: 'monthly', setup_fee_cents: 100000, is_default: false, active: true, sort_order: 3, brands: 2, in_use: 0, pending: 1 },
+  { category: 'trade_ui', key: 'classic', display_name: 'Classic terminal', description: 'Rise/fall.', price_cents: 0, billing_type: 'free', setup_fee_cents: 0, is_default: true, active: true, sort_order: 1, brands: 2, in_use: 2, pending: 0 },
+  { category: 'trade_ui', key: 'deriv', display_name: 'Deriv UI', description: 'Digits.', price_cents: 0, billing_type: 'free', setup_fee_cents: 0, is_default: false, active: true, sort_order: 2, brands: 1, in_use: 0, pending: 0 },
 ];
 const FIXTURES = {
   '/platform/platforms': { platforms: PLATFORMS },
@@ -73,6 +84,10 @@ const FIXTURES = {
   '/tickets': { tickets: [TICKET] },
   '/tickets/t-1': { ticket: TICKET, comments: [], escalations: [] },
   '/addons/brand': { items: ADDONS },
+  '/addons/requests': { requests: [ADDON_REQ] },
+  '/addons/catalog': { items: CATALOG },
+  '/addons/brands': { brands: [{ site_id: SITE, name: 'Tamu Traders', slug: 'tamu', status: 'active', platform_id: PLATFORM, platform_name: 'Alpha Platform',
+    chart_style: 'pro', trade_ui: 'classic', owned: ['chart:classic', 'chart:pro', 'trade_ui:deriv'], pending: 1 }] },
   [`/platform/sites/${SITE}/users`]: { items: [USER] },
   [`/platform/sites/${SITE}/users/u-target`]: { ...USER, realBalanceCents: 50000, bonusBalanceCents: 2000, depositsCents: 100000, turnoverCents: 300000, betCount: 12, createdAtMs: 1 },
   [`/platform/sites/${SITE}/users/u-target/overrides`]: { userId: 'u-target', winRate: null, houseEdge: null, tradeDurationS: null, maxWinMultiplier: null,
@@ -146,10 +161,53 @@ const FIXTURES = {
     updatedAt: null, exists: false, egressIp: '203.0.113.7', encryptionConfigured: true },
 };
 
+
+// BILL-1 fixtures
+const DAY = 86400e3;
+const INV_SUM = { id: 'inv-1', number: 'TRIO-2026-00007', platformId: PLATFORM, platformName: 'Alpha Platform', kind: 'renewal', status: 'open',
+  issuedAt: new Date(Date.now() - 12 * DAY).toISOString(), dueAt: new Date(Date.now() - 5 * DAY).toISOString(),
+  periodStart: new Date(Date.now() - 12 * DAY).toISOString(), periodEnd: new Date(Date.now() + 18 * DAY).toISOString(),
+  totalCents: 4500000, amountPaidCents: 0, amountDueCents: 4500000, overdue: true, paidAt: null };
+const INV_PAID = { ...INV_SUM, id: 'inv-0', number: 'TRIO-2026-00003', status: 'paid', dueAt: new Date(Date.now() - 35 * DAY).toISOString(),
+  issuedAt: new Date(Date.now() - 42 * DAY).toISOString(), amountPaidCents: 4000000, totalCents: 4000000, amountDueCents: 0, overdue: false, paidAt: new Date(Date.now() - 36 * DAY).toISOString() };
+const SELLER = { name: 'TrioCodes Ltd', address: 'Nairobi', taxPin: 'P051234567X', email: 'billing@triocodes.com', phone: '', taxLabel: 'VAT',
+  paymentInstructions: 'Bank: KCB 1234567890', footerNote: 'Thank you.', mpesaPayEnabled: true };
+const INVOICE = { ...INV_SUM, currency: 'KES', planKey: 'business', subtotalCents: 4500000, taxRateBp: 0, taxCents: 0, voidedAt: null, statusReason: null, notes: null,
+  lines: [{ id: 'l1', kind: 'plan', description: 'Business plan', siteId: null, siteName: null, quantity: 1, unitCents: 4000000, amountCents: 4000000, periodStart: INV_SUM.periodStart, periodEnd: INV_SUM.periodEnd },
+    { id: 'l2', kind: 'addon_monthly', description: 'Area graph — Tamu Traders', siteId: SITE, siteName: 'Tamu Traders', quantity: 1, unitCents: 500000, amountCents: 500000, periodStart: INV_SUM.periodStart, periodEnd: INV_SUM.periodEnd }],
+  payments: [], seller: SELLER };
+const ACCOUNT = { platformId: PLATFORM, platformName: 'Alpha Platform', platformSlug: 'alpha', planKey: 'business', planName: 'Business', priceCents: 4000000,
+  customPrice: false, billingPeriod: 'month', status: 'grace_period', billingExempt: false, trialEndsAt: null,
+  currentPeriodStart: INV_SUM.periodStart, currentPeriodEnd: INV_SUM.periodEnd, graceEndsAt: new Date(Date.now() + 2 * DAY).toISOString(),
+  lastPaymentAt: INV_PAID.paidAt, nextInvoiceAt: INV_SUM.periodEnd, monthlyAddonsCents: 500000, pendingChargesCents: 0,
+  balanceDueCents: 4500000, overdueCents: 4500000, openInvoices: 1, maxSites: 5, maxUsers: 1000, sites: 2, users: 812 };
+const BILL_PLANS = [
+  { key: 'starter', name: 'Starter', priceCents: 100000, maxSites: 1, maxUsers: 100, billingPeriod: 'month', isCustom: false, active: true, sort: 1, platforms: 0 },
+  { key: 'business', name: 'Business', priceCents: 4000000, maxSites: 5, maxUsers: 1000, billingPeriod: 'month', isCustom: false, active: true, sort: 2, platforms: 1 },
+  { key: 'enterprise', name: 'Enterprise', priceCents: null, maxSites: null, maxUsers: null, billingPeriod: 'month', isCustom: true, active: true, sort: 3, platforms: 1 },
+];
+Object.assign(FIXTURES, {
+  '/platform/billing/accounts': { accounts: [ACCOUNT] },
+  '/platform/billing/invoices': { invoices: [INV_SUM, INV_PAID] },
+  '/platform/billing/invoices/inv-1': INVOICE,
+  '/platform/billing/invoices/inv-1/pay': { paymentId: 'pay-1', amountCents: 4500000, invoiceNumber: 'TRIO-2026-00007', checkoutRequestId: 'ws_CO_1' },
+  '/platform/billing/invoices/inv-1/payments': INVOICE,
+  '/platform/billing/charges': { charges: [] },
+  '/platform/billing/plans': { plans: BILL_PLANS },
+  '/platform/billing/settings': { businessName: 'TrioCodes Ltd', businessAddress: 'Nairobi', taxPin: '', billingEmail: '', billingPhone: '', invoicePrefix: 'TRIO',
+    nextNumber: 8, daysUntilDue: 7, taxRateBp: 0, taxLabel: 'VAT', paymentInstructions: 'Bank: KCB 1234567890', mpesaPayEnabled: true, footerNote: '',
+    trialDays: 3, pastDueDays: 3, graceDays: 5, updatedAt: null },
+  '/platform/billing/overview': { mrrCents: 4500000, arrCents: 54000000, outstandingCents: 4500000, overdueCents: 4500000, collectedThisMonthCents: 0,
+    collectedLastMonthCents: 4000000, aging: { current: 0, d1_30: 4500000, d31_60: 0, d61_90: 0, d90p: 0 }, statusCounts: { grace_period: 1 },
+    upcoming: [], recentPayments: [{ id: 'p0', invoiceId: 'inv-0', number: 'TRIO-2026-00003', platformName: 'Alpha Platform', method: 'mpesa', amountCents: 4000000, reference: 'QK12AB', settledAt: INV_PAID.paidAt }] },
+  '/platform/billing/run': { issued: 1, transitions: 0, reminders: 2 },
+  [`/platform/subscriptions/${PLATFORM}/events`]: { events: [] },
+});
+
 const results = [];
 const check = (name, ok, detail = '') => { results.push({ name, ok }); console.log(`  [${ok ? 'PASS' : 'FAIL'}] ${name}${!ok && detail ? `  -- ${detail}` : ''}`); };
 
-async function session(browser, { token, me, stash = null, viewport = null }) {
+async function session(browser, { token, me, stash = null, viewport = null, fixtures = {} }) {
   const ctx = await browser.newContext(viewport ? { viewport } : {});
   const calls = [];
   const full = [];   // method + path + query (UI-9: which platform a request acts for)
@@ -165,6 +223,7 @@ async function session(browser, { token, me, stash = null, viewport = null }) {
     if (req.method() !== 'GET') { let b = null; try { b = req.postDataJSON(); } catch { /* none */ } bodies.push([`${req.method()} ${path}`, b]); }
     const body = path === '/auth/me' ? me
       : path === '/me/referral' ? REFERRAL
+      : fixtures[path] ? fixtures[path]
       : FIXTURES[path] ? FIXTURES[path]
       : /^\/admin\/users\/[^/]+$/.test(path) ? USER
       : { items: [], sites: [], platforms: [], statuses: {}, configured: false, key: null, enabled: true };
@@ -195,13 +254,18 @@ try {
     check('site admin: the shell names the brand (UI-8)', await page.locator('aside').getByText('Tamu Traders', { exact: true }).isVisible() && await page.locator('aside').getByText('Brand admin', { exact: true }).first().isVisible());
     check('site admin: NO Audit log / Governance / Platform nav', !nav.some((n) => /Audit log|Game config|M-Pesa|Fly\.io|All brands|System logs/.test(n)), nav.join('|'));
     await open(page, '/admin/audit');
-    check('site admin: old /admin/audit forwards to the console, which reveals nothing (404)', page.url().endsWith('/platform/audit') && await page.getByText('This page could not be found.').isVisible(), page.url());
+    check('UI-F site admin: old /admin/audit goes back to the back-office home (was: a console 404)', page.url().endsWith('/admin'), page.url());
     check('site admin: no audit request was ever made', !calls.includes('GET /admin/audit'), calls.filter((c) => c.includes('audit')).join());
     await open(page, '/admin/game');
-    check('site admin: old /admin/game forwards to the console (404 for a site admin)', await page.getByText('This page could not be found.').isVisible(), page.url());
+    check('UI-F site admin: old /admin/game goes back to the back-office home (was: a console 404)', page.url().endsWith('/admin'), page.url());
     await open(page, '/admin/users/u-target');
     check('site admin: "Edit details" and "Role" sections visible', await page.getByText('Edit details', { exact: true }).isVisible().catch(() => false) && await page.getByText('Role', { exact: true }).first().isVisible().catch(() => false));
     check('site admin: overrides are read-only (no Save overrides)', !(await page.getByText('Save overrides').isVisible().catch(() => false)));
+    check('UI-F user page: marketer money is not repeated here (lives in Marketer payouts)', (await page.getByText('Marketer expenses & advances').count()) === 0);
+    check('UI-F user page: brand admins are not appointed from here (console → People)', (await page.locator('option[value="admin"]').count()) === 0);
+    await open(page, '/admin/users?status=suspended');
+    check('UI-F users: a ?status= deep link pre-selects the quick filter', await page.getByRole('button', { name: /^Suspended/ }).getAttribute('aria-pressed').then((v) => v === 'true').catch(() => false));
+    check('UI-F users: one way to open a person (the name), no separate Manage column', (await page.getByRole('columnheader', { name: 'Manage' }).count()) === 0);
     await open(page, '/platform');
     check('site admin: /platform is a 404', await page.getByText('This page could not be found.').isVisible());
     await ctx.close(); }
@@ -209,10 +273,11 @@ try {
   // 2) Owner, own session
   { const { ctx, page, calls } = await session(browser, { token: T.owner, me: ME.owner });
     await open(page, '/admin/tickets');
-    check('owner (own session): /admin shows the brand picker, not an unscoped back office (UI-2)', await page.getByText('Choose a brand to open').isVisible());
+    check('owner (own session): /admin shows the brand picker, not an unscoped back office (UI-2)', await page.getByRole('heading', { name: 'Brand back office' }).isVisible());
     check('owner: no back-office data request was made without a brand', !calls.some((c) => /^GET \/(admin|tickets)/.test(c)), calls.join());
     await open(page, '/platform'); const pnav = await navTexts(page);
-    check('owner console: system nav incl. moved governance (Audit log, System logs, M-Pesa, Deployment)', ['Platforms', 'Gateways', 'Controls & economy', 'Audit log', 'System logs', 'M-Pesa defaults', 'Deployment'].every((x) => pnav.some((n) => n.includes(x))), pnav.join('|'));
+    check('owner console: system nav incl. moved governance (Audit log, System logs, Deployment)', ['Platforms', 'Gateways', 'Controls & economy', 'Audit log', 'System logs', 'Deployment'].every((x) => pnav.some((n) => n.includes(x))), pnav.join('|'));
+    check('UI-F owner console: M-Pesa defaults is reached from Gateways, not a second nav item', !pnav.some((n) => n.includes('M-Pesa defaults')), pnav.join('|'));
     await open(page, '/admin/mpesa');
     check('owner: old /admin/mpesa forwards to /platform/mpesa', page.url().endsWith('/platform/mpesa'), page.url());
     await ctx.close(); }
@@ -233,11 +298,12 @@ try {
   { const { ctx, page, calls } = await session(browser, { token: T.pa, me: ME.pa });
     await open(page, '/platform'); const pnav = await navTexts(page);
     check('platform admin console: the shell names its platform (UI-8)', await page.locator('aside').getByText('Alpha Platform', { exact: true }).isVisible() && await page.locator('aside').getByText('Platform console', { exact: true }).isVisible());
-    check('platform admin console: NO system nav', !pnav.some((n) => /Platforms|Gateways|Controls|Add-ons|System logs|M-Pesa|Deployment|Brand back office/.test(n)), pnav.join('|'));
+    check('platform admin console: NO system nav', !pnav.some((n) => /Platforms|Gateways|Controls|System logs|M-Pesa|Deployment|Brand back office/.test(n)), pnav.join('|'));
+    check('ADDON-1: platform admins get Add-ons for their brands', pnav.includes('Add-ons'), pnav.join('|'));
     const paHrefs = await page.locator('aside nav a').evaluateAll((as) => as.map((a) => a.getAttribute('href')));
-    check('platform admin console: its only audit trail is the platform-scoped one', paHrefs.includes('/platform/activity') && !paHrefs.includes('/platform/audit'), paHrefs.join('|'));
+    check('UI-F platform admin console: one audit log, the same page as the owner (scoped server-side)', paHrefs.includes('/platform/audit') && !paHrefs.includes('/platform/activity'), paHrefs.join('|'));
     await open(page, '/platform/audit');
-    check('platform admin: /platform/audit is a 404', await page.getByText('This page could not be found.').isVisible());
+    check('UI-F platform admin: /platform/audit opens the audit log', await page.getByRole('heading', { name: 'Audit log' }).isVisible().catch(() => false) && calls.includes('GET /platform/audit-log'), calls.filter((c) => c.includes('audit')).join());
     await open(page, '/platform/onboard');
     check('platform admin: onboarding never calls the owner-only platforms list', !calls.includes('GET /platform/platforms'), calls.filter((c) => c.includes('platforms')).join());
     await open(page, '/admin');
@@ -317,7 +383,7 @@ try {
     check('owner: a brand page can ASSIGN a locked add-on (was: request only)', await page.getByRole('button', { name: 'Assign…' }).first().isVisible());
     check('owner: a brand page can REMOVE an owned non-default add-on', await page.getByRole('button', { name: 'Remove…' }).first().isVisible());
     await page.getByRole('button', { name: 'Assign…' }).first().click();
-    check('owner: assigning states the effect on players and the price first', await page.getByText(/becomes this brand's ACTIVE chart for every player now\. It is billed at KES 5,000/).isVisible());
+    check('owner: assigning states the effect on players and the price first', await page.getByRole('dialog').getByText(/becomes the price chart players see, straight away\. KES 5,000 is added once to the platform's next invoice/).isVisible().catch(() => false));
     await ctx.close(); }
   { const { ctx, page, calls } = await session(browser, { token: T.pa, me: ME.pa });
     await open(page, '/platform/pool');
@@ -328,9 +394,9 @@ try {
     check('platform admin: new ticket says it goes straight to the System owner', await page.getByText('Goes straight to the System owner.').isVisible());
     await page.keyboard.press('Escape');
     await open(page, `/platform/clients/${SITE}`);
-    check('UI-C: add-ons are NOT shown under Identity (own tab)', (await page.getByRole('button', { name: /Request Pro chart/ }).count()) === 0);
+    check('UI-C: add-ons are NOT shown under Identity (own tab)', (await page.getByRole('button', { name: /^Request/ }).count()) === 0);
     await page.getByRole('tab', { name: 'Add-ons' }).click({ timeout: 3000 }).catch(() => {}); await page.waitForTimeout(300);
-    check('platform admin: a brand page offers Request, never Assign', (await page.getByRole('button', { name: 'Assign…' }).count()) === 0 && await page.getByRole('button', { name: /Request Pro chart/ }).isVisible());
+    check('platform admin: a brand page offers Request, never Assign', (await page.getByRole('button', { name: 'Assign…' }).count()) === 0 && await page.getByRole('button', { name: /Request · KES 5,000 one-off/ }).isVisible().catch(() => false));
     await ctx.close(); }
   { const { ctx, page } = await session(browser, { token: T.admin, me: ME.admin });
     await open(page, '/admin/tickets');
@@ -344,17 +410,11 @@ try {
   // 9) docs/42 UI-10: platform-admin player management + one audit trail
   { const { ctx, page, calls, bodies } = await session(browser, { token: T.pa, me: ME.pa });
     await open(page, `/platform/clients/${SITE}`);
-    await page.getByRole('tab', { name: 'Players' }).click({ timeout: 3000 }).catch(() => page.getByRole('button', { name: 'Players' }).click()); await page.waitForTimeout(300);
-    await page.getByText('@target').first().click(); await page.waitForTimeout(500);
+    await page.getByRole('tab', { name: 'People' }).click(); await page.waitForTimeout(300);
+    await page.locator('section[aria-label="Players"]').getByText('@target').first().click(); await page.waitForTimeout(500);
     check('platform admin: selecting a player shows their money + activity (detail)', await page.getByText('Bonus balance').isVisible() && await page.getByText('KES 20').first().isVisible());
-    await page.getByLabel('Wallet').selectOption('bonus');
-    await page.getByLabel('Amount (KES)').fill('100');
-    await page.getByLabel('Reason').fill('goodwill');
-    await page.getByRole('button', { name: 'Review adjustment' }).click();
-    check('platform admin: the confirm names the wallet and shows before -> after', await page.getByText(/bonus \(non-withdrawable\) balance/).isVisible() && await page.getByText('KES 120').isVisible());
-    await page.getByRole('button', { name: 'Confirm adjustment' }).click(); await page.waitForTimeout(400);
-    const adj = bodies.find(([k]) => k === 'POST /platform/sites/' + SITE + '/users/u-target/balance');
-    check('platform admin: the adjustment is sent for the BONUS wallet (was: never sent, always real cash)', adj && adj[1]?.kind === 'bonus' && adj[1]?.amountCents === 10000, JSON.stringify(adj));
+    check('UI-F platform admin: balance changes live in the back office only (no second form here)', (await page.getByRole('button', { name: 'Review adjustment' }).count()) === 0 && await page.getByRole('button', { name: 'Manage in back office' }).isVisible());
+    check('UI-F platform admin: brand admins are managed on the same People tab', await page.getByRole('region', { name: 'Brand admins' }).isVisible().catch(() => false) || await page.getByText('Brand admins', { exact: true }).isVisible());
     await page.getByText('Game overrides for this player').click(); await page.waitForTimeout(400);
     check('platform admin: player overrides are editable in the console (was: no UI)', await page.getByLabel('Win rate (0–1)').isVisible());
     await page.getByLabel('Win rate (0–1)').fill('0.9');
@@ -366,6 +426,7 @@ try {
     await open(page, '/platform'); const nav = await navTexts(page);
     check('platform admin: nav has ONE audit trail across its brands (Audit log)', nav.filter((n) => n.includes('Audit log')).length === 1, nav.join('|'));
     await open(page, '/platform/activity');
+    check('UI-F platform admin: the old /platform/activity forwards to the one audit log', page.url().includes('/platform/audit'), page.url());
     check('platform admin: the audit trail names the brand and the person', await page.getByText('@siteadmin').isVisible() && await page.getByRole('cell', { name: 'Tamu Traders' }).first().isVisible());
     check('platform admin: the audit trail uses the platform-scoped route', calls.includes('GET /platform/audit-log'), calls.filter((c) => c.includes('audit')).join());
     await ctx.close(); }
@@ -405,7 +466,7 @@ try {
   // UI-A (console shell): grouped + labelled navigation, a header that stays inside the sidebar, one current
   // item that follows the route, distinct icons, and — on a phone — a drawer that holds the nav AND the account.
   const OWNER_ROUTES = ['/platform', '/platform/tickets', '/platform/platforms', '/platform/onboard', '/platform/registrar', '/admin',
-    '/platform/payment-accounts', '/platform/payments', '/platform/mpesa', '/platform/pool', '/platform/billing', '/platform/addons',
+    '/platform/payment-accounts', '/platform/payments', '/platform/pool', '/platform/billing', '/platform/addons',
     '/platform/config', '/platform/audit', '/platform/logs', '/platform/engine'];
   { const { ctx, page } = await session(browser, { token: T.owner, me: ME.owner });
     await open(page, '/platform/engine');
@@ -418,12 +479,15 @@ try {
     check('UI-A owner: exactly one current item, and it is the open route', (await cur.count()) === 1 && (await cur.getAttribute('href')) === '/platform/engine');
     const hrefs = await page.locator('aside nav a').evaluateAll((as) => as.map((a) => a.getAttribute('href')));
     check('UI-A owner: every console route stays reachable from the nav', OWNER_ROUTES.every((h) => hrefs.includes(h)), hrefs.join('|'));
+    await open(page, '/platform/mpesa');
+    check('UI-F owner: M-Pesa defaults keeps "Gateways" current', (await page.locator('aside [aria-current="page"]').getAttribute('href').catch(() => null)) === '/platform/payments');
+    await open(page, '/platform/engine');
     const glyphs = await page.locator('aside nav a svg').evaluateAll((ss) => ss.map((s) => s.innerHTML));
     check('UI-A owner: every nav item has its own icon', glyphs.length === new Set(glyphs).size, `${glyphs.length} icons, ${new Set(glyphs).size} distinct`);
     await open(page, `/platform/clients/${SITE}`);
     check('UI-A owner: a brand page keeps "Overview" current', (await page.locator('aside [aria-current="page"]').getAttribute('href').catch(() => null)) === '/platform');
     await open(page, '/admin');
-    check('UI-A owner: the brand picker opens inside the console, with "Brand back office" current', await page.getByText('Choose a brand to open').isVisible() && (await page.locator('aside [aria-current="page"]').getAttribute('href').catch(() => null)) === '/admin');
+    check('UI-A owner: the brand picker opens inside the console, with "Brand back office" current', await page.getByRole('heading', { name: 'Brand back office' }).isVisible() && (await page.locator('aside [aria-current="page"]').getAttribute('href').catch(() => null)) === '/admin');
     await ctx.close(); }
   { const { ctx, page } = await session(browser, { token: T.admin, me: ME.admin });
     await open(page, '/admin/withdrawals');
@@ -523,13 +587,176 @@ try {
     check('POOL-1: the owner can view every platform at once', await page.getByRole('option', { name: 'All platforms' }).count() === 1);
     await ctx.close(); }
 
+
+  // BILL-1: platform admin — what is owed, one clear Pay action (M-Pesa STK), invoices; no owner money controls.
+  { const { ctx, page, bodies } = await session(browser, { token: T.pa, me: ME.pa });
+    await open(page, '/platform/billing');
+    const banner = await page.getByRole('alert').first().innerText().catch(() => '');
+    check('BILL-1: a platform in its grace period sees when its brands go offline, and what it owes', /keep your brands online/.test(banner) && /KES 45,000/.test(banner), banner.slice(0, 200));
+    check('BILL-1: the plan, next-invoice estimate and usage are shown', await page.getByText('Your plan', { exact: true }).isVisible().catch(() => false) && await page.getByText('Estimated total').isVisible().catch(() => false) && /812/.test(await page.getByRole('meter', { name: 'Players' }).locator('..').innerText().catch(() => '')));
+    check('BILL-1: invoices show a plain overdue state', await page.getByText('Overdue 5 days').first().isVisible().catch(() => false));
+    check('BILL-1: platform admins get no owner money controls', !(await page.getByRole('button', { name: 'Run billing now' }).count()) && !(await page.getByRole('tab', { name: 'Settings' }).count()));
+    await page.getByRole('alert').getByRole('button', { name: /Pay KES 45,000/ }).click({ timeout: 3000 }).catch(() => {}); await page.waitForTimeout(300);
+    const phone = await page.getByLabel('M-Pesa phone number').inputValue().catch(() => '');
+    check('BILL-1: Pay now pre-fills the admin’s own phone', phone === '0700000003', phone);
+    await page.getByRole('button', { name: /Send prompt for KES 45,000/ }).click({ timeout: 3000 }).catch(() => {}); await page.waitForTimeout(400);
+    const sent = bodies.find(([k]) => k === 'POST /platform/billing/invoices/inv-1/pay');
+    check('BILL-1: Pay now sends the STK request for that invoice with the phone', !!sent && sent[1]?.phone === '0700000003', JSON.stringify(bodies.map(([k]) => k)));
+    check('BILL-1: then it says to check the phone', await page.getByText('Check your phone').isVisible().catch(() => false));
+    await open(page, '/platform/billing/invoices/inv-1');
+    const doc = await page.getByRole('article').innerText().catch(() => '');
+    check('BILL-1: the invoice page is a proper invoice (seller, bill-to, lines by brand, amount due, reference)',
+      /TrioCodes Ltd/.test(doc) && /Bill to[\s\S]*Alpha Platform/i.test(doc) && /Area graph — Tamu Traders/.test(doc) && /Amount due[\s\S]*KES 45,000/i.test(doc) && /TRIO2600007/.test(doc), doc.slice(0, 300));
+    check('BILL-1: a platform admin cannot record, void or write off', !(await page.getByRole('button', { name: 'Record payment' }).count()) && !(await page.getByRole('button', { name: 'Void' }).count()) && await page.getByRole('button', { name: /Pay KES 45,000/ }).isVisible());
+    await ctx.close(); }
+  { const { ctx, page } = await session(browser, { token: T.pa, me: ME.pa, viewport: { width: 390, height: 844 } });
+    await open(page, '/platform/billing');
+    const w = await page.evaluate(() => document.documentElement.scrollWidth);
+    check('BILL-1: the billing page fits a phone (no sideways scroll)', w <= 392, String(w));
+    check('BILL-1: on a phone invoices are cards with a Pay button', await page.getByRole('list', { name: 'Invoices' }).getByRole('button', { name: /Pay KES 45,000/ }).isVisible().catch(() => false));
+    await ctx.close(); }
+
+  // BILL-1: owner — revenue overview, invoice filters, settings, manual invoice, record payment, credit.
+  { const { ctx, page, full, bodies } = await session(browser, { token: T.owner, me: ME.owner });
+    await open(page, '/platform/billing');
+    check('BILL-1: the owner sees recurring revenue, what is owed and how late', await page.getByText('Monthly recurring').isVisible().catch(() => false) && await page.getByText('Money owed, by how late it is').isVisible().catch(() => false));
+    const att = await page.locator('section').filter({ hasText: 'Needs attention' }).first().innerText().catch(() => '');
+    check('BILL-1: "Needs attention" lists the platform in its final notice with the amount', /Alpha Platform/.test(att) && /Final notice/.test(att) && /KES 45,000/.test(att), att.slice(0, 200));
+    await page.getByRole('tab', { name: 'Invoices' }).click(); await page.waitForTimeout(200);
+    await page.getByRole('tab', { name: 'Overdue' }).click(); await page.waitForTimeout(400);
+    check('BILL-1: the Overdue filter asks the API for overdue invoices', full.some((c) => c.startsWith('GET /platform/billing/invoices?') && c.includes('status=overdue')), full.filter((c) => c.includes('/billing/invoices')).join('|'));
+    check('BILL-1: the tab is kept in the URL', page.url().includes('tab=invoices'));
+    await page.getByRole('tab', { name: 'Settings' }).click(); await page.waitForTimeout(300);
+    await page.getByLabel('Tax rate (%)').fill('16'); await page.waitForTimeout(100);
+    check('BILL-1: settings show the unsaved-change bar and the overdue timeline', await page.getByText('1 unsaved change').isVisible().catch(() => false) && await page.getByRole('list', { name: 'Overdue timeline' }).isVisible());
+    await page.getByRole('button', { name: 'Save changes' }).click(); await page.waitForTimeout(400);
+    const st = bodies.find(([k]) => k === 'PATCH /platform/billing/settings');
+    check('BILL-1: saving sends only what changed (16% = 1600 basis points)', !!st && JSON.stringify(st[1]) === '{"taxRateBp":1600}', JSON.stringify(st?.[1]));
+    await page.getByRole('button', { name: 'New invoice' }).click(); await page.waitForTimeout(200);
+    await page.getByLabel('Platform').last().selectOption(PLATFORM).catch(() => {});
+    await page.getByLabel('Line 1 description').fill('Custom domain setup');
+    await page.getByLabel('Line 1 quantity').fill('2');
+    await page.getByLabel('Line 1 unit price').fill('2,500');
+    await page.getByRole('button', { name: /Send invoice/ }).click(); await page.waitForTimeout(400);
+    const ni = bodies.find(([k]) => k === 'POST /platform/billing/invoices');
+    check('BILL-1: a manual invoice sends its lines in cents with the quantity', !!ni && ni[1]?.platformId === PLATFORM && JSON.stringify(ni[1]?.lines) === '[{"description":"Custom domain setup","unitCents":250000,"quantity":2}]', JSON.stringify(ni?.[1]));
+    await open(page, '/platform/billing/invoices/inv-1');
+    await page.getByRole('button', { name: 'Record payment' }).click(); await page.waitForTimeout(200);
+    check('BILL-1: recording a payment defaults to the full balance', (await page.getByLabel('Amount (KES)').inputValue()) === '45000');
+    await page.getByLabel('Reference').fill('KCB-778');
+    await page.getByRole('dialog').getByRole('button', { name: 'Record payment' }).click(); await page.waitForTimeout(400);
+    const rp = bodies.find(([k]) => k === 'POST /platform/billing/invoices/inv-1/payments');
+    check('BILL-1: the payment is recorded as a bank transfer for the full balance with its reference', !!rp && rp[1]?.method === 'bank' && rp[1]?.amountCents === 4500000 && rp[1]?.reference === 'KCB-778', JSON.stringify(rp?.[1]));
+    await open(page, '/platform/billing?tab=subscriptions');
+    await page.getByRole('button', { name: 'Manage' }).first().click(); await page.waitForTimeout(300);
+    await page.getByRole('button', { name: 'Add charge or credit' }).click(); await page.waitForTimeout(150);
+    await page.getByRole('radio', { name: /Credit/ }).click();
+    await page.getByLabel('Description').fill('Downtime credit'); await page.getByLabel('Amount (KES)').fill('1000');
+    await page.getByRole('button', { name: 'Add credit' }).click(); await page.waitForTimeout(400);
+    const cr = bodies.find(([k]) => k === 'POST /platform/billing/charges');
+    check('BILL-1: a credit is sent as a negative amount for the next invoice', !!cr && cr[1]?.amountCents === -100000 && cr[1]?.platformId === PLATFORM, JSON.stringify(cr?.[1]));
+    await ctx.close(); }
+
+
+  // ADDON-1: owner — requests with the brand's reason and the billing consequence, catalog pricing model, brand matrix.
+  { const { ctx, page, bodies } = await session(browser, { token: T.owner, me: ME.owner });
+    await open(page, '/platform/addons');
+    check('ADDON-1: the owner lands on the requests inbox with the count', await page.getByRole('tab', { name: 'Requests (1)' }).isVisible().catch(() => false));
+    const inbox = await page.getByRole('list', { name: 'Requests' }).innerText().catch(() => '');
+    check('ADDON-1: a request shows product, brand, platform, quoted price and the brand’s reason',
+      /Area graph/.test(inbox) && /Tamu Traders/.test(inbox) && /Alpha Platform/.test(inbox) && /KES 3,000 \/ month \+ KES 1,000 setup/.test(inbox) && /Players asked/.test(inbox), inbox.slice(0, 300));
+    await page.getByRole('button', { name: 'Approve…' }).click(); await page.waitForTimeout(200);
+    check('ADDON-1: approving states exactly what gets billed', await page.getByRole('dialog').getByText(/KES 3,000 a month is added to the platform's invoices from the next renewal, plus a one-off KES 1,000 setup fee/).isVisible().catch(() => false));
+    await page.getByLabel(/Note to the brand/).fill('Live now');
+    await page.getByRole('button', { name: 'Approve and assign' }).click(); await page.waitForTimeout(400);
+    const dec = bodies.find(([k]) => k === 'POST /addons/requests/9/decide');
+    check('ADDON-1: the decision carries the owner’s note', !!dec && dec[1]?.decision === 'approve' && dec[1]?.note === 'Live now', JSON.stringify(dec?.[1]));
+    await page.getByRole('button', { name: 'Decline…' }).click(); await page.waitForTimeout(200);
+    check('ADDON-1: declining needs a reason the brand will see', await page.getByRole('button', { name: 'Decline', exact: true }).isDisabled().catch(() => false));
+    await page.keyboard.press('Escape');
+    await page.getByRole('tab', { name: 'Catalog' }).click(); await page.waitForTimeout(300);
+    check('ADDON-1: the catalog shows pricing model, setup fee and adoption', await page.getByText('Monthly', { exact: true }).first().isVisible().catch(() => false) && await page.getByText('KES 1,000').first().isVisible().catch(() => false));
+    await page.getByRole('button', { name: 'Edit Pro chart' }).click(); await page.waitForTimeout(200);
+    await page.getByRole('radio', { name: /Monthly/ }).click();
+    await page.getByLabel('Price per month (KES)').fill('2,000'); await page.getByLabel('Setup fee (KES)').fill('500');
+    check('ADDON-1: the editor previews what brands will see', await page.getByText('KES 2,000 / month').last().isVisible().catch(() => false));
+    await page.getByRole('dialog').getByRole('button', { name: 'Save' }).click(); await page.waitForTimeout(400);
+    const up = bodies.find(([k]) => k === 'PATCH /addons/catalog/chart/pro');
+    check('ADDON-1: saving sends the pricing model, price and setup fee in cents', !!up && up[1]?.billingType === 'monthly' && up[1]?.priceCents === 200000 && up[1]?.setupFeeCents === 50000, JSON.stringify(up?.[1]));
+    await page.getByRole('button', { name: 'Edit Classic chart' }).click(); await page.waitForTimeout(200);
+    check('ADDON-1: a category default cannot be priced or hidden', await page.getByRole('radio', { name: /Monthly/ }).isDisabled().catch(() => false) && await page.getByRole('switch', { name: 'Offer to brands' }).isDisabled().catch(() => false));
+    await page.keyboard.press('Escape');
+    await page.getByRole('tab', { name: 'Brands' }).click(); await page.waitForTimeout(300);
+    const row = await page.locator('tbody tr', { hasText: 'Tamu Traders' }).first().innerText().catch(() => '');
+    check('ADDON-1: the brands tab shows what each brand uses and owns', /Pro chart/.test(row) && /Classic terminal/.test(row) && /Deriv UI/.test(row) && /1 request/.test(row), row);
+    await ctx.close(); }
+
+  // ADDON-1: platform admin — marketplace for its brand: request with a reason, switch to an owned system.
+  { const { ctx, page, bodies } = await session(browser, { token: T.pa, me: ME.pa });
+    await open(page, '/platform/addons');
+    check('UI-F platform admin: /platform/addons is an overview that links to each brand\'s Add-ons tab (one marketplace, on the brand)',
+      await page.getByRole('list', { name: "Your brands' add-ons" }).getByRole('link', { name: /Manage add-ons/ }).first().getAttribute('href').then((h) => h === `/platform/clients/${SITE}?tab=addons`).catch(() => false));
+    await open(page, `/platform/clients/${SITE}?tab=addons`);
+    check('ADDON-1: the marketplace shows each add-on with its price and state', await page.locator('[data-addon="chart:area"]').getByText('Requested', { exact: true }).isVisible().catch(() => false)
+      && await page.locator('[data-addon="trade_ui:deriv"]').getByText('Owned', { exact: true }).isVisible().catch(() => false));
+    await page.locator('[data-addon="trade_ui:deriv"]').getByRole('button', { name: 'Use this' }).click(); await page.waitForTimeout(400);
+    const act = bodies.find(([k]) => k === 'POST /addons/activate');
+    check('ADDON-1: a brand switches to a system it owns without asking', !!act && act[1]?.category === 'trade_ui' && act[1]?.key === 'deriv' && act[1]?.site === SITE, JSON.stringify(act?.[1]));
+    await page.locator('[data-addon="chart:pro"]').getByRole('button', { name: /Request/ }).click(); await page.waitForTimeout(200);
+    check('ADDON-1: requesting shows the price and what happens if approved', await page.getByRole('dialog').getByText(/KES 5,000 is added once to the platform's next invoice/).isVisible().catch(() => false));
+    await page.getByLabel(/Why do you want it/).fill('Traders want candles');
+    await page.getByRole('button', { name: 'Send request' }).click(); await page.waitForTimeout(400);
+    const rq = bodies.find(([k]) => k === 'POST /addons/request');
+    check('ADDON-1: the request carries the brand and the reason', !!rq && rq[1]?.site === SITE && rq[1]?.key === 'pro' && rq[1]?.note === 'Traders want candles', JSON.stringify(rq?.[1]));
+    await page.locator('[data-addon="chart:area"]').getByRole('button', { name: 'Withdraw request' }).click(); await page.waitForTimeout(400);
+    check('ADDON-1: an open request can be withdrawn', bodies.some(([k]) => k === 'POST /addons/requests/9/cancel'), bodies.map(([k]) => k).join('|'));
+    const hist = await page.getByRole('list', { name: 'Add-on requests' }).innerText().catch(() => '');
+    check('ADDON-1: request history shows status and the reason', /Waiting for review/.test(hist) && /Players asked/.test(hist), hist.slice(0, 200));
+    await ctx.close(); }
+  { const { ctx, page } = await session(browser, { token: T.pa, me: ME.pa, viewport: { width: 390, height: 844 } });
+    await open(page, '/platform/addons');
+    const w = await page.evaluate(() => document.documentElement.scrollWidth);
+    check('ADDON-1: the add-ons page fits a phone', w <= 392, String(w));
+    await ctx.close(); }
+
+  // UI-F #32: the owner's brand back office picks a platform first, then its brands.
+  { const PICK_SITES = { sites: [
+      { ...SITE_ROW, platformId: PLATFORM },
+      { ...SITE_ROW, siteId: 'site-kilo', slug: 'kilo', name: 'Kilo Bets', primaryDomain: 'kilo.test', platformId: OTHER_PLATFORM },
+      { ...SITE_ROW, siteId: 'site-old', slug: 'old', name: 'Old Brand', primaryDomain: null, status: 'archived', platformId: PLATFORM },
+    ] };
+    const { ctx, page } = await session(browser, { token: T.owner, me: ME.owner, fixtures: { '/platform/sites': PICK_SITES } });
+    await open(page, `/admin?platform=${OTHER_PLATFORM}`);
+    const plats = await page.getByRole('navigation', { name: 'Platforms' }).innerText().catch(() => '');
+    check('UI-F picker: platforms are listed with their brand counts', /Alpha Platform\s*1/.test(plats) && /Beta Platform\s*1/.test(plats), plats);
+    const brands = () => page.getByRole('list', { name: 'Brands' }).innerText().catch(() => '');
+    check('UI-F picker: ?platform= opens that platform and lists only its brands', /Kilo Bets/.test(await brands()) && !/Tamu Traders/.test(await brands()));
+    await page.getByLabel('Search brands').fill('tamu'); await page.waitForTimeout(200);
+    check('UI-F picker: a search with no match here says which platform has it', await page.getByRole('button', { name: 'Alpha Platform (1)' }).isVisible().catch(() => false));
+    await page.getByRole('button', { name: 'Alpha Platform (1)' }).click(); await page.waitForTimeout(200);
+    check('UI-F picker: jumping to that platform shows the brand', /Tamu Traders/.test(await brands()) && page.url().includes(`platform=${PLATFORM}`), page.url());
+    await page.getByLabel('Search brands').fill(''); await page.waitForTimeout(150);
+    check('UI-F picker: archived brands are hidden by default', !/Old Brand/.test(await brands()));
+    await page.getByLabel(/Show archived/).check(); await page.waitForTimeout(150);
+    check('UI-F picker: …and shown on request', /Old Brand/.test(await brands()));
+    check('UI-F picker: every brand opens with one clear action', (await page.getByRole('list', { name: 'Brands' }).getByRole('button', { name: 'Open back office' }).count()) === 2);
+    await open(page, '/admin');
+    check('UI-F picker: the last platform is remembered on this device', /Tamu Traders/.test(await brands()) && !/Kilo Bets/.test(await brands()));
+    await ctx.close(); }
+  { const { ctx, page } = await session(browser, { token: T.owner, me: ME.owner, viewport: { width: 390, height: 844 } });
+    await open(page, '/admin');
+    const w = await page.evaluate(() => document.documentElement.scrollWidth);
+    check('UI-F picker: on a phone the platform is a select and the page fits', await page.getByLabel('Platform', { exact: true }).isVisible().catch(() => false) && w <= 392, String(w));
+    await ctx.close(); }
+
   // UI-D: Gateways as one list incl. M-Pesa, with an in-place "offered to players" switch and plain language.
   { const { ctx, page } = await session(browser, { token: T.owner, me: ME.owner });
     await open(page, '/platform/payments');
     const list = await page.getByRole('list', { name: 'Gateways' }).innerText().catch(() => '');
     check('UI-D: Gateways lists M-Pesa first, with the other gateways', list.indexOf('M-Pesa (Daraja)') >= 0 && list.indexOf('M-Pesa (Daraja)') < list.indexOf('Mega Pay'), list.slice(0, 120));
     check('UI-D: no developer jargon in the gateway list (HMAC, Basic Auth)', !/HMAC|Basic Auth/.test(list));
-    check('UI-D: a gateway that is not set up cannot be switched on for players', await page.getByRole('switch', { name: /Offer .* to players/ }).first().isDisabled().catch(() => false));
+    check('UI-F: the gateway list shows state only — switching happens on the gateway page (one place)', (await page.getByRole('list', { name: 'Gateways' }).getByRole('switch').count()) === 0
+      && (await page.getByRole('list', { name: 'Gateways' }).locator('a[href="/platform/payments/megapay"]').count()) > 0);
     await ctx.close(); }
 } finally {
   await browser.close();

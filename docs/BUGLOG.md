@@ -5,6 +5,178 @@ entry: what, evidence, root cause, impact, and resolution.
 
 ---
 
+## #79 — Opening the sign-in window crashed the whole app (found in e2e before merge) — FIXED (branch `feat/demo-sound-chat-account`)
+- **Found by:** the new `apps/web/e2e/account.e2e.mjs`. After signing out, tapping "Log in" replaced the page with "The app failed to load". The browser console showed React error #310 ("rendered more hooks than during the previous render").
+- **Root cause:** the new two-factor step in `AuthModal` declared its three `useState` hooks after the component's `if (!open) return null`. The first render with the window open ran more hooks than the closed render before it. Every brand's sign-in would have broken. Nothing reached production.
+- **Fix:** the hooks now sit above the early return, and the code step resets when the window closes or the mode changes.
+- **Guard:** a one-off `react-hooks/rules-of-hooks` scan of all of `apps/web/src` is now clean. The repo has no ESLint set up; adding that rule to CI is recommended.
+- **Also fixed during the same e2e pass:**
+  - The account switcher stayed open after a switch. It now closes, as in Deriv's switcher.
+  - On phones the demo banner pushed the buy buttons under the bottom nav. It is now one line on phones.
+  - The chat header said "A live agent is here to help" even when nobody is online. It now says "Our support team replies here".
+
+## #78 — No identity verification for players (ACCT-1) — FIXED (migration 0168)
+- **What:** the mock's "Verify Identity" item had nothing behind it. Brands had no way to collect or review an ID.
+- **Fix:**
+  - Players choose a document type (National ID, passport or driving licence) and enter the name, number and date of birth (18+ only). They upload the front, the back when needed, and a selfie; the phone camera opens directly.
+  - The brand reviews on the new **Identity checks** page and approves, or rejects with a note the player sees. The player's page in the back office shows the latest status.
+  - The database refuses: a second pending submission, re-submitting once verified, another player's file, re-used files, a PDF selfie, over 6 MB, more than 12 unused uploads a day, and reviews outside the reviewer's brands or platform.
+  - Every decision is audited (`kyc.review`). Unused uploads are removed after two days.
+  - Files are served only through signed links that expire after one hour.
+- **Scope note:** verification does **not** block deposits or withdrawals. It is shown to the player and to staff only.
+- **Verification:**
+  - `e2e_identity_verification.py`: 34/34 (BEFORE 0167 / AFTER 0168).
+  - `app.kyc.test.ts` passes, and the scope matrix now covers `/admin/kyc/:id`.
+  - The real-stack e2e covers submit, then review with the three images, then approve, then "verified" in the player's menu.
+
+## #77 — Players could not use two-factor sign-in (ACCT-1) — FIXED (web; API unchanged)
+- **What:** the API already supported TOTP for every role, but the player sign-in window could not send a code. The account menu also had no way to turn it on. A player who enabled 2FA through the API would have been locked out.
+- **Fix:**
+  - A new **Two-Factor Auth** dialog shows a QR code, the key and 8 one-time recovery codes. Two-factor turns on only after the player ticks "I saved my recovery codes" and enters a valid code. The same dialog turns it off.
+  - When needed, sign-in asks for the 6-digit code or a recovery code.
+- **Verification:** the real-stack e2e sets up 2FA with a real TOTP and signs out. It then checks that a wrong code is refused and that the right code signs the player in.
+
+## #76 — "Live Chat" had no human behind it; no WhatsApp contact (CHAT-1) — FIXED (migration 0167)
+- **What:** Live Chat opened the AI assistant widget, or nothing when that widget was off. Players could not reach a person, and brands could not list a WhatsApp number.
+- **Fix:**
+  - **Player side:** a Customer Care chat on every brand, from the top bar, the phone bottom nav and the account menu. It supports text, photos (compressed on the phone), short videos and voice notes, and shows an unread badge. Agents appear as "Support".
+  - **Back office:** **Player chats → Live chat** lists open, resolved or all threads with search. Agents reply with the same attachments and can resolve or reopen. The nav shows an unread count.
+  - **WhatsApp:** each brand can set a WhatsApp number in the console (Brand → Identity). It is shown as "WhatsApp Care" in the account menu and in the chat greeting.
+  - **Database rules:** one open thread per player, and messages always carry the thread's brand. Limits are 5 MB for photos, 15 MB for videos and 3 MB for voice notes. The API refuses cross-brand access.
+  - **Retention:** attachments are removed after 90 days (`CHAT_MEDIA_RETENTION_DAYS`), by a job that runs every 6 hours.
+- **Verification:**
+  - `e2e_live_chat.py`: 30/30.
+  - `app.livechat.test.ts` passes, and the scope matrix covers `/admin/chat/threads/:id`.
+  - The real-stack e2e covers player text and photo, then the agent reply, then the unread badge, then resolve.
+
+## #75 — Demo mode existed in the database but the engine traded it as real money (DEMO-1) — FIXED (engine change authorised by the owner; no migration)
+- **What:** migration 0123 added `wallets.account_mode` and a separate demo balance. The engine, however, only put **marketers** on the demo path. A player switched to demo would still have traded real money against the pool. There was also no switch in the UI.
+- **Fix:**
+  - **Engine** (authorised, "with a demo label"): an account in demo mode is now handled exactly like a marketer demo account. It uses a separate balance, never touches the pool, and positions are flagged `demo`. The mode is read fresh on every trade; marketer status is cached for 60 seconds; if the check fails, the trade takes the real path.
+  - **API:** `POST /wallet/mode` switches accounts, and is refused while a contract is open. `POST /wallet/demo/topup` refills the demo balance to KES 10,000.
+  - **Web:** the balance pill now has a Real/Demo switcher (as in the mock) and a Refresh demo balance button. In demo mode a "Demo account" banner says results can differ from real-money play, and demo trades are tagged DEMO in positions and history.
+- **Verification:**
+  - `app.demo1.test.ts` and `demo1.pg.test.ts` pass.
+  - The real-stack e2e confirms a demo trade moves only the demo balance, while the real balance stays the same.
+
+## #74 — Digits screen: digit row overlapped AUTO/MANUAL on phones; Live Chat button did nothing; no positions, session or history view (DIGITS-UI) — FIXED (branch `ui/digits-mock`, web only; engine untouched)
+- **Found while rebuilding the digits screen to the owner's mocks (desktop and phone):**
+  - **Overlap:** on phones the digit-statistics row sat on top of the AUTO/MANUAL toggle. The centre column was `min-h-0` inside a fixed-height flex column, so it shrank below its content (visible on the pre-change screenshot at 390×844).
+  - **Dead button:** the bottom nav's "Live Chat" opened the support store even when the support widget is switched off, which is the default, so tapping it did nothing.
+  - **Missing views:** there was no Open / Closed view of positions, no session P/L, and no single transaction history. Players had to leave the trade screen for the history page.
+- **Fix (web only):**
+  - **Layout:** on phones the columns no longer shrink below their content.
+  - **Bottom nav:** Live Chat shows only when support chat is on. Otherwise "Guide" opens How to Trade.
+  - **Screen layout (to the mocks):** desktop has a positions rail (Open / Closed / History plus session totals), the chart and digit row in the centre, and the trading console on the right. Phones have market tabs on top and a bottom nav with a Positions sheet.
+  - **Top bar:** Trader's Hub, Deposit, Withdraw, History (the ledger-backed transaction list), AI, How to Trade, the balance pill, notifications and the account menu. The menu includes Change password, using the existing API.
+  - **Chart:** tools for line/area, drawing a horizontal line, PNG export, zoom, show-all and back-to-live, plus an outlined live price tag and a start dot.
+  - **Result card:** P/L, stake, payout, result digit, duration and the contract.
+  - **Auto:** STOP takes the first slot while Auto runs, and the header shows "Auto · <side>".
+  - **Unchanged:** payout figures still come from the engine's 0.95 factor. Nothing in the engine or API changed.
+- **Verification:**
+  - New `apps/web/e2e/digits.e2e.mjs` passes 34/34 against the real local stack (API, engine and web), covering a real trade from open to settle.
+  - The role e2e still passes 198/198.
+  - Screenshots checked at 320, 390, 768, 1440 and 1920 px.
+
+## #73 — Mega Pay "rejected the API key" for the live key; test mislabelled bad keys as valid; saving config would break deposits — FIXED (branch `fix/megapay-live-endpoint`, no migration)
+- **Reported:** Test connection said "✕ Mega Pay rejected the API key" for the key that is collecting live payments.
+- **Evidence:** read-only status queries against Mega Pay with a sentinel id, which never move money.
+  - `/backend/v2` (our default host) answers every real key with "Invalid Api Key. Use Test Api Key: MGPY1EvRts3I". With the test key it answers "Invalid email. Use Test Email: megapaysandboxtest@gmail.com". It is a sandbox.
+  - `/backend/v1` is the only host in Mega Pay's documentation. With the owner's key and account email it answers "Transaction request does not exist!", meaning the key and email were accepted. A wrong key gets "Api Key does not exist!" and a wrong email gets "Email does not exist!".
+  - The email the owner typed (`cosiam22@…`) does not exist on Mega Pay. The account email is `cosialm22@…`.
+  - Live deposits keep working (386 succeeded in 3 days) because they use the deployment's `MEGAPAY_API_BASE`, not the code default.
+- **Root cause:**
+  - The code, the gateway form and the probe all defaulted to `/backend/v2` for both environments. The form's Environment also defaulted to Sandbox.
+  - The probe only looked for "invalid … key". On production it reported a wrong key or wrong email as valid.
+- **Latent risk (worse than the report):** console-saved Mega Pay config layers over env. Saving the live key with the form's default host would have moved live deposits onto the sandbox, and every deposit would have failed. The same applied to per-platform and per-brand Payment accounts, which resolve without env.
+- **Fix:**
+  - The host now follows the environment: production uses `/backend/v1`, sandbox uses `/backend/v2`.
+  - A production config carrying the old v2 default is corrected to v1. A genuinely different host is kept.
+  - The deployment's `MEGAPAY_API_BASE` is still used verbatim, so live deposits are unchanged.
+  - The probe reads Mega Pay's actual messages: wrong key, wrong email, "live key in Sandbox — set Environment to Production", or valid. It never echoes the key.
+  - The form's host field is blank by default ("Automatic (follows Environment)").
+- **Verification:**
+  - `megapay.endpoint.test.ts` has 8 tests built on the recorded live responses.
+  - The existing gateway and Mega Pay tests pass, and `npm test` passes 1177/1177.
+
+## #72 — The same job lived on two or three pages; some links led to a 404; "Needs setup" miscounted brands (UI-F) — FIXED (branch `ui/f-focused-pages`, no migration)
+- **What:** an audit of the console and back office found the same function on several pages, often with different rules.
+  - Pool mode and today's budget could be set from the brand page and the Withdrawal pool page.
+  - A gateway could be switched on from the Gateways list, the gateway page and the brand's Payments tab.
+  - There were two audit trails: `/platform/audit` for the owner and `/platform/activity` for platform admins.
+  - Marketer expenses could be logged from the user page and from Marketer payouts, and the two used different category lists (`tiktok_promo` against `promo`).
+  - Brand admins could be appointed from the user page for the owner only, a path no one could reach.
+  - Player overrides had an editable branch in the back office that could never render.
+  - The back-office Overview repeated the Users, Balances and RTP panels from other pages.
+- **Broken links found along the way:**
+  - Old back-office URLs (`/admin/game`, `/admin/audit`, `/admin/logs`, `/admin/mpesa`, `/admin/fly`) sent brand admins to console pages, which returned a 404.
+  - The users table nested a phone `<a>` inside the name `<Link>`, which is invalid HTML.
+  - Platform-level audit rows (no brand) never showed to platform admins.
+- **Wrong figure:** the console's "Needs setup" KPI counted a brand as not ready unless it had its own legacy M-Pesa fields. Since PAY-1, every brand gets paid through its own accounts, its platform's accounts or the System accounts, so live brands were flagged.
+- **Fix: one home per job, with links everywhere else.**
+  - Brand page tabs are now Identity, Branding, Economy, Add-ons, People and Legal. Pool, payments and audit are links to their own pages.
+  - People covers brand admins (appoint and remove) and a read-only player list with overrides. Its "Manage in back office" button opens the brand session straight on that player.
+  - There is one audit log, `/platform/audit`, scoped on the server. `listPlatformAudit` now includes platform-level rows that target the caller's platform. `/platform/activity` forwards to it.
+  - The Gateways list only shows state. Switching a gateway on happens on the gateway page, where a per-brand switch appears only for brands that own that gateway add-on; brands without it link to their Add-ons tab.
+  - The back-office Overview shows trends plus a "Needs attention" list of deep links. Game health moved to Reports → Health.
+  - Users has quick-filter pills with counts, reads `?status=` and `?role=` from the URL, and drops the repeated columns.
+  - The user page links to Marketer payouts (which reads `?marketer=`) for marketer money, and to the console for brand admins. Its overrides are read-only.
+  - Old URLs go through `MovedToConsole`: operators land on the console page, brand admins on `/admin`.
+  - Readiness now counts only a live domain.
+- **Owner request #32, done in the same change:** the Brand back office picker now has you choose a platform, then a brand. It shows brand counts per platform, keeps the platform in `?platform=`, remembers it on the device, hides archived brands unless asked, says which other platform matches a search, and uses a select on phones.
+- **Verification:**
+  - Role e2e: 198/198 (+17 new UI-F and picker checks).
+  - `npm test`: 1169/1169.
+  - `platformaudit.pg.test.ts` has a new platform-level scope case and passes.
+  - Screenshots taken on the real local stack.
+- **Follow-up (caught during deploy verification):** the first merge did not deploy the API. The new pg test called `listPlatformAudit({ limit })` without `platformId: null`. `tsc -b` type-checks test files, so the deploy's verify step failed, while the per-app `--noEmit` check had passed. Fixed in the test. The pre-merge check is now the same `npx tsc -b packages/shared apps/engine apps/api` that CI runs.
+
+## #71 — Add-ons: paid charts never reached players; catalog, requests and billing gaps (ADDON-1) — FIXED (branch `feat/addon1-marketplace`, migration 0166)
+- **What (owner request, 2026-09-23: "a complete overhaul of the /addons page … a total joke"):**
+  - **Players never saw paid charts (critical, found in the audit).** `/site/brand` coerced every `chart_style` except `candlestick` to `line`. A brand sold *Area graph* (KES 50,000 in production), *OHLC bars* (60,000) or *Baseline* got the free line chart.
+  - The catalog had no descriptions, the pricing model could not be edited, add-ons could not be hidden, and there were no adoption numbers.
+  - Approving or declining a request overwrote the brand's reason, and a request could not be withdrawn. A decline returned `"rejectd"`.
+  - A price change before approval changed what the brand paid. Removing an add-on before it was invoiced still billed it.
+  - Brands could not switch between systems they owned. Platform admins had no add-ons page.
+- **Fix:** see docs/48.
+  - Every chart system is served and rendered: TradingView opens on the brand's series type.
+  - Migration 0166 adds the catalog editor RPC with rules, quoted-price billing, void-on-remove, cancel and activate, the brand matrix, and product-named notices.
+  - New routes; a rebuilt `/platform/addons` (owner: Requests / Catalog / Brands; platform admin: marketplace + history); a marketplace component used on every tier.
+- **Tests:**
+  - `e2e_addon_marketplace.py`: BEFORE 4; AFTER 46. All 39 DB suites pass.
+  - Unit tests: 1169/1169.
+  - Role e2e: 181/181, including 21 new checks.
+  - Real stack: the player page on an Area brand renders the area chart.
+
+---
+
+## #70 — Billing was a stub: no invoices, no way to pay, add-on prices never billed, dunning on dates alone (BILL-1) — FIXED (branch `feat/bill1-billing`, migration 0165)
+- **What (owner request, 2026-09-23: "a really serious /billing page … what we have is a total basic and a joke"):**
+  - There were no invoices. A "payment" was the owner pressing *Mark paid*, which extended the period with no record of what was paid for.
+  - Platforms had no way to pay. Add-on prices were shown ("It is billed at KES X") but never charged.
+  - The cron moved platforms to past_due / grace / suspended purely on dates, even when nothing had been invoiced.
+  - The owner saw each platform's active/archived state, not its subscription standing. There were no revenue figures and no settings.
+- **Fix:** see docs/47.
+  - Migration 0165 adds consolidated per-platform invoices (plan + each brand's monthly add-ons + pending one-off/setup charges), numbered `PREFIX-YYYY-00001` and billed in advance.
+  - Dunning now follows the oldest unpaid invoice (past_due → final notice → suspended), with a reminder at each stage. A paid-up platform returns to active and its brands come back online.
+  - Payments: manual (bank / cash / M-Pesa / other, including part payments) and M-Pesa **Pay now**, an STK push from the System account. Every result is verified with STKPushQuery, success *and* failure, so a forged callback can neither pay nor cancel. A 2-minute sweep settles payments whose callback was lost.
+  - Settlement is idempotent. Overpayments (rounding up to whole KES, or a double settle) and credits larger than an invoice carry forward as credits instead of being lost.
+  - Add-ons get a pricing model (free / one-off / monthly + setup fee). One-off and setup fees are charged on grant, never twice. The System's own platform is exempt, and existing (grandfathered) entitlements are not charged.
+  - Owner console: Overview (MRR/ARR, outstanding, overdue, aging, needs-attention, renewals, payments), Invoices, Subscriptions (manage: plan, charge/credit, status, exempt, history), Plans, Settings (seller, prefix, terms, tax, Pay now, overdue timeline).
+  - Platform admin page: a due banner that states the consequence and date, plan, next-invoice estimate, usage, invoices with Pay, plan comparison.
+  - Printable invoice page.
+- **Found while testing on the real stack:** Pay now pre-filled the phone as `00700000003` when the profile stored `07…` (it only handled `254…`), so the Send button stayed disabled. It is now normalised from any stored form (`localPhone`, unit-tested).
+- **Behaviour change (production):** the daily lifecycle job now issues invoices. NDUATI (Business, KES 40,000) gets its first invoice on its renewal date (2026-10-19), due 7 days later. MUCHENDU (the System's platform) is exempt.
+- **Tests:**
+  - `e2e_billing.py`: BEFORE reproduces 3; AFTER 112 checks.
+  - `e2e_subscriptions_tickets.py` updated to the invoice-driven lifecycle (33/33).
+  - Engine: 5 unit tests. API: 3 route tests and a real-schema pg test. The F-44 cross-tenant matrix now covers the billing routes against a seeded invoice. Web: 4 label tests. Unit total 1167/1167.
+  - All 38 DB e2e suites pass.
+  - Role e2e: 23 new checks; 163/163 pass.
+  - Real stack: Pay now → the stub Daraja client → the reconcile sweep settled the invoice, and the platform went from grace_period to active.
+
+---
+
 ## #69 — No per-brand pool view; dynamic distribution had no setting and was off unless a GitHub variable was set; history hid who got what (POOL-1) — FIXED (branch `feat/pool1-overview-auto`, migration 0164)
 - **What (owner request, 2026-09-23):**
   - Nothing showed each brand's pool for today: budget, paid, reserved and available.

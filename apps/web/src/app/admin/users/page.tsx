@@ -9,7 +9,7 @@ import { StatusBadge } from '@/components/ui/Badge';
 import { formatExact, formatAgo, formatNumber } from '@/lib/format';
 import { ApiError } from '@/lib/api/client';
 import { useToast } from '@/lib/toast/ToastProvider';
-import { PageHeader, StatCard, Section, TableWrap, Th, Td, Empty, Toolbar, FilterSelect, ConfirmButton, SearchInput } from '@/components/admin/ui';
+import { PageHeader, TableWrap, Th, Td, Empty, Toolbar, FilterSelect, ConfirmButton, SearchInput } from '@/components/admin/ui';
 import { useUsers, useOverview, useBulkAction, type UsersFilter } from '@/lib/admin/hooks';
 import type { AdminUserRow, BulkAction, BulkActionInput, NotificationLevel } from '@/lib/admin/types';
 
@@ -19,11 +19,21 @@ const ROLE_OPTS = [
   { value: 'marketer', label: 'Marketers' },
   { value: 'admin', label: 'Admins' },
 ];
+const ROLE_LABEL: Record<string, string> = { marketer: 'Marketer', admin: 'Brand admin', platform_admin: 'Platform admin', platform_superadmin: 'System owner' };
 const STATUS_OPTS = [
   { value: '', label: 'All statuses' },
   { value: 'active', label: 'Active' },
   { value: 'suspended', label: 'Suspended' },
   { value: 'banned', label: 'Banned' },
+];
+
+type Counts = { total?: number; active?: number; suspended?: number; banned?: number; marketers?: number } | undefined;
+const QUICK: { label: string; role: string; status: string; count: (u: Counts) => number }[] = [
+  { label: 'Everyone', role: '', status: '', count: (u) => u?.total ?? 0 },
+  { label: 'Active', role: '', status: 'active', count: (u) => u?.active ?? 0 },
+  { label: 'Suspended', role: '', status: 'suspended', count: (u) => u?.suspended ?? 0 },
+  { label: 'Banned', role: '', status: 'banned', count: (u) => u?.banned ?? 0 },
+  { label: 'Marketers', role: 'marketer', status: '', count: (u) => u?.marketers ?? 0 },
 ];
 
 const kesToCents = (s: string): number | undefined => {
@@ -38,6 +48,12 @@ const intOrU = (s: string): number | undefined => {
 export default function UsersPage() {
   const [role, setRole] = useState('');
   const [status, setStatus] = useState('');
+  // UI-F: the Overview "Needs attention" list links here with ?status=suspended.
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search);
+    const st = q.get('status'); if (st && STATUS_OPTS.some((o) => o.value === st)) setStatus(st);
+    const rl = q.get('role'); if (rl && ROLE_OPTS.some((o) => o.value === rl)) setRole(rl);
+  }, []);
   const [search, setSearch] = useState('');
   const [showAdv, setShowAdv] = useState(false);
 
@@ -102,28 +118,27 @@ export default function UsersPage() {
     <>
       <PageHeader
         title="Users"
-        subtitle="Every account with its wallet balance, lifetime cash flow, game economics and last activity — filter, select, and act in bulk or per user."
+        subtitle="Every account on this brand. Click a name to manage one person; tick several to act on them together."
       />
 
-      <Section title="Population">
-        {overview.isLoading ? (
-          <Skeleton className="h-24 w-full" />
-        ) : (
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-            <StatCard label="Total" value={u?.total ?? 0} />
-            <StatCard label="Active" value={u?.active ?? 0} tone="up" />
-            <StatCard label="Suspended" value={u?.suspended ?? 0} tone="warn" />
-            <StatCard label="Banned" value={u?.banned ?? 0} tone="down" />
-            <StatCard label="Players" value={u?.players ?? 0} />
-            <StatCard label="Staff" value={(u?.admins ?? 0) + (u?.marketers ?? 0)} hint={`${u?.marketers ?? 0} marketers`} />
-          </div>
-        )}
-      </Section>
+      <div className="flex flex-wrap gap-2" role="group" aria-label="Quick filters">
+        {overview.isLoading ? <Skeleton className="h-8 w-80" /> : QUICK.map((qf) => {
+          const on = qf.role === role && qf.status === status;
+          const count = qf.count(u);
+          return (
+            <button key={qf.label} type="button" aria-pressed={on}
+              onClick={() => { setRole(qf.role); setStatus(qf.status); }}
+              className={'inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition ' +
+                (on ? 'border-accent bg-accent text-accent-fg' : 'border-border bg-surface text-muted hover:text-fg')}>
+              {qf.label}<span className={'tabular-nums ' + (on ? '' : 'text-fg')}>{formatNumber(count)}</span>
+            </button>
+          );
+        })}
+      </div>
 
       <Toolbar>
         <SearchInput value={search} onChange={setSearch} placeholder="Search username or phone…" className="sm:w-72" />
         <FilterSelect value={role} onChange={setRole} options={ROLE_OPTS} />
-        <FilterSelect value={status} onChange={setStatus} options={STATUS_OPTS} />
         <Button variant="outline" size="sm" onClick={() => setShowAdv((v) => !v)}>
           {showAdv ? 'Hide filters' : 'More filters'}
           {advCount > 0 ? (
@@ -160,20 +175,13 @@ export default function UsersPage() {
                 <Th>
                   <input type="checkbox" aria-label="Select all loaded" checked={allSelected} onChange={toggleAll} className="h-4 w-4 accent-[var(--accent,#2563eb)]" />
                 </Th>
-                <Th>Player</Th>
-                <Th>Role</Th>
+                <Th>Account</Th>
                 <Th>Status</Th>
-                <Th className="text-right">Real balance</Th>
-                <Th className="text-right">Last funded</Th>
-                <Th className="text-right">Deposits</Th>
-                <Th className="text-right">Withdrawals</Th>
-                <Th className="text-right">Turnover</Th>
-                <Th className="text-right">Net rev (GGR)</Th>
-                <Th className="text-right">Bets</Th>
+                <Th className="text-right">Balance</Th>
+                <Th className="text-right">Deposited / withdrawn</Th>
+                <Th className="text-right"><span title="What the house kept from this account's bets (stakes minus winnings), and how many bets.">House revenue</span></Th>
                 <Th>Last transaction</Th>
                 <Th className="text-right">Last active</Th>
-                <Th className="text-right">Joined</Th>
-                <Th className="text-right">Manage</Th>
               </tr>
             </thead>
             <tbody>
@@ -359,24 +367,32 @@ function UserRow({ r, selected, onToggle }: { r: AdminUserRow; selected: boolean
         <input type="checkbox" aria-label={`Select ${r.username}`} checked={selected} onChange={onToggle} className="h-4 w-4" />
       </Td>
       <Td>
-        <Link href={href} className="group inline-flex flex-col leading-tight">
-          <span className="font-medium text-accent group-hover:underline">@{r.username}</span>
+        <span className="inline-flex flex-col leading-tight">
+          <span className="flex items-center gap-1.5">
+            <Link href={href} className="font-medium text-accent hover:underline">@{r.username}</Link>
+            {r.role !== 'player' ? <span className="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] font-medium text-muted">{ROLE_LABEL[r.role] ?? r.role}</span> : null}
+          </span>
           {r.phone ? (
-            <a href={`tel:${r.phone}`} onClick={(e) => e.stopPropagation()} className="text-[11px] tabular-nums text-muted hover:text-accent hover:underline">{r.phone}</a>
+            <a href={`tel:${r.phone}`} className="text-[11px] tabular-nums text-muted hover:text-accent hover:underline">{r.phone}</a>
           ) : (
             <span className="font-mono text-[10px] text-muted">{r.userId.slice(0, 8)}…</span>
           )}
-        </Link>
+        </span>
       </Td>
-      <Td className="capitalize text-muted">{r.role}</Td>
       <Td><StatusBadge status={r.status} /></Td>
       <Td className="text-right font-medium tabular-nums"><Money cents={r.realBalanceCents} /></Td>
-      <Td className="text-right tabular-nums text-muted">{r.lastFundedCents != null ? <Money cents={r.lastFundedCents} /> : '—'}</Td>
-      <Td className="text-right tabular-nums text-up"><Money cents={r.depositsCents} /></Td>
-      <Td className="text-right tabular-nums text-down"><Money cents={r.withdrawalsCents} /></Td>
-      <Td className="text-right tabular-nums"><Money cents={r.turnoverCents} /></Td>
-      <Td className={'text-right font-medium tabular-nums ' + (r.ggrCents >= 0 ? 'text-up' : 'text-down')}><Money cents={r.ggrCents} /></Td>
-      <Td className="text-right tabular-nums text-muted">{formatNumber(r.betCount)}</Td>
+      <Td className="text-right tabular-nums">
+        <span className="flex flex-col leading-tight">
+          <span className={r.depositsCents > 0 ? 'text-up' : 'text-muted'}><Money cents={r.depositsCents} /></span>
+          {r.withdrawalsCents > 0 ? <span className="text-[11px] text-down">−<Money cents={r.withdrawalsCents} /></span> : <span className="text-[11px] text-muted">no withdrawals</span>}
+        </span>
+      </Td>
+      <Td className="text-right tabular-nums">
+        <span className="flex flex-col leading-tight">
+          <span className={'font-medium ' + (r.ggrCents >= 0 ? 'text-up' : 'text-down')}><Money cents={r.ggrCents} /></span>
+          <span className="text-[11px] text-muted">{formatNumber(r.betCount)} bets</span>
+        </span>
+      </Td>
       <Td>
         {r.lastTxAtMs && r.lastTxKind ? (
           <span className="flex flex-col leading-tight">
@@ -393,8 +409,6 @@ function UserRow({ r, selected, onToggle }: { r: AdminUserRow; selected: boolean
       <Td className="whitespace-nowrap text-right text-xs text-muted">
         {r.lastActiveAtMs ? <span title={formatExact(r.lastActiveAtMs)}>{formatAgo(r.lastActiveAtMs)}</span> : '—'}
       </Td>
-      <Td className="whitespace-nowrap text-right text-xs text-muted"><span title={formatExact(r.createdAtMs)}>{formatAgo(r.createdAtMs)}</span></Td>
-      <Td className="text-right"><Link href={href} className="text-sm font-medium text-accent hover:underline">Open</Link></Td>
     </tr>
   );
 }

@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/Button';
 import { Money } from '@/components/ui/Money';
 import { StatusBadge } from '@/components/ui/Badge';
 import { formatExact, formatAgo } from '@/lib/format';
+import { formatKes } from '@invest254/shared/money';
 import { PageHeader, StatCard, Section, TableWrap, Th, Td, Empty, Toolbar, FilterSelect } from '@/components/admin/ui';
 import { useRowSelection, SelectAllCheckbox, RowCheckbox, BulkBar, downloadCsv, copyText } from '@/components/admin/BulkSelect';
 import { useToast } from '@/lib/toast/ToastProvider';
@@ -108,31 +109,21 @@ export default function FinancePage() {
   const summary = recon.data?.summary ?? [];
 
   const fin = overview.data?.finance;
-  const netCents = fin ? fin.depositsCents - fin.withdrawalsCents : 0;
 
   return (
     <>
       <PageHeader
         title="Finance"
-        subtitle="Every deposit and withdrawal with the player, exact time, amount and status — plus M-Pesa reconciliation for stuck STK pushes."
+        subtitle="Every deposit and withdrawal with the player, exact time, amount and status, plus a check for M-Pesa deposits stuck waiting on the player."
       />
 
-      {/* Money KPIs — the operator's at-a-glance cash position. */}
-      <Section title="Cash position">
-        {overview.isLoading ? (
-          <Skeleton className="h-24 w-full" />
-        ) : (
-          <div className="flex flex-col gap-2">
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-              <StatCard label="Deposits (success)" money={fin?.depositsCents ?? 0} tone="up" />
-              <StatCard label="Withdrawals (M-Pesa)" money={fin?.withdrawalsCents ?? 0} tone="down" hint="real cash out" />
-              <StatCard label="Net cash in" money={netCents} tone={netCents >= 0 ? 'up' : 'down'} hint="deposits − real withdrawals" />
-              <StatCard label="Wallet liability" money={fin?.walletLiabilityCents ?? 0} hint="owed to players" />
-            </div>
-            {/* Pending-withdrawal MODERATION lives in the Withdrawals queue (single owner) — link, don't duplicate the KPI. */}
-            <Link href="/admin/withdrawals" className="self-start text-xs font-medium text-accent hover:underline">
-              {fin?.pendingWithdrawals ?? 0} withdrawal{(fin?.pendingWithdrawals ?? 0) === 1 ? '' : 's'} awaiting moderation → Withdrawals queue
-            </Link>
+      {/* UI-F: money in/out totals live on Overview and Reports; Finance keeps what only it answers. */}
+      <Section title="Owed to players">
+        {overview.isLoading ? <Skeleton className="h-16 w-full" /> : (
+          <div className="flex flex-wrap items-center gap-4 rounded-2xl border border-border bg-surface p-4">
+            <div><div className="text-xs uppercase tracking-wide text-muted">Player balances (wallet liability)</div>
+              <div className="text-xl font-bold tabular-nums">{formatKes(fin?.walletLiabilityCents ?? 0)}</div></div>
+            <p className="max-w-md text-xs text-muted">What players could withdraw right now. Deposits, withdrawals and house revenue over time are on <Link href="/admin/reports" className="text-accent hover:underline">Reports</Link>; requests waiting are on <Link href="/admin/withdrawals" className="text-accent hover:underline">Withdrawals</Link>.</p>
           </div>
         )}
       </Section>

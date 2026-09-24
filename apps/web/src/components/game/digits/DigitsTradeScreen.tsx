@@ -9,7 +9,12 @@ import { VolatilitySelector } from '@/components/game/digits/VolatilitySelector'
 import { EntryScanner, type ScanSuggestion } from '@/components/game/digits/EntryScanner';
 import { DigitResultModal, type DigitResult } from '@/components/game/digits/DigitResultModal';
 import { InsufficientBalanceModal, type InsufficientFundsInfo } from '@/components/game/digits/InsufficientBalanceModal';
-import { DigitHistoryPanel } from '@/components/game/digits/DigitHistoryPanel';
+import { PositionsPanel } from '@/components/game/digits/PositionsPanel';
+import { DIcon } from '@/components/game/digits/icons';
+import type { DerivChartHandle } from '@/components/game/digits/DerivChart';
+import { useDigitSession } from '@/lib/game/digitSession';
+import { useAmountText } from '@/lib/game/useAmountText';
+import { play } from '@/lib/sound/sound';
 import { useInvalidateDigitHistory } from '@/lib/game/useDigitHistory';
 import { useGameSocket, type DigitSettledData } from '@/lib/game/GameSocketProvider';
 import { instrumentById, DEFAULT_INSTRUMENT_ID, type Instrument } from '@/lib/game/instruments';
@@ -85,7 +90,7 @@ function contractLabel(o: Outcome, barrier: number, pick: number): string {
   }
 }
 
-type Pending = { stakeCents: number; outcome: Outcome; manual: boolean; label: string };
+type Pending = { stakeCents: number; outcome: Outcome; manual: boolean; label: string; openedAtMs: number; demo: boolean };
 
 /** Deriv-style binary/digits trade surface — trades REAL contracts against the authoritative engine. */
 export function DigitsTradeScreen() {
@@ -100,6 +105,16 @@ export function DigitsTradeScreen() {
   const toast = useToast();
   const { data: wallet } = useWallet();
   const spendable = (wallet?.real ?? 0) + (wallet?.bonus ?? 0);
+  const amt = useAmountText();
+  // DIGITS-UI: publish the live session to the shell (positions rail/sheet, auto pill, history).
+  const publishOpen = useDigitSession((s) => s.setOpenContract);
+  const publishClosed = useDigitSession((s) => s.addClosed);
+  const publishAuto = useDigitSession((s) => s.setAuto);
+  // Chart tools (DIGITS-UI): line/area, draw a horizontal line, export, zoom/follow.
+  const chartRef = useRef<DerivChartHandle | null>(null);
+  const [chartVariant, setChartVariant] = useState<'line' | 'area'>('line');
+  const [drawMode, setDrawMode] = useState(false);
+  const [railOpen, setRailOpen] = useState(true);
 
   // Site stake limits. Money of record is KES cents; rendered in the brand's display currency.
   // Foreign brands floor at USD_LIMITS.minStake ($5) and never below the site's KES min (mirrors
@@ -225,6 +240,15 @@ export function DigitsTradeScreen() {
       lossStreakRef.current = won ? 0 : lossStreakRef.current + 1;
       setPnl((x) => x + delta);
       setFlash({ won, delta });
+      play(won ? 'win' : 'loss');
+      const nowMs = Date.now();
+      publishOpen(null);
+      if (settled) {
+        publishClosed({
+          id: s.positionId ?? `${nowMs}`, label: settled.label, stakeCents: settled.stakeCents, payoutCents: s.payoutCents,
+          pnlCents: delta, won, digit: s.digit, openedAtMs: settled.openedAtMs, settledAtMs: nowMs, demo: settled.demo,
+        });
+      }
       setSettleMarker({ digit: s.digit, won, tSec: Math.floor((getLastInstrumentTick()?.t ?? Date.now()) / 1000) });
       invalidateHistory(); // persist-backed receipt now exists → refresh the history panel
       // MANUAL trades open a focused result card (receipt); the AUTO bot reports P/L via its own HUD.
@@ -236,12 +260,13 @@ export function DigitsTradeScreen() {
           stakeCents: settled.stakeCents,
           payoutCents: s.payoutCents,
           pnlCents: delta,
+          durationMs: nowMs - settled.openedAtMs,
         });
       }
       window.setTimeout(() => setFlash(null), 900);
     });
     return off;
-  }, [onDigitSettled, invalidateHistory, getLastInstrumentTick]);
+  }, [onDigitSettled, invalidateHistory, getLastInstrumentTick, publishOpen, publishClosed]);
 
   const place = useCallback(
     (outcome: Outcome, cents: number, manual = false): boolean => {
@@ -271,7 +296,10 @@ export function DigitsTradeScreen() {
         return false;
       }
       if (cents > spendable) {
-        if (manual) setNeedFunds({ requiredCents: cents, currentCents: spendable });
+        if (manual) {
+          if (wallet?.mode === 'demo') toast.push({ tone: 'info', title: 'Not enough play money', description: 'Open the account menu and tap “Refresh demo balance”.' });
+          else setNeedFunds({ requiredCents: cents, currentCents: spendable });
+        }
         return false;
       }
       if (winProbability(outcome, barrier) <= 0) {
@@ -280,14 +308,17 @@ export function DigitsTradeScreen() {
       }
       const target = outcome === 'over' || outcome === 'under' ? barrier : outcome === 'matches' || outcome === 'differs' ? pick : 0;
       const label = contractLabel(outcome, barrier, pick);
-      pendingRef.current = { stakeCents: cents, outcome, manual, label };
+      const openedAtMs = Date.now();
+      pendingRef.current = { stakeCents: cents, outcome, manual, label, openedAtMs, demo: wallet?.mode === 'demo' };
       setPendingView({ label, stakeCents: cents });
+      publishOpen({ label, stakeCents: cents, openedAtMs });
+      if (manual) play('place');
       setEntryMarker({ tSec: Math.floor((getLastInstrumentTick()?.t ?? Date.now()) / 1000) });
       setSettleMarker(null);
       openDigit({ instrumentId: instId, kind: outcome, target, stakeCents: cents });
       return true;
     },
-    [token, spendable, openDeposit, openAuth, toast, barrier, pick, instId, instrument, openDigit, minStakeCents, maxStakeCents, getLastInstrumentTick, fmt, both, totalReturnCents],
+    [token, spendable, openDeposit, openAuth, toast, barrier, pick, instId, instrument, openDigit, minStakeCents, maxStakeCents, getLastInstrumentTick, fmt, both, totalReturnCents, publishOpen, wallet?.mode],
   );
 
   // Entry (IN) + settle (result digit) markers for the CURRENT/last contract, drawn on the chart at
@@ -397,304 +428,333 @@ export function DigitsTradeScreen() {
     window.setTimeout(() => setLoadedOutcome(null), 5000);
   }, [running]);
 
+  // DIGITS-UI: the shell's "Auto · <side>" pill follows the running bot.
+  useEffect(() => {
+    publishAuto(running ? { side: outcomesFor(market).find((o) => o.key === autoOutcomeRef.current)?.label ?? autoOutcomeRef.current } : null);
+  }, [running, market, publishAuto]);
+  useEffect(() => () => publishAuto(null), [publishAuto]);
+
+  const bal = spendable;
+  const readout = amountMode === 'payout' ? stakeCents : payoutForStake(stakeCents, primaryProb, PAYOUT_FACTOR);
+
+  // ── Market tabs (phones: full-width row above the chart; desktop: pills in the console) ──
+  const marketTabs = (variant: 'top' | 'console') => (
+    <div className={cn('flex items-center', variant === 'top' ? 'gap-1.5 lg:hidden' : 'hidden gap-2 lg:flex')}>
+      {MARKETS.map((m) => (
+        <button
+          key={m.id}
+          type="button"
+          aria-pressed={market === m.id}
+          onClick={() => { setMarket(m.id); if (running) setRunning(false); }}
+          className={cn(
+            'min-w-0 flex-1 truncate border font-medium transition',
+            variant === 'top' ? 'rounded-xl py-2 text-[clamp(11px,3.3vw,13px)]' : 'rounded-lg py-2 text-[12px]',
+            market === m.id ? 'border-accent bg-accent/10 text-fg' : 'border-border text-muted hover:text-fg',
+          )}
+        >
+          {variant === 'console' ? m.label.replace('Matches/Differs', 'Match / Differ').replace('Even/Odd', 'Even / Odd').replace('Over/Under', 'Over / Under') : m.label}
+        </button>
+      ))}
+    </div>
+  );
+
+  const toolBtn = (label: string, icon: Parameters<typeof DIcon>[0]['name'], onClick: () => void, active = false) => (
+    <button type="button" onClick={onClick} aria-label={label} title={label} aria-pressed={active}
+      className={cn('grid h-7 w-7 place-items-center rounded-md transition', active ? 'bg-accent/15 text-accent' : 'text-muted hover:bg-surface-2 hover:text-fg')}>
+      <DIcon name={icon} className="h-4 w-4" />
+    </button>
+  );
+  const roundBtn = (label: string, icon: Parameters<typeof DIcon>[0]['name'], onClick: () => void) => (
+    <button type="button" onClick={onClick} aria-label={label} title={label}
+      className="grid h-7 w-7 place-items-center rounded-full border border-border bg-bg/80 text-muted backdrop-blur transition hover:text-fg">
+      <DIcon name={icon} className="h-3.5 w-3.5" />
+    </button>
+  );
+
   return (
-    <div className="flex h-full min-h-0 flex-col gap-1.5 overflow-y-auto overflow-x-hidden overscroll-contain p-0.5 pb-2 sm:gap-2 lg:flex-row lg:gap-3 lg:overflow-hidden lg:p-1">
-      {/* Left rail (desktop only): persisted trade history. Mobile keeps history on its own page. */}
-      <aside className="hidden lg:flex lg:w-[300px] lg:shrink-0 lg:min-h-0 lg:flex-col lg:overflow-y-auto">
-        <DigitHistoryPanel />
-      </aside>
+    <div className="flex h-full min-h-0 flex-col gap-2 overflow-y-auto overflow-x-hidden overscroll-contain pb-2 lg:flex-row lg:gap-0 lg:overflow-hidden lg:pb-0">
+      {/* Left rail (desktop): Open / Closed / History + session summary */}
+      {railOpen ? (
+        <aside className="hidden border-r border-border bg-surface lg:flex lg:w-[260px] lg:shrink-0 lg:flex-col">
+          <PositionsPanel onClose={() => setRailOpen(false)} className="h-full" />
+        </aside>
+      ) : null}
 
-      {/* Center pane: market tabs + chart + heatmap + digit selector (chart flex-fills on desktop) */}
-      <div className="flex min-h-0 flex-col gap-1.5 sm:gap-2 lg:min-w-0 lg:flex-1 lg:overflow-hidden">
-      {/* Market tabs — Matches/Differs · Even/Odd · Over/Under (active = outlined accent pill) */}
-      <div className="flex items-center gap-1.5 xs:gap-2">
-        {MARKETS.map((m) => (
-          <button
-            key={m.id}
-            type="button"
-            onClick={() => { setMarket(m.id); if (running) setRunning(false); }}
-            className={cn(
-              'min-w-0 flex-1 truncate rounded-full border px-2 py-1.5 text-[clamp(11px,3.2vw,13px)] font-semibold transition',
-              market === m.id
-                ? 'border-accent bg-accent/10 text-fg'
-                : 'border-transparent text-muted hover:text-fg',
-            )}
-          >
-            {m.label}
-          </button>
-        ))}
-      </div>
+      {/* Center: chart + digit statistics */}
+      <div className="flex shrink-0 flex-col gap-2 lg:min-h-0 lg:min-w-0 lg:flex-1 lg:shrink lg:gap-3 lg:p-3">
+        {marketTabs('top')}
 
-      {/* Chart card — toolbar (1T · instrument · live share) + Deriv-style chart.
-          STABLE HEIGHT (not flex-1): a fixed share of the viewport so toggling AUTO/MANUAL or
-          returning from the AI scanner (which grows the console) can NEVER squeeze the chart — the
-          root scrolls instead. Also must NOT clip (overflow-visible) so the toolbar dropdowns
-          (timeframe / volatility) can extend beyond it; clipping is on the chart canvas only, below. */}
-      <div className="relative flex h-[42vh] min-h-[220px] shrink-0 flex-col rounded-xl border border-border bg-surface lg:h-auto lg:min-h-0 lg:flex-1 lg:shrink">
-        <div className="flex items-center gap-1.5 p-2 pb-1">
-          {/* 1T timeframe / zoom */}
-          <div ref={tfRef} className="relative shrink-0">
-            <button
-              type="button"
-              onClick={() => setTfOpen((v) => !v)}
-              aria-haspopup="listbox"
-              aria-expanded={tfOpen}
-              className="flex h-9 w-9 items-center justify-center rounded-lg border border-border bg-surface-2 text-[12px] font-bold text-accent transition hover:border-accent/60"
-            >
-              {tf.label}
-            </button>
-            {tfOpen ? (
-              <div role="listbox" className="absolute left-0 top-[calc(100%+6px)] z-30 w-28 rounded-lg border border-border bg-surface-2 p-1 shadow-2xl">
-                {TIMEFRAMES.map((o) => (
-                  <button
-                    key={o.label}
-                    type="button"
-                    role="option"
-                    aria-selected={o.label === tf.label}
-                    onClick={() => { setTf(o); setTfOpen(false); }}
-                    className={cn(
-                      'block w-full rounded-md px-2 py-1.5 text-left text-xs font-semibold transition',
-                      o.label === tf.label ? 'bg-accent/15 text-fg' : 'text-muted hover:text-fg',
-                    )}
-                  >
-                    {o.label}
-                  </button>
-                ))}
+        <div className="relative flex h-[34vh] min-h-[220px] shrink-0 flex-col overflow-visible rounded-xl border border-border bg-bg lg:h-auto lg:min-h-0 lg:flex-1 lg:shrink">
+          {/* toolbar: timeframe · instrument · share */}
+          <div className="absolute inset-x-0 top-0 z-20 flex items-start gap-2 p-2 lg:p-3">
+            {!railOpen ? (
+              <button type="button" onClick={() => setRailOpen(true)} className="hidden h-9 items-center gap-1.5 rounded-lg border border-border bg-surface px-2.5 text-[12px] font-semibold text-fg lg:flex">
+                <DIcon name="clock" className="h-4 w-4" />Positions
+              </button>
+            ) : null}
+            <div ref={tfRef} className="relative shrink-0">
+              <button type="button" onClick={() => setTfOpen((v) => !v)} aria-haspopup="listbox" aria-expanded={tfOpen} aria-label="Timeframe"
+                className="grid h-9 w-9 place-items-center rounded-lg border border-accent/30 bg-accent/10 text-[12px] font-bold text-accent transition hover:border-accent/60">
+                {tf.label}
+              </button>
+              {tfOpen ? (
+                <div role="listbox" className="absolute left-0 top-[calc(100%+6px)] z-30 w-28 rounded-lg border border-border bg-surface-2 p-1 shadow-2xl">
+                  {TIMEFRAMES.map((o) => (
+                    <button key={o.label} type="button" role="option" aria-selected={o.label === tf.label} onClick={() => { setTf(o); setTfOpen(false); }}
+                      className={cn('block w-full rounded-md px-2 py-1.5 text-left text-xs font-semibold transition', o.label === tf.label ? 'bg-accent/15 text-fg' : 'text-muted hover:text-fg')}>
+                      {o.label}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+            <div className="min-w-0">
+              <VolatilitySelector wide instrument={instrument} price={snap.price || null} changePct={snap.changePct}
+                onSelect={(i) => { setInstId(i.id); if (running) setRunning(false); }} />
+            </div>
+            <span title={`${shareLabel} over the last ${WINDOW} ticks`}
+              className="ml-auto shrink-0 rounded-lg border border-border bg-surface px-2 py-1 text-[11px] font-semibold tabular-nums text-fg">
+              {Math.round(sharePct)}%
+            </span>
+          </div>
+
+          {/* chart */}
+          <div className="relative min-h-0 flex-1 overflow-hidden rounded-xl pt-12 lg:pt-14">
+            <DerivChart
+              ref={chartRef}
+              getTicks={getInstrumentTicks}
+              getLastTick={getLastInstrumentTick}
+              resetKey={instrumentResetKey}
+              barSpacing={tf.barSpacing}
+              markers={chartMarkers}
+              variant={chartVariant}
+              drawMode={drawMode}
+              onLineDrawn={() => setDrawMode(false)}
+            />
+            {/* drawing tools (desktop) */}
+            <div className="absolute left-2 top-14 z-10 hidden flex-col gap-1 lg:flex">
+              {toolBtn('Line chart', 'line', () => setChartVariant('line'), chartVariant === 'line')}
+              {toolBtn('Area chart', 'bars', () => setChartVariant('area'), chartVariant === 'area')}
+              {toolBtn(drawMode ? 'Click the chart to draw a line' : 'Draw a horizontal line (double-click to clear)', 'pencil', () => setDrawMode((v) => !v), drawMode)}
+              {toolBtn('Download chart', 'download', () => chartRef.current?.download(`${instrument.short.replace(/\s+/g, '-')}.png`))}
+            </div>
+            {/* zoom (desktop) */}
+            <div className="absolute bottom-8 left-2 z-10 hidden flex-col items-center gap-1.5 lg:flex">
+              {roundBtn('Zoom in', 'plus', () => chartRef.current?.zoomIn())}
+              {roundBtn('Show all', 'crosshair', () => chartRef.current?.fit())}
+              {roundBtn('Zoom out', 'minus', () => chartRef.current?.zoomOut())}
+              <button type="button" onClick={() => { chartRef.current?.followLive(); chartRef.current?.clearLines(); }} aria-label="Back to live price" title="Back to live price"
+                className="mt-1 grid h-8 w-8 place-items-center rounded-lg bg-accent text-accent-fg shadow-[0_0_14px_-4px_var(--pp-accent)]">
+                <DIcon name="refresh" className="h-4 w-4" strokeWidth={2.2} />
+              </button>
+            </div>
+            {pendingView ? (
+              <div className="pointer-events-none absolute inset-x-0 top-14 mx-auto flex w-fit items-center gap-2 rounded-full border border-accent/40 bg-surface/90 px-3 py-1 text-[12px] font-semibold text-fg shadow-lg backdrop-blur">
+                <span className="h-3 w-3 animate-spin rounded-full border-2 border-accent/30 border-t-accent" />
+                {pendingView.label} · {amt.text(pendingView.stakeCents)}
+              </div>
+            ) : null}
+            {flash ? (
+              <div className={cn('pointer-events-none absolute inset-x-0 top-14 mx-auto w-fit rounded-full px-3.5 py-1 text-[13px] font-bold shadow-lg', flash.won ? 'bg-up text-white' : 'bg-down text-white')}>
+                {flash.won ? 'WON ' : 'LOST '}{amt.signed(flash.delta)}
               </div>
             ) : null}
           </div>
-
-          {/* Instrument dropdown (wide toolbar variant) — dynamic width, hugs content */}
-          <div className="min-w-0">
-            <VolatilitySelector
-              wide
-              instrument={instrument}
-              price={snap.price || null}
-              changePct={snap.changePct}
-              onSelect={(i) => { setInstId(i.id); if (running) setRunning(false); }}
-            />
-          </div>
-
-          {/* Live share badge (market-aware) — pinned right */}
-          <span
-            title={`${shareLabel} over last ${WINDOW} ticks`}
-            className="ml-auto shrink-0 self-center rounded-lg border border-border bg-surface-2 px-2 py-1 text-[11px] font-bold tabular-nums text-fg"
-          >
-            {Math.round(sharePct)}%
-          </span>
         </div>
 
-        <div className="relative min-h-0 flex-1 overflow-hidden rounded-b-xl">
-          <DerivChart
-            getTicks={getInstrumentTicks}
-            getLastTick={getLastInstrumentTick}
-            resetKey={instrumentResetKey}
-            barSpacing={tf.barSpacing}
-            markers={chartMarkers}
-          />
-          {pendingView ? (
-            <div className="pointer-events-none absolute inset-x-0 top-2 mx-auto flex w-fit items-center gap-2 rounded-full border border-accent/40 bg-surface-2/90 px-3 py-1 text-[12px] font-semibold text-fg shadow-lg backdrop-blur">
-              <span className="h-3 w-3 animate-spin rounded-full border-2 border-accent/30 border-t-accent" />
-              {pendingView.label} · {fmt(pendingView.stakeCents)}
-            </div>
-          ) : null}
-          {flash ? (
-            <div
-              className={cn(
-                'pointer-events-none absolute inset-x-0 top-2 mx-auto w-fit rounded-full px-3.5 py-1 text-[13px] font-bold shadow-lg',
-                flash.won ? 'bg-up text-white' : 'bg-down text-white',
-              )}
-            >
-              {flash.won ? 'WON ' : 'LOST '}
-              {flash.won ? '+' : ''}{fmt(flash.delta)}
-            </div>
-          ) : null}
-        </div>
+        <DigitHeatmap freqs={snap.freqs} current={snap.digit} />
       </div>
 
-      {/* Live digit-frequency stats (read-only): current digit ringed, hottest green, coldest red */}
-      <DigitHeatmap
-        freqs={snap.freqs}
-        current={snap.digit}
-        selected={null}
-        selectable={false}
-      />
+      {/* Right: trading console */}
+      <div className="flex shrink-0 flex-col gap-2.5 lg:min-h-0 lg:w-[340px] lg:shrink-0 lg:gap-3 lg:overflow-y-auto lg:border-l lg:border-border lg:bg-surface lg:p-4">
+        <div className="hidden items-center justify-between lg:flex">
+          <span className="text-[11px] font-medium uppercase tracking-[0.16em] text-muted">Trading mode</span>
+          <span className="text-[10px] tabular-nums text-muted">Bal {amt.prefix}{amt.num(bal)}</span>
+        </div>
 
-      {/* DIGIT selector — barrier (Over/Under) or prediction (Match/Differ). Hidden for Even/Odd.
-          "DIGIT" hugs the left; the numbers group to the right with a clear gap between them. */}
-      {needsDigit ? (
-        <div className="flex items-center gap-4 rounded-lg border border-border bg-surface-2 px-3 py-2">
-          <span className="shrink-0 text-[10px] font-bold uppercase tracking-[0.15em] text-muted">Digit</span>
-          <div className="flex flex-1 items-center justify-between">
-            {Array.from({ length: 10 }, (_, d) => (
-              <button
-                key={d}
-                type="button"
-                onClick={() => onSelectDigit(d)}
-                aria-pressed={selectorValue === d}
-                aria-label={`${market === 'overunder' ? 'Barrier' : 'Prediction'} digit ${d}`}
-                className={cn(
-                  'flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[13px] font-bold tabular-nums transition',
-                  selectorValue === d ? 'border border-accent text-fg' : 'text-muted hover:text-fg',
-                )}
-              >
-                {d}
+        {wallet?.mode === 'demo' ? (
+          <div role="note" className="flex items-center gap-2 rounded-xl border border-warn/40 bg-warn/10 px-3 py-1.5 text-[11px] leading-snug text-warn lg:items-start lg:py-2 lg:text-[12px]">
+            <span className="grid h-4 w-4 shrink-0 place-items-center rounded-full bg-warn text-[9px] font-bold text-black lg:mt-0.5">D</span>
+            {/* phone: one line, so the buy buttons stay above the fold */}
+            <span className="min-w-0 truncate lg:hidden"><b>Demo</b> · play money · results can differ from real play</span>
+            <span className="hidden lg:inline"><b>Demo account</b> — play money that can’t be withdrawn. Results can differ from real-money play.</span>
+          </div>
+        ) : null}
+
+        {/* AUTO / MANUAL */}
+        <div className="flex rounded-xl border border-border bg-bg/60 p-1">
+          {(['auto', 'manual'] as const).map((m) => (
+            <button key={m} type="button" aria-pressed={mode === m}
+              onClick={() => { setMode(m); if (running) setRunning(false); }}
+              className={cn('flex-1 rounded-lg py-2.5 text-[13px] font-semibold uppercase tracking-wide transition',
+                mode === m ? 'bg-accent text-accent-fg shadow-[0_2px_16px_-4px_var(--pp-accent)]' : 'text-muted hover:text-fg')}>
+              {m}
+            </button>
+          ))}
+        </div>
+
+        {marketTabs('console')}
+
+        {/* SELECT DIGIT — barrier (Over/Under) or prediction (Match/Differ) */}
+        {needsDigit ? (
+          <div className="rounded-xl border border-border bg-bg/40 px-3 py-2.5">
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-[10px] font-medium uppercase tracking-[0.16em] text-muted">Select digit</span>
+              <span className="text-[12px] font-bold tabular-nums text-accent">{selectorValue}</span>
+            </div>
+            <div className="grid grid-cols-10 gap-1">
+              {Array.from({ length: 10 }, (_, d) => (
+                <button key={d} type="button" onClick={() => onSelectDigit(d)} aria-pressed={selectorValue === d}
+                  aria-label={`${market === 'overunder' ? 'Barrier' : 'Prediction'} digit ${d}`}
+                  className={cn('grid aspect-square place-items-center rounded-md border text-[12px] font-semibold tabular-nums transition',
+                    selectorValue === d ? 'border-accent bg-accent/15 text-fg shadow-[0_0_10px_-3px_var(--pp-accent)]' : 'border-border text-muted hover:text-fg')}>
+                  {d}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : null}
+
+        {/* STAKE AMOUNT + Stake/Payout (desktop; on phones the caption in the stepper toggles it) */}
+        <div className="hidden items-center justify-between lg:flex">
+          <span className="text-[11px] font-medium uppercase tracking-[0.16em] text-muted">{amountMode === 'payout' ? 'Payout amount' : 'Stake amount'}</span>
+          <div className="flex rounded-lg border border-border bg-bg/60 p-0.5 text-[11px] font-semibold">
+            {(['stake', 'payout'] as const).map((mm) => (
+              <button key={mm} type="button" aria-pressed={amountMode === mm}
+                onClick={() => {
+                  if (mm === amountMode) return;
+                  if (mm === 'payout') setPayoutInput(toAmountStr(payoutForStake(stakeCents, primaryProb, PAYOUT_FACTOR)));
+                  else setStake(toAmountStr(stakeCents));
+                  setAmountMode(mm);
+                }}
+                className={cn('rounded-md px-2.5 py-1 capitalize transition', amountMode === mm ? 'bg-accent text-accent-fg' : 'text-muted hover:text-fg')}>
+                {mm}
               </button>
             ))}
           </div>
         </div>
-      ) : null}
-      </div>
 
-      {/* Right pane: the trade console + AI Entry Scanner (fixed-width rail on desktop) */}
-      <div className="flex min-h-0 flex-col gap-1.5 sm:gap-2 lg:w-[380px] lg:shrink-0 lg:overflow-y-auto">
-      {/* Console */}
-      <div className="flex min-h-0 flex-col gap-1.5">
-        {/* AUTO / MANUAL */}
-        <div className="flex rounded-xl border border-border bg-surface p-1">
-              {(['auto', 'manual'] as const).map((m) => (
-                <button
-                  key={m}
-                  type="button"
-                  onClick={() => { setMode(m); if (running) setRunning(false); }}
-                  className={cn(
-                    'flex-1 rounded-lg py-2 text-[13px] font-extrabold uppercase tracking-wide transition',
-                    mode === m ? 'bg-accent text-accent-fg shadow-[0_2px_16px_-4px_var(--pp-accent)]' : 'text-muted hover:text-fg',
-                  )}
-                >
-                  {m}
+        {/* stepper */}
+        <div className="flex items-center gap-3 rounded-xl border border-border bg-bg/40 px-3 py-2.5">
+          <button type="button" onClick={() => stepStake(-1)} aria-label="Decrease amount"
+            className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-surface-2 text-muted transition hover:text-fg"><DIcon name="minus" className="h-4 w-4" /></button>
+          <div className="flex-1 text-center">
+            <button type="button" onClick={() => {
+                const mm = amountMode === 'payout' ? 'stake' : 'payout';
+                if (mm === 'payout') setPayoutInput(toAmountStr(payoutForStake(stakeCents, primaryProb, PAYOUT_FACTOR)));
+                else setStake(toAmountStr(stakeCents));
+                setAmountMode(mm);
+              }}
+              title="Switch between entering a stake and a target payout"
+              className="text-[10px] font-medium uppercase tracking-[0.16em] text-muted lg:hidden">
+              {amountMode === 'payout' ? 'Payout ⇄' : 'Stake ⇄'}
+            </button>
+            <div className="flex items-baseline justify-center gap-3">
+              <span className="text-[15px] font-semibold text-accent">{symbol}</span>
+              <input inputMode="decimal" value={amountMode === 'payout' ? payoutInput : stake}
+                onChange={(e) => {
+                  const v = e.target.value.replace(/[^0-9.]/g, '').replace(/(\..*)\./g, '$1');
+                  if (amountMode === 'payout') setPayoutInput(v); else setStake(v);
+                }}
+                aria-label={amountMode === 'payout' ? 'Target payout' : 'Stake amount'}
+                className="w-24 bg-transparent text-center font-mono text-[22px] font-bold tabular-nums text-fg outline-none" />
+            </div>
+          </div>
+          <button type="button" onClick={() => stepStake(1)} aria-label="Increase amount"
+            className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-surface-2 text-muted transition hover:text-fg"><DIcon name="plus" className="h-4 w-4" /></button>
+        </div>
+
+        {/* presets */}
+        <div className="grid grid-cols-6 gap-1.5">
+          {presets.map((q) => {
+            const active = Number(amountMode === 'payout' ? payoutInput : stake) === q;
+            const belowMin = amountMode === 'stake' && toKesCents(q) < minStakeCents;
+            return (
+              <button key={q} type="button" disabled={belowMin}
+                onClick={() => (amountMode === 'payout' ? setPayoutInput(String(q)) : setStake(String(q)))}
+                className={cn('rounded-lg border py-1.5 text-[clamp(10.5px,2.8vw,12px)] font-medium tabular-nums transition disabled:cursor-not-allowed disabled:opacity-30',
+                  active ? 'border-accent bg-accent/15 text-fg' : 'border-border bg-bg/40 text-muted hover:text-fg')}>
+                {isForeign ? `${symbol}${q}` : q >= 1000 ? `${q / 1000}k` : q}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* resolved readout (desktop) */}
+        <div className="hidden items-center justify-between rounded-xl border border-border bg-bg/40 px-4 py-3.5 lg:flex">
+          <span className="text-[13px] text-muted">{amountMode === 'payout' ? 'Stake' : 'Payout'}</span>
+          <span className="font-mono text-[18px] font-bold tabular-nums text-fg">{amt.num(readout)} <span className="text-[11px] font-medium text-muted">{amt.code}</span></span>
+        </div>
+
+        {stakeHint ? <p className="text-center text-[11px] text-warn">{stakeHint}</p> : null}
+
+        {/* AUTO settings */}
+        {mode === 'auto' ? (
+          <div className="grid grid-cols-3 gap-2">
+            <BotField icon="target" label="Target" prefix={symbol} value={targetProfit} onChange={setTargetProfit} tone="up" />
+            <BotField icon="stop" label="Stop loss" prefix={symbol} value={stopLoss} onChange={setStopLoss} tone="down" />
+            <BotField icon="mult" label="Mult" prefix="×" value={multiplier} onChange={setMultiplier} />
+          </div>
+        ) : null}
+
+        {/* Buy buttons: stacked cards on desktop, side by side on phones. While AUTO runs, STOP takes the first slot. */}
+        <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-1 lg:gap-3">
+          {(running
+            ? [{ key: 'stop' as const, label: 'Stop' }, ...[primary, secondary].filter((o) => o.key !== autoOutcomeRef.current)]
+            : [primary, secondary]
+          ).map((o, i) => {
+            if (o.key === 'stop') {
+              return (
+                <button key="stop" type="button" onClick={() => setRunning(false)} aria-label="Stop auto trading"
+                  className="flex items-center justify-center gap-2 rounded-2xl bg-warn py-4 text-[17px] font-bold uppercase text-black shadow-[0_0_24px_-8px_var(--pp-warn)] transition hover:brightness-105 lg:py-5">
+                  <span className="h-3.5 w-3.5 rounded-full bg-black" />Stop
                 </button>
-              ))}
-            </div>
-
-            {/* Amount mode: enter a STAKE or a target PAYOUT (resolved against the primary side). */}
-            <div className="flex items-center justify-between">
-              <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-muted">Amount</span>
-              <div className="flex rounded-lg border border-border bg-surface p-0.5 text-[11px] font-bold">
-                {(['stake', 'payout'] as const).map((mm) => (
-                  <button
-                    key={mm}
-                    type="button"
-                    aria-pressed={amountMode === mm}
-                    onClick={() => {
-                      if (mm === amountMode) return;
-                      if (mm === 'payout') setPayoutInput(toAmountStr(payoutForStake(stakeCents, primaryProb, PAYOUT_FACTOR)));
-                      else setStake(toAmountStr(stakeCents));
-                      setAmountMode(mm);
-                    }}
-                    className={cn('rounded-md px-2.5 py-1 capitalize transition', amountMode === mm ? 'bg-accent text-accent-fg' : 'text-muted hover:text-fg')}
-                  >
-                    {mm}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Amount stepper — edits the active quantity (stake, or target payout in payout mode) */}
-            <div className="flex items-center gap-3">
-              <button type="button" onClick={() => stepStake(-1)} aria-label="Decrease amount"
-                className="grid h-9 w-9 shrink-0 place-items-center rounded-full border border-border bg-surface text-xl font-light text-muted transition hover:border-accent/60 hover:text-fg">−</button>
-              <div className="flex-1 text-center">
-                <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-muted">{amountMode === 'payout' ? 'Payout' : 'Stake'}</div>
-                <div className="flex items-baseline justify-center gap-1.5">
-                  <span className="text-base font-bold text-muted">{symbol}</span>
-                  <input
-                    inputMode="decimal"
-                    value={amountMode === 'payout' ? payoutInput : stake}
-                    onChange={(e) => {
-                      const v = e.target.value.replace(/[^0-9.]/g, '').replace(/(\..*)\./g, '$1');
-                      if (amountMode === 'payout') setPayoutInput(v); else setStake(v);
-                    }}
-                    aria-label={amountMode === 'payout' ? 'Target payout' : 'Stake amount'}
-                    className="w-28 bg-transparent text-center text-[20px] font-extrabold tabular-nums text-fg outline-none"
-                  />
-                </div>
-              </div>
-              <button type="button" onClick={() => stepStake(1)} aria-label="Increase amount"
-                className="grid h-9 w-9 shrink-0 place-items-center rounded-full border border-border bg-surface text-xl font-light text-muted transition hover:border-accent/60 hover:text-fg">+</button>
-            </div>
-
-            {/* Presets */}
-            <div className="grid grid-cols-6 gap-1.5 xs:gap-2">
-              {presets.map((q) => {
-                const active = Number(amountMode === 'payout' ? payoutInput : stake) === q;
-                const belowMin = amountMode === 'stake' && toKesCents(q) < minStakeCents;
-                return (
-                  <button
-                    key={q}
-                    type="button"
-                    disabled={belowMin}
-                    onClick={() => (amountMode === 'payout' ? setPayoutInput(String(q)) : setStake(String(q)))}
-                    className={cn(
-                      'rounded-lg border py-1.5 text-[clamp(10.5px,2.8vw,12.5px)] font-semibold tabular-nums transition disabled:cursor-not-allowed disabled:opacity-30',
-                      active ? 'border-accent/55 bg-accent/15 text-fg' : 'border-border bg-surface-2 text-muted hover:text-fg',
-                    )}
-                  >
-                    {isForeign ? `${symbol}${q}` : q >= 1000 ? `${q / 1000}k` : q}
-                  </button>
-                );
-              })}
-            </div>
-
-            {/* Resolved readout: the OTHER quantity — potential payout in Stake mode, required stake
-                in Payout mode — computed against the primary side (Even/Over/Match), like the reference. */}
-            <div className="flex items-center justify-between rounded-lg border border-border bg-surface-2 px-3 py-2">
-              <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-muted">{amountMode === 'payout' ? 'Stake' : 'Payout'}</span>
-              <span className="text-sm font-bold tabular-nums text-fg">{fmt(amountMode === 'payout' ? stakeCents : payoutForStake(stakeCents, primaryProb, PAYOUT_FACTOR))}</span>
-            </div>
-
-            {/* Min/max hint — always shows the site minimum (currency-formatted, never raw cents);
-                becomes a warning when the current stake is out of range. */}
-            <p className={cn('text-center text-[11px]', stakeHint ? 'text-warn' : 'text-muted')}>
-              {stakeHint ?? `Min ${both(minStakeCents)}${maxStakeCents !== undefined ? ` · Max ${both(maxStakeCents)}` : ''}`}
-            </p>
-
-            {/* AUTO-bot params (bot controls — only meaningful in AUTO mode) */}
-            {mode === 'auto' ? (
-              <div className="grid grid-cols-3 gap-2">
-                <BotField icon="target" label="Target" prefix={symbol} value={targetProfit} onChange={setTargetProfit} tone="up" />
-                <BotField icon="stop" label="Stop loss" prefix={symbol} value={stopLoss} onChange={setStopLoss} tone="down" />
-                <BotField icon="mult" label="Mult" prefix="×" value={multiplier} onChange={setMultiplier} />
-              </div>
-            ) : null}
-
-            {/* Dual payout CTAs */}
-            <div className="grid grid-cols-2 gap-3">
-              {[primary, secondary].map((o, i) => {
-                const meta = ctaMeta(o.key);
-                const isUp = i === 0;
-                const active = running && autoOutcomeRef.current === o.key;
-                return (
-                  <button
-                    key={o.key}
-                    type="button"
-                    disabled={meta.disabled || (!running && !stakeValid)}
-                    onClick={() => onCta(o.key)}
-                    className={cn(
-                      'flex items-center justify-between rounded-xl border px-4 py-2.5 text-left transition disabled:opacity-40',
-                      isUp ? 'border-up/40 bg-up/15 text-up hover:bg-up/25' : 'border-down/40 bg-down/15 text-down hover:bg-down/25',
-                      active ? 'ring-2 ring-white/60' : loadedOutcome === o.key ? 'ring-2 ring-accent' : '',
-                    )}
-                  >
-                    <div>
-                      <div className="text-[17px] font-extrabold leading-tight">{mode === 'auto' && active ? 'Stop' : o.label}</div>
-                      <div className="text-[11px] font-semibold tabular-nums opacity-90">{meta.profitPct.toFixed(2)}%</div>
-                    </div>
-                    <div className="text-right">
-                      <div className="text-[15px] font-extrabold tabular-nums">{fmt(meta.ret)}</div>
-                      <div className="text-[11px] font-semibold opacity-75">Payout</div>
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
+              );
+            }
+            const outcome = o.key as Outcome;
+            const meta = ctaMeta(outcome);
+            const isUp = outcome === primary.key;
+            return (
+              <button key={outcome} type="button"
+                aria-label={`Buy ${o.label}: pays ${amt.text(meta.ret)} (${meta.profitPct.toFixed(2)}%)`}
+                disabled={meta.disabled || running || (!stakeValid)}
+                onClick={() => onCta(outcome)}
+                className={cn(
+                  'group rounded-2xl border-[1.5px] text-left transition disabled:opacity-40',
+                  isUp ? 'border-up bg-up/10 hover:bg-up/15' : 'border-down bg-down/10 hover:bg-down/15',
+                  loadedOutcome === outcome ? 'ring-2 ring-accent ring-offset-2 ring-offset-bg' : '',
+                  i === 0 && running ? '' : '',
+                )}>
+                {/* desktop card */}
+                <span className="hidden items-center gap-3 px-4 py-4 lg:flex">
+                  <span className={cn('grid h-10 w-10 shrink-0 place-items-center rounded-xl', isUp ? 'bg-up/20 text-up' : 'bg-down/20 text-down')}>
+                    <DIcon name={isUp ? 'grid' : 'triangle'} className="h-5 w-5" />
+                  </span>
+                  <span className={cn('flex-1 text-[19px] font-bold', isUp ? 'text-up' : 'text-down')}>{o.label}</span>
+                  <span className="text-right">
+                    <span className="block font-mono text-[13px] font-semibold tabular-nums text-fg">{amt.text(meta.ret)}</span>
+                    <span className={cn('block font-mono text-[15px] font-bold tabular-nums', isUp ? 'text-up' : 'text-down')}>{meta.profitPct.toFixed(2)}%</span>
+                  </span>
+                </span>
+                {/* phone card */}
+                <span className="flex items-center justify-between px-3.5 py-3 lg:hidden">
+                  <span>
+                    <span className={cn('block text-[17px] font-bold leading-tight', isUp ? 'text-up' : 'text-down')}>{o.label}</span>
+                    <span className="block text-[11px] font-medium tabular-nums text-muted">{meta.profitPct.toFixed(2)}%</span>
+                  </span>
+                  <span className="text-right">
+                    <span className="block font-mono text-[15px] font-bold tabular-nums text-fg">{amt.prefix}{amt.num(meta.ret)}</span>
+                    <span className="block text-[11px] text-muted">Payout</span>
+                  </span>
+                </span>
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       <EntryScanner currentInstrumentId={instId} busy={running} onApply={applyScan} />
-      </div>
-
       <DigitResultModal result={result} onClose={() => setResult(null)} />
-
       <InsufficientBalanceModal
         info={needFunds}
         onClose={() => setNeedFunds(null)}
@@ -705,7 +765,7 @@ export function DigitsTradeScreen() {
 }
 
 function BotFieldIcon({ kind }: { kind: 'target' | 'stop' | 'mult' }) {
-  const cls = cn('h-3 w-3', kind === 'target' ? 'text-up' : kind === 'stop' ? 'text-down' : 'text-muted');
+  const cls = cn('h-3 w-3', kind === 'target' ? 'text-up' : kind === 'stop' ? 'text-down' : 'text-accent');
   if (kind === 'target') {
     return (
       <svg viewBox="0 0 24 24" className={cls} fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
@@ -743,23 +803,21 @@ function BotField({
   icon: 'target' | 'stop' | 'mult';
 }) {
   return (
-    <label className="flex flex-col gap-1 rounded-xl border border-border bg-surface px-3 py-2">
-      <span className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-muted">
+    <label className="flex flex-col items-center gap-1 rounded-xl border border-border bg-bg/40 px-2 py-2.5 text-center">
+      <span className="flex items-center gap-1 text-[9px] font-medium uppercase tracking-wider text-muted">
         <BotFieldIcon kind={icon} />
         {label}
       </span>
-      <div className="flex items-baseline gap-1">
-        <span className="text-xs font-semibold text-muted">{prefix}</span>
+      <span className="flex items-baseline justify-center gap-0.5">
+        <span className={cn('text-[10px] font-semibold', tone === 'up' ? 'text-up' : tone === 'down' ? 'text-down' : 'text-accent')}>{prefix}</span>
         <input
           inputMode="decimal"
           value={value}
+          aria-label={label}
           onChange={(e) => onChange(e.target.value.replace(/[^0-9.]/g, '').replace(/(\..*)\./g, '$1'))}
-          className={cn(
-            'w-full bg-transparent text-base font-bold tabular-nums outline-none',
-            tone === 'up' ? 'text-up' : tone === 'down' ? 'text-down' : 'text-fg',
-          )}
+          className="w-14 bg-transparent text-center font-mono text-[14px] font-semibold tabular-nums text-fg outline-none"
         />
-      </div>
+      </span>
     </label>
   );
 }

@@ -10,6 +10,7 @@ import type { GatewayFieldDto, ConnResultDto } from '@/lib/platform/endpoints';
 import { GatewayLogo } from '@/components/platform/GatewayLogo';
 import { gatewayCopy } from '@/lib/payments/gatewayCopy';
 import { formatDateTime } from '@/lib/format';
+import { useAddonBrands } from '@/lib/addons/hooks';
 
 const STATUS_STYLES: Record<ConnResultDto['status'], string> = {
   valid: 'bg-emerald-500/15 text-emerald-500 border-emerald-500/30',
@@ -45,6 +46,14 @@ function Detail({ code, schema, config }: { code: string; schema: import('@/lib/
   const { data: sitesData } = usePlatformSites();
   const setGlobal = useSetProviderGlobal();
   const setSite = useSetProviderSite();
+  // UI-F: a brand can only offer a gateway it has as an add-on (M-Pesa is always included). Brands
+  // without it link to their Add-ons tab instead of showing a switch that would do nothing.
+  const addonBrands = useAddonBrands();
+  const ownsGateway = (siteId: string): boolean | null => {
+    if (code === 'mpesa') return true;
+    const b = addonBrands.data?.brands.find((x) => x.site_id === siteId);
+    return b ? b.owned.includes(`payment_gateway:${code}`) : null;
+  };
 
   const provider = providers?.providers.find((p) => p.code === code);
   const sites = sitesData?.sites ?? [];
@@ -197,13 +206,18 @@ function Detail({ code, schema, config }: { code: string; schema: import('@/lib/
                 </div>
                 <div className="flex flex-col gap-2">
                   <div className="text-sm font-medium text-fg">Per brand</div>
-                  <p className="text-xs text-muted">“Default” follows the switch above; On or Off overrides it for that brand only.</p>
+                  <p className="text-xs text-muted">“Default” follows the switch above; On or Off overrides it for that brand only. A brand needs this gateway as an add-on before it can be offered.</p>
                   <ul className="flex max-h-80 flex-col divide-y divide-border overflow-y-auto rounded-xl border border-border" aria-label="Per-brand availability">
                     {sites.filter((s2) => s2.status === 'active').map((s2) => {
                       const st = stateOf(s2.siteId);
                       return (
                         <li key={s2.siteId} className="flex items-center justify-between gap-2 px-3 py-2">
                           <span className="min-w-0 truncate text-sm">{s2.name}</span>
+                          {ownsGateway(s2.siteId) === false ? (
+                            <Link href={`/platform/clients/${s2.siteId}?tab=addons`} className="shrink-0 text-xs text-muted hover:text-accent hover:underline" title="This brand does not have this gateway as an add-on yet">
+                              Not added · Add-ons
+                            </Link>
+                          ) : (
                           <div className="flex shrink-0 rounded-lg border border-border bg-surface p-0.5" role="radiogroup" aria-label={`${schema.displayName} for ${s2.name}`}>
                             {(['inherit', 'on', 'off'] as const).map((opt) => (
                               <button key={opt} type="button" role="radio" aria-checked={st === opt} disabled={setSite.isPending}
@@ -213,6 +227,7 @@ function Detail({ code, schema, config }: { code: string; schema: import('@/lib/
                               </button>
                             ))}
                           </div>
+                          )}
                         </li>
                       );
                     })}

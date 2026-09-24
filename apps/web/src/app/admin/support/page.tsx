@@ -6,6 +6,8 @@ import { StatusBadge } from '@/components/ui/Badge';
 import { Modal } from '@/components/ui/Modal';
 import { formatRelativeTime } from '@/lib/format';
 import { PageHeader, TableWrap, Th, Td, Empty, Toolbar, FilterSelect } from '@/components/admin/ui';
+import { PageTabs, useTabParam } from '@/components/admin/Tabs';
+import { LiveChatInbox } from '@/components/chat/LiveChatInbox';
 import { useSupportConversations, useSupportThread } from '@/lib/support/operatorHooks';
 import type { SupportConversationDto, SupportMessageDto } from '@/lib/support/types';
 
@@ -26,7 +28,7 @@ const ms = (iso: string): number => {
  * (RLS keeps a site admin to their own brand; platform_superadmin sees all) and opens a full
  * transcript with the knowledge-base sources and confidence the assistant recorded per turn.
  */
-export default function SupportInboxPage() {
+function AssistantLog() {
   const [status, setStatus] = useState('');
   const [openId, setOpenId] = useState<string | null>(null);
   const q = useSupportConversations(100);
@@ -38,20 +40,14 @@ export default function SupportInboxPage() {
 
   return (
     <>
-      <PageHeader
-        title="Player chats"
-        subtitle="Every visitor inquiry, answered by the assistant and grounded in your knowledge base. Escalations are flagged for follow up."
-        actions={
-          <Toolbar>
-            <FilterSelect label="Status" value={status} onChange={setStatus} options={STATUS_OPTIONS} />
-          </Toolbar>
-        }
-      />
+      <Toolbar>
+        <FilterSelect label="Status" value={status} onChange={setStatus} options={STATUS_OPTIONS} />
+      </Toolbar>
 
       {q.isLoading ? (
         <Skeleton className="h-40 w-full" />
       ) : q.isError ? (
-        <Empty title="Couldn't load conversations" description="Try again shortly." />
+        <Empty title="The assistant log is not available" description="The automatic assistant is switched off on this platform. Live chats are on the Live chat tab." />
       ) : rows.length === 0 ? (
         <Empty title="No conversations" description={status ? 'None match this filter.' : 'No support conversations yet.'} />
       ) : (
@@ -164,5 +160,23 @@ function OperatorBubble({ m }: { m: SupportMessageDto }) {
         ) : null}
       </div>
     </div>
+  );
+}
+
+const TABS = [
+  { id: 'live', label: 'Live chat', hint: 'Players writing to your support team. Reply here; they see it in the chat window.' },
+  { id: 'assistant', label: 'Assistant log', hint: 'Questions answered by the automatic assistant, when it is switched on.' },
+] as const;
+type Tab = (typeof TABS)[number]['id'];
+
+/** CHAT-1: Player chats — the live inbox (reply, attachments, resolve) and the assistant's log. */
+export default function SupportInboxPage() {
+  const [tab, setTab] = useTabParam<Tab>(TABS.map((t) => t.id), 'live');
+  return (
+    <>
+      <PageHeader title="Player chats" subtitle="Answer players in real time. Photos, videos and voice notes open right in the conversation." />
+      <PageTabs tabs={[...TABS]} value={tab} onChange={setTab} label="Player chats" />
+      {tab === 'live' ? <LiveChatInbox /> : <AssistantLog />}
+    </>
   );
 }

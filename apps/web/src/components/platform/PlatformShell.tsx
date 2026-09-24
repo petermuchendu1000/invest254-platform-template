@@ -59,7 +59,7 @@ export function PlatformShell({ children }: { children: React.ReactNode }) {
   // these, this is the matching client guard.
   // Onboarding + registrar config are available to platform admins (they manage their own clients);
   // platforms/payments/global-config remain SYSTEM-owner only.
-  const SYSTEM_ONLY_PREFIXES = ['/platform/platforms', '/platform/payments', '/platform/config', '/platform/addons', '/platform/audit', '/platform/logs', '/platform/mpesa', '/platform/engine'];
+  const SYSTEM_ONLY_PREFIXES = ['/platform/platforms', '/platform/payments', '/platform/config', '/platform/logs', '/platform/mpesa', '/platform/engine'];
   if (!isSystem && SYSTEM_ONLY_PREFIXES.some((p) => pathname?.startsWith(p))) {
     return <Gate title="404" body="This page could not be found." action={null} />;
   }

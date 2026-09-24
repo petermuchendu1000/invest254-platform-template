@@ -37,7 +37,7 @@ export default function ClientDetailView({ params }: { params: { id: string } })
                 <span className={`rounded-full px-2 py-0.5 text-xs font-medium capitalize ${statusCls(site.status)}`}>{site.status}</span>
               </div>
               <p className="mt-1 text-sm text-muted">
-                {site.primaryDomain ?? 'No domain yet'} · {site.slug} · economy v{site.config.version}
+                {site.primaryDomain ?? 'No domain yet'} · {site.slug}
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-2">
@@ -46,6 +46,7 @@ export default function ClientDetailView({ params }: { params: { id: string } })
                   Visit site ↗
                 </a>
               ) : null}
+              <Link href={`/platform/audit?site=${site.siteId}`} className="inline-flex h-9 items-center rounded-brand border border-border px-3 text-sm font-medium text-fg transition hover:bg-surface-2">Audit log</Link>
               <OpenBrandButton siteId={site.siteId} brandName={site.name} />
             </div>
           </div>

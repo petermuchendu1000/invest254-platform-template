@@ -91,8 +91,9 @@ export default function PlatformOverviewPage() {
       (!s || x.name.toLowerCase().includes(s) || x.slug.includes(s) || (x.primaryDomain ?? '').includes(s)));
   }, [siteList, q, status, currency]);
 
-  // Per-brand launch readiness ("Needs setup" KPI + CSV export): live-ready once the domain is set
-  // and both M-Pesa rails (pay-in creds + B2C pay-out) are configured.
+  // Per-brand launch readiness ("Needs setup" KPI + CSV export): live once its domain is live. UI-F:
+  // payments no longer count — since PAY-1 every brand is paid through its own, its platform's or the
+  // System accounts, so the old per-brand M-Pesa fields flagged brands that were in fact taking money.
   const readiness = (s: SiteWithConfig) => {
     // TRUTHFUL domain state from Cloudflare Pages (not merely "a domain string is set").
     const d = (s.primaryDomain ?? '').trim().toLowerCase();
@@ -100,9 +101,7 @@ export default function PlatformOverviewPage() {
     const domainState: 'live' | 'pending' | 'unprovisioned' | 'none' =
       !d ? 'none' : st === 'active' ? 'live' : st ? 'pending' : 'unprovisioned';
     const domainOk = domainState === 'live';
-    const depOk = !!(s.hasMpesaConsumerKey && s.hasMpesaConsumerSecret && s.hasMpesaPasskey);
-    const b2cOk = !!s.hasMpesaB2cCredential;
-    return { domainState, domainOk, depOk, b2cOk, score: [domainOk, depOk, b2cOk].filter(Boolean).length };
+    return { domainState, domainOk, score: domainOk ? 1 : 0 };
   };
   const enriched = useMemo(
     () => rows.map((s) => ({ s, k: kpiById.get(s.siteId), r: readiness(s), m: metric(s.siteId), online: live.onlineBySite[s.siteId] ?? 0 })),
@@ -138,7 +137,7 @@ export default function PlatformOverviewPage() {
       : kpis.map((k) => ({ deposits: k.depositsCents, ggr: k.ggrCents }));
     return src.reduce((a, x) => ({ deposits: a.deposits + x.deposits, ggr: a.ggr + x.ggr }), { deposits: 0, ggr: 0 });
   }, [rangeActive, perf.data, kpis]);
-  const needsSetup = enriched.filter((e) => e.r.score < 3).length;
+  const needsSetup = enriched.filter((e) => e.r.score < 1).length;
 
   const rangeLabel = preset === 'all' ? 'All-time'
     : preset === 'today' ? 'Today'
@@ -153,7 +152,7 @@ export default function PlatformOverviewPage() {
       liveOnline: online, players: k?.users ?? 0, newPlayers: m.newPlayers ?? '',
       window: rangeLabel,
       depositsKES: (m.deposits / 100).toFixed(2), ggrKES: (m.ggr / 100).toFixed(2), bets: m.bets,
-      domainSet: r.domainOk, mpesaPayIn: r.depOk, mpesaPayout: r.b2cOk,
+      domainSet: r.domainOk,
     })));
 
   return (
@@ -170,9 +169,9 @@ export default function PlatformOverviewPage() {
         {!live.denied ? <LiveOnlineCard total={live.totalOnline} connected={live.connected} /> : null}
         <StatCard label="Players" value={formatNumber(totals.users)} hint="registered" />
         <StatCard label={`Deposits · ${rangeLabel}`} money={windowTotals.deposits} tone="up" />
-        <StatCard label={`GGR · ${rangeLabel}`} money={windowTotals.ggr} tone={windowTotals.ggr >= 0 ? 'up' : 'down'} />
+        <StatCard label={`House revenue · ${rangeLabel}`} money={windowTotals.ggr} tone={windowTotals.ggr >= 0 ? 'up' : 'down'} />
         <StatCard label="Open positions" value={formatNumber(totals.open)} />
-        <StatCard label="Needs setup" value={needsSetup} tone={needsSetup > 0 ? 'warn' : 'up'} hint="domain / M-Pesa incomplete" />
+        <StatCard label="Needs setup" value={needsSetup} tone={needsSetup > 0 ? 'warn' : 'up'} hint="website address not live yet" />
       </div>
 
       {/* Live deposits feed, pushed the instant a deposit confirms — every brand for the owner, the
@@ -220,7 +219,7 @@ export default function PlatformOverviewPage() {
               <Sortable label="Players" k="players" sort={sort} setSort={setSort} align="right" />
               {rangeActive ? <Sortable label="New" k="newplayers" sort={sort} setSort={setSort} align="right" /> : null}
               <Sortable label="Deposits" k="deposits" sort={sort} setSort={setSort} align="right" />
-              <Sortable label="GGR" k="ggr" sort={sort} setSort={setSort} align="right" />
+              <Sortable label="House revenue" k="ggr" sort={sort} setSort={setSort} align="right" />
               <Sortable label="Bets" k="bets" sort={sort} setSort={setSort} align="right" />
             </tr>
           </thead>

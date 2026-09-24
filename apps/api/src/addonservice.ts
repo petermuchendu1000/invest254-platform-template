@@ -8,9 +8,16 @@
 import type { Querier } from "@invest254/engine";
 
 export type AddonCategory = "chart" | "trade_ui" | "payment_gateway";
+export type BillingType = "free" | "one_off" | "monthly";
 export interface CatalogItem {
-  category: AddonCategory; key: string; display_name: string; price_cents: number;
-  is_default: boolean; active: boolean; sort_order: number;
+  category: AddonCategory; key: string; display_name: string; description: string; price_cents: number;
+  billing_type: BillingType; setup_fee_cents: number; is_default: boolean; active: boolean; sort_order: number;
+  /** Owner only: brands that own it, brands using it now, open requests. */
+  brands: number | null; in_use: number | null; pending: number | null;
+}
+export interface AddonPatch {
+  displayName?: string; description?: string; billingType?: BillingType; priceCents?: number; setupFeeCents?: number;
+  active?: boolean; sortOrder?: number;
 }
 export interface BrandAddonRow {
   category: AddonCategory; key: string; display_name: string; price_cents: number;
@@ -47,6 +54,22 @@ export class AddonService {
   async grant(actorId: string, actorRole: string, siteId: string, category: string, key: string): Promise<unknown> {
     const r = await this.q.query("select fn_addon_grant($1,$2,$3,$4,$5) as v", [actorId, actorRole, siteId, category, key]);
     return r.rows[0]?.v ?? null;
+  }
+  async update(actorId: string, actorRole: string, category: string, key: string, patch: AddonPatch): Promise<unknown> {
+    const r = await this.q.query("select fn_addon_update($1,$2,$3,$4,$5::jsonb) as v", [actorId, actorRole, category, key, JSON.stringify(patch)]);
+    return r.rows[0]?.v ?? null;
+  }
+  async cancelRequest(actorId: string, actorRole: string, requestId: number): Promise<unknown> {
+    const r = await this.q.query("select fn_addon_cancel_request($1,$2,$3) as v", [actorId, actorRole, requestId]);
+    return r.rows[0]?.v ?? null;
+  }
+  async activate(actorId: string, actorRole: string, siteId: string, category: string, key: string): Promise<unknown> {
+    const r = await this.q.query("select fn_addon_activate($1,$2,$3,$4,$5) as v", [actorId, actorRole, siteId, category, key]);
+    return r.rows[0]?.v ?? null;
+  }
+  async brands(actorId: string, actorRole: string): Promise<unknown[]> {
+    const r = await this.q.query("select fn_addon_brands($1,$2) as v", [actorId, actorRole]);
+    return (r.rows[0]?.v ?? []) as unknown[];
   }
   async revoke(actorId: string, actorRole: string, siteId: string, category: string, key: string): Promise<unknown> {
     const r = await this.q.query("select fn_addon_revoke($1,$2,$3,$4,$5) as v", [actorId, actorRole, siteId, category, key]);

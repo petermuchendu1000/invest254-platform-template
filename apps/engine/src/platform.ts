@@ -19,12 +19,14 @@ export interface SiteRow {
   siteId: string; slug: string; name: string; status: string;
   primaryDomain: string | null; logoUrl: string | null; faviconUrl: string | null; wordmarkText: string | null;
   colorPrimary: string; colorBg: string; colorAccent: string; theme: string;
-  currency: string; locale: string; chartStyle: string; tradeUi: string; licenceLine: string | null; supportEmail: string | null;
+  currency: string; locale: string; chartStyle: string; tradeUi: string; licenceLine: string | null; supportEmail: string | null; supportWhatsapp?: string | null;
   // Per-brand M-Pesa config (non-secret) + which secret refs are configured + legal copy (docs/24).
   mpesaEnv: string | null; mpesaShortcode: string | null; mpesaCallbackBase: string | null; mpesaB2cInitiator: string | null;
   hasMpesaConsumerKey: boolean; hasMpesaConsumerSecret: boolean; hasMpesaPasskey: boolean; hasMpesaB2cCredential: boolean;
   legalCopy: Record<string, unknown> | null;
   ownerUserId: string | null;
+  /** UI-F: the platform this brand belongs to (null only for legacy rows). */
+  platformId?: string | null;
 }
 export interface SiteConfigRow {
   houseEdge: number; maxMultiplier: number; minStakeCents: number; maxStakeCents: number; minWithdrawalCents: number;
@@ -247,13 +249,14 @@ function mapSiteRow(x: Record<string, unknown>): SiteRow {
     faviconUrl: (x.favicon_url as string) ?? null, wordmarkText: (x.wordmark_text as string) ?? null,
     colorPrimary: String(x.color_primary), colorBg: String(x.color_bg), colorAccent: String(x.color_accent), theme: String(x.theme),
     currency: String(x.currency), locale: String(x.locale), chartStyle: (x.chart_style as string) ?? "line", tradeUi: (x.trade_ui as string) ?? "classic",
-    licenceLine: (x.licence_line as string) ?? null, supportEmail: (x.support_email as string) ?? null,
+    licenceLine: (x.licence_line as string) ?? null, supportEmail: (x.support_email as string) ?? null, supportWhatsapp: (x.support_whatsapp as string | null) ?? null,
     mpesaEnv: (x.mpesa_env as string) ?? null, mpesaShortcode: (x.mpesa_shortcode as string) ?? null,
     mpesaCallbackBase: (x.mpesa_callback_base as string) ?? null, mpesaB2cInitiator: (x.mpesa_b2c_initiator as string) ?? null,
     hasMpesaConsumerKey: Boolean(x.mpesa_consumer_key_ref), hasMpesaConsumerSecret: Boolean(x.mpesa_consumer_secret_ref),
     hasMpesaPasskey: Boolean(x.mpesa_passkey_ref), hasMpesaB2cCredential: Boolean(x.mpesa_b2c_credential_ref),
     legalCopy: (x.legal_copy as Record<string, unknown>) ?? null,
     ownerUserId: (x.owner_user_id as string) ?? null,
+    platformId: x.platform_id == null ? null : String(x.platform_id),
   };
 }
 function mapConfigRow(x: Record<string, unknown>): SiteConfigRow {
@@ -743,7 +746,7 @@ export class InMemoryPlatformRepository implements PlatformRepository {
     const map: Record<string, keyof SiteRow> = {
       name: "name", primary_domain: "primaryDomain", logo_url: "logoUrl", favicon_url: "faviconUrl",
       wordmark_text: "wordmarkText", color_primary: "colorPrimary", color_bg: "colorBg", color_accent: "colorAccent",
-      theme: "theme", currency: "currency", locale: "locale", chart_style: "chartStyle", licence_line: "licenceLine", support_email: "supportEmail", status: "status",
+      theme: "theme", currency: "currency", locale: "locale", chart_style: "chartStyle", licence_line: "licenceLine", support_email: "supportEmail", support_whatsapp: "supportWhatsapp", status: "status",
     };
     for (const [k, prop] of Object.entries(map)) {
       if (k in patch) (s as unknown as Record<string, unknown>)[prop] = patch[k] === "" ? null : patch[k];

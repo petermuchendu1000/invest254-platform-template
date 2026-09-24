@@ -72,10 +72,18 @@ export interface BonusStatusDto {
 }
 
 export interface WalletDto {
+  /** Spendable balance in the ACTIVE account (the demo balance while in demo mode). */
   real: Cents;
+  /** Spendable bonus (0 in demo mode). */
   bonus: Cents;
   currency: string;
   bonuses?: BonusStatusDto[];
+  /** DEMO-1: active account + every bucket (absent on older APIs → treat as real). */
+  mode?: 'real' | 'demo';
+  modeLocked?: boolean;
+  realBalance?: Cents;
+  bonusBalance?: Cents;
+  demoBalance?: Cents;
 }
 
 
@@ -147,6 +155,8 @@ export interface DigitHistoryDto {
   status: string;          // 'open' | 'settled'
   openedAt: number;        // epoch ms
   settledAt: number | null;
+  /** DEMO-1: staked from the demo (play-money) account. */
+  demo?: boolean;
 }
 
 /** GET /positions/:id — single position plus its fairness record. */

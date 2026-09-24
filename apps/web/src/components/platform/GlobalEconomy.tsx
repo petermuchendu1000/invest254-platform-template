@@ -290,11 +290,11 @@ export function PaymentsEconomySection(props: { server: PaymentsEconomy; activeC
   }
 
   return (
-    <Section title="Payments — applies to every client">
+    <Section title="Payments — applies to every brand">
       <Card className="flex flex-col gap-4">
         <p className="max-w-2xl text-xs text-muted">
-          Platform-wide payment limits. An enforced value overrides every brand (min deposit was a fixed
-          KES 200 before this console). Leave a field un-enforced to keep the existing behaviour.
+          Payment limits for every brand. A value you enforce here overrides each brand&apos;s own setting;
+          leave a field un-enforced and each brand keeps its own.
         </p>
         <div className="flex flex-col divide-y divide-border rounded-xl border border-border">
           {PAYMENT_KEYS.map((k) => {

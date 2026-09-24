@@ -3,12 +3,9 @@
 import { useMemo } from 'react';
 import Link from 'next/link';
 import { Skeleton } from '@/components/ui/Skeleton';
-import { Money } from '@/components/ui/Money';
-import { useCan } from '@/lib/auth/can';
-import { PageHeader, StatCard, Section, TableWrap, Th, Td, Empty } from '@/components/admin/ui';
+import { PageHeader, Section, Empty } from '@/components/admin/ui';
 import { KpiCard, kesCompact, trendDelta, type Point } from '@/components/admin/charts';
 import { useOverview, useRtp, useReportDaily } from '@/lib/admin/hooks';
-import { RealCashRtpPanel, ConfigChangeReviewPanel } from '@/components/admin/EconomyIntegrityPanels';
 
 function isoDaysAgo(days: number): string {
   const d = new Date();
@@ -17,145 +14,45 @@ function isoDaysAgo(days: number): string {
 }
 
 export default function AdminOverviewPage() {
-  const o = useOverview();
-  const rtp = useRtp();
-  // docs/42: decided by the TOKEN role via the shared capability list (UI-3/UI-11).
-  const isSuper = useCan('backoffice.governance');
-  const showIntegrity = useCan('backoffice.economy_integrity');
-
   return (
     <>
-      <PageHeader
-        title="Overview"
-        subtitle={
-          isSuper
-            ? 'System owner view — full operational health across users, finance and game.'
-            : 'Operations view — users, finance, affiliate and game health.'
-        }
-      />
-
+      <PageHeader title="Overview" subtitle="The last 30 days at a glance, and what needs you now. Details live on the page each item links to." />
       <TrendsSection />
-
-      {o.isLoading ? (
-        <Skeleton className="h-40 w-full" />
-      ) : o.isError || !o.data ? (
-        <Empty title="Couldn't load overview" description="Check your connection and try again." />
-      ) : (
-        <>
-          {/* Compact users summary — the full population table + per-user actions live on /admin/users. */}
-          <Section title="Users">
-            <div className="flex flex-col gap-2">
-              <div className="grid grid-cols-2 gap-3">
-                <StatCard label="Total users" value={o.data.users.total} hint={`${o.data.users.active} active · ${o.data.users.players} players · ${o.data.users.marketers} marketers`} />
-                <StatCard
-                  label="Suspended / banned"
-                  value={`${o.data.users.suspended} / ${o.data.users.banned}`}
-                  tone={o.data.users.banned > 0 ? 'down' : 'default'}
-                />
-              </div>
-              <Link href="/admin/users" className="self-start text-xs font-medium text-accent hover:underline">
-                Manage all users (players, marketers, staff) →
-              </Link>
-            </div>
-          </Section>
-
-          {/* Operational balances & queues only — money-flow totals/trends live in the Trends KPIs above
-              (deliberately not repeated here). Each card is a distinct liability or action queue. */}
-          <Section title="Balances & queues">
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-              <StatCard
-                label="Pending withdrawals"
-                value={o.data.finance.pendingWithdrawals}
-                tone={o.data.finance.pendingWithdrawals > 0 ? 'warn' : 'default'}
-                hint="awaiting review"
-              />
-              <StatCard label="Wallet liability" money={o.data.finance.walletLiabilityCents} hint="owed to players" />
-              <StatCard label="Commission accrued" money={o.data.affiliate.commissionAccruedCents} hint="owed to marketers" />
-              <StatCard
-                label="Pending payouts"
-                value={o.data.affiliate.pendingPayouts}
-                tone={o.data.affiliate.pendingPayouts > 0 ? 'warn' : 'default'}
-                hint="marketer payouts"
-              />
-            </div>
-          </Section>
-        </>
-      )}
-
-      <Section title="RTP monitor">
-        {rtp.isLoading ? (
-          <Skeleton className="h-28 w-full" />
-        ) : rtp.isError || !rtp.data ? (
-          <Empty title="RTP unavailable" />
-        ) : (
-          <div className="flex flex-col gap-2">
-            <div className="flex items-center gap-3 text-sm">
-              <span className="text-muted">
-                Target RTP <span className="font-medium text-fg">{pct(rtp.data.targetRtp)}</span> · tolerance ±
-                {pct(rtp.data.toleranceAbs)}
-              </span>
-              <span
-                className={
-                  'rounded-full px-2 py-0.5 text-xs font-medium ' +
-                  (rtp.data.alert ? 'bg-down/15 text-down' : 'bg-up/15 text-up')
-                }
-              >
-                {rtp.data.alert ? 'Drift alert' : 'In tolerance'}
-              </span>
-            </div>
-            <TableWrap>
-              <thead>
-                <tr className="border-b border-border">
-                  <Th>Window</Th>
-                  <Th numeric>Trades</Th>
-                  <Th numeric>Turnover</Th>
-                  <Th numeric>Payout</Th>
-                  <Th numeric>Realised RTP</Th>
-                </tr>
-              </thead>
-              <tbody>
-                {rtp.data.windows.map((w) => {
-                  const drift =
-                    w.realisedRtp !== null && Math.abs(w.realisedRtp - rtp.data!.targetRtp) > rtp.data!.toleranceAbs;
-                  return (
-                    <tr key={w.window} className="border-b border-border last:border-0">
-                      <Td className="font-medium capitalize">{w.window}</Td>
-                      <Td numeric>{w.settledPositions}</Td>
-                      <Td numeric>
-                        <Money cents={w.turnoverCents} />
-                      </Td>
-                      <Td numeric>
-                        <Money cents={w.payoutCents} />
-                      </Td>
-                      <Td numeric className={'font-medium ' + (drift ? 'text-down' : 'text-fg')}>
-                        {w.realisedRtp === null ? '—' : pct(w.realisedRtp)}
-                      </Td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </TableWrap>
-            <p className="text-xs text-muted">
-              Realised RTP is payout ÷ turnover per window. A window outside tolerance (with enough samples) flags an
-              alert.
-            </p>
-          </div>
-        )}
-      </Section>
-
-      {/* Economy integrity (rec #7 + docs/28 §4): real-cash truth + config change review. Owner tier. */}
-      {showIntegrity && (
-        <>
-          <RealCashRtpPanel />
-          <ConfigChangeReviewPanel />
-        </>
-      )}
+      <Attention />
     </>
   );
 }
 
-function pct(v: number): string {
-  return `${(v * 100).toFixed(1)}%`;
+/**
+ * UI-F: "Needs attention" — only queues and alerts, each linking to the ONE page that handles it. The user,
+ * balance and return-to-player panels that sat here repeated Users, Finance and Reports.
+ */
+function Attention() {
+  const o = useOverview();
+  const rtp = useRtp();
+  if (o.isLoading) return <Skeleton className="h-32 w-full" />;
+  if (o.isError || !o.data) return <Empty title="Couldn't load what needs attention" description="Check your connection and try again." />;
+  const d = o.data;
+  const items: { href: string; label: string; value: string; tone: 'warn' | 'down' | 'ok' }[] = [
+    { href: '/admin/withdrawals', label: 'Withdrawals waiting for review', value: String(d.finance.pendingWithdrawals), tone: d.finance.pendingWithdrawals ? 'warn' : 'ok' },
+    { href: '/admin/marketer-finance', label: 'Marketer payouts waiting', value: String(d.affiliate.pendingPayouts), tone: d.affiliate.pendingPayouts ? 'warn' : 'ok' },
+    { href: '/admin/users?status=suspended', label: 'Suspended or banned accounts', value: `${d.users.suspended + d.users.banned}`, tone: d.users.banned ? 'down' : 'ok' },
+    { href: '/admin/reports?tab=health', label: 'Return to player', value: rtp.data ? (rtp.data.alert ? 'Outside the allowed range' : 'Within range') : '…', tone: rtp.data?.alert ? 'down' : 'ok' },
+  ];
+  return (
+    <Section title="Needs attention">
+      <ul className="grid gap-3 sm:grid-cols-2" aria-label="Needs attention">
+        {items.map((i) => (
+          <li key={i.href}>
+            <Link href={i.href} className="flex items-center justify-between gap-3 rounded-2xl border border-border bg-surface p-4 transition hover:bg-surface-2">
+              <span className="text-sm">{i.label}</span>
+              <span className={'whitespace-nowrap rounded-full px-2.5 py-0.5 text-sm font-semibold ' + (i.tone === 'down' ? 'bg-down/15 text-down' : i.tone === 'warn' ? 'bg-warn/15 text-warn' : 'bg-surface-2 text-muted')}>{i.value}</span>
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </Section>
+  );
 }
 
 /** 30-day financial trend charts, derived from the daily report time series. */
@@ -195,7 +92,7 @@ function TrendsSection() {
             <KpiCard label="Deposits" value={kesCompact(sum(deposits))} series={deposits} tone="up" {...trend(deposits)} deltaHint={deltaHint} />
             <KpiCard label="Withdrawals" value={kesCompact(sum(withdrawals))} series={withdrawals} tone="down" goodWhen="neutral" {...trend(withdrawals)} deltaHint={deltaHint} />
             <KpiCard label="Turnover" value={kesCompact(sum(turnover))} series={turnover} tone="accent" {...trend(turnover)} deltaHint={deltaHint} />
-            <KpiCard label="Net revenue (GGR)" value={kesCompact(ggrTotal)} series={ggr} tone={ggrTotal >= 0 ? 'up' : 'down'} {...trend(ggr)} deltaHint={deltaHint} />
+            <KpiCard label="House revenue" value={kesCompact(ggrTotal)} series={ggr} tone={ggrTotal >= 0 ? 'up' : 'down'} {...trend(ggr)} deltaHint={deltaHint} />
           </div>
 
           {/* Full daily cash-flow + GGR charts and per-day/per-player breakdowns live on Reports —

@@ -51,7 +51,7 @@ const digitHistoryDto = (d: DigitHistoryRow) => ({
   openIndex: d.openIndex, settleIndex: d.settleIndex,
   stakeCents: d.stakeCents, entryRate: d.entryRate, exitRate: d.exitRate, settleDigit: d.settleDigit,
   payoutCents: d.payoutCents, pnlCents: d.pnlCents, result: d.result, status: d.status,
-  openedAt: d.openedAtMs, settledAt: d.settledAtMs,
+  openedAt: d.openedAtMs, settledAt: d.settledAtMs, demo: d.demo === true,
 });
 
 const transactionDto = (t: TransactionRecord) => ({

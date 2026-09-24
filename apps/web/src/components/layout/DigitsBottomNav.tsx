@@ -1,86 +1,49 @@
 'use client';
 
-import Link from 'next/link';
-import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/cn';
-import { useSupportChat } from '@/lib/support/useSupportChat';
+import { useLiveChat } from '@/lib/chat/liveChat';
+import { useLiveChatUnread } from '@/components/chat/LiveChatPanel';
 import { useEntryScanner } from '@/lib/game/entryScannerUi';
-
-function Icon({ path, className = 'h-5 w-5' }: { path: string; className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden>
-      <path d={path} />
-    </svg>
-  );
-}
+import { useDigitSession } from '@/lib/game/digitSession';
+import { DIcon } from '@/components/game/digits/icons';
 
 /**
- * Digits-brand bottom navigation (matches the digits broker mock): Live Chat · AI · Positions.
- * Only rendered for `trade_ui = 'digits'` brands on the trade surface. Live Chat opens the existing
- * support widget; Positions links to history; AI opens the Entry Scanner (rendered inside the trade
- * screen, which owns the socket feed the scanner samples).
+ * Digits-brand bottom navigation (digits broker mock), phones only: Live Chat · AI · Positions.
+ * Live Chat opens customer care (CHAT-1); AI opens the scanner; Positions opens the Open / Closed /
+ * History sheet.
  */
 export function DigitsBottomNav() {
-  const pathname = usePathname();
-  const setSupportOpen = useSupportChat((s) => s.setOpen);
+  const setSupportOpen = useLiveChat((s) => s.setOpen);
+  const chatUnread = useLiveChatUnread();
   const openScanner = useEntryScanner((s) => s.setOpen);
+  const positionsOpen = useDigitSession((s) => s.positionsOpen);
+  const setPositionsOpen = useDigitSession((s) => s.setPositionsOpen);
+  const openCount = useDigitSession((s) => (s.open ? 1 : 0));
 
+  const item = 'flex w-20 flex-col items-center gap-1 rounded-xl py-1.5 text-[11px] font-semibold transition';
   return (
-    <nav className="pb-safe fixed inset-x-0 bottom-0 z-30 border-t border-border bg-surface">
-      <ul className="mx-auto flex w-full max-w-app items-end justify-around px-4 py-1.5">
+    <nav className="pb-safe fixed inset-x-0 bottom-0 z-30 border-t border-border bg-surface lg:hidden">
+      <ul className="mx-auto flex w-full max-w-app items-end justify-around px-4 pt-1.5">
         <li>
-          <button
-            type="button"
-            onClick={() => setSupportOpen(true)}
-            className="flex flex-col items-center gap-1 rounded-xl px-3 py-1.5 text-[11px] font-semibold text-muted transition hover:text-fg"
-          >
-            <Icon path="M21 15a2 2 0 01-2 2H8l-5 4V5a2 2 0 012-2h14a2 2 0 012 2z" />
-            Live Chat
+          <button type="button" onClick={() => setSupportOpen(true)} className={cn(item, 'relative text-muted hover:text-fg')}>
+            <DIcon name="chat" />Live Chat
+            {chatUnread ? <span className="absolute right-3 top-0 grid h-4 min-w-4 place-items-center rounded-full bg-down px-1 text-[9px] font-bold text-white">{chatUnread}</span> : null}
           </button>
         </li>
-
-        <li className="-mt-3">
-          <button
-            type="button"
-            onClick={() => openScanner(true)}
-            aria-label="AI Entry Scanner"
-            className="group flex flex-col items-center gap-1 text-[11px] font-semibold text-fg"
-          >
-            <span className="relative flex h-12 w-12 items-center justify-center">
-              {/* slow attention halo (respects reduced motion) */}
-              <span aria-hidden className="absolute inline-flex h-11 w-11 rounded-full bg-accent/25 opacity-70 [animation-duration:2.4s] motion-safe:animate-ping motion-reduce:hidden" />
-              <span className="relative flex h-12 w-12 items-center justify-center rounded-full bg-accent/15 text-accent shadow-[0_0_22px_-3px_var(--pp-accent)] ring-1 ring-accent/40 transition duration-200 group-active:scale-95 group-hover:ring-accent/70">
-                {/* robot-face mark (accent line-art) with a gentle twinkle */}
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden className="h-7 w-7 [animation-duration:2.6s] motion-safe:animate-pulse">
-                  <line x1="12" y1="2" x2="12" y2="4.6" />
-                  <circle cx="12" cy="1.9" r="1" fill="currentColor" stroke="none" />
-                  <rect x="4" y="4.6" width="16" height="13.8" rx="4" />
-                  <rect x="1.5" y="9.6" width="2" height="4" rx="1" />
-                  <rect x="20.5" y="9.6" width="2" height="4" rx="1" />
-                  <circle cx="9" cy="11" r="2.2" />
-                  <circle cx="15" cy="11" r="2.2" />
-                  <circle cx="9" cy="11" r="0.85" fill="currentColor" stroke="none" />
-                  <circle cx="15" cy="11" r="0.85" fill="currentColor" stroke="none" />
-                  <path d="M8.6 14.4c1 1.4 5.8 1.4 6.8 0" />
-                </svg>
-              </span>
+        <li className="-mt-5">
+          <button type="button" onClick={() => openScanner(true)} aria-label="AI" className="group flex flex-col items-center gap-1 text-[11px] font-semibold text-fg">
+            <span className="grid h-14 w-14 place-items-center rounded-full bg-[linear-gradient(135deg,var(--pp-accent),color-mix(in_srgb,var(--pp-accent)_40%,#a855f7))] text-white shadow-[0_6px_22px_-6px_var(--pp-accent)] ring-4 ring-surface transition group-active:scale-95">
+              <DIcon name="sparkles" className="h-6 w-6" strokeWidth={2} />
             </span>
             AI
           </button>
         </li>
-
         <li>
-          <Link
-            href="/history/digits"
-            aria-current={pathname.startsWith('/history/digits') ? 'page' : undefined}
-            className={cn(
-              'flex flex-col items-center gap-1 rounded-xl px-3 py-1.5 text-[11px] font-semibold transition',
-              pathname.startsWith('/history/digits') ? 'text-accent' : 'text-muted hover:text-fg',
-            )}
-          >
-            <Icon path="M12 8v4l3 2M21 12a9 9 0 11-9-9" />
-            Positions
-          </Link>
+          <button type="button" onClick={() => setPositionsOpen(true)} aria-expanded={positionsOpen}
+            className={cn(item, 'relative', positionsOpen ? 'text-accent' : 'text-muted hover:text-fg')}>
+            <DIcon name="clock" />Positions
+            {openCount ? <span className="absolute right-4 top-0.5 h-2 w-2 rounded-full bg-accent" /> : null}
+          </button>
         </li>
       </ul>
     </nav>

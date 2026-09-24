@@ -34,6 +34,17 @@ test("UI-10 (real schema): platform audit = its brands only, attributed to brand
     assert.equal(page1.items.length, 2); assert.ok(page1.nextCursor, "keyset cursor");
     const page2 = await repo.listPlatformAudit({ platformId: p1, limit: 2, cursor: page1.nextCursor! });
     assert.deepEqual(page2.items.map((r) => r.action), ["ui10.a1"], "second page continues without overlap");
+
+    // UI-F (one audit log): platform-level actions (no brand) show for THAT platform only, and all show for the owner.
+    const pl = (target: string, action: string) => c.query(
+      "insert into admin_actions(actor_id, actor_role, action, target_type, target_id, site_id) values ($1,'platform_admin',$2,'platform',$3,null)", [actor, action, target]);
+    await pl(p1, "uif.p1"); await pl(p2, "uif.p2");
+    const p1All = (await repo.listPlatformAudit({ platformId: p1, limit: 50 })).items.map((r) => r.action);
+    assert.ok(p1All.includes("uif.p1") && !p1All.includes("uif.p2"), "a platform sees its own platform-level actions, never another's");
+    const p1Brand = (await repo.listPlatformAudit({ platformId: p1, siteId: s2, limit: 50 })).items.map((r) => r.action);
+    assert.ok(!p1Brand.includes("uif.p1"), "a brand filter excludes platform-level rows");
+    const owner = (await repo.listPlatformAudit({ platformId: null, limit: 50 })).items.map((r) => r.action);
+    assert.ok(owner.includes("uif.p1") && owner.includes("uif.p2") && owner.includes("ui10.c1"), "the owner sees everything");
   } finally {
     await c.query("rollback").catch(() => {});
     c.release(); await pool.end();

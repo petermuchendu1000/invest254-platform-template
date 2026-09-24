@@ -39,15 +39,16 @@ function FlyBody() {
 
   return (
     <div className="space-y-6">
-      <Section title="Fly.io engine restart">
+      <Section title="Restart the API and game engine">
         <p className="text-sm text-muted">
-          Restart the Fly machines running the API/engine so freshly deployed code picks up. System owner only.
+          New code is deployed automatically when it is merged. Restart only if the API or the game engine misbehaves: players are
+          disconnected for 10 to 30 seconds and then reconnect by themselves.
         </p>
         <div className="flex flex-col gap-4 rounded-xl border border-border bg-surface p-5">
           <div className="flex flex-wrap items-center gap-3 text-sm">
-            <span className="text-muted">Target apps:</span>
+            <span className="text-muted">Restarts:</span>
             {apps.map((a) => (
-              <code key={a} className="rounded bg-surface-2 px-2 py-0.5 font-mono text-xs">{a}</code>
+              <span key={a} className="rounded bg-surface-2 px-2 py-0.5 text-xs" title={a}>{/engine/i.test(a) ? 'Game engine' : /api/i.test(a) ? 'API' : a}</span>
             ))}
             <span
               className={
@@ -56,7 +57,7 @@ function FlyBody() {
               }
             >
               <span className={'h-1.5 w-1.5 rounded-full ' + (configured ? 'bg-up' : 'bg-down')} />
-              {configured ? 'Configured' : 'FLY_API_TOKEN not set on server'}
+              {configured ? 'Ready' : 'Unavailable: the hosting access key is not set on the server'}
             </span>
           </div>
 
@@ -67,13 +68,13 @@ function FlyBody() {
                 disabled={!configured || restart.isPending}
                 onClick={() => setConfirming(true)}
               >
-                {restart.isPending ? 'Restarting…' : 'Restart engine'}
+                {restart.isPending ? 'Restarting…' : 'Restart'}
               </Button>
             </div>
           ) : (
             <div className="flex flex-wrap items-center gap-3 rounded-lg border border-down/40 bg-down/10 p-4">
               <p className="text-sm">
-                Restart all running machines on <strong>{apps.join(' + ')}</strong>? Brief unavailability (~10–30s) per app.
+                Restart the API and the game engine now? Players are disconnected for 10 to 30 seconds.
               </p>
               <div className="ml-auto flex gap-2">
                 <Button variant="ghost" onClick={() => setConfirming(false)}>Cancel</Button>
@@ -98,7 +99,7 @@ function FlyBody() {
 export default function FlyAdminPage() {
   return (
     <>
-      <PageHeader title="Deployment" subtitle="Deployment controls — restart the engine after shipping updates." />
+      <PageHeader title="Deployment" subtitle="Restart the running services. Deploys happen automatically when code is merged." />
       <RequireCapability cap="backoffice.governance" title="Owner-only area" hint="System governance is managed by the system owner from their own console session.">
         <FlyBody />
       </RequireCapability>

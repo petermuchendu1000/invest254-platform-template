@@ -46,6 +46,10 @@ const DOMAIN_STATUS: Readonly<Record<string, number>> = {
   GATEWAY_NOT_CONFIGURED: 503,   // the brand's payment owner has no complete account for this rail (never re-routed)
   PAYBILL_NOT_AVAILABLE: 403,    // the manual Pay Bill is the System owner's; not offered on own accounts
   INVALID_SCOPE: 500,
+  // DEMO-1 (0123 + 0167): switching accounts
+  INVALID_MODE: 400,
+  OPEN_POSITIONS: 409,           // a contract is still open: finish it before switching accounts
+  MODE_LOCKED: 409,              // marketer accounts are always demo
 };
 
 /** Technical/provider faults that must NEVER reach a client verbatim — they carry gateway payloads
@@ -215,6 +219,21 @@ export function registerProtectedRoutes(router: Router, deps: ApiDeps): void {
     return deps.walletBalance(ctx.claims!.userId, ctx.siteId);
   });
 
+  // ── DEMO-1: Real / Demo account switch (migration 0123). The server decides the bucket for every
+  //    trade from the stored mode; the client only asks to switch. ──
+  router.post(`${BASE}/wallet/mode`, auth, site, async (ctx: Ctx) => {
+    if (!deps.setAccountMode) throw new ApiError("NOT_AVAILABLE", "Demo accounts are not available.", 501);
+    const mode = asObject(ctx.body).mode;
+    if (mode !== "real" && mode !== "demo") throw new ApiError("INVALID_MODE", "mode must be 'real' or 'demo'", 400);
+    const now = await domain(() => deps.setAccountMode!(ctx.claims!.userId, ctx.siteId, mode), ctx);
+    return { mode: now, wallet: await deps.walletBalance(ctx.claims!.userId, ctx.siteId) };
+  });
+  router.post(`${BASE}/wallet/demo/topup`, auth, site, async (ctx: Ctx) => {
+    if (!deps.topupDemo) throw new ApiError("NOT_AVAILABLE", "Demo accounts are not available.", 501);
+    const demo = await domain(() => deps.topupDemo!(ctx.claims!.userId, ctx.siteId), ctx);
+    return { demoBalance: demo, wallet: await deps.walletBalance(ctx.claims!.userId, ctx.siteId) };
+  });
+
   // ── Player: payments ──
   router.post(`${BASE}/deposits`, auth, site, depositLimit, async (ctx: Ctx) => {
     if (deps.platformGate && !(await deps.platformGate.allows("deposits")))
@@ -296,6 +315,13 @@ export function registerProtectedRoutes(router: Router, deps: ApiDeps): void {
 
   const stkCallback = async (ctx: Ctx) => {
     const cb = parseStkCallback(ctx.body);
+    // BILL-1: an invoice Pay-now shares the System STK callback URL; billing claims its own checkouts first
+    // (verified with STKPushQuery inside), everything else is a player deposit as before.
+    if (deps.billing) {
+      const billing = deps.billing;
+      const r = await domain(() => billing.handleStkCallback(cb.checkoutRequestId, cb.resultCode, cb.resultDesc, cb.receipt, ctx.body));
+      if (r.handled) return DARAJA_ACK;
+    }
     await domain(() => deps.payments.handleStkCallback(cb.checkoutRequestId, cb.resultCode, cb.resultDesc, cb.receipt, ctx.body));
     return DARAJA_ACK;
   };

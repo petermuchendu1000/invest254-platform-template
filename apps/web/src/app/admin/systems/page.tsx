@@ -13,9 +13,9 @@ export default function AdminSystemsPage() {
     <>
       <PageHeader
         title="Add-ons & gateways"
-        subtitle="Your brand's price chart, trade interface, and payment gateways. Locked systems can be requested from the system admin."
+        subtitle="Extras for your brand: price chart styles, trade screens and payment gateways. Ask for one you don't have yet."
       />
-      <Section title="Available systems">
+      <Section>
         <BrandAddons />
       </Section>
     </>

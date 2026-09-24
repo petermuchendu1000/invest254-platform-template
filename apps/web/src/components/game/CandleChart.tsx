@@ -57,8 +57,8 @@ interface Ind { ma7: boolean; ma25: boolean; ma99: boolean; bb: boolean }
 interface Legend { o: number; h: number; l: number; c: number; changePct: number }
 
 export function CandleChart({
-  getTicks, getLastTick, windowMs, symbol = 'BTC/KES',
-}: { getTicks: () => Tick[]; getLastTick: () => Tick | null; windowMs: number; symbol?: string }) {
+  getTicks, getLastTick, windowMs, symbol = 'BTC/KES', initialType = 'candles',
+}: { getTicks: () => Tick[]; getLastTick: () => Tick | null; windowMs: number; symbol?: string; initialType?: MainType }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const mainRef = useRef<ISeriesApi<SeriesType> | null>(null);
@@ -74,8 +74,9 @@ export function CandleChart({
   const resumeRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [intervalMs, setIntervalMs] = useState(DEFAULT_INTERVAL_MS);
-  const [chartType, setChartType] = useState<MainType>('candles');
-  const chartTypeRef = useRef<MainType>('candles'); chartTypeRef.current = chartType;
+  // ADDON-1: opens on the brand's chart system (area / bars / baseline / candles); players can still switch views.
+  const [chartType, setChartType] = useState<MainType>(initialType);
+  const chartTypeRef = useRef<MainType>(initialType); chartTypeRef.current = chartType;
   const [scaleMode, setScaleMode] = useState<ScaleMode>('normal');
   const [ind, setInd] = useState<Ind>({ ma7: false, ma25: false, ma99: false, bb: false });
   const indRef = useRef(ind); indRef.current = ind;

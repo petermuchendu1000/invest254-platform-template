@@ -19,8 +19,9 @@ export function useAuthActions() {
   // API is one host for all domains, so without this a player on any brand pools into site #1.
   const brand = useBrand();
 
-  async function login(phone: string, password: string) {
-    const res = await api.login({ phone, password, site: brand.slug });
+  async function login(phone: string, password: string, second?: { totp?: string; recoveryCode?: string }) {
+    const res = await api.login({ phone, password, site: brand.slug,
+      ...(second?.totp ? { totp: second.totp } : {}), ...(second?.recoveryCode ? { recovery_code: second.recoveryCode } : {}) });
     setToken(res.token);
     setUser(await api.me(res.token));
     return res;

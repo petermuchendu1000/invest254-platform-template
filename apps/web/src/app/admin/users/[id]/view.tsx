@@ -14,11 +14,11 @@ import { useToast } from '@/lib/toast/ToastProvider';
 import { formatDateTime, formatAgo, formatNumber } from '@/lib/format';
 import { useCan } from '@/lib/auth/can';
 import { PageHeader, StatCard, Section, Empty, ConfirmButton, TableWrap, Th, Td, Toolbar, FilterSelect } from '@/components/admin/ui';
-import { useUser, useUserActivity, useSetUserStatus, useAdjustBalance, useClearBalance, useResetBalance, useSetCommissionRate, useSetUserRole, useDeleteUser, useSetDefaultMarketer, useUpdateUserDetails, useUserNotifications, useSendNotification, useResolveNotification, useUserOverrides, useSetOverrides, useGameConfig, useMarketerExpenses, useAddMarketerExpense } from '@/lib/admin/hooks';
-import type { AdminUserActivityRow, AdminNotificationRow, NotificationLevel, UserOverridePatch } from '@/lib/admin/types';
+import { useUser, useUserActivity, useSetUserStatus, useAdjustBalance, useClearBalance, useResetBalance, useSetCommissionRate, useSetUserRole, useDeleteUser, useSetDefaultMarketer, useUpdateUserDetails, useUserNotifications, useSendNotification, useResolveNotification, useUserOverrides } from '@/lib/admin/hooks';
+import type { AdminUserActivityRow, AdminNotificationRow, NotificationLevel } from '@/lib/admin/types';
 import { formatKes } from '@invest254/shared/money';
+import { useKycList, DOC_LABEL } from '@/lib/account/accountUi';
 
-const ROLES = ['player', 'marketer', 'admin'] as const;
 
 export default function UserDetailPage({ params }: { params: { id: string } }) {
   const id = params.id;
@@ -59,7 +59,7 @@ export default function UserDetailPage({ params }: { params: { id: string } }) {
               )}
               <StatCard label="Bonus balance" money={q.data.bonusBalanceCents} />
               <StatCard label="Turnover" money={q.data.turnoverCents} />
-              <StatCard label="Net revenue (GGR)" money={q.data.ggrCents} tone={q.data.ggrCents >= 0 ? 'up' : 'down'} />
+              <StatCard label="House revenue" money={q.data.ggrCents} tone={q.data.ggrCents >= 0 ? 'up' : 'down'} />
             </div>
           </Section>
 
@@ -82,6 +82,8 @@ export default function UserDetailPage({ params }: { params: { id: string } }) {
             </Card>
           </Section>
 
+          <IdentityStatus id={id} />
+
           <ActivityTimeline id={id} />
 
           {q.data.role === 'platform_superadmin' ? (
@@ -99,20 +101,45 @@ export default function UserDetailPage({ params }: { params: { id: string } }) {
               <StatusActions id={id} status={q.data.status} />
               <EditDetails id={id} phone={q.data.phone} username={q.data.username} targetRole={q.data.role} />
               <RoleManage id={id} current={q.data.role} />
-              {q.data.isMarketer ? <MarketerHubLink /> : null}
+              {q.data.isMarketer || q.data.role === 'marketer' ? <MarketerHubLink id={id} /> : null}
               <BalanceAdjust id={id} />
               <ResetBalance id={id} />
               <OverridesPanel id={id} />
               <NotificationSend id={id} />
               {(q.data.role === 'marketer' || q.data.isBrandDefaultMarketer) ? <DefaultMarketerControl id={id} isDefault={q.data.isBrandDefaultMarketer} username={q.data.username} role={q.data.role} /> : null}
               {q.data.role === 'marketer' ? <CommissionRate id={id} /> : null}
-              {q.data.role === 'marketer' ? <MarketerExpenses id={id} /> : null}
               <DeleteAccount id={id} role={q.data.role} username={q.data.username} />
             </>
           )}
         </>
       )}
     </>
+  );
+}
+
+/** ACCT-1: the player's identity check, newest first, with a link to review it. */
+const KYC_TONE: Record<string, string> = { pending: 'text-warn', approved: 'text-up', rejected: 'text-down' };
+const KYC_LABEL: Record<string, string> = { pending: 'In review', approved: 'Verified', rejected: 'Not approved' };
+function IdentityStatus({ id }: { id: string }) {
+  const q = useKycList('all', id);
+  const rows = q.data?.items ?? [];
+  return (
+    <Section title="Identity">
+      <Card className="flex flex-col gap-2 text-sm">
+        {q.isLoading ? <span className="text-muted">Loading…</span> : rows.length === 0 ? (
+          <span className="text-muted">Not submitted. The player can send an ID and a selfie from their account menu.</span>
+        ) : rows.slice(0, 3).map((r) => (
+          <div key={r.id} className="flex flex-wrap items-center justify-between gap-2">
+            <span>
+              <span className={cn('font-semibold', KYC_TONE[r.status])}>{KYC_LABEL[r.status]}</span>
+              <span className="text-muted"> · {DOC_LABEL[r.docType]} · sent {formatAgo(Date.parse(r.submittedAt))}</span>
+              {r.reviewNote ? <span className="block text-xs text-muted">Note: {r.reviewNote}</span> : null}
+            </span>
+            <Link href={`/admin/identity?open=${r.id}`} className="text-xs font-semibold text-accent hover:underline">{r.status === 'pending' ? 'Review' : 'View'}</Link>
+          </div>
+        ))}
+      </Card>
+    </Section>
   );
 }
 
@@ -327,8 +354,18 @@ function RoleManage({ id, current }: { id: string; current: string }) {
   // docs/42 (token role, shared capability list): player<->marketer for a brand admin; the admin role
   // (and admin accounts) only for the system owner's own session — never during impersonation.
   if (!canBasic) return null;
-  if (!canAdmin && current !== 'player' && current !== 'marketer') return null;
-  const roleOptions = canAdmin ? ROLES : ['player', 'marketer'];
+  // UI-F: brand admins are appointed and removed in one place — the console's brand People tab.
+  // Here only player <-> marketer is managed.
+  if (current !== 'player' && current !== 'marketer') {
+    return canAdmin ? (
+      <Section title="Role">
+        <Card className="text-sm text-muted">
+          This account is a brand admin. Appoint or remove brand admins from the console: <span className="text-fg">Brands → this brand → People</span>.
+        </Card>
+      </Section>
+    ) : null;
+  }
+  const roleOptions = ['player', 'marketer'];
 
   function run() {
     m.mutate(
@@ -367,29 +404,30 @@ function RoleManage({ id, current }: { id: string; current: string }) {
           label="Change role"
           confirmLabel="Confirm role change"
           size="md"
-          variant={role === 'admin' ? 'down' : 'primary'}
+          variant="primary"
           busy={m.isPending}
           disabled={role === current}
           onConfirm={run}
         />
       </Card>
       <p className="text-xs text-muted">
-        Promoting to admin grants back-office access. Changes are audited and apply on the user’s next login.
+        Marketers get a referral link and a marketer dashboard. Changes are audited and apply on the user’s next login.
       </p>
     </Section>
   );
 }
 
-/** Consolidation cross-link: a demo/social-proof account's simulated wallet is managed (and deleted)
- *  in the one Marketers hub. This deep-link keeps role management here and wallet/demo there. */
-function MarketerHubLink() {
+/** UI-F: a marketer's money (demo wallet, expenses, advances, payouts) has one home — the Marketer
+ *  payouts hub. This page keeps only who they are and their role; it links there for the money. */
+function MarketerHubLink({ id }: { id: string }) {
   return (
-    <Section title="Demo / social-proof account">
-      <Card className="flex flex-col gap-1">
-        <span className="text-sm text-muted">
-          This account has a demo (social-proof) wallet. Manage or remove it — and every marketer money
-          flow — in the{' '}
-          <Link href="/admin/marketer-finance" className="text-accent underline">Marketer &amp; affiliate finance</Link> hub.
+    <Section title="Marketer money">
+      <Card className="flex flex-col gap-2 text-sm text-muted">
+        <span>Expenses, advances, payouts and this marketer&apos;s demo wallet are managed in Marketer payouts.</span>
+        <span className="flex flex-wrap gap-3">
+          <Link href={`/admin/marketer-finance?tab=expenses&marketer=${id}`} className="font-medium text-accent hover:underline">Log or view expenses</Link>
+          <Link href="/admin/marketer-finance?tab=wallets" className="font-medium text-accent hover:underline">Demo wallets</Link>
+          <Link href="/admin/marketer-finance?tab=advances" className="font-medium text-accent hover:underline">Advance requests</Link>
         </span>
       </Card>
     </Section>
@@ -825,268 +863,44 @@ function NotificationSend({ id }: { id: string }) {
   );
 }
 
-function LabeledInput({ label, value, onChange, placeholder }: { label: string; value: string; onChange: (v: string) => void; placeholder?: string }) {
-  return (
-    <label className="flex flex-col gap-1 text-xs text-muted">
-      {label}
-      <input
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={placeholder}
-        className="h-10 rounded-xl border border-border bg-surface-2 px-3 text-sm text-fg outline-none focus:border-accent"
-      />
-    </label>
-  );
-}
-
 /** Per-user engine overrides: win rate, forced auto-sell duration, payout cap, stake bounds (J8). */
+/** UI-F: per-player game settings are changed in one place — the console (brand → People). The back
+ *  office shows them read-only so support staff know why a player's game behaves differently. */
 function OverridesPanel({ id }: { id: string }) {
-  const canWriteOverrides = useCan('backoffice.users.overrides_write');   // docs/42 UI-7: owner-only at the API
   const q = useUserOverrides(id);
-  const m = useSetOverrides(id);
-  const gc = useGameConfig();
-  const toast = useToast();
-  const [form, setForm] = useState<Record<string, string>>({});
-
-  useEffect(() => {
-    const o = q.data;
-    if (!o) return;
-    setForm({
-      winRate: o.winRate != null ? String(o.winRate) : '',
-      houseEdge: o.houseEdge != null ? String(o.houseEdge) : '',
-      tradeDurationS: o.tradeDurationS != null ? String(o.tradeDurationS) : '',
-      maxWinMultiplier: o.maxWinMultiplier != null ? String(o.maxWinMultiplier) : '',
-      minStake: o.minStakeCents != null ? String(o.minStakeCents / 100) : '',
-      maxStake: o.maxStakeCents != null ? String(o.maxStakeCents / 100) : '',
-      notes: o.notes ?? '',
-    });
-  }, [q.data]);
-
-  const set = (k: string, v: string) => setForm((s) => ({ ...s, [k]: v }));
-  const numOrNull = (s: string): number | null => {
-    const t = (s ?? '').trim();
-    if (t === '') return null;
-    const n = Number(t);
-    return Number.isFinite(n) ? n : null;
-  };
-  const centsOrNull = (s: string): number | null => {
-    const n = numOrNull(s);
-    return n == null ? null : Math.round(n * 100);
-  };
-  const intOrNull = (s: string): number | null => {
-    const n = numOrNull(s);
-    return n == null ? null : Math.round(n);
-  };
-
-  function save() {
-    const patch: UserOverridePatch = {
-      winRate: numOrNull(form.winRate ?? ''),
-      houseEdge: numOrNull(form.houseEdge ?? ''),
-      tradeDurationS: intOrNull(form.tradeDurationS ?? ''),
-      maxWinMultiplier: numOrNull(form.maxWinMultiplier ?? ''),
-      minStakeCents: centsOrNull(form.minStake ?? ''),
-      maxStakeCents: centsOrNull(form.maxStake ?? ''),
-      notes: (form.notes ?? '').trim() === '' ? null : (form.notes ?? '').trim(),
-    };
-    m.mutate(patch, {
-      onSuccess: () => toast.push({ tone: 'success', title: 'Overrides saved', description: "Applied to the user's next trades." }),
-      onError: (e) => toast.push({ tone: 'error', title: 'Save failed', description: e instanceof ApiError ? e.message : 'Try again.' }),
-    });
-  }
-
-  // Live feasibility preview: fold the form over the global config so the operator sees whether
-  // the per-user pricing is feasible (and thus actually applied) BEFORE saving.
-  const g = gc.data;
-  const fx = (() => {
-    const he = numOrNull(form.houseEdge ?? '') ?? (g ? g.houseEdge : null);
-    const wr = numOrNull(form.winRate ?? '') ?? (g ? g.targetWinRate : null);
-    const mm = numOrNull(form.maxWinMultiplier ?? '') ?? (g ? g.maxMultiplier : null);
-    if (he == null || wr == null || mm == null) return null;
-    const pricing =
-      numOrNull(form.winRate ?? '') != null ||
-      numOrNull(form.houseEdge ?? '') != null ||
-      numOrNull(form.maxWinMultiplier ?? '') != null;
-    const rtp = 1 - he;
-    const required = rtp / wr;
-    const bounded = he >= 0 && he < 1 && wr > 0 && wr <= 1 && mm > 1;
-    const feasible = bounded && required > 1 && required <= mm;
-    return { feasible, rtp, winRate: wr, maxMult: mm, required, pricing };
-  })();
-
-  // UI-C: in the brand back office nobody can write overrides (owner-only at the API). Show the values as
-  // plain text with who manages them, instead of eight inputs that looked editable until you read the footnote.
-  if (!canWriteOverrides) {
-    const o = q.data;
-    const val = (v: number | null | undefined, fmt: (n: number) => string) => (v == null ? 'Brand default' : fmt(v));
-    const rows: Array<[string, string]> = [
-      ['Win rate', val(o?.winRate, (n) => `${(n * 100).toFixed(1)}%`)],
-      ['House edge', val(o?.houseEdge, (n) => `${(n * 100).toFixed(1)}%`)],
-      ['Max win multiplier', val(o?.maxWinMultiplier, (n) => `×${n}`)],
-      ['Auto-sell after', val(o?.tradeDurationS, (n) => `${n}s`)],
-      ['Min stake', val(o?.minStakeCents, (n) => formatKes(n))],
-      ['Max stake', val(o?.maxStakeCents, (n) => formatKes(n))],
-    ];
-    const custom = rows.some(([, v]) => v !== 'Brand default');
-    return (
-      <Section title="Player overrides">
-        <Card className="flex flex-col gap-3" data-testid="overrides-readonly">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="text-sm text-muted">
-              {custom ? 'This player has custom game settings.' : 'This player uses the brand’s game settings.'}
-            </p>
-            <span className="rounded-full bg-surface-2 px-2 py-0.5 text-xs font-medium text-muted">Managed in the console</span>
-          </div>
-          {q.isLoading ? <Skeleton className="h-20 w-full" /> : (
-            <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-3">
-              {rows.map(([k, v]) => (
-                <div key={k} className="flex flex-col">
-                  <dt className="text-xs text-muted">{k}</dt>
-                  <dd className={v === 'Brand default' ? 'text-muted' : 'font-medium text-fg'}>{v}</dd>
-                </div>
-              ))}
-            </dl>
-          )}
-          {o?.notes ? <p className="text-xs text-muted">Note: {o.notes}</p> : null}
-          <p className="text-xs text-muted">Your platform admin or the System owner can change these from the console.</p>
-        </Card>
-      </Section>
-    );
-  }
-
+  const o = q.data;
+  const val = (v: number | null | undefined, fmt: (n: number) => string) => (v == null ? 'Brand default' : fmt(v));
+  const rows: Array<[string, string]> = [
+    ['Win rate', val(o?.winRate, (n) => `${(n * 100).toFixed(1)}%`)],
+    ['House edge', val(o?.houseEdge, (n) => `${(n * 100).toFixed(1)}%`)],
+    ['Max win multiplier', val(o?.maxWinMultiplier, (n) => `×${n}`)],
+    ['Auto-sell after', val(o?.tradeDurationS, (n) => `${n}s`)],
+    ['Min stake', val(o?.minStakeCents, (n) => formatKes(n))],
+    ['Max stake', val(o?.maxStakeCents, (n) => formatKes(n))],
+  ];
+  const custom = rows.some(([, v]) => v !== 'Brand default');
   return (
     <Section title="Player overrides">
-      <Card className="flex flex-col gap-3">
-        <p className="text-xs text-muted">
-          Per-player overrides of the global game configuration — blank = use the global value. Pricing fields
-          (win rate, house edge, max win multiplier) rig this user&apos;s outcomes; duration forces their auto-sell
-          timer; stake bounds gate their trades. Feasibility requires <span className="font-mono">(1 − houseEdge) / winRate</span> to
-          land in <span className="font-mono">(1, maxMultiplier]</span> — if it doesn&apos;t, the pricing override is ignored, so raising
-          a win rate above the global RTP also needs a lower house edge.
-        </p>
-        {fx ? (
-          <div
-            className={
-              'rounded-xl border px-3 py-2 text-xs ' +
-              (fx.feasible
-                ? 'border-up/40 bg-up/10 text-up'
-                : 'border-down/40 bg-down/10 text-down')
-            }
-          >
-            {fx.feasible ? (
-              <span>
-                ✓ Effective for this player: RTP <b>{(fx.rtp * 100).toFixed(1)}%</b> · win rate{' '}
-                <b>{(fx.winRate * 100).toFixed(1)}%</b> · avg winning multiplier <b>×{fx.required.toFixed(2)}</b> (cap ×
-                {fx.maxMult}). {fx.pricing ? 'Pricing is overridden.' : 'Using global pricing.'}
-              </span>
-            ) : (
-              <span>
-                ⚠ Infeasible pricing — this override will be <b>ignored</b> (falls back to global). RTP{' '}
-                {(fx.rtp * 100).toFixed(1)}% at win rate {(fx.winRate * 100).toFixed(1)}% needs an average winning
-                multiplier of ×{fx.required.toFixed(2)}, which must be in (1, ×{fx.maxMult}]. Lower the house edge (e.g.
-                ≤ {Math.max(0, 1 - fx.winRate * fx.maxMult).toFixed(2)}) or the win rate.
-              </span>
-            )}
-          </div>
-        ) : null}
-        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-          <LabeledInput label="Win rate (fraction 0–1)" value={form.winRate ?? ''} onChange={(v) => set('winRate', v)} placeholder="e.g. 0.90" />
-          <LabeledInput label="House edge (0–1 · RTP = 1 − this)" value={form.houseEdge ?? ''} onChange={(v) => set('houseEdge', v)} placeholder="e.g. 0.05" />
-          <LabeledInput label="Max win multiplier" value={form.maxWinMultiplier ?? ''} onChange={(v) => set('maxWinMultiplier', v)} placeholder="e.g. 5" />
-          <LabeledInput label="Auto-sell duration (s)" value={form.tradeDurationS ?? ''} onChange={(v) => set('tradeDurationS', v)} placeholder="e.g. 30" />
-          <LabeledInput label="Min stake (KES)" value={form.minStake ?? ''} onChange={(v) => set('minStake', v)} placeholder="e.g. 250" />
-          <LabeledInput label="Max stake (KES)" value={form.maxStake ?? ''} onChange={(v) => set('maxStake', v)} placeholder="e.g. 50000" />
-          <LabeledInput label="Notes" value={form.notes ?? ''} onChange={(v) => set('notes', v)} placeholder="optional" />
-        </div>
-        {canWriteOverrides ? (
-          <ConfirmButton label="Save overrides" confirmLabel="Confirm save" variant="primary" size="md" busy={m.isPending} disabled={q.isLoading} onConfirm={save} />
-        ) : (
-          <p className="text-xs text-muted">Read-only here. Per-player overrides are set by the system owner from the system console.</p>
-        )}
-        {q.data?.updatedAtMs ? (
-          <p className="text-xs text-muted">
-            Last updated {formatAgo(q.data.updatedAtMs)}{q.data.updatedBy ? ` by ${q.data.updatedBy.slice(0, 8)}…` : ''}.
+      <Card className="flex flex-col gap-3" data-testid="overrides-readonly">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p className="text-sm text-muted">
+            {custom ? 'This player has custom game settings.' : 'This player uses the brand’s game settings.'}
           </p>
-        ) : null}
-      </Card>
-    </Section>
-  );
-}
-
-const EXPENSE_CATEGORIES = [
-  { value: 'tiktok_promo', label: 'TikTok promo' },
-  { value: 'data_bundles', label: 'Data bundles' },
-  { value: 'advance', label: 'Advance payment' },
-  { value: 'airtime', label: 'Airtime' },
-  { value: 'transport', label: 'Transport' },
-  { value: 'other', label: 'Other' },
-];
-
-/** Admin-logged marketer expenses (transparency, 0068). Everything logged here is visible to the
- *  marketer in their hidden dashboard, so payouts and advances are never a black box. */
-function MarketerExpenses({ id }: { id: string }) {
-  const q = useMarketerExpenses(id);
-  const add = useAddMarketerExpense(id);
-  const toast = useToast();
-  const [category, setCategory] = useState('tiktok_promo');
-  const [amountKes, setAmountKes] = useState('');
-  const [note, setNote] = useState('');
-
-  const rows = q.data?.items ?? [];
-  const total = q.data?.totalCents ?? 0;
-
-  function submit(e: React.FormEvent) {
-    e.preventDefault();
-    const kes = Number(amountKes);
-    if (!Number.isFinite(kes) || kes <= 0) { toast.push({ tone: 'error', title: 'Enter a valid amount' }); return; }
-    const body: { category: string; amountCents: number; note?: string } = { category, amountCents: Math.round(kes * 100) };
-    const trimmed = note.trim();
-    if (trimmed) body.note = trimmed;
-    add.mutate(
-      body,
-      {
-        onSuccess: () => { setAmountKes(''); setNote(''); toast.push({ tone: 'success', title: 'Expense logged', description: 'Visible to the marketer immediately.' }); },
-        onError: (err) => toast.push({ tone: 'error', title: 'Could not log expense', description: err instanceof ApiError ? err.message : 'Try again.' }),
-      },
-    );
-  }
-
-  return (
-    <Section title="Marketer expenses & advances">
-      <form onSubmit={submit} className="mb-3 grid grid-cols-1 gap-2 sm:grid-cols-4">
-        <select value={category} onChange={(e) => setCategory(e.target.value)} className="h-10 rounded-lg border border-border bg-surface-2 px-3 text-sm text-fg outline-none focus:border-accent">
-          {EXPENSE_CATEGORIES.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
-        </select>
-        <input value={amountKes} onChange={(e) => setAmountKes(e.target.value.replace(/[^0-9.]/g, ''))} inputMode="decimal" placeholder="Amount (KES)" className="h-10 rounded-lg border border-border bg-surface-2 px-3 text-sm text-fg outline-none focus:border-accent" />
-        <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Note (optional)" className="h-10 rounded-lg border border-border bg-surface-2 px-3 text-sm text-fg outline-none focus:border-accent" />
-        <Button type="submit" disabled={add.isPending}>{add.isPending ? 'Adding…' : 'Add expense'}</Button>
-      </form>
-      {q.isLoading ? (
-        <Skeleton className="h-20 w-full" />
-      ) : rows.length === 0 ? (
-        <Empty title="No expenses logged" description="Log promo spend, data bundles or advances — the marketer sees them for full transparency." />
-      ) : (
-        <TableWrap>
-          <thead>
-            <tr className="border-b border-border">
-              <Th>Category</Th>
-              <Th>Note</Th>
-              <Th className="text-right">Amount</Th>
-              <Th className="text-right">When</Th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((e) => (
-              <tr key={e.id} className="border-b border-border last:border-0">
-                <Td className="capitalize">{e.category.replace(/_/g, ' ')}</Td>
-                <Td className="text-muted">{e.note ?? '—'}</Td>
-                <Td className="text-right font-medium tabular-nums text-down">−<Money cents={e.amountCents} /></Td>
-                <Td className="text-right text-xs text-muted">{formatAgo(e.createdAtMs)}</Td>
-              </tr>
+          <span className="rounded-full bg-surface-2 px-2 py-0.5 text-xs font-medium text-muted">Managed in the console</span>
+        </div>
+        {q.isLoading ? <Skeleton className="h-20 w-full" /> : (
+          <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-3">
+            {rows.map(([k, v]) => (
+              <div key={k} className="flex flex-col">
+                <dt className="text-xs text-muted">{k}</dt>
+                <dd className={v === 'Brand default' ? 'text-muted' : 'font-medium text-fg'}>{v}</dd>
+              </div>
             ))}
-          </tbody>
-        </TableWrap>
-      )}
-      <p className="mt-2 text-right text-sm">Total logged: <span className="font-bold tabular-nums text-down"><Money cents={total} /></span></p>
+          </dl>
+        )}
+        {o?.notes ? <p className="text-xs text-muted">Note: {o.notes}</p> : null}
+        <p className="text-xs text-muted">Your platform admin or the System owner can change these from the console.</p>
+      </Card>
     </Section>
   );
 }

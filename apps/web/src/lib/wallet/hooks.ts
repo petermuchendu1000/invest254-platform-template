@@ -21,6 +21,30 @@ export function useWallet() {
   });
 }
 
+/** DEMO-1: switch between the Real and Demo account; the server returns the new wallet. */
+export function useSetAccountMode() {
+  const token = useSession((s) => s.token);
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (mode: 'real' | 'demo') => api.setAccountMode(token as string, mode),
+    onSuccess: (r) => {
+      qc.setQueryData(['wallet'], r.wallet);
+      void qc.invalidateQueries({ queryKey: ['ledger'] });
+      void qc.invalidateQueries({ queryKey: ['wallet-ledger'] });
+    },
+  });
+}
+
+/** DEMO-1: refill the demo balance. */
+export function useTopupDemo() {
+  const token = useSession((s) => s.token);
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.topupDemo(token as string),
+    onSuccess: (r) => { qc.setQueryData(['wallet'], r.wallet); },
+  });
+}
+
 export function useLedger() {
   const token = useSession((s) => s.token);
   return useInfiniteQuery({

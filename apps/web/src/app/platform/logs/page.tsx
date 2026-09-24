@@ -19,7 +19,7 @@ const LEVELS = [
 const APPS = [
   { value: '', label: 'All services' },
   { value: 'api', label: 'API' },
-  { value: 'engine', label: 'Engine (WS)' },
+  { value: 'engine', label: 'Game engine' },
 ];
 
 const levelBadge = (level: string): string =>
@@ -35,7 +35,8 @@ function fieldsText(fields: unknown): string {
 
 function SystemLogsPageInner() {
   const [app, setApp] = useState('');
-  const [level, setLevel] = useState('');
+  // UI-E: open on errors, the first thing someone opening System logs looks for.
+  const [level, setLevel] = useState('error');
   const [qInput, setQInput] = useState('');
   const [q, setQ] = useState('');
   // Debounce the free-text search so we don't refetch on every keystroke.
@@ -51,7 +52,7 @@ function SystemLogsPageInner() {
     <>
       <PageHeader
         title="System logs"
-        subtitle="Structured request, error and money-path logs from the API (docs/36). Warnings and errors are persisted; filter by level or search a path/message. Correlate a flow by its request id."
+        subtitle="Errors and warnings from the API and the game engine, newest first. Search a message or page address; every entry of one request shares its request id, so one payment can be followed end to end."
       />
 
       <Section>

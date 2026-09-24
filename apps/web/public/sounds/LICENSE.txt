@@ -1,0 +1,11 @@
+Sound effects in this folder come from "Interface Sounds (1.0)" by Kenney (www.kenney.nl).
+License: Creative Commons Zero (CC0) — http://creativecommons.org/publicdomain/zero/1.0/
+Free for personal, educational and commercial use; credit is appreciated but not required.
+
+tap.mp3      <- click_002.ogg
+place.mp3    <- select_004.ogg
+win.mp3      <- confirmation_002.ogg
+loss.mp3     <- error_006.ogg
+message.mp3  <- glass_002.ogg
+toggle.mp3   <- toggle_002.ogg
+(converted to mono MP3 at 64 kbps, loudness-normalised to -20 LUFS)
