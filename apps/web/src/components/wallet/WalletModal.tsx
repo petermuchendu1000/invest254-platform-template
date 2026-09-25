@@ -7,6 +7,7 @@ import { Skeleton } from '@/components/ui/Skeleton';
 import { cn } from '@/lib/cn';
 import { useDepositUi, type WalletMode } from '@/lib/wallet/depositUi';
 import { useWallet } from '@/lib/wallet/hooks';
+import { walletFigures } from '@/lib/wallet/figures';
 import { useSession } from '@/lib/auth/session';
 import { DepositPanel } from '@/components/wallet/DepositPanel';
 import { WithdrawForm } from '@/components/wallet/WithdrawForm';
@@ -42,11 +43,13 @@ export function WalletModal() {
       {/* Balance — the anchor for both actions */}
       <div className="px-4 pt-4">
         <div className="flex flex-col items-center gap-0.5 rounded-2xl bg-surface-2 px-4 py-3 text-center">
-          <span className="text-xs text-muted">{mode === 'deposit' ? 'Available balance' : 'Available to withdraw'}</span>
+          <span className="text-xs text-muted">{mode === 'deposit' ? 'Real balance' : 'Withdrawable'}</span>
           {token && !wallet ? (
             <Skeleton className="h-7 w-32" />
           ) : (() => {
-            const bal = parts(wallet ? (mode === 'deposit' ? wallet.real + wallet.bonus : wallet.real) : 0);
+            // DEMO-2: money in and out is always the Real account, never the demo balance.
+            const f = walletFigures(wallet);
+            const bal = parts(mode === 'deposit' ? f.realTotal : f.withdrawable);
             return (
               <>
                 <span className="text-2xl font-extrabold leading-tight tracking-tight text-accent">{bal.display}</span>

@@ -174,7 +174,7 @@ async function buildDeps(): Promise<ApiDeps> {
   // CHAT-1 / ACCT-1: signed file links use a key derived from an existing server secret (no new secret);
   // a random per-process key is the dev fallback.
   const chatMediaSecret = createHash("sha256").update(`chat-media:${process.env.SUPABASE_JWT_SECRET ?? process.env.PAYMENTS_CONFIG_ENC_KEY ?? randomBytes(32).toString("hex")}`).digest("hex");
-  const walletMode = makeWalletModeDeps(q);
+  const walletMode = makeWalletModeDeps(q, kesToCurrencyRate);   // DEMO-2: demo opens at 10,000 of the brand currency
   const platform = new PlatformService(new PgPlatformRepository(q));
   const subscriptions = new SubscriptionService(new PgSubscriptionRepository(q));
   const tickets = new TicketService(new PgTicketRepository(q));

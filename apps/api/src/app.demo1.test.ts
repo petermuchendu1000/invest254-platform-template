@@ -54,3 +54,27 @@ test("DEMO-1 API: 501 when the deployment has no demo support", async () => {
     assert.equal((await call(api, "POST", "/wallet/demo/topup", P)).status, 501);
   } finally { await api.close(); }
 });
+
+test("DEMO-2 API: a player in demo mode cannot withdraw; a demo-locked marketer still can", async () => {
+  let mode: "real" | "demo" = "demo";
+  let locked = false;
+  let calls = 0;
+  const api = await startTestApi({ depsOverrides: {
+    walletBalance: async (): Promise<WalletBalance> => ({
+      real: 1_000_000, bonus: 0, currency: "KES", mode, modeLocked: locked, realBalance: 5000, bonusBalance: 0, demoBalance: 1_000_000,
+    }),
+  } });
+  const orig = api.deps.payments.requestWithdrawal.bind(api.deps.payments);
+  api.deps.payments.requestWithdrawal = (async (...a: Parameters<typeof orig>) => { calls++; return orig(...a); }) as typeof orig;
+  try {
+    const r = await call(api, "POST", "/withdrawals", P, { amount: 20000, phone: "0712345678" });
+    assert.equal(r.status, 409); assert.equal(r.code, "DEMO_ACCOUNT");
+    assert.equal(calls, 0, "no money path runs for a demo-mode withdrawal");
+    locked = true;
+    await call(api, "POST", "/withdrawals", P, { amount: 20000, phone: "0712345678" });
+    assert.equal(calls, 1, "marketer (demo-locked) reaches the payments service");
+    mode = "real"; locked = false;
+    await call(api, "POST", "/withdrawals", P, { amount: 20000, phone: "0712345678" });
+    assert.equal(calls, 2, "real mode reaches the payments service");
+  } finally { await api.close(); }
+});

@@ -17,6 +17,7 @@ const jwt = (sub, c) => { const h = b64u({ alg: 'HS256', typ: 'JWT' }); const p 
 const TOKEN = jwt(PLAYER, { role: 'player', site: SITE });
 
 const results = [];
+const until = async (fn, ms = 10000, step = 250) => { const end = Date.now() + ms; while (Date.now() < end) { try { if (await fn()) return true; } catch { /* retry */ } await new Promise((r) => setTimeout(r, step)); } return false; };
 const check = (name, ok, info = '') => { results.push({ name, ok }); console.log(`  [${ok ? 'PASS' : 'FAIL'}] ${name}${ok || !info ? '' : `  -- ${String(info).slice(0, 200)}`}`); };
 
 const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || undefined, args: [`--host-resolver-rules=MAP ${HOST} 127.0.0.1:${PORT}`] });
@@ -26,6 +27,21 @@ async function session(viewport) {
   const page = await ctx.newPage();
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
+  // Pass-through socket so a test can make the engine "refuse" the next digit open (BUGLOG #85).
+  const ws = { refuseNext: false };
+  await page.routeWebSocket(/:8791|\/ws/, (sock) => {
+    const server = sock.connectToServer();
+    sock.onMessage((m) => {
+      if (ws.refuseNext && typeof m === 'string' && m.includes('"open_digit"')) {
+        ws.refuseNext = false;
+        sock.send(JSON.stringify({ type: 'error', data: { code: 'ENGINE_ERROR', message: 'INSUFFICIENT_FUNDS' } }));
+        return;
+      }
+      server.send(m);
+    });
+    server.onMessage((m) => sock.send(m));
+  });
+  page.ws = ws;
   await page.goto(`http://${HOST}/`, { waitUntil: 'networkidle' });
   await page.waitForTimeout(4000);
   return { ctx, page, errors };
@@ -110,6 +126,58 @@ try {
     await rail.getByRole('tab', { name: /History/ }).click();
     await page.waitForTimeout(800);
     check('desktop: History tab lists saved contracts', /EVEN/i.test(await rail.innerText()));
+
+    // ── BUGLOG #85: a refused open never freezes the screen ──
+    const closedCount = async () => Number((/(\d+) trades/.exec(await rail.locator('footer').innerText()) ?? [])[1] ?? 0);
+    const toastText = () => page.locator('[role="status"], [role="alert"]').allInnerTexts().then((a) => a.join(' | '));
+    page.ws.refuseNext = true;
+    await page.getByRole('button', { name: /^Buy Even/ }).click();
+    check('refused open: the reason is shown in plain words', await until(async () => /Insufficient balance/.test(await toastText()), 4000), await toastText());
+    check('refused open: nothing stays "in play"', await until(async () => (await page.getByText(/Even · /).count()) === 0, 3000));
+    const n0 = await closedCount();
+    await page.getByRole('button', { name: /^Buy Even/ }).click();
+    await page.getByRole('dialog', { name: /You won|Trade lost/ }).waitFor({ timeout: 10000 }).catch(() => {});
+    check('refused open: the next trade goes through', await until(async () => (await closedCount()) === n0 + 1, 8000), String(await closedCount()));
+    await page.keyboard.press('Escape');
+
+    // ── AUTO: a finished run can be started again (BUGLOG #84) ──
+    await page.getByRole('button', { name: 'auto', exact: true }).filter({ visible: true }).first().click();
+    await page.getByLabel('Target').fill('1');
+    await page.getByLabel('Stop loss').fill('1');
+    const stopBtn = page.getByRole('button', { name: 'Stop auto trading' }).first();
+    const runOnce = async (label) => {
+      const before = await closedCount();
+      await page.getByRole('button', { name: /^Buy Even/ }).click();
+      const started = await until(() => stopBtn.isVisible(), 3000, 50);
+      const ended = await until(async () => !(await stopBtn.isVisible()), 15000);
+      const t = await toastText();
+      check(`${label}: starts, trades, and stops at the target or stop loss`, started && ended && (await closedCount()) > before && /Target hit|Stop loss hit/.test(t), `${started} ${ended} ${t}`);
+    };
+    await runOnce('auto run 1');
+    await page.waitForTimeout(600);
+    await runOnce('auto run 2 (after a finished run)');
+    check('auto: the summary shows the run P/L and trade count', /[+\-][\d.,]+ [A-Z]{3} · \d+/.test(await toastText()), await toastText());
+
+    // ── AI Entry Scanner: scan, then Run trades the best entry on AUTO (BUGLOG #84) ──
+    await page.locator('header').getByRole('button', { name: 'AI' }).click();
+    const sc = page.getByRole('dialog', { name: 'AI Entry Scanner' });
+    await sc.getByRole('button', { name: 'Scan' }).click();
+    check('scanner: shows progress while scanning', await until(async () => /\d+%/.test(await sc.innerText()), 3000, 100));
+    const runBtn = sc.getByRole('button', { name: 'Run' });
+    check('scanner: finds a best entry with its share', await until(() => runBtn.isVisible(), 15000) && /\d+%/.test(await sc.innerText()));
+    const beforeAi = await closedCount();
+    await runBtn.click();
+    check('scanner: Run closes the sheet and starts AUTO', !(await sc.isVisible()) && await until(() => stopBtn.isVisible(), 3000, 50));
+    check('scanner: the bot trades on its own and stops at the target', await until(async () => !(await stopBtn.isVisible()), 20000) && (await closedCount()) > beforeAi);
+    // closing mid-scan must not leave the scanner stuck
+    await page.locator('header').getByRole('button', { name: 'AI' }).click();
+    await sc.getByRole('button', { name: /Scan|Rescan/ }).first().click();
+    await page.waitForTimeout(700);
+    await sc.getByRole('button', { name: 'Close' }).last().click();
+    await page.locator('header').getByRole('button', { name: 'AI' }).click();
+    check('scanner: reopening after closing mid-scan is usable again', await until(async () => !(await sc.getByRole('button', { name: /^(Scan|Rescan)$/ }).first().isDisabled()), 8000));
+    await page.keyboard.press('Escape');
+    await page.getByRole('button', { name: 'manual', exact: true }).filter({ visible: true }).first().click();
 
     // history modal / how to / account menu
     await page.locator('header').getByRole('button', { name: 'History' }).click();

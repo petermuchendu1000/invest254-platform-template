@@ -7,7 +7,8 @@ import { normalizeMsisdn, MIN_WITHDRAWAL_CENTS } from '@invest254/shared/payment
 import { Input } from '@/components/ui/Input';
 import { Button } from '@/components/ui/Button';
 import { api } from '@/lib/api/endpoints';
-import { useWithdraw, useWallet } from '@/lib/wallet/hooks';
+import { useWithdraw, useWallet, useSetAccountMode } from '@/lib/wallet/hooks';
+import { walletFigures } from '@/lib/wallet/figures';
 import { useDepositUi } from '@/lib/wallet/depositUi';
 import { useSession } from '@/lib/auth/session';
 import { paymentErrorMessage } from '@/lib/wallet/errors';
@@ -72,7 +73,10 @@ export function WithdrawForm() {
   const [paid, setPaid] = useState(false);
   const [paidAmountKes, setPaidAmountKes] = useState(0);
 
-  const realCents = wallet?.real ?? 0;
+  // DEMO-2 (BUGLOG #82): only the Real account is withdrawable; the demo balance never is.
+  const figures = walletFigures(wallet);
+  const realCents = figures.withdrawable;
+  const switchMode = useSetAccountMode();
   const effectivePhone = accountPhone ?? phone;   // F-49: the registered number whenever we know it
 
   const parsedAmount = Number.parseFloat(amount);
@@ -147,6 +151,23 @@ export function WithdrawForm() {
           </div>
         </div>
         <Button fullWidth size="lg" onClick={close}>Done</Button>
+      </div>
+    );
+  }
+
+  // ── Demo account: nothing to withdraw until the player is on Real ─────────────
+  if (figures.demo) {
+    return (
+      <div className="mx-auto flex w-full max-w-sm flex-col items-center gap-4 px-5 pb-6 pt-5 text-center" data-testid="withdraw-demo">
+        <span className="rounded-full bg-warn/15 px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider text-warn">Demo</span>
+        <div>
+          <div className="text-[11px] font-medium uppercase tracking-wider text-muted">Real</div>
+          <div className="mt-1 text-3xl font-black tabular-nums text-fg">{fmt(figures.realCash)}</div>
+        </div>
+        {switchMode.error ? <p className="text-xs text-down" role="alert">{paymentErrorMessage(switchMode.error)}</p> : null}
+        <Button size="lg" fullWidth disabled={switchMode.isPending} onClick={() => switchMode.mutate('real')}>
+          {switchMode.isPending ? 'Switching…' : 'Switch to Real'}
+        </Button>
       </div>
     );
   }

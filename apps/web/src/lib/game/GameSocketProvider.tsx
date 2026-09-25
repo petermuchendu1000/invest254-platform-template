@@ -76,10 +76,12 @@ interface GameSocketValue {
   instrumentResetKey: string;
   /** Subscribe the socket to an instrument's authoritative feed (history + live ticks). */
   subscribeInstrument: (instrumentId: string) => void;
-  /** Place a DIGIT contract; settlement arrives via `onDigitSettled`. */
-  openDigit: (input: OpenDigitInput) => void;
+  /** Place a DIGIT contract; settlement arrives via `onDigitSettled`. False = not sent (no login / offline). */
+  openDigit: (input: OpenDigitInput) => boolean;
   /** Subscribe to authoritative digit settlements. Returns an unsubscribe fn. */
   onDigitSettled: (cb: (s: DigitSettledData) => void) => () => void;
+  /** The engine refused a digit open (funds, limits, one-at-a-time…). Returns an unsubscribe fn. */
+  onDigitRejected: (cb: (e: { code: string; message: string }) => void) => () => void;
   /** Place a MULTIPLIER contract; lifecycle arrives via `onMultiplier`. */
   openMultiplier: (input: OpenMultiplierInput) => void;
   /** Manually close an open multiplier (server may refuse in pool mode). */
@@ -133,6 +135,8 @@ function errorTitle(code: string): string {
       return 'Session expired — log in again';
     case 'INSUFFICIENT_FUNDS':
       return 'Insufficient balance';
+    case 'SYSTEM_DISABLED':
+      return 'Paused';
     default:
       return 'Trade rejected';
   }
@@ -149,6 +153,11 @@ function friendlyError(
 ): string | undefined {
   const raw = reasons && reasons.length > 0 ? reasons.join(' · ') : message;
   if (!raw) return raw;
+  // Engine codes arrive as the message of an ENGINE_ERROR frame: never show a bare code.
+  if (/^INSUFFICIENT_FUNDS\b/.test(raw)) return 'Top up or lower the stake.';
+  if (/^CONTRACT_EXISTS\b/.test(raw)) return 'One contract at a time on this market.';
+  if (/^(INVALID_INSTRUMENT|NO_SEED)\b/.test(raw)) return 'Market unavailable. Pick another.';
+  if (/^stake must be integer cents/.test(raw)) return 'Enter a valid stake.';
   let m: RegExpExecArray | null;
   if ((m = /STAKE_BELOW_MIN:\s*min\s*(\d+)/i.exec(raw))) return `Minimum stake is ${fmt(Number(m[1]))}.`;
   if ((m = /STAKE_ABOVE_MAX:\s*max\s*(\d+)/i.exec(raw))) return `Maximum stake is ${fmt(Number(m[1]))}.`;
@@ -194,6 +203,9 @@ export function GameSocketProvider({ children }: { children: React.ReactNode }) 
   const [instrumentResetKey, setInstrumentResetKey] = useState('');
   const subscribedInstrumentRef = useRef<string | null>(null);
   const digitListenersRef = useRef<Set<(s: DigitSettledData) => void>>(new Set());
+  // Digit opens sent and not yet acknowledged: an 'error' frame while one is outstanding is its refusal.
+  const digitAwaitingRef = useRef(0);
+  const digitRejectRef = useRef<Set<(e: { code: string; message: string }) => void>>(new Set());
   const multListenersRef = useRef<Set<(e: MultEvent) => void>>(new Set());
 
   /** Keep ref + state in lockstep so socket handlers can read the current value. */
@@ -295,14 +307,17 @@ export function GameSocketProvider({ children }: { children: React.ReactNode }) 
   );
 
   const openDigit = useCallback(
-    (input: OpenDigitInput) => {
+    (input: OpenDigitInput): boolean => {
       if (!tokenRef.current) {
         toast.push({ tone: 'error', title: 'Log in to trade' });
-        return;
+        return false;
       }
       if (!send('open_digit', input)) {
         toast.push({ tone: 'error', title: 'Not connected', description: 'Reconnecting — try again shortly.' });
+        return false;
       }
+      digitAwaitingRef.current += 1;
+      return true;
     },
     [send, toast],
   );
@@ -310,6 +325,11 @@ export function GameSocketProvider({ children }: { children: React.ReactNode }) 
   const onDigitSettled = useCallback((cb: (s: DigitSettledData) => void) => {
     digitListenersRef.current.add(cb);
     return () => { digitListenersRef.current.delete(cb); };
+  }, []);
+
+  const onDigitRejected = useCallback((cb: (e: { code: string; message: string }) => void) => {
+    digitRejectRef.current.add(cb);
+    return () => { digitRejectRef.current.delete(cb); };
   }, []);
 
   const openMultiplier = useCallback(
@@ -530,6 +550,7 @@ export function GameSocketProvider({ children }: { children: React.ReactNode }) 
           break;
         }
         case 'digit_opened':
+          digitAwaitingRef.current = Math.max(0, digitAwaitingRef.current - 1);
           break; // ack only; the screen shows the pending contract locally until settlement
         case 'digit_settled': {
           const d = data as DigitSettledData;
@@ -561,6 +582,12 @@ export function GameSocketProvider({ children }: { children: React.ReactNode }) 
         }
         case 'error': {
           const d = data as WsErrorData;
+          if (digitAwaitingRef.current > 0) {
+            // BUGLOG #85: a refused digit open used to leave the screen "in play" forever
+            digitAwaitingRef.current -= 1;
+            const e = { code: String(d.code ?? ''), message: String(d.message ?? '') };
+            digitRejectRef.current.forEach((cb) => { try { cb(e); } catch { /* non-fatal */ } });
+          }
           const a = activeRef.current;
           if (a && !a.positionId) {
             // optimistic open never acked → roll back and re-sync balance
@@ -572,7 +599,7 @@ export function GameSocketProvider({ children }: { children: React.ReactNode }) 
           }
           toast.push({
             tone: 'error',
-            title: errorTitle(d.code),
+            title: errorTitle(/^INSUFFICIENT_FUNDS/.test(String(d.message ?? '')) ? 'INSUFFICIENT_FUNDS' : d.code),
             description: friendlyError(d.message, d.reasons, fmtRef.current),
           });
           break;
@@ -676,6 +703,7 @@ export function GameSocketProvider({ children }: { children: React.ReactNode }) 
         subscribeInstrument,
         openDigit,
         onDigitSettled,
+        onDigitRejected,
         openMultiplier,
         closeMultiplier,
         onMultiplier,

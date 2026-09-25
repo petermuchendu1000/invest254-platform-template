@@ -6,7 +6,7 @@
  *
  * Registers a FRESH player on the brand every run (so it can be re-run), then walks:
  *   WhatsApp number set in the console → shown in the player's menu and chat greeting;
- *   Real/Demo switch (no banner, no disclaimer) → refresh demo balance → a demo trade moves only the demo balance → back to Real;
+ *   Real/Demo switch (no banner, no disclaimer; opens funded) → refresh demo balance → demo money is not withdrawable → a demo trade moves only the demo balance → back to Real;
  *   sound toggle (state + persisted across reloads);
  *   live chat: player text + photo → agent inbox → agent reply ("Support") + unread badge → resolve;
  *   player two-factor is off (not in the menu, API refuses) → sign out → sign in with phone + password;
@@ -76,13 +76,24 @@ try {
   check('demo: no demo banner on the trade screen', await until(async () => (await page.getByRole('note').filter({ hasText: /play money/i }).count()) === 0));
   const w0 = (await api('/wallet', TOKEN)).body;
   check('demo: the API reports demo mode', w0.mode === 'demo', JSON.stringify(w0));
+  // DEMO-2 (BUGLOG #83): a new demo account opens funded — the pill shows 10,000 without any refresh
+  check('demo: a new demo account opens at 10,000 (no refresh)', w0.demoBalance >= 1_000_000 && await until(async () => /10,000/.test(await pill.getAttribute('aria-label')), 4000), `${JSON.stringify(w0)} / ${await pill.getAttribute('aria-label')}`);
   await pill.click();
   check('demo: the switcher has no disclaimer paragraph', !/can.t be withdrawn|can differ/i.test(await sw.innerText()));
   await page.getByRole('button', { name: 'Refresh demo balance' }).click();
   const w1ok = await until(async () => (await api('/wallet', TOKEN)).body.demoBalance >= 1_000_000);
   const w1 = (await api('/wallet', TOKEN)).body;
-  check('demo: Refresh demo balance tops up to KES 10,000', w1ok, JSON.stringify(w1));
-  await pill.click(); // close the switcher
+  check('demo: Refresh demo balance keeps KES 10,000', w1ok, JSON.stringify(w1));
+  // DEMO-2 (BUGLOG #82): demo money is never withdrawable — the sheet offers Switch to Real, the API refuses
+  await sw.getByRole('button', { name: 'Withdraw' }).click();
+  const wsheet = page.getByTestId('withdraw-demo');
+  check('demo withdraw: the sheet shows Switch to Real, no amount entry', await until(() => wsheet.isVisible(), 4000) && (await page.locator('input[name="amount"]').count()) === 0);
+  check('demo withdraw: nothing is shown as withdrawable', /Withdrawable\s*(KES|\$)?\s*0(\.00)?\b/.test(await page.getByRole('dialog').first().innerText()), await page.getByRole('dialog').first().innerText());
+  const wd = await api('/withdrawals', TOKEN, { method: 'POST', body: JSON.stringify({ amount: 20000, phone: PHONE }) });
+  check('demo withdraw: the API refuses DEMO_ACCOUNT (409)', wd.status === 409 && wd.body?.error?.code === 'DEMO_ACCOUNT', JSON.stringify(wd));
+  check('demo withdraw: no money moved', JSON.stringify((await api('/wallet', TOKEN)).body.realBalance) === JSON.stringify(w1.realBalance));
+  await page.keyboard.press('Escape');
+  await until(async () => !(await wsheet.isVisible()), 3000);
   await page.getByRole('button', { name: /^Buy Even/ }).click();
   const modal = page.getByRole('dialog', { name: /You won|Trade lost/ });
   check('demo: a trade settles in demo', await modal.waitFor({ timeout: 12000 }).then(() => true).catch(() => false));

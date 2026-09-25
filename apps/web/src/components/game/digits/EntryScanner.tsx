@@ -152,9 +152,10 @@ export function EntryScanner({
         .sort((a, b) => b.strength - a.strength);
       setBest(ranked[0]?.s ?? null);
     } finally {
-      // Always restore the user's instrument feed.
+      // Always restore the user's instrument feed, and always end the scan: closing the sheet mid-scan
+      // used to leave it "Scanning…" with both buttons disabled for good (BUGLOG #84).
       subscribeInstrument(currentInstrumentId);
-      if (!cancelledRef.current) setScanning(false);
+      setScanning(false);
     }
   }
 
@@ -185,13 +186,6 @@ export function EntryScanner({
             <Icon path="M6 6l12 12M18 6L6 18" className="h-4 w-4" />
           </button>
         </div>
-
-        {/* description */}
-        <p className="rounded-xl border border-border bg-surface-2/50 p-3 text-[13px] leading-relaxed text-muted">
-          Pick the market category you want to scan. The deep scanner walks every{' '}
-          <span className="font-semibold text-fg">volatility / synthetic</span> index and surfaces the
-          strongest recent entry lean for that category based on its live tick history.
-        </p>
 
         {/* market dropdown */}
         <div className="mt-4">
@@ -234,7 +228,7 @@ export function EntryScanner({
         {scanning ? (
           <div className="mt-4">
             <div className="flex items-center justify-between text-[12px] font-semibold text-muted">
-              <span>Scanning…</span>
+              <span>{instrumentById(INSTRUMENTS[Math.min(progress, total - 1)]!.id).short}</span>
               <span className="tabular-nums">{progress}/{total}</span>
             </div>
             <div className="mt-1.5 h-2 w-full overflow-hidden rounded-full bg-surface-2">
@@ -244,18 +238,17 @@ export function EntryScanner({
         ) : best ? (
           <div className="mt-4">
             <div className="flex items-center justify-between text-[12px] font-semibold text-muted">
-              <span>Scan complete</span>
+              <span>Best</span>
               <span className="tabular-nums">{total}/{total}</span>
             </div>
             <div className="mt-1.5 h-2 w-full overflow-hidden rounded-full bg-surface-2">
               <div className="h-full rounded-full bg-accent" style={{ width: '100%' }} />
             </div>
             <div className="mt-3 rounded-xl border border-accent/40 bg-accent/10 p-3">
-              <div className="text-[10px] font-bold uppercase tracking-wider text-accent">Best entry found</div>
-              <div className="mt-1 flex items-center justify-between gap-2">
+              <div className="flex items-center justify-between gap-2">
                 <div className="min-w-0">
                   <div className="truncate text-[15px] font-extrabold text-fg">{instrumentById(best.instrumentId).label}</div>
-                  <div className="text-[12px] text-muted">Suggested side: <span className="font-semibold text-fg">{sideLabel(best)}</span></div>
+                  <div className="text-[13px] font-semibold text-fg">{sideLabel(best)}</div>
                 </div>
                 <span className="shrink-0 rounded-full bg-accent/20 px-2.5 py-1 text-[13px] font-bold tabular-nums text-accent">{Math.round(best.share)}%</span>
               </div>
@@ -263,28 +256,29 @@ export function EntryScanner({
           </div>
         ) : null}
 
-        {/* actions */}
-        <button
-          type="button"
-          onClick={runScan}
-          disabled={scanning || busy}
-          className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-accent py-3 text-[15px] font-bold text-accent-fg transition hover:brightness-105 disabled:opacity-50"
-        >
-          <Icon path="M11 4a7 7 0 105.2 11.7l3.5 3.6M11 4a7 7 0 015.2 11.7" className="h-4 w-4" />
-          {scanning ? 'Scanning…' : 'Deep Scan for Best Market'}
-        </button>
-        <button
-          type="button"
-          disabled={!best || scanning}
-          onClick={() => { if (best) { onApply(best); setOpen(false); } }}
-          className="mt-2 w-full rounded-xl border border-border py-2.5 text-[14px] font-semibold text-fg transition hover:border-accent/60 disabled:opacity-40"
-        >
-          Load Deep Scanner Bot
-        </button>
-
-        {busy ? (
-          <p className="mt-2 text-center text-[11px] text-warn">Finish or stop the current trade before scanning.</p>
-        ) : null}
+        {/* actions: Scan, then Run (loads the entry and trades it on AUTO) */}
+        <div className="mt-4 grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            onClick={runScan}
+            disabled={scanning || busy}
+            className={cn('flex items-center justify-center gap-2 rounded-xl py-3 text-[15px] font-bold transition disabled:opacity-40',
+              best ? 'border border-border text-fg hover:border-accent/60' : 'col-span-2 bg-accent text-accent-fg hover:brightness-105')}
+          >
+            <Icon path="M11 4a7 7 0 105.2 11.7l3.5 3.6M11 4a7 7 0 015.2 11.7" className="h-4 w-4" />
+            {scanning ? `${pct}%` : busy ? 'Auto running' : best ? 'Rescan' : 'Scan'}
+          </button>
+          {best ? (
+            <button
+              type="button"
+              disabled={scanning}
+              onClick={() => { onApply(best); setOpen(false); }}
+              className="flex items-center justify-center gap-2 rounded-xl bg-accent py-3 text-[15px] font-bold text-accent-fg transition hover:brightness-105 disabled:opacity-40"
+            >
+              <Icon path="M7 5l12 7-12 7V5z" className="h-4 w-4" />Run
+            </button>
+          ) : null}
+        </div>
       </div>
     </div>
   );

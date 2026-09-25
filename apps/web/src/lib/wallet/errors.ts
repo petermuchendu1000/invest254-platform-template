@@ -33,6 +33,8 @@ const MESSAGES: Record<string, string> = {
   CODE_ALREADY_USED: 'That code has already been used.',
   INVALID_CODE: 'That code is not valid.',
   AUTH_REQUIRED: 'Please log in to continue.',
+  DEMO_ACCOUNT: 'Switch to your Real account to withdraw.',
+  OPEN_POSITIONS: 'Finish your open trade first.',
   VALIDATION: 'Please check your details and try again.',
 };
 

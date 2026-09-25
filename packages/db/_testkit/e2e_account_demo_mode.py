@@ -119,19 +119,47 @@ def main():
     bm = bal(cur, m)
     check("marketer stake debits DEMO only; real untouched", bm == {"real":100000,"bonus":0,"demo":160000} and one(cur,"select demo from positions where id=%s",(pm,))[0] is True)
 
-    # ── E. Demo funds are NEVER withdrawable ────────────────────────────────────────────────────────
+    # ── E. Demo funds are NEVER withdrawable; a player in demo mode cannot withdraw at all (0169) ──
+    def try_withdraw(uid, amount):
+        ph = one(cur, "select phone from profiles where id=%s", (uid,))[0]
+        try:
+            cur.execute("select fn_create_withdrawal(%s,%s,%s,%s,%s)", (uid, amount, ph, 1000, SITE)); return "ok"
+        except Exception as e:
+            conn.rollback(); conn.autocommit = True
+            return str(e).split("\n")[0]
     d = mkuser(cur, "player", real=0, demo=1000000)
     one(cur, "select fn_set_account_mode(%s,%s,'demo')", (d, SITE))
-    wd_blocked = False
-    try:
-        # the account's REGISTERED number (0161 pays out only to it) — the refusal must be about funds
-        d_phone = one(cur, "select phone from profiles where id=%s", (d,))[0]
-        cur.execute("select fn_create_withdrawal(%s,%s,%s,%s,%s)", (d, 50000, d_phone, 1000, SITE))
-    except Exception as e:
-        wd_blocked = "INSUFFICIENT_FUNDS" in str(e)
-        conn.rollback()  # clear aborted tx (autocommit re-enables after)
-        conn.autocommit = True
-    check("demo-only user cannot withdraw (real sourced only)", wd_blocked and bal(cur, d)["demo"] == 1000000)
+    r = try_withdraw(d, 50000)
+    check("demo-only user in demo mode: DEMO_ACCOUNT", "DEMO_ACCOUNT" in r and bal(cur, d)["demo"] == 1000000, r)
+    rd = mkuser(cur, "player", real=300000, demo=1000000)
+    one(cur, "select fn_set_account_mode(%s,%s,'demo')", (rd, SITE))
+    r = try_withdraw(rd, 50000)
+    check("real money + demo mode: refused (BUGLOG #82), nothing debited", "DEMO_ACCOUNT" in r and bal(cur, rd) == {"real":300000,"bonus":0,"demo":1000000}, r)
+    ntx = one(cur, "select count(*) from transactions where user_id=%s", (rd,))[0]
+    check("no withdrawal transaction written", ntx == 0)
+    one(cur, "select fn_set_account_mode(%s,%s,'real')", (rd, SITE))
+    r = try_withdraw(rd, 50000)
+    check("same player on Real: withdrawal proceeds from REAL only", r == "ok" and bal(cur, rd) == {"real":250000,"bonus":0,"demo":1000000}, r)
+    rz = mkuser(cur, "player", real=0, demo=1000000)
+    r = try_withdraw(rz, 50000)
+    check("real mode, no real money: INSUFFICIENT_FUNDS (demo never counted)", "INSUFFICIENT_FUNDS" in r and bal(cur, rz)["demo"] == 1000000, r)
+
+    # ── G. Demo top-up target (0169): fx-aware target from the API, bounded ─────────────────────────
+    g = mkuser(cur, "player")
+    usd_target = 129032259                     # $10,000 at 0.00775 USD/KES
+    check("topup to an API target", one(cur, "select fn_topup_demo_account(%s,%s,%s)", (g, SITE, usd_target))[0] == usd_target and bal(cur, g)["demo"] == usd_target)
+    check("topup at/above target is a no-op", one(cur, "select fn_topup_demo_account(%s,%s,%s)", (g, SITE, usd_target))[0] == usd_target)
+    check("2-arg call still resolves (default KES 10,000; no-op above it)", one(cur, "select fn_topup_demo_account(%s,%s)", (g, SITE))[0] == usd_target)
+    for bad in (99999, 10000000001):
+        try:
+            cur.execute("select fn_topup_demo_account(%s,%s,%s)", (g, SITE, bad)); ok = False
+        except Exception as e:
+            ok = "INVALID_AMOUNT" in str(e); conn.rollback(); conn.autocommit = True
+        check(f"topup target {bad} refused", ok)
+    led = one(cur, "select coalesce(sum(amount),0) from ledger_entries where user_id=%s and balance_kind='demo'", (g,))[0]
+    check("demo ledger records exactly the granted amount", led == usd_target, str(led))
+    grants = one(cur, "select array(select grantee::regrole::text from aclexplode(p.proacl) where privilege_type='EXECUTE' order by 1) from pg_proc p where proname='fn_topup_demo_account'")[0]
+    check("topup callable by service_role only", "anon" not in grants and "authenticated" not in grants and "service_role" in grants, str(grants))
 
     # ── F. Reporting: demo-mode positions leave the real cohort, join the demo cohort ────────────────
     check("v_real_positions INCLUDES the real-mode position", one(cur, "select exists(select 1 from v_real_positions where id=%s)", (pos_real,))[0] is True)

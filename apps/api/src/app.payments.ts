@@ -50,6 +50,7 @@ const DOMAIN_STATUS: Readonly<Record<string, number>> = {
   INVALID_MODE: 400,
   OPEN_POSITIONS: 409,           // a contract is still open: finish it before switching accounts
   MODE_LOCKED: 409,              // marketer accounts are always demo
+  DEMO_ACCOUNT: 409,             // DEMO-2 (0169): demo money is never withdrawable — switch to Real first
 };
 
 /** Technical/provider faults that must NEVER reach a client verbatim — they carry gateway payloads
@@ -292,6 +293,10 @@ export function registerProtectedRoutes(router: Router, deps: ApiDeps): void {
     const body = asObject(ctx.body);
     const amount = requireIntAmount(body);
     const phone = requirePhone(body);
+    // DEMO-2 (BUGLOG #82): a player in demo mode is refused before any money path runs (0169 refuses it
+    // again under the wallet lock). Marketers are demo-locked and use their own demo transfer below.
+    const w = await deps.walletBalance(ctx.claims!.userId, ctx.siteId);
+    if (w.mode === "demo" && !w.modeLocked) throw new ApiError("DEMO_ACCOUNT", "Switch to your Real account to withdraw.", 409);
     const out = await domain(() => deps.payments.requestWithdrawal(ctx.claims!.userId, amount, phone, ctx.siteId), ctx);
     // Marketer instant transfer -> paid to the mpesa app wallet (200). Normal player -> pending (202).
     if (out.mode === "marketer") {

@@ -25,7 +25,8 @@ import { payoutForStake, stakeForPayout } from '@/lib/game/digitPayout';
 import { useDisplayMoney, USD_LIMITS } from '@/lib/money';
 import { api } from '@/lib/api/endpoints';
 import { useBrand } from '@/lib/brand/BrandProvider';
-import { useWallet } from '@/lib/wallet/hooks';
+import { useWallet, useTopupDemo } from '@/lib/wallet/hooks';
+import { afterSettle, nextAuto, runPnl, startRun, type AutoRun, type AutoStop } from '@/lib/game/autoBot';
 import { useSession } from '@/lib/auth/session';
 import { useDepositUi } from '@/lib/wallet/depositUi';
 import { useToast } from '@/lib/toast/ToastProvider';
@@ -99,7 +100,7 @@ type Pending = { stakeCents: number; outcome: Outcome; manual: boolean; label: s
 export function DigitsTradeScreen() {
   const [instId, setInstId] = useState<string>(DEFAULT_INSTRUMENT_ID);
   const instrument: Instrument = instrumentById(instId);
-  const { getInstrumentTicks, getLastInstrumentTick, instrumentResetKey, subscribeInstrument, openDigit, onDigitSettled } = useGameSocket();
+  const { getInstrumentTicks, getLastInstrumentTick, instrumentResetKey, subscribeInstrument, openDigit, onDigitSettled, onDigitRejected } = useGameSocket();
   const { fmt, both, symbol, isForeign, toKesCents, toDisplay, limit } = useDisplayMoney();
   const brand = useBrand();
   const token = useSession((s) => s.token);
@@ -107,6 +108,7 @@ export function DigitsTradeScreen() {
   const openAuth = useAuthUi((s) => s.openAuth);
   const toast = useToast();
   const { data: wallet } = useWallet();
+  const topupDemo = useTopupDemo();
   const spendable = (wallet?.real ?? 0) + (wallet?.bonus ?? 0);
   const amt = useAmountText();
   // DIGITS-UI: publish the live session to the shell (positions rail/sheet, auto pill, history).
@@ -152,14 +154,17 @@ export function DigitsTradeScreen() {
   const [amountMode, setAmountMode] = useState<'stake' | 'payout'>('stake');
   const [payoutInput, setPayoutInput] = useState<string>('');
   const primaryProb = winProbability(outcomesFor(market)[0].key, barrier);
-  const stakeCents = useMemo(() => {
+  // Stake for a side. In payout mode each side needs its own stake to return the typed payout
+  // (BUGLOG #86: the secondary side used the primary side's stake and paid a different amount).
+  const stakeFor = useCallback((o: Outcome): number => {
     if (amountMode === 'payout') {
       const p = Number.parseFloat(payoutInput);
-      return Number.isFinite(p) && p > 0 ? stakeForPayout(toKesCents(p), primaryProb, PAYOUT_FACTOR) : 0;
+      return Number.isFinite(p) && p > 0 ? stakeForPayout(toKesCents(p), winProbability(o, barrier), PAYOUT_FACTOR) : 0;
     }
     const n = Number.parseFloat(stake);
     return Number.isFinite(n) && n > 0 ? toKesCents(n) : 0;
-  }, [amountMode, stake, payoutInput, primaryProb, toKesCents]);
+  }, [amountMode, stake, payoutInput, barrier, toKesCents]);
+  const stakeCents = stakeFor(outcomesFor(market)[0].key);
 
   // Client-side stake validity (money of record is KES cents). Blocks below-min / above-max BEFORE
   // hitting the engine, and drives a friendly currency-formatted hint (never raw cents).
@@ -212,12 +217,21 @@ export function DigitsTradeScreen() {
   });
 
   const pendingRef = useRef<Pending | null>(null);
+  const pendingTimerRef = useRef<number | null>(null);
   const runningRef = useRef(false);
   runningRef.current = running;
-  const lossStreakRef = useRef(0);
+  // The current AUTO run: its own P&L baseline, trade count and loss streak (autoBot.ts).
+  const runRef = useRef<AutoRun | null>(null);
   const autoOutcomeRef = useRef<Outcome>('even');
   const pnlRef = useRef(0);
   pnlRef.current = pnl;
+
+  const clearPending = useCallback(() => {
+    pendingRef.current = null;
+    if (pendingTimerRef.current) { window.clearTimeout(pendingTimerRef.current); pendingTimerRef.current = null; }
+    setPendingView(null);
+    publishOpen(null);
+  }, [publishOpen]);
 
   const totalReturnCents = useCallback(
     (cents: number, outcome: Outcome) => payoutForStake(cents, winProbability(outcome, barrier), PAYOUT_FACTOR),
@@ -241,16 +255,15 @@ export function DigitsTradeScreen() {
   useEffect(() => {
     const off = onDigitSettled((s: DigitSettledData) => {
       const settled = pendingRef.current; // capture BEFORE clearing (label + manual flag)
-      pendingRef.current = null;
-      setPendingView(null); // contract resolved -> drop the "in play" chip
+      clearPending(); // contract resolved -> drop the "in play" chip
       const won = s.won;
       const delta = s.pnlCents; // authoritative P/L in cents
-      lossStreakRef.current = won ? 0 : lossStreakRef.current + 1;
+      if (runRef.current && settled && !settled.manual) runRef.current = afterSettle(runRef.current, won);
+      pnlRef.current += delta; // the loop may decide before React re-renders
       setPnl((x) => x + delta);
       setFlash({ won, delta });
       play(won ? 'win' : 'loss');
       const nowMs = Date.now();
-      publishOpen(null);
       if (settled) {
         publishClosed({
           id: s.positionId ?? `${nowMs}`, label: settled.label, stakeCents: settled.stakeCents, payoutCents: s.payoutCents,
@@ -274,7 +287,7 @@ export function DigitsTradeScreen() {
       window.setTimeout(() => setFlash(null), 900);
     });
     return off;
-  }, [onDigitSettled, invalidateHistory, getLastInstrumentTick, publishOpen, publishClosed]);
+  }, [onDigitSettled, invalidateHistory, getLastInstrumentTick, publishClosed, clearPending]);
 
   const place = useCallback(
     (outcome: Outcome, cents: number, manual = false): boolean => {
@@ -305,7 +318,8 @@ export function DigitsTradeScreen() {
       }
       if (cents > spendable) {
         if (manual) {
-          if (wallet?.mode === 'demo') toast.push({ tone: 'info', title: 'Not enough play money', description: 'Open the account menu and tap “Refresh demo balance”.' });
+          // Demo: refill in place (no menu hunt). Real: the top-up sheet with the shortfall.
+          if (wallet?.mode === 'demo') topupDemo.mutate(undefined, { onSuccess: (r) => toast.push({ tone: 'success', title: 'Demo refilled', description: amt.text(r.demoBalance) }) });
           else setNeedFunds({ requiredCents: cents, currentCents: spendable });
         }
         return false;
@@ -317,17 +331,34 @@ export function DigitsTradeScreen() {
       const target = outcome === 'over' || outcome === 'under' ? barrier : outcome === 'matches' || outcome === 'differs' ? pick : 0;
       const label = contractLabel(outcome, barrier, pick);
       const openedAtMs = Date.now();
+      if (!openDigit({ instrumentId: instId, kind: outcome, target, stakeCents: cents })) return false; // offline: nothing in play
       pendingRef.current = { stakeCents: cents, outcome, manual, label, openedAtMs, demo: wallet?.mode === 'demo' };
       setPendingView({ label, stakeCents: cents });
       publishOpen({ label, stakeCents: cents, openedAtMs });
       if (manual) play('place');
       setEntryMarker({ tSec: Math.floor((getLastInstrumentTick()?.t ?? Date.now()) / 1000) });
       setSettleMarker(null);
-      openDigit({ instrumentId: instId, kind: outcome, target, stakeCents: cents });
+      // Backstop (BUGLOG #85): a contract settles within seconds; if no answer ever comes (dropped
+      // socket, lost frame) the screen must not stay "in play" forever. History/wallet re-sync.
+      if (pendingTimerRef.current) window.clearTimeout(pendingTimerRef.current);
+      pendingTimerRef.current = window.setTimeout(() => {
+        if (pendingRef.current?.openedAtMs !== openedAtMs) return;
+        clearPending();
+        invalidateHistory();
+      }, 20_000);
       return true;
     },
-    [token, spendable, openDeposit, openAuth, toast, barrier, pick, instId, instrument, openDigit, minStakeCents, maxStakeCents, getLastInstrumentTick, fmt, both, totalReturnCents, publishOpen, wallet?.mode],
+    [token, spendable, openAuth, toast, barrier, pick, instId, openDigit, minStakeCents, maxStakeCents, getLastInstrumentTick, both, publishOpen, wallet?.mode, topupDemo, amt, clearPending, invalidateHistory],
   );
+
+  // BUGLOG #85: the engine refused the open (funds, limits, one-at-a-time): nothing is in play. The
+  // provider already told the player why; AUTO stops rather than retrying the same refusal.
+  const stopAutoRef = useRef<(reason: AutoStop | 'user' | 'rejected') => void>(() => {});
+  useEffect(() => onDigitRejected(() => {
+    if (!pendingRef.current) return;
+    clearPending();
+    if (runningRef.current) stopAutoRef.current('rejected');
+  }), [onDigitRejected, clearPending]);
 
   // Entry (IN) + settle (result digit) markers for the CURRENT/last contract, drawn on the chart at
   // the exact ticks that opened and decided it. Kind is semantic; DerivChart maps it to brand colours.
@@ -338,40 +369,66 @@ export function DigitsTradeScreen() {
     return m;
   }, [entryMarker, settleMarker]);
 
+  // Everything the loop reads, refreshed every render, so ONE interval runs for the screen's lifetime
+  // (it used to be torn down and rebuilt on every balance/stake change).
+  const loop = useRef({ place, stakeFor, spendable, multiplier, targetProfit, stopLoss, toKesCents, minStakeCents, maxStakeCents });
+  loop.current = { place, stakeFor, spendable, multiplier, targetProfit, stopLoss, toKesCents, minStakeCents, maxStakeCents };
+
   // Live snapshot (price / current digit / change% / heatmap) + AUTO-bot loop, off the tick stream.
   useEffect(() => {
+    let lastT = -1; let lastN = -1;
     const id = window.setInterval(() => {
       const ticks = getInstrumentTicks();
       const n = ticks.length;
       if (n === 0) return;
       const last = ticks[n - 1]!;
-      const digit = lastDigitOf(last.rate);
-      const firstIdx = Math.max(0, n - 60);
-      const first = ticks[firstIdx]!;
-      const changePct = first.rate ? ((last.rate - first.rate) / first.rate) * 100 : 0;
-      const win = Math.min(n, WINDOW);
-      const counts = Array<number>(10).fill(0);
-      for (let i = n - win; i < n; i++) { const dd = lastDigitOf(ticks[i]!.rate); counts[dd] = (counts[dd] ?? 0) + 1; }
-      const freqs = counts.map((c) => (c / win) * 100);
-      setSnap({ price: last.rate, digit, changePct, freqs });
+      // Re-render only when a new tick arrived (was 4 renders a second of the whole screen).
+      if (last.t !== lastT || n !== lastN) {
+        lastT = last.t; lastN = n;
+        const digit = lastDigitOf(last.rate);
+        const first = ticks[Math.max(0, n - 60)]!;
+        const changePct = first.rate ? ((last.rate - first.rate) / first.rate) * 100 : 0;
+        const win = Math.min(n, WINDOW);
+        const counts = Array<number>(10).fill(0);
+        for (let i = n - win; i < n; i++) { const dd = lastDigitOf(ticks[i]!.rate); counts[dd] = (counts[dd] ?? 0) + 1; }
+        setSnap({ price: last.rate, digit, changePct, freqs: counts.map((c) => (c / win) * 100) });
+      }
 
-      // AUTO bot: keep placing on the chosen outcome (martingale on loss) until target/stop.
-      if (runningRef.current && !pendingRef.current) {
-        const targetCents = toKesCents(Number.parseFloat(targetProfit) || 0);
-        const stopCents = toKesCents(Number.parseFloat(stopLoss) || 0);
-        if ((targetCents > 0 && pnlRef.current >= targetCents) || (stopCents > 0 && pnlRef.current <= -stopCents)) {
-          setRunning(false);
-          return;
-        }
-        const mult = Math.max(1, Number.parseFloat(multiplier) || 1);
-        const base = stakeCents;
-        const cap = Math.min(spendable || base, maxStakeCents ?? Number.POSITIVE_INFINITY);
-        const next = Math.min(Math.round(base * Math.pow(mult, lossStreakRef.current)), cap);
-        place(autoOutcomeRef.current, next, false);
+      // AUTO: one decision whenever nothing is in play (autoBot.ts).
+      const run = runRef.current;
+      if (runningRef.current && run && !pendingRef.current) {
+        const L = loop.current;
+        const d = nextAuto(run, pnlRef.current, {
+          baseCents: L.stakeFor(autoOutcomeRef.current),
+          multiplier: Number.parseFloat(L.multiplier) || 1,
+          targetCents: L.toKesCents(Number.parseFloat(L.targetProfit) || 0),
+          stopLossCents: L.toKesCents(Number.parseFloat(L.stopLoss) || 0),
+          minCents: L.minStakeCents, maxCents: L.maxStakeCents, balanceCents: L.spendable,
+        });
+        if (d.kind === 'stop') stopAutoRef.current(d.reason);
+        else if (!L.place(autoOutcomeRef.current, d.stakeCents, false)) stopAutoRef.current('rejected');
       }
     }, 250);
     return () => window.clearInterval(id);
-  }, [getInstrumentTicks, place, stakeCents, spendable, multiplier, targetProfit, stopLoss, toKesCents]);
+  }, [getInstrumentTicks]);
+
+  // Start / stop AUTO. A run keeps its own P&L, so the button always works again (BUGLOG #84).
+  const startAuto = useCallback((o: Outcome) => {
+    autoOutcomeRef.current = o;
+    runRef.current = startRun(pnlRef.current);
+    setRunning(true);
+  }, []);
+  const stopAuto = useCallback((reason: AutoStop | 'user' | 'rejected') => {
+    const run = runRef.current;
+    runRef.current = null;
+    setRunning(false);
+    if (!run || reason === 'rejected') return;       // the refusal was already shown
+    const p = runPnl(run, pnlRef.current);
+    const title = reason === 'target' ? 'Target hit' : reason === 'stoploss' ? 'Stop loss hit' : reason === 'funds' ? 'Balance too low' : reason === 'stake' ? 'Stake below minimum' : 'Auto stopped';
+    toast.push({ tone: reason === 'target' ? 'success' : reason === 'user' ? 'info' : 'error', title, description: `${amt.signed(p)} · ${run.trades}` });
+  }, [toast, amt]);
+  stopAutoRef.current = stopAuto;
+  const halt = () => { if (runningRef.current) stopAuto('user'); };
 
   const [primary, secondary] = outcomesFor(market);
   const needsDigit = market !== 'evenodd';
@@ -403,30 +460,26 @@ export function DigitsTradeScreen() {
 
   const onCta = (outcome: Outcome) => {
     if (mode === 'auto') {
-      if (running) {
-        setRunning(false);
-        return;
-      }
-      autoOutcomeRef.current = outcome;
-      lossStreakRef.current = 0;
-      setRunning(true);
+      if (running) { stopAuto('user'); return; }
+      if (!token) { openAuth('login'); return; }
+      startAuto(outcome);
       return;
     }
-    place(outcome, stakeCents, true);
+    place(outcome, stakeFor(outcome), true);
   };
 
   const ctaMeta = (o: Outcome) => {
     const prob = winProbability(o, barrier);
     const disabled = prob <= 0;
     const profitPct = prob > 0 ? (PAYOUT_FACTOR / prob - 1) * 100 : 0;
-    const ret = prob > 0 ? totalReturnCents(stakeCents, o) : 0;
+    const ret = prob > 0 ? totalReturnCents(stakeFor(o), o) : 0;
     return { disabled, profitPct, ret };
   };
 
-  // Apply an Entry Scanner suggestion: switch instrument + market (+ barrier/pick), arm AUTO mode,
-  // and briefly highlight the suggested side so the user can start it with one tap.
+  // Entry Scanner: load the best entry (instrument, market, side, digit) and RUN it on AUTO with the
+  // current stake, target, stop loss and multiplier (BUGLOG #84: it used to only arm the screen).
   const applyScan = useCallback((s: ScanSuggestion) => {
-    if (running) setRunning(false);
+    if (runningRef.current) stopAuto('user');
     setInstId(s.instrumentId);
     setMulti(false);
     setMarket(s.market as Market);
@@ -434,8 +487,10 @@ export function DigitsTradeScreen() {
     if (s.market === 'matchesdiffers' && s.digit != null) setPick(s.digit);
     setMode('auto');
     setLoadedOutcome(s.side as Outcome);
-    window.setTimeout(() => setLoadedOutcome(null), 5000);
-  }, [running]);
+    window.setTimeout(() => setLoadedOutcome(null), 3000);
+    if (!token) { openAuth('login'); return; }
+    startAuto(s.side as Outcome);
+  }, [startAuto, stopAuto, token, openAuth]);
 
   // DIGITS-UI: the shell's "Auto · <side>" pill follows the running bot.
   useEffect(() => {
@@ -449,7 +504,7 @@ export function DigitsTradeScreen() {
   // ── Trade types (phones: a scrollable row above the chart; desktop: pills in the console). The
   //    grid button opens the full "Trade types" sheet (owner's mock). ──
   const pickType = (id: TradeTypeId) => {
-    if (running) setRunning(false);
+    halt();
     if (id === 'multipliers') { setMulti(true); return; }
     setMulti(false); setMarket(id);
   };
@@ -547,7 +602,7 @@ export function DigitsTradeScreen() {
             </div>
             <div className="min-w-0">
               <VolatilitySelector wide instrument={instrument} price={snap.price || null} changePct={snap.changePct}
-                onSelect={(i) => { setInstId(i.id); if (running) setRunning(false); }} />
+                onSelect={(i) => { setInstId(i.id); halt(); }} />
             </div>
             <span title={`${shareLabel} over the last ${WINDOW} ticks`}
               className="ml-auto shrink-0 rounded-lg border border-border bg-surface px-2 py-1 text-[11px] font-semibold tabular-nums text-fg">
@@ -619,7 +674,7 @@ export function DigitsTradeScreen() {
         <div className="flex rounded-xl border border-border bg-bg/60 p-1">
           {(['auto', 'manual'] as const).map((m) => (
             <button key={m} type="button" aria-pressed={mode === m}
-              onClick={() => { setMode(m); if (running) setRunning(false); }}
+              onClick={() => { setMode(m); halt(); }}
               className={cn('flex-1 rounded-lg py-2.5 text-[13px] font-semibold uppercase tracking-wide transition',
                 mode === m ? 'bg-accent text-accent-fg shadow-[0_2px_16px_-4px_var(--pp-accent)]' : 'text-muted hover:text-fg')}>
               {m}
@@ -744,7 +799,7 @@ export function DigitsTradeScreen() {
           ).map((o, i) => {
             if (o.key === 'stop') {
               return (
-                <button key="stop" type="button" onClick={() => setRunning(false)} aria-label="Stop auto trading"
+                <button key="stop" type="button" onClick={() => stopAuto('user')} aria-label="Stop auto trading"
                   className="flex items-center justify-center gap-2 rounded-2xl bg-warn py-4 text-[17px] font-bold uppercase text-black shadow-[0_0_24px_-8px_var(--pp-warn)] transition hover:brightness-105 lg:py-5">
                   <span className="h-3.5 w-3.5 rounded-full bg-black" />Stop
                 </button>

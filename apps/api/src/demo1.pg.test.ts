@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import pg from "pg";
 import { makeDemoAccountResolver } from "@invest254/engine";
-import { makeWalletModeDeps } from "./demo.pg.js";
+import { makeWalletModeDeps, demoTargetCents } from "./demo.pg.js";
 
 /**
  * DEMO-1 against the REAL schema (rolled back): the engine's demo check and the money RPCs agree,
@@ -31,6 +31,8 @@ test("DEMO-1 (real schema): switch, refresh, isolated demo money, engine agrees,
 
     assert.equal(await wm.setMode(uid, site, "demo"), "demo");
     assert.equal(await isDemo(uid), true, "the engine sees demo mode immediately (no stale cache)");
+    w = await wm.balances(uid, site);
+    assert.equal(w.real, 1_000_000, "DEMO-2: the first switch to demo opens funded (no 0 until Refresh)");
     assert.equal(await wm.topupDemo(uid, site), 1_000_000);
     w = await wm.balances(uid, site);
     assert.equal(w.real, 1_000_000); assert.equal(w.bonus, 0); assert.equal(w.realBalance, 50000); assert.equal(w.bonusBalance, 1000);
@@ -55,6 +57,44 @@ test("DEMO-1 (real schema): switch, refresh, isolated demo money, engine agrees,
     w = await wm.balances(uid, site);
     assert.equal(w.real, 50000); assert.equal(w.demoBalance, 1_022_500);
     assert.equal(await wm.topupDemo(uid, site), 1_022_500, "refresh is a no-op above the starting amount (can't be farmed)");
+  } finally {
+    await c.query("rollback").catch(() => {});
+    c.release(); await pool.end();
+  }
+});
+
+test("DEMO-2 (real schema): a USD brand's demo opens at $10,000; a spent demo refills on the next switch", { skip: !DSN }, async () => {
+  const pool = new pg.Pool({ connectionString: DSN });
+  const c = await pool.connect();
+  try {
+    await c.query("begin");
+    const site = (await c.query("select id from sites order by created_at limit 1")).rows[0].id as string;
+    await c.query("update sites set currency = 'USD' where id = $1", [site]);
+    const uid = (await c.query("insert into profiles(phone, username, site_id, role) values ('254799300002','demo2p',$1,'player') returning id", [site])).rows[0].id as string;
+    await c.query("insert into wallets(user_id, site_id) values ($1,$2) on conflict do nothing", [uid, site]);
+    const Q = { query: (sql: string, p?: unknown[]) => c.query(sql, p as unknown[]) as never };
+    const rate = 0.00775;                                     // USD per KES
+    const wm = makeWalletModeDeps(Q, async (cur) => (cur === "USD" ? rate : 0));
+    const target = demoTargetCents(rate, "USD");
+    assert.equal(target, 129_032_259);
+    assert.ok((target / 100) * rate >= 10_000 && (target / 100) * rate < 10_000.01, "shows $10,000.00, never $9,999.99");
+    await wm.setMode(uid, site, "demo");
+    assert.equal((await wm.balances(uid, site)).real, target);
+    // spend it below the minimum stake, go to Real and back: refilled
+    await c.query("update wallets set demo_balance = 100 where user_id = $1", [uid]);
+    await wm.setMode(uid, site, "real");
+    assert.equal((await wm.balances(uid, site)).demoBalance, 100, "switching to Real never touches demo");
+    await wm.setMode(uid, site, "demo");
+    assert.equal((await wm.balances(uid, site)).real, target);
+    // a demo balance that can still trade is left alone
+    await c.query("update wallets set demo_balance = 5_000_000 where user_id = $1", [uid]);
+    await wm.setMode(uid, site, "real"); await wm.setMode(uid, site, "demo");
+    assert.equal((await wm.balances(uid, site)).real, 5_000_000);
+    // marketers keep their own demo top-up
+    const m = (await c.query("insert into profiles(phone, username, site_id, role) values ('254799300003','demo2m',$1,'marketer') returning id", [site])).rows[0].id as string;
+    await c.query("insert into wallets(user_id, site_id) values ($1,$2) on conflict do nothing", [m, site]);
+    await wm.setMode(m, site, "demo");
+    assert.equal((await wm.balances(m, site)).demoBalance, 0, "marketer demo is funded by the marketer flow, not here");
   } finally {
     await c.query("rollback").catch(() => {});
     c.release(); await pool.end();

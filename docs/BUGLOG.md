@@ -5,6 +5,95 @@ entry: what, evidence, root cause, impact, and resolution.
 
 ---
 
+## #86 — Payout mode: the second side used the first side's stake, so it paid a different amount than typed — FIXED (branch `fix/deriv-auto-ai`, web only)
+- **What:** in Payout mode the stake was derived from the PRIMARY side's odds only. For example, a Matches/Differs
+  payout typed as 100 staked the Matches stake on Differs and paid about 11, not 100.
+- **Fix:** `stakeFor(side)` derives each side's stake from its own win probability. Manual trades, AUTO and each
+  button's figure use it.
+
+## #85 — A refused trade froze the Deriv screen "in play" for good (manual and AUTO) — FIXED (branch `fix/deriv-auto-ai`, web only; engine untouched)
+- **What:** when the engine refused a digit open (insufficient balance, stake limits, one contract per market,
+  paused play), the screen kept its local "pending" contract. After that, every tap said "Trade in progress" and
+  AUTO silently stopped placing, until a reload. The same happened when the socket was offline at the moment
+  of the tap, because the contract was marked pending before the send.
+- **Root cause:** the engine answers a refused open with an `error` frame. The socket provider only toasted it,
+  and the screen had no way to learn that its open was refused.
+- **Fix:**
+  - The provider counts unacknowledged digit opens. An `error` while one is outstanding is that open's refusal,
+    and it goes to `onDigitRejected` listeners. `openDigit` returns false when nothing was sent, and the screen
+    only marks a contract pending after a successful send.
+  - The screen clears the pending contract on a refusal, and AUTO stops instead of retrying the same refusal.
+  - A 20 s backstop clears any contract that never settles and re-syncs history.
+  - Engine codes now read in plain words ("Insufficient balance · Top up or lower the stake") instead of
+    "Trade rejected · INSUFFICIENT_FUNDS".
+- **Perf (same change):** the 250 ms loop re-rendered the whole screen four times a second even without a new tick.
+  It was also torn down and rebuilt on every balance or stake change. It now re-renders only on a new tick, and
+  one interval lives for the screen's lifetime (it reads a ref).
+- **Tests:** digits.e2e.mjs routes the socket and refuses the next open. It checks the plain-words reason, that
+  nothing is left in play, and that the next trade goes through.
+
+## #84 — AUTO could not be started again after a run finished; the AI scanner only "loaded" and never traded, and could get stuck — FIXED (branch `fix/deriv-auto-ai`, web only)
+- **What (owner):** "After clicking the auto button, once it completes the rounds, clicking again does not do
+  anything" and "The AI functionality on loading best conditions and clicking the button does not work".
+- **Root causes:**
+  - Target and stop loss were compared to the SESSION P&L, which never reset. After a run hit its target, every
+    new run was already "at target" and stopped on its first tick.
+  - "Load Deep Scanner Bot" only switched the market and highlighted a button for 5 s. Nothing traded.
+  - Closing the scanner mid-scan left `scanning` true forever, so both buttons stayed disabled until a reload.
+  - AUTO stopped silently. It also looped for ever without trading when the martingale stake exceeded the balance
+    but was below the minimum.
+- **Fix:**
+  - `lib/game/autoBot.ts` (pure, 6 unit tests) gives each run its own P&L baseline, trade count and loss streak.
+    It stops on target / stop loss / funds / below-minimum stake with a reason. The stop shows a
+    numbers-only summary (for example "Target hit · +240 KES · 3").
+  - The scanner is now Scan → Run. Run loads the best entry and starts AUTO on its side at once, with the current
+    stake, target, stop loss and multiplier. The scan always ends.
+  - Copy cut to numbers: progress %, the index being scanned, and the share.
+- **Tests:** digits.e2e.mjs checks two consecutive AUTO runs that both trade and stop, and the summary. It checks
+  that Scan shows progress and a best entry, that Run closes the sheet and the bot trades and stops by itself,
+  and that the scanner is usable after closing it mid-scan. 53/53.
+
+## #83 — A new demo account showed 0 until the player found "Refresh demo balance"; a USD brand's demo was KES 10,000 (≈ $77) — FIXED (branch `fix/deriv-demo-money`, migration 0169; engine untouched)
+- **What:** a player who signed up and switched to Demo saw a 0 balance and could not trade until they opened the
+  account menu and pressed "Refresh demo balance". On the USD brand (muchwins) the refill was KES 10,000, shown as
+  about $77, not $10,000.
+- **Root cause:** `wallets.demo_balance` defaults to 0 and was only funded by the manual refresh
+  (`fn_topup_demo_account`, a fixed KES 1,000,000-cent target).
+- **Fix:**
+  - The switch to Demo (`demo.pg.ts setMode`) funds the demo account when it cannot cover the brand's minimum
+    stake (new or spent). The switch response carries the funded wallet, so the pill shows 10,000 at once.
+  - The target is 10,000 of the brand currency, converted to KES cents at the live rate and rounded up so it
+    never reads 9,999.99 (`demoTargetCents`). `fn_topup_demo_account` takes that target, bounded to
+    KES 1,000–100M, and callable by service_role only.
+  - Marketers keep their own demo flow.
+- **Tests:**
+  - demo1.pg.test.ts (real schema): the first switch opens funded; USD opens at $10,000; a spent demo refills on
+    the next switch; a balance that can still trade is left alone; the marketer is untouched.
+  - e2e_account_demo_mode.py §G: target, no-op, 2-arg compatibility, bounds, ledger, grants. 34/34.
+  - account.e2e.mjs: "a new demo account opens at 10,000 (no refresh)".
+
+## #82 — Demo money showed as withdrawable, and a withdrawal in Demo took REAL money — FIXED (branch `fix/deriv-demo-money`, migration 0169; engine untouched)
+- **What (owner):** "users can withdraw demo money".
+- **Evidence:**
+  - In Demo, the wallet sheet's "Available to withdraw" and the 25/50/75/Max chips used `wallet.real`, which is
+    the ACTIVE account's balance, so the demo balance was offered.
+  - `fn_create_withdrawal` had no mode check and debits `real_balance`. A player with real money who withdrew
+    "their demo balance" silently lost real money. A player without real money got a confusing
+    "Insufficient balance" for a figure the sheet said was available.
+- **Fix (defence in depth):**
+  - The API refuses `DEMO_ACCOUNT` (409) before any money path runs. Marketers are demo-locked and keep their
+    demo transfer.
+  - `fn_create_withdrawal` refuses `DEMO_ACCOUNT` under the wallet row lock, so a switch cannot race it.
+  - Web: `walletFigures()` is the one source for the wallet figures. Withdrawable is the Real cash only, and 0 in
+    Demo. In Demo the sheet shows the Real balance and a single "Switch to Real" button, with no amount entry.
+    The sheet header reads the Real account (Real balance / Withdrawable).
+- **Tests:**
+  - figures.test.ts (5).
+  - app.demo1.test.ts: DEMO_ACCOUNT in demo; marketer and Real reach the service.
+  - e2e_account_demo_mode.py §E: demo-only, real+demo refused with nothing debited, Real proceeds, and demo is
+    never counted.
+  - account.e2e.mjs: the sheet, the API refusal, and no money moved.
+
 ## #81 — Digits screen: Markets picker, Trade types sheet and scanner list to the mock; Multipliers built but never reachable — FIXED (branch `ui/deriv-markets-tradetypes`, web only; engine untouched)
 - **What (owner's Deriv mocks):**
   - The instrument menu was a plain list: no categories, search or favourites.
