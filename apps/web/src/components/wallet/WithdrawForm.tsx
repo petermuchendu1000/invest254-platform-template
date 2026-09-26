@@ -176,18 +176,19 @@ export function WithdrawForm() {
   return (
     <form className="mx-auto flex w-full max-w-sm flex-col gap-4 px-5 pb-6 pt-4" onSubmit={onSubmit} noValidate>
       {/* Amount hero — centered entry, the focal point of the form. */}
-      <div
+      {/* a <label>: tapping anywhere in the hero focuses the amount (the field itself is only 1ch wide) */}
+      <label
         className={[
-          'rounded-2xl border bg-surface-2 px-4 py-5 text-center transition',
+          'block cursor-text rounded-2xl border bg-surface-2 px-4 py-5 text-center transition',
           errors['amount'] ? 'border-down' : 'border-border focus-within:border-accent',
         ].join(' ')}
       >
-        <span className="text-[11px] font-medium uppercase tracking-wider text-muted">Amount to withdraw</span>
+        <span className="text-[11px] font-medium uppercase tracking-wider text-muted">Amount</span>
         <div className="mt-2 flex items-baseline justify-center gap-1.5">
           <span className="text-2xl font-bold text-muted">{symbol}</span>
           <input
             name="amount"
-            inputMode="numeric"
+            inputMode={isForeign ? 'decimal' : 'numeric'}
             autoComplete="off"
             autoFocus
             aria-label={`Amount to withdraw in ${currency}`}
@@ -198,7 +199,7 @@ export function WithdrawForm() {
             className="max-w-full bg-transparent text-4xl font-black tabular-nums text-fg outline-none placeholder:text-muted"
           />
         </div>
-      </div>
+      </label>
 
       {/* Binance-style quick-select — drives the amount from the available balance in the header. */}
       <div className="-mt-1 grid grid-cols-4 gap-2">
@@ -286,7 +287,7 @@ export function WithdrawForm() {
           <path d="M12 3l7 3v5c0 4.4-3 7.6-7 9-4-1.4-7-4.6-7-9V6l7-3Z" />
           <path d="M9 12l2 2 4-4" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
-        Paid instantly to M-Pesa · Secured
+        M-Pesa · Secured
       </p>
     </form>
   );

@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { useStakeLimits } from '@/lib/game/useStakeLimits';
 import { useDisplayMoney } from '@/lib/money';
 import { cn } from '@/lib/cn';
 import { api } from '@/lib/api/endpoints';
@@ -48,9 +49,10 @@ export function WelcomeBonusOverlay() {
   const rafRef = useRef<number | null>(null);
 
   const amountCents = current?.amountCents ?? 0;
-  // Min stake is the DB-driven amount a player must be able to stake (site_game_config.min_stake,
-  // surfaced as GameConfigDto.minStakeCents) — never hard-coded here. Undefined until config loads.
-  const minStakeCents = config?.minStakeCents;
+  // The minimum stake the trade screen enforces (STAKE-1: brand currency, multiple of 5, $5 floor on
+  // USD) — BUGLOG #102: the raw KES cents read "$1.93" on a USD brand.
+  const limits = useStakeLimits();
+  const minStakeCents = config && limits.ready ? limits.minCents : undefined;
   const shown = useCountUp(visible ? amountCents : 0, 1000, current?.id);
 
   // Show / auto-dismiss lifecycle (celebratory, so it lingers a touch longer than a win).
@@ -179,13 +181,7 @@ export function WelcomeBonusOverlay() {
     };
   }, [visible, current]);
 
-  const nudge = useMemo(() => {
-    if (minStakeCents && minStakeCents > 0) {
-      // The bonus is a sweetener on top of a real deposit — encourage funding at least the min stake.
-      return `Deposit ${fmt(minStakeCents)} or more to place your first trade — the bigger your stake, the bigger you can win.`;
-    }
-    return `Deposit to place your first trade — the more you add, the bigger you can win.`;
-  }, [minStakeCents, fmt]);
+  const nudge = useMemo(() => (minStakeCents && minStakeCents > 0 ? `Min stake ${fmt(minStakeCents)}` : ''), [minStakeCents, fmt]);
 
   if (!current) return null;
 
@@ -223,12 +219,11 @@ export function WelcomeBonusOverlay() {
         {/* Big count-up amount */}
         <div className="mt-2 text-4xl font-black tabular-nums text-warn">+{fmt(Math.round(shown))}</div>
 
-        {/* Psychology-driven nudge */}
-        <div className="mt-3 text-sm text-fg">{nudge}</div>
+        {nudge ? <div className="mt-3 text-sm tabular-nums text-fg">{nudge}</div> : null}
 
         {/* Honest small print: it's a restricted bonus. */}
         <div className="mt-2 text-xs text-muted">
-          Bonus funds — play them, and win to convert to withdrawable cash.
+          Bonus · withdrawable once won
         </div>
 
         <button
@@ -250,7 +245,7 @@ export function WelcomeBonusOverlay() {
           }}
           className="mt-2 h-8 w-full rounded-xl text-xs font-medium text-muted transition hover:text-fg"
         >
-          Maybe later
+          Later
         </button>
       </div>
 

@@ -62,7 +62,6 @@ export default function RegistrarConfigPage() {
     <>
       <PageHeader
         title="Domain registrar"
-        subtitle="Connect your Namecheap account so new client domains are pointed to the platform automatically during onboarding."
       />
 
       {isSystem ? (

@@ -19,8 +19,7 @@ export function Footer() {
             18+
           </span>
           <p className="text-xs leading-relaxed text-muted">
-            Trading involves real money and risk. Play responsibly — only stake what you can afford
-            to lose. Must be 18 or older.
+            Trading involves real money and risk. Only stake what you can afford to lose.
           </p>
         </div>
 
@@ -51,7 +50,7 @@ export function Footer() {
           <p className="text-[11px] text-muted">{brand.licenceLine}</p>
         ) : null}
         <p className="text-[11px] text-muted">
-          © {year} {brand.name}. Self-control is the best game plan.
+          © {year} {brand.name}
         </p>
       </div>
     </footer>

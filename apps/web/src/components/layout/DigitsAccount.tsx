@@ -12,9 +12,11 @@ import { useWallet, useSetAccountMode, useTopupDemo } from '@/lib/wallet/hooks';
 import { useDepositUi } from '@/lib/wallet/depositUi';
 import { useAmountText } from '@/lib/game/useAmountText';
 import { useDigitSession } from '@/lib/game/digitSession';
+import { useMultSession } from '@/lib/game/multSession';
 import { useLiveChat } from '@/lib/chat/liveChat';
 import { useAccountUi, useMyKyc, PLAYER_TWO_FACTOR } from '@/lib/account/accountUi';
 import { useToast } from '@/lib/toast/ToastProvider';
+import { passwordError } from '@/lib/auth/validation';
 import { DIcon, type IconName } from '@/components/game/digits/icons';
 
 /** Close a popover on outside click / Escape. */
@@ -48,7 +50,8 @@ export function AccountPill({ compact = false }: { compact?: boolean }) {
   const { data } = useWallet();
   const amt = useAmountText();
   const auto = useDigitSession((s) => s.auto);
-  const inPlay = useDigitSession((s) => !!s.open || !!s.auto);
+  const multOpen = useMultSession((s) => !!s.position);
+  const inPlay = useDigitSession((s) => !!s.open || !!s.auto) || multOpen;
   const openDeposit = useDepositUi((s) => s.openDeposit);
   const openWithdraw = useDepositUi((s) => s.openWithdraw);
   const setMode = useSetAccountMode();
@@ -65,9 +68,9 @@ export function AccountPill({ compact = false }: { compact?: boolean }) {
 
   const switchTo = (mode: 'real' | 'demo') => {
     if (mode === data.mode || setMode.isPending) return;
-    if (inPlay) { toast.push({ tone: 'info', title: 'Finish your trade first', description: 'Switch accounts once your open contract settles and Auto is stopped.' }); return; }
+    if (inPlay) { toast.push({ tone: 'info', title: 'Trade open' }); return; }
     setMode.mutate(mode, {
-      onSuccess: (r) => { setOpen(false); toast.push({ tone: 'success', title: r.mode === 'demo' ? 'Demo account active' : 'Real account active', description: r.mode === 'demo' ? 'You are trading with play money.' : 'You are trading with real money.' }); },
+      onSuccess: (r) => { setOpen(false); toast.push({ tone: 'success', title: r.mode === 'demo' ? 'Demo' : 'Real', description: amt.text(r.wallet.real + r.wallet.bonus) }); },
       onError: (e) => toast.push({ tone: 'error', title: 'Could not switch', description: e instanceof ApiError ? e.message : 'Try again.' }),
     });
   };
@@ -116,16 +119,16 @@ export function AccountPill({ compact = false }: { compact?: boolean }) {
         <DIcon name="chevronDown" className={cn('h-3.5 w-3.5 text-muted', compact && 'hidden min-[360px]:block')} />
       </button>
       {open ? (
-        <div className="absolute left-0 top-[calc(100%+8px)] z-50 w-72 rounded-xl border border-border bg-surface p-2 shadow-2xl sm:left-auto sm:right-0" role="dialog" aria-label="Switch account">
+        <div className="fixed inset-x-2 top-[3.75rem] z-50 rounded-xl border border-border bg-surface p-2 shadow-2xl sm:absolute sm:inset-x-auto sm:right-0 sm:top-[calc(100%+8px)] sm:w-72" role="dialog" aria-label="Switch account">
           <div className="px-2 pb-2 pt-1 text-[10px] font-semibold uppercase tracking-wider text-muted">Switch account</div>
           <div role="menu" className="flex flex-col gap-1">
             <Row mode="real" label="Real Account" cents={realB + bonusB} dot="bg-blue-500" />
             <Row mode="demo" label="Demo Account" cents={demoB} dot="bg-down" />
           </div>
-          {bonusB > 0 ? <p className="px-3 pt-1 text-[11px] text-muted">Real includes {amt.prefix}{amt.num(bonusB)} bonus (play only).</p> : null}
+          {bonusB > 0 ? <p className="px-3 pt-1 text-[11px] tabular-nums text-muted">incl. {amt.prefix}{amt.num(bonusB)} bonus</p> : null}
           <button type="button" disabled={topup.isPending}
             onClick={() => topup.mutate(undefined, {
-              onSuccess: (r) => toast.push({ tone: 'success', title: 'Demo balance refreshed', description: `${amt.text(r.demoBalance)} play money.` }),
+              onSuccess: (r) => toast.push({ tone: 'success', title: 'Demo', description: amt.text(r.demoBalance) }),
               onError: (e) => toast.push({ tone: 'error', title: 'Could not refresh', description: e instanceof ApiError ? e.message : 'Try again.' }),
             })}
             className="mt-2 flex w-full items-center justify-center gap-2 border-t border-border pt-2.5 text-[12px] font-medium text-muted hover:text-fg disabled:opacity-50">
@@ -206,7 +209,7 @@ export function AccountMenu() {
 }
 
 /** Change password (existing POST /auth/password/change). */
-function ChangePasswordModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+export function ChangePasswordModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const token = useSession((s) => s.token);
   const toast = useToast();
   const [cur, setCur] = useState('');
@@ -215,9 +218,16 @@ function ChangePasswordModal({ open, onClose }: { open: boolean; onClose: () => 
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   useEffect(() => { if (!open) { setCur(''); setNext(''); setConfirm(''); setErr(null); } }, [open]);
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [open, onClose]);
   if (!open) return null;
 
-  const problem = next && next.length < 8 ? 'Use at least 8 characters.' : confirm && confirm !== next ? 'The new passwords do not match.' : null;
+  // the same rules the server applies (was length only → a round trip to learn "add a number")
+  const problem = next && passwordError(next) ? passwordError(next)! : confirm && confirm !== next ? 'The new passwords do not match.' : null;
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!token || problem || !cur || !next) return;

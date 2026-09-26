@@ -16,8 +16,12 @@ export const DEMO_TARGET_MAJOR = 10_000;
  *  display never reads 9,999.99. KES (or no rate) → KES 10,000. */
 export function demoTargetCents(fxRateFromKes: number | null | undefined, currency: string): number {
   if (currency === "KES" || !fxRateFromKes || !Number.isFinite(fxRateFromKes) || fxRateFromKes <= 0) return DEMO_TARGET_MAJOR * 100;
-  return Math.ceil((DEMO_TARGET_MAJOR / fxRateFromKes) * 100);
+  // within fn_topup_demo_account's bounds (KES 1,000 .. KES 100M): a weak currency (UGX 10,000 ≈ KES 350)
+  // gets the KES 1,000 floor instead of a refused refill (BUGLOG #118)
+  return Math.min(DEMO_TARGET_MAX_CENTS, Math.max(DEMO_TARGET_MIN_CENTS, Math.ceil((DEMO_TARGET_MAJOR / fxRateFromKes) * 100)));
 }
+export const DEMO_TARGET_MIN_CENTS = 100_000;
+export const DEMO_TARGET_MAX_CENTS = 10_000_000_000;
 
 export function makeWalletModeDeps(q: WalletModeQuerier, rate: (currency: string) => Promise<number> = async () => 0) {
   const siteOf = async (userId: string, siteId?: string): Promise<string | null> =>
@@ -66,7 +70,8 @@ export function makeWalletModeDeps(q: WalletModeQuerier, rate: (currency: string
              left join site_game_config c on c.site_id = w.site_id
             where w.user_id = $1 and ($2::uuid is null or w.site_id = $2)`, [userId, site]);
         const x = b.rows[0];
-        if (x && toCents(x.demo_balance) < Math.max(1, toCents(x.min_stake))) await topupDemo(userId, site ?? undefined);
+        // best effort: the switch has happened; a failed refill must not report the switch as failed
+        if (x && toCents(x.demo_balance) < Math.max(1, toCents(x.min_stake))) await topupDemo(userId, site ?? undefined).catch(() => 0);
       }
       return now;
     },

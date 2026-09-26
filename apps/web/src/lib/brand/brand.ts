@@ -13,6 +13,7 @@
  */
 
 import { fontStack } from './fonts.js';
+import { semanticColourOk } from './derivePalette.js';
 
 export interface Brand {
   siteId: string;
@@ -135,7 +136,9 @@ export function brandCssVars(b: Brand): Record<string, string> {
     };
     for (const [k, cssVar] of Object.entries(map)) {
       const v = t[k];
-      if (typeof v === "string" && v) vars[cssVar] = v;
+      if (typeof v !== "string" || !v) continue;
+      if ((k === "up" || k === "down") && !semanticColourOk(k, v)) continue;   // BUGLOG #127
+      vars[cssVar] = v;
     }
     // Typography tokens map to full font-family stacks (family + generic + system fallback).
     if (typeof t.fontTitle === "string" && t.fontTitle) vars["--brand-font-title"] = fontStack(t.fontTitle);

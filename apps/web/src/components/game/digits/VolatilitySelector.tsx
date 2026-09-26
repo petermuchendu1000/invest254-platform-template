@@ -1,5 +1,6 @@
 'use client';
 
+import { createPortal } from 'react-dom';
 import { useEffect, useRef, useState } from 'react';
 import { cn } from '@/lib/cn';
 import { type Instrument } from '@/lib/game/instruments';
@@ -23,7 +24,6 @@ function IndexLabel({ inst }: { inst: Instrument }) {
     <>
       {m[1]}
       {m[2] ? <span className="font-bold text-fg">{m[2]}</span> : null}
-      {m[3]}
     </>
   );
 }
@@ -49,11 +49,13 @@ export function VolatilitySelector({
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);   // the portalled panel is outside rootRef
 
   useEffect(() => {
     if (!open) return;
     const onDoc = (e: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
+      const t = e.target as Node;
+      if (rootRef.current && !rootRef.current.contains(t) && !panelRef.current?.contains(t)) setOpen(false);
     };
     document.addEventListener('mousedown', onDoc);
     return () => document.removeEventListener('mousedown', onDoc);
@@ -131,18 +133,19 @@ export function VolatilitySelector({
       </button>
       )}
 
-      {open ? (
+      {/* Portalled to <body> (BUGLOG #120): inside the chart toolbar's stacking context (z-20) the phone
+          sheet rendered UNDER the bottom nav, hiding the last markets. */}
+      {open && typeof document !== 'undefined' ? createPortal(
         <>
-          {/* phone backdrop */}
-          <button type="button" aria-label="Close markets" onClick={() => setOpen(false)} className="fixed inset-0 z-40 bg-black/50 lg:hidden" />
-          <div role="dialog" aria-label="Markets"
+          <button type="button" aria-label="Close markets" tabIndex={-1} onClick={() => setOpen(false)} className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm lg:bg-transparent lg:backdrop-blur-none" />
+          <div ref={panelRef} role="dialog" aria-modal="true" aria-label="Markets"
             style={pos ? ({ '--mp-left': `${pos.left}px`, '--mp-top': `${pos.top}px` } as React.CSSProperties) : undefined}
-            className="fixed inset-x-0 bottom-0 z-50 h-[82vh] overflow-hidden rounded-t-2xl border border-border bg-surface shadow-2xl
-                       lg:inset-auto lg:left-[var(--mp-left)] lg:top-[var(--mp-top)] lg:h-[min(470px,calc(100vh-var(--mp-top)-16px))] lg:w-[640px] lg:rounded-2xl">
-            <MarketsPanel current={instrument} onSelect={onSelect} onClose={() => setOpen(false)} />
+            className="fixed inset-x-0 bottom-0 z-50 flex h-[min(88dvh,720px)] flex-col overflow-hidden rounded-t-[20px] border border-border bg-surface pb-[env(safe-area-inset-bottom)] shadow-2xl
+                       lg:inset-auto lg:left-[var(--mp-left)] lg:top-[var(--mp-top)] lg:h-[min(470px,calc(100vh-var(--mp-top)-16px))] lg:w-[640px] lg:rounded-2xl lg:pb-0">
+            <div aria-hidden className="mx-auto mt-2 h-1 w-9 shrink-0 rounded-full bg-muted/40 lg:hidden" />
+            <div className="min-h-0 flex-1"><MarketsPanel current={instrument} onSelect={onSelect} onClose={() => setOpen(false)} /></div>
           </div>
-        </>
-      ) : null}
+        </>, document.body) : null}
     </div>
   );
 }

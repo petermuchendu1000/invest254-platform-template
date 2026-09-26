@@ -341,6 +341,10 @@ export function usePayoutAction() {
     },
   });
 }
+export function useCommissionRate(id: string) {
+  const t = useTok();
+  return useQuery({ queryKey: ['admin', 'user', id, 'rate'], queryFn: () => adminApi.commissionRate(t, id), enabled: !!t && !!id });
+}
 export function useSetCommissionRate() {
   const t = useTok();
   const qc = useQueryClient();

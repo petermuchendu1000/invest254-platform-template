@@ -1,5 +1,6 @@
 'use client';
 
+import { useFailToast } from '@/lib/toast/useFailToast';
 import { PageTabs, useTabParam } from '@/components/admin/Tabs';
 import { useEffect, useState } from 'react';
 import { formatKes, kesToCents } from '@invest254/shared/money';
@@ -90,7 +91,6 @@ export default function MarketerFinancePage() {
     <>
       <PageHeader
         title="Marketer payouts"
-        subtitle="Everything paid to or recorded against your marketers."
       />
 
       <div className="flex flex-col gap-2">
@@ -109,6 +109,7 @@ export default function MarketerFinancePage() {
 
 /* ── Deposit-referral commission payouts ────────────────────────────────────────────────────── */
 function ReferralPayouts() {
+  const fail = useFailToast();
   const [status, setStatus] = useState('requested');
   const q = useCommissionPayouts(status);
   const action = useCommissionPayoutAction();
@@ -116,9 +117,10 @@ function ReferralPayouts() {
   const [rejecting, setRejecting] = useState<AdminCommissionPayoutRow | null>(null);
 
   const markPaid = (r: AdminCommissionPayoutRow, password: string) => {
-    const input = window.prompt('M-Pesa / bank reference for this payment (optional):');
-    const ref = input && input.trim() ? input.trim() : undefined;
-    action.mutate({ id: r.id, action: 'paid', password, ...(ref ? { ref } : {}) });
+    const input = window.prompt('M-Pesa / bank reference (optional):');
+    if (input === null) return;                       // Cancel = do nothing (BUGLOG #108: it still marked paid)
+    const ref = input.trim() ? input.trim() : undefined;
+    action.mutate({ id: r.id, action: 'paid', password, ...(ref ? { ref } : {}) }, { onError: (e) => fail(e) });
   };
 
   return (
@@ -152,7 +154,7 @@ function ReferralPayouts() {
                 <span className="flex justify-end gap-1.5">
                   {r.status === 'requested' ? (
                     <>
-                      <PasswordConfirmButton label="Approve" confirmLabel="Authorize" variant="up" busy={action.isPending} onConfirm={(pw) => action.mutate({ id: r.id, action: 'approve', password: pw })} />
+                      <PasswordConfirmButton label="Approve" confirmLabel="Authorize" variant="up" busy={action.isPending} onConfirm={(pw) => action.mutate({ id: r.id, action: 'approve', password: pw }, { onError: (e) => fail(e) })} />
                       <Button size="sm" variant="down" disabled={action.isPending} onClick={() => setRejecting(r)}>Reject</Button>
                     </>
                   ) : r.status === 'approved' ? (
@@ -186,7 +188,7 @@ function ReferralPayouts() {
         }
         onConfirm={(reason) =>
           rejecting &&
-          action.mutate({ id: rejecting.id, action: 'reject', ...(reason ? { reason } : {}) }, { onSuccess: () => setRejecting(null) })
+          action.mutate({ id: rejecting.id, action: 'reject', ...(reason ? { reason } : {}) }, { onSuccess: () => setRejecting(null), onError: (e) => fail(e) })
         }
       />
     </Section>
@@ -197,6 +199,7 @@ function ReferralPayouts() {
 const EXPENSE_CATEGORIES = ['advance', 'airtime', 'data_bundles', 'promo', 'salary', 'bonus', 'other'];
 
 function Expenses() {
+  const fail = useFailToast();
   const marketersQ = useMarketers();
   const marketers = marketersQ.data ?? [];
   const [marketerId, setMarketerId] = useState('');
@@ -215,7 +218,7 @@ function Expenses() {
     e.preventDefault();
     const c = kesToCents(Number(amount));
     if (!marketerId || c <= 0) return;
-    add.mutate({ category, amountCents: c, ...(note ? { note } : {}) }, { onSuccess: () => { setAmount(''); setNote(''); } });
+    add.mutate({ category, amountCents: c, ...(note ? { note } : {}) }, { onSuccess: () => { setAmount(''); setNote(''); }, onError: (e) => fail(e) });
   };
 
   return (
@@ -281,6 +284,7 @@ const ADVANCE_STATUSES = [
 ];
 
 function Advances() {
+  const fail = useFailToast();
   const [status, setStatus] = useState('requested');
   const q = useAdminAdvances(status);
   const decide = useDecideAdvance();
@@ -289,9 +293,10 @@ function Advances() {
   const pending = rows.filter((r) => r.status === 'requested').length;
 
   const approve = (r: AdminAdvanceDto) => {
-    const input = window.prompt('Optional note for the marketer (e.g. how it will be recovered):') ?? undefined;
-    const note = input && input.trim() ? input.trim() : undefined;
-    decide.mutate({ id: r.id, approve: true, ...(note ? { note } : {}) });
+    const input = window.prompt('Note for the marketer (optional):');
+    if (input === null) return;                       // Cancel = do nothing (BUGLOG #108: it still approved)
+    const note = input.trim() ? input.trim() : undefined;
+    decide.mutate({ id: r.id, approve: true, ...(note ? { note } : {}) }, { onError: (e) => fail(e) });
   };
 
   return (
@@ -355,7 +360,7 @@ function Advances() {
         consequence={<>No money is committed and nothing is logged against the marketer. They are notified of the decline and your reason, and can submit a new request.</>}
         onConfirm={(reason) =>
           rejecting &&
-          decide.mutate({ id: rejecting.id, approve: false, ...(reason ? { note: reason } : {}) }, { onSuccess: () => setRejecting(null) })
+          decide.mutate({ id: rejecting.id, approve: false, ...(reason ? { note: reason } : {}) }, { onSuccess: () => setRejecting(null), onError: (e) => fail(e) })
         }
       />
     </Section>

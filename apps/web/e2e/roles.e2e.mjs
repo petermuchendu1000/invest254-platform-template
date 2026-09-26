@@ -416,10 +416,10 @@ try {
     check('UI-F platform admin: balance changes live in the back office only (no second form here)', (await page.getByRole('button', { name: 'Review adjustment' }).count()) === 0 && await page.getByRole('button', { name: 'Manage in back office' }).isVisible());
     check('UI-F platform admin: brand admins are managed on the same People tab', await page.getByRole('region', { name: 'Brand admins' }).isVisible().catch(() => false) || await page.getByText('Brand admins', { exact: true }).isVisible());
     await page.getByText('Game overrides for this player').click(); await page.waitForTimeout(400);
-    check('platform admin: player overrides are editable in the console (was: no UI)', await page.getByLabel('Win rate (0–1)').isVisible());
-    await page.getByLabel('Win rate (0–1)').fill('0.9');
-    check("platform admin: an override better than the brand is stopped before saving", await page.getByText(/at most the brand's 0.4/).isVisible() && await page.getByRole('button', { name: 'Save overrides' }).isDisabled());
-    await page.getByLabel('Win rate (0–1)').fill('0.3');
+    check('platform admin: player overrides are editable in the console (was: no UI)', await page.getByLabel('Win rate (%)').isVisible());
+    await page.getByLabel('Win rate (%)').fill('90');
+    check("platform admin: an override better than the brand is stopped before saving", await page.getByText(/at most 4\d(\.\d+)?%/).isVisible() && await page.getByRole('button', { name: 'Save overrides' }).isDisabled());
+    await page.getByLabel('Win rate (%)').fill('30');
     await page.getByRole('button', { name: 'Save overrides' }).click(); await page.waitForTimeout(400);
     const ov = bodies.find(([k]) => k === 'PATCH /platform/sites/' + SITE + '/users/u-target/overrides');
     check('platform admin: a valid override is saved', ov && ov[1]?.winRate === 0.3, JSON.stringify(ov));

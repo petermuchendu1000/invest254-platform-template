@@ -13,7 +13,6 @@ export default function AdminSystemsPage() {
     <>
       <PageHeader
         title="Add-ons & gateways"
-        subtitle="Extras for your brand: price chart styles, trade screens and payment gateways. Ask for one you don't have yet."
       />
       <Section>
         <BrandAddons />

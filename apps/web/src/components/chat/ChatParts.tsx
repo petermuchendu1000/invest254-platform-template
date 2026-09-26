@@ -46,6 +46,7 @@ export function ChatMessages({ messages, mine, header }: { messages: ChatMessage
         );
       })}
       <div ref={end} />
+      {zoom ? <ZoomEscape onClose={() => setZoom(null)} /> : null}
       {zoom ? (
         <div className="fixed inset-0 z-[80] grid place-items-center bg-black/90 p-4" role="dialog" aria-modal="true" aria-label="Photo" onClick={() => setZoom(null)}>
           {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -54,6 +55,16 @@ export function ChatMessages({ messages, mine, header }: { messages: ChatMessage
       ) : null}
     </div>
   );
+}
+
+/** Escape closes the zoomed photo only — not the whole chat (BUGLOG #107). */
+function ZoomEscape({ onClose }: { onClose: () => void }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopImmediatePropagation(); e.preventDefault(); onClose(); } };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [onClose]);
+  return null;
 }
 
 /** Pick the best recording format this browser supports (all are on the server's allow-list). */
@@ -67,7 +78,7 @@ function recorderMime(): string | undefined {
  * CHAT-1: composer — attach a photo or short video, record a voice note (tap the mic to start, tap
  * again to send; Cancel discards), type and send. File size limits match the server's.
  */
-export function ChatComposer({ onSend, busy, disabled, placeholder = 'Type your message…' }: {
+export function ChatComposer({ onSend, busy, disabled, placeholder = 'Message' }: {
   onSend: (v: { body: string; file?: Blob | null }) => Promise<unknown>; busy?: boolean; disabled?: boolean; placeholder?: string;
 }) {
   const [text, setText] = useState('');
@@ -85,11 +96,24 @@ export function ChatComposer({ onSend, busy, disabled, placeholder = 'Type your 
     return () => window.clearInterval(t);
   }, [rec]);
 
+  // Clear only what was sent (BUGLOG #104: a voice note wiped the typed draft and a staged photo, and
+  // text typed during an upload was lost). The staged file is cleared only if it is the one sent.
   const send = async (body: string, f?: Blob | null) => {
     setErr(null);
-    try { await onSend({ body, file: f ?? null }); setText(''); setFile(null); }
-    catch (e) { setErr((e as Error).message || 'Could not send. Try again.'); }
+    try {
+      await onSend({ body, file: f ?? null });
+      if (body) setText((t) => (t.trim() === body.trim() ? '' : t));
+      if (f) setFile((cur) => (cur === f ? null : cur));
+    } catch (e) { setErr((e as Error).message || 'Could not send. Try again.'); }
   };
+
+  // Closing the chat while recording must release the microphone (BUGLOG #104).
+  const recRef = useRef<MediaRecorder | null>(null);
+  recRef.current = rec?.r ?? null;
+  useEffect(() => () => {
+    const r = recRef.current;
+    if (r && r.state !== 'inactive') { cancelled.current = true; try { r.stop(); } catch { /* ignore */ } }
+  }, []);
 
   const pick = async (f: File | undefined) => {
     setErr(null);

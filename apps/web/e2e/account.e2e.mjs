@@ -61,9 +61,29 @@ try {
     check('console: no page errors', errors.length === 0, errors.join(' | '));
     await ctx.close(); }
 
+  // ── 1b. Stake limits in the brand currency → the player's pills (STAKE-1, BUGLOG #87) ──
+  // start from a different saved value so the run is repeatable
+  await api(`/platform/sites/${SITE}/stake-limits`, OWNER_TOKEN, { method: 'PUT', body: JSON.stringify({ min: 300, max: 60000 }) });
+  { const { ctx, page, errors } = await session(OWNER_TOKEN, `${CONSOLE}/platform/clients/${SITE}?tab=economy`);
+    const card = page.getByTestId('stake-limits');
+    check('stake: the Economy tab has the Stake card', await until(() => card.isVisible(), 8000));
+    await card.getByLabel(/^Min/).fill('252');
+    check('stake: a minimum that is not a multiple of 5 is refused before saving', await card.getByRole('alert').isVisible() && await card.getByRole('button', { name: 'Save' }).isDisabled());
+    await card.getByLabel(/^Min/).fill('250');
+    await card.getByLabel(/^Max/).fill('50000');
+    check('stake: the preview shows the pills (min ×1 2 4 5 10 20)', /KES 250\s*KES 500\s*KES 1k\s*KES 1\.25k\s*KES 2\.5k\s*KES 5k/.test(await card.innerText()), await card.innerText());
+    await card.getByRole('button', { name: 'Save' }).click();
+    const cfg = async () => (await api(`/game/config?site=${HOST}`, null)).body;
+    check('stake: saved — the public config carries 250 / 50,000 and the engine limits in cents', await until(async () => { const c = await cfg(); return c.minStakeNative === 250 && c.maxStakeNative === 50000 && c.minStakeCents === 25000 && c.maxStakeCents === 5000000; }, 6000), JSON.stringify(await cfg()));
+    check('stake console: no page errors', errors.length === 0, errors.join(' | '));
+    await ctx.close(); }
+
   const player = await session(TOKEN, `http://${HOST}/`);
   const { page } = player;
   const header = page.locator('header');
+
+  check('stake: the player sees pills 250 · 500 · 1k · 1.25k · 2.5k · 5k', await until(async () => (await page.getByTestId('stake-pills').innerText()).replace(/\s+/g, ' ').trim() === '250 500 1k 1.25k 2.5k 5k', 6000), await page.getByTestId('stake-pills').innerText().catch(() => ''));
+  check('stake: the stake starts at the minimum pill', (await page.getByLabel('Stake amount').first().inputValue()) === '250');
 
   // ── 2. Real / Demo switch ──
   const pill = page.getByRole('button', { name: /account, .*Switch account$/ }).first();
@@ -110,14 +130,21 @@ try {
   await page.getByRole('button', { name: /^Up/ }).click();
   const mClose = page.getByRole('button', { name: /^Close [+-]/ });
   check('multipliers (demo): a contract opens', await until(() => mClose.isVisible(), 8000));
-  await page.waitForTimeout(1500);
+  // BUGLOG #98: leaving the Multipliers tab and coming back keeps the open position (and its Close)
+  await page.getByRole('button', { name: 'Even / Odd' }).click();
+  await page.getByRole('button', { name: 'Multipliers', exact: true }).filter({ visible: true }).first().click();
+  check('multipliers (demo): the open position survives a tab switch', await until(() => mClose.isVisible(), 4000));
+  await page.waitForTimeout(1000);
   await mClose.click();
   check('multipliers (demo): closing settles it', await until(async () => /Closed|Stopped out/.test(await page.locator('body').innerText()), 8000));
   const wm1 = (await api('/wallet', TOKEN)).body;
   check('multipliers (demo): only the demo balance moved', wm1.realBalance === wm0.realBalance && wm1.demoBalance !== wm0.demoBalance, `${JSON.stringify(wm0)} -> ${JSON.stringify(wm1)}`);
   await pill.click();
   await sw.getByRole('menuitemradio', { name: /Real Account/ }).click();
+  // BUGLOG #95: session totals are per account — back on Real, the demo trades are not counted
+  const realFooterOk = async () => /^0 · 0W 0L$/.test((await page.locator('aside').first().getByTestId('session-trades').innerText()).trim());
   check('demo: switching back returns to Real and closes the switcher', await until(async () => /^Real account/.test(await pill.getAttribute('aria-label'))) && (await api('/wallet', TOKEN)).body.mode === 'real' && !(await sw.isVisible()));
+  check('demo: back on Real, the session footer does not count demo trades', await until(realFooterOk, 4000), await page.locator('aside').first().getByTestId('session-trades').innerText());
 
   // ── 3. Sound toggle ──
   const snd = header.getByRole('button', { name: /^Turn sound (on|off)$/ }).first();
@@ -189,7 +216,7 @@ try {
   await kyc.locator('input[type=file][aria-label="Back of the document"]').setInputFiles({ name: 'back.png', ...img });
   await kyc.locator('input[type=file][aria-label="Selfie"]').setInputFiles({ name: 'selfie.png', ...img });
   await kyc.getByRole('button', { name: 'Send for review' }).click();
-  check('kyc: submitting shows "Under review"', await until(() => kyc.getByText('Under review.').isVisible(), 15000));
+  check('kyc: submitting shows "Under review"', await until(() => kyc.getByText('Under review', { exact: true }).isVisible(), 15000));
   await kyc.getByRole('button', { name: 'Close' }).last().click();
 
   await agent.page.goto(`${CONSOLE}/admin/identity`, { waitUntil: 'networkidle' });
@@ -220,10 +247,16 @@ try {
   await page.getByRole('button', { name: 'Account menu' }).click();
   await page.getByRole('menu').last().getByRole('button', { name: 'Sign Out' }).click();
   await until(() => header.getByRole('button', { name: 'Log in' }).first().isVisible());
+  // BUGLOG #99: nothing of the signed-out player stays on screen (session list, balance, cached queries)
+  check('sign-out: no trace of the previous player (session totals cleared, no balance pill)', await until(async () =>
+    (await page.getByRole('button', { name: /account, .*Switch account$/ }).count()) === 0
+    && /^0 · 0W 0L$/.test((await page.locator('aside').first().getByTestId('session-trades').innerText().catch(() => '0 · 0W 0L')).trim()), 5000));
   await header.getByRole('button', { name: 'Log in' }).first().click();
   check('sign-in: the window opens without crashing', await until(() => page.getByPlaceholder('07XX XXX XXX').isVisible()));
   const auth = page.locator('form', { has: page.getByPlaceholder('07XX XXX XXX') });
-  await auth.getByPlaceholder('07XX XXX XXX').fill(`07${suffix}`);
+  // BUGLOG #101: an autofilled international number is accepted
+  await auth.getByPlaceholder('07XX XXX XXX').fill(`+254 7${suffix.slice(0, 2)} ${suffix.slice(2, 5)} ${suffix.slice(5)}`);
+  check('sign-in: "+254 7…" autofill becomes 07…', (await auth.getByPlaceholder('07XX XXX XXX').inputValue()) === `07${suffix}`, await auth.getByPlaceholder('07XX XXX XXX').inputValue());
   await auth.locator('input[type=password]').first().fill(PASSWORD);
   await auth.getByRole('button', { name: 'Log in', exact: true }).last().click();
   check('sign-in: phone + password signs the player straight in (no code step)', await until(() => page.getByRole('button', { name: 'Account menu' }).isVisible(), 10000)

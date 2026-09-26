@@ -130,6 +130,14 @@ function StrengthMeter({ password }: { password: string }) {
   );
 }
 
+/** Autofill / paste: "+254 712 345 678" or "254712345678" → "0712345678" (BUGLOG #101: was cut to "2547123456"). */
+function localPhone(v: string): string {
+  let d = v.replace(/\D/g, '');
+  if (d.startsWith('254') && d.length >= 12) d = `0${d.slice(3)}`;
+  else if (d.length === 9 && /^[17]/.test(d)) d = `0${d}`;
+  return d.slice(0, 10);
+}
+
 export function AuthModal() {
   const { open, mode, openAuth, close } = useAuthUi();
   const { login, register } = useAuthActions();
@@ -241,15 +249,17 @@ export function AuthModal() {
   useEffect(() => { if (!open || mode !== 'login') { setNeedsCode(false); setUseRecovery(false); setCode(''); } }, [open, mode]);
 
   const copy = useMemo(() => {
-    if (isReset) return { title: 'Reset password', sub: 'Set a new password for your account.', cta: 'Update password' };
-    if (isRegister) return { title: 'Create account', sub: 'Start trading in under a minute.', cta: 'Create account' };
-    return { title: 'Log in', sub: 'Welcome back. Trade the curve.', cta: 'Log in' };
+    if (isReset) return { title: 'Reset password', sub: '', cta: 'Update password' };
+    if (isRegister) return { title: 'Create account', sub: '', cta: 'Create account' };
+    return { title: 'Log in', sub: '', cta: 'Log in' };
   }, [isRegister, isReset]);
 
   if (!open) return null;
 
   function validate(): boolean {
-    const next: Record<string, string | undefined> = { phone: phoneError(phone), password: passwordError(password) };
+    // Login sends any password to the server (older passwords may predate today's rules); the rules
+    // apply only to a NEW password (register / reset).
+    const next: Record<string, string | undefined> = { phone: phoneError(phone), password: isRegister || isReset ? passwordError(password) : (password ? undefined : 'Enter your password.') };
     if (isRegister) {
       next['username'] = usernameError(username);
       next['referral'] = referralError(referral);
@@ -337,7 +347,7 @@ export function AuthModal() {
       {/* Title block — left aligned, tight hierarchy */}
       <div className="px-6 pb-4">
         <h2 className="text-[22px] font-semibold leading-tight tracking-tight text-fg">{copy.title}</h2>
-        <p className="mt-1 text-sm text-muted">{copy.sub}</p>
+        {copy.sub ? <p className="mt-1 text-sm text-muted">{copy.sub}</p> : null}
       </div>
 
       {/* Quiet underline tabs (hidden in reset, which is a sub-flow of log in) */}
@@ -388,7 +398,7 @@ export function AuthModal() {
           autoFocus
           placeholder="07XX XXX XXX"
           value={phone}
-          onChange={(e) => setPhone(e.target.value.replace(/[^\d]/g, '').slice(0, 10))}
+          onChange={(e) => setPhone(localPhone(e.target.value))}
           error={errors['phone']}
         />
 
@@ -558,11 +568,11 @@ export function AuthModal() {
         {/* Mode cross-link keeps the tabs from being the only path between states. */}
         {!isReset ? (
           <p className="pb-1 text-center text-sm text-muted">
-            {isRegister ? 'Already have an account?' : 'New to Invest254?'}{' '}
+            {isRegister ? 'Have an account?' : `New to ${brand.name}?`}{' '}
             <button
               type="button"
               onClick={() => openAuth(isRegister ? 'login' : 'register')}
-              className="font-semibold text-accent transition hover:underline"
+              className="min-w-11 px-1 font-semibold text-accent transition hover:underline"
             >
               {isRegister ? 'Log in' : 'Create one'}
             </button>
@@ -576,7 +586,7 @@ export function AuthModal() {
           <span className="text-up">
             <ShieldIcon />
           </span>
-          <span>Encrypted in transit · M-Pesa secured · 18+</span>
+          <span>M-Pesa · 18+</span>
         </div>
         <p className="text-center text-xs leading-relaxed text-muted">
           By continuing you agree to our{' '}

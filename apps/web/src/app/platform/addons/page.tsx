@@ -50,7 +50,7 @@ function OwnerAddons() {
   const pending = open.data?.requests.length ?? 0;
   return (
     <div className="flex flex-col gap-5">
-      <PageHeader title="Add-ons" subtitle="Sell extra price charts, trade screens and payment gateways to brands. Set prices here, review what brands ask for, and see who uses what." />
+      <PageHeader title="Add-ons" />
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <StatCard label="Open requests" value={pending} tone={pending ? 'warn' : 'default'} hint={pending ? 'Waiting for your decision' : 'Nothing waiting'} />
         <StatCard label="Paid add-ons owned" value={owned} hint="Across all brands" />
@@ -286,7 +286,7 @@ function PlatformAddons() {
   const paid = new Set(items.filter((i) => !i.is_default).map((i) => `${i.category}:${i.key}`));
   return (
     <div className="flex flex-col gap-5">
-      <PageHeader title="Add-ons" subtitle="Extra price charts, trade screens and payment gateways for your brands. Request them on each brand; the System owner approves, and they are billed on your platform's invoice." />
+      <PageHeader title="Add-ons" />
       {brands.isLoading ? <Skeleton className="h-40 w-full" /> : !list.length ? <Empty title="No brands yet" description="Onboard a brand first." /> : (
         <ul className="grid gap-3 md:grid-cols-2" aria-label="Your brands' add-ons">
           {list.map((b) => {

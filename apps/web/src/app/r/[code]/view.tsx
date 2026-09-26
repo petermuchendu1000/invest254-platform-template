@@ -2,6 +2,7 @@
 
 import { useEffect } from 'react';
 import Link from 'next/link';
+import { useBrand } from '@/lib/brand/BrandProvider';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { useAuthUi } from '@/lib/auth/ui';
@@ -23,28 +24,21 @@ export default function ReferralLandingPage({ params }: { params: { code: string
     void api.recordAffiliateClick(code, host).catch(() => {});
   }, [code]);
 
+  const brand = useBrand();
   return (
     <section className="mx-auto flex min-h-[60vh] max-w-md flex-col items-center justify-center gap-5 text-center">
       <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-accent text-2xl font-bold text-accent-fg">
-        P
+        {(brand.name || '?').charAt(0).toUpperCase()}
       </div>
-      <div className="flex flex-col gap-2">
-        <h1 className="text-2xl font-semibold tracking-tight">You&apos;re invited to Invest254</h1>
-        <p className="text-sm leading-relaxed text-muted">
-          Predict BUY/SELL on the live BTC/KES curve and win in real Kenyan Shillings. Sign up with
-          this invite to get started.
-        </p>
-      </div>
+      <h1 className="text-2xl font-semibold tracking-tight">{brand.name}</h1>
 
       <Card className="flex w-full flex-col items-center gap-1">
-        <span className="text-xs text-muted">Your invite code</span>
+        <span className="text-xs text-muted">Invite code</span>
         <span className="font-mono text-lg font-semibold tracking-widest text-fg">{code}</span>
-        <span className="text-xs text-muted">It&apos;s applied automatically at sign-up.</span>
       </Card>
 
       {token ? (
         <div className="flex flex-col items-center gap-2">
-          <p className="text-sm text-muted">You&apos;re already signed in.</p>
           <Link href="/">
             <Button>Go to trading</Button>
           </Link>

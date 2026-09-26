@@ -1,5 +1,6 @@
 'use client';
 
+import { useFailToast } from '@/lib/toast/useFailToast';
 /**
  * Global ECONOMY editors (migration 0099) for the platform_superadmin console.
  *
@@ -118,6 +119,7 @@ export function CohortEconomySection(props: {
   setCfg: SetCfg;
 }) {
   const { apiKey, kind, title, description, server, sites, version, setCfg } = props;
+  const failToast = useFailToast();
   const serverKey = JSON.stringify(server);
   const [draft, setDraft] = useState<Draft>(() => draftFromBlock(COHORT_KEYS, COHORT_FIELD_SPECS, server));
   const [confirm, setConfirm] = useState(false);
@@ -140,7 +142,7 @@ export function CohortEconomySection(props: {
 
   function save() {
     if (built.errors.length) return;
-    setCfg.mutate({ [apiKey]: built.patch }, { onSuccess: () => setConfirm(false) });
+    setCfg.mutate({ [apiKey]: built.patch }, { onSuccess: () => setConfirm(false), onError: (e) => failToast(e) });
   }
 
   const setField = (k: CohortKey, patch: Partial<DraftField>) =>
@@ -166,7 +168,6 @@ export function CohortEconomySection(props: {
                     <span id={id} className="text-sm font-semibold text-fg">{spec.label}</span>
                     <EnforceBadge on={df.on} />
                   </div>
-                  <p className="mt-0.5 text-xs text-muted">{spec.hint}</p>
                 </div>
                 <div className="w-full sm:w-40">
                   <Input
@@ -268,6 +269,7 @@ export function CohortEconomySection(props: {
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 export function PaymentsEconomySection(props: { server: PaymentsEconomy; activeCount: number; setCfg: SetCfg }) {
   const { server, activeCount, setCfg } = props;
+  const failToast = useFailToast();
   const serverKey = JSON.stringify(server);
   const [draft, setDraft] = useState<Draft>(() => draftFromBlock(PAYMENT_KEYS, PAYMENT_FIELD_SPECS, server));
   const [confirm, setConfirm] = useState(false);
@@ -286,7 +288,7 @@ export function PaymentsEconomySection(props: { server: PaymentsEconomy; activeC
   const setField = (k: PaymentKey, patch: Partial<DraftField>) => setDraft((d) => ({ ...d, [k]: { ...d[k]!, ...patch } }));
   function save() {
     if (built.errors.length || crossErr) return;
-    setCfg.mutate({ payments: built.patch }, { onSuccess: () => setConfirm(false) });
+    setCfg.mutate({ payments: built.patch }, { onSuccess: () => setConfirm(false), onError: (e) => failToast(e) });
   }
 
   return (
@@ -306,7 +308,6 @@ export function PaymentsEconomySection(props: { server: PaymentsEconomy; activeC
                     <span id={id} className="text-sm font-semibold text-fg">{spec.label}</span>
                     <EnforceBadge on={df.on} />
                   </div>
-                  <p className="mt-0.5 text-xs text-muted">{spec.hint}</p>
                 </div>
                 <div className="w-full sm:w-40">
                   <Input inputMode="decimal" aria-label={`${spec.label} (KES)`} value={df.input}

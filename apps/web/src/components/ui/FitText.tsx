@@ -36,7 +36,9 @@ export function FitText({ children, className, minPx = 13, title }: {
     if (t.scrollWidth > avail) t.style.whiteSpace = 'normal'; // last resort: wrap at spaces
   }, [minPx]);
 
-  useIsoLayoutEffect(fit); // after every render: the figure may have changed
+  // re-fit when the figure changes (not on every parent render: each fit forces a synchronous reflow)
+  const key = typeof children === 'string' || typeof children === 'number' ? String(children) : undefined;
+  useIsoLayoutEffect(() => { fit(); }, key === undefined ? undefined : [key, fit]);
   React.useEffect(() => {
     const el = box.current;
     if (!el || typeof ResizeObserver === 'undefined') return;

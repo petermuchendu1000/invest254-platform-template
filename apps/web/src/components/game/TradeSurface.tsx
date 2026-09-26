@@ -38,8 +38,9 @@ export function TradeSurface() {
   return (
     <section className="flex h-full min-h-0 flex-col gap-2 md:gap-3">
       <PriceHeader />
-      <TickerStrip />
-      <div className="min-h-0 flex-1">
+      {/* short phones (SE): the decorative marquee gives its row to the chart */}
+      <div className="[@media(max-height:640px)]:hidden"><TickerStrip /></div>
+      <div className="min-h-[160px] flex-1">
         <GameCurve />
       </div>
       <BetPanel />

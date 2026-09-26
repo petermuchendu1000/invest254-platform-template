@@ -36,7 +36,7 @@ export function Logo({ className = '' }: { className?: string }) {
     <Link
       href="/"
       aria-label={`${brand.name} home`}
-      className={`flex items-center gap-2 text-fg ${className}`}
+      className={`flex min-w-0 items-center gap-2 text-fg ${className}`}
     >
       {custom ? (
         // eslint-disable-next-line @next/next/no-img-element
@@ -44,7 +44,7 @@ export function Logo({ className = '' }: { className?: string }) {
       ) : (
         <LogoMark seed={brand.slug} />
       )}
-      <span className="text-base font-extrabold leading-none tracking-tight text-fg">
+      <span className="truncate whitespace-nowrap text-base max-[359px]:sr-only font-extrabold leading-tight tracking-tight text-fg">
         {wordmark}
       </span>
     </Link>

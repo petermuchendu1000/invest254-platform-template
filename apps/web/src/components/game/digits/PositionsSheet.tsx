@@ -18,10 +18,12 @@ export function PositionsSheet() {
   }, [open, setOpen]);
   if (!open) return null;
   return (
-    <div className="fixed inset-0 z-50 flex lg:hidden" role="dialog" aria-modal="true" aria-label="Positions">
-      <button aria-label="Close positions" className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setOpen(false)} />
-      <div className="relative ml-auto flex h-full w-[88vw] max-w-[420px] flex-col border-l border-border bg-surface shadow-2xl">
-        <PositionsPanel onClose={() => setOpen(false)} className="h-full" />
+    // A bottom sheet with a grabber, like every other phone overlay (was a side drawer leaving a strip).
+    <div className="fixed inset-0 z-50 flex items-end lg:hidden" role="dialog" aria-modal="true" aria-label="Positions">
+      <button aria-label="Close positions" tabIndex={-1} className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setOpen(false)} />
+      <div className="relative flex h-[min(88dvh,720px)] w-full flex-col overflow-hidden rounded-t-[20px] border border-border bg-surface pb-[env(safe-area-inset-bottom)] shadow-2xl">
+        <div aria-hidden className="mx-auto mt-2 h-1 w-9 shrink-0 rounded-full bg-muted/40" />
+        <PositionsPanel onClose={() => setOpen(false)} className="min-h-0 flex-1" />
       </div>
     </div>
   );

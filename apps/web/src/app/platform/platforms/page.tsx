@@ -67,7 +67,7 @@ export default function PlatformsPage() {
   const [assignSiteId, setAssignSiteId] = useState('');
   const [assignPlatformId, setAssignPlatformId] = useState('');
 
-  const err = (e: unknown) => toast.push({ tone: 'error', title: 'Failed', description: e instanceof ApiError ? e.message : String(e) });
+  const err = (e: unknown) => toast.push({ tone: 'error', title: 'Failed', description: e instanceof ApiError ? e.message : 'Try again.' });
   const ok = (title: string) => toast.push({ tone: 'success', title });
 
   async function createPlatform() {
@@ -93,7 +93,6 @@ export default function PlatformsPage() {
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Platforms"
-        subtitle="Each platform groups brands under one platform admin, who sees only its own brands."
         actions={
           <div className="flex gap-2">
             <Button variant="outline" onClick={() => setAssignOpen(true)}>Move a brand</Button>
@@ -116,7 +115,6 @@ export default function PlatformsPage() {
           <Card><div className="flex flex-col items-start gap-3 p-6"><p className="text-sm text-muted">No platforms yet.</p><Button onClick={() => setCreateOpen(true)}>Create your first platform</Button></div></Card>
         ) : (
           <TableWrap>
-            <table className="w-full text-sm">
               <thead>
                 <tr>
                   <Th>Platform</Th><Th>Status</Th><Th className="text-right">Brands</Th>
@@ -139,7 +137,6 @@ export default function PlatformsPage() {
                   </tr>
                 ))}
               </tbody>
-            </table>
           </TableWrap>
         )}
       </Section>

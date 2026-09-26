@@ -5,6 +5,299 @@ entry: what, evidence, root cause, impact, and resolution.
 
 ---
 
+## #120–#130 — Apple pass: every UI measured on real phone widths — FIXED (branches `ui/apple-pass`, `ui/apple-pass-2`)
+Reported: the Entry Scanner's Market dropdown opened off the bottom of a phone screen. A scripted audit then
+walked every player, admin and owner screen and overlay at 320/360/390/430 (touch) and 1440. It checked five
+things: clipped overlays, sideways scroll, hit targets under 44 pt (Apple HIG; under 32 fails), inputs under
+16 px (iOS Safari zooms on focus), and controls covered by other layers.
+- **#120 (reported):**
+  - **Bug:** the scanner's Market list was a dropdown inside a bottom panel, so it clipped.
+  - **Fix:** new `Sheet` (bottom sheet on phones, card on desktop, grabber, safe area, scrolling body) and
+    `Segmented` (HIG segmented control, 48 px, arrow keys). The scanner is a Sheet with a
+    Even/Odd · Match/Differ · Over/Under segment. Nothing can open off-screen.
+- **#121:**
+  - **Bug:** the Markets sheet rendered *under* the bottom nav. It was `fixed z-50` inside a z-20 stacking
+    context.
+  - **Fix:** portalled to `<body>`.
+  - Positions is now a real bottom sheet too.
+- **#122:** the side drawer could not scroll on short phones, so its last items were unreachable. It now
+  scrolls and respects the safe area. Verify Identity and Change Password are in it.
+- **#123:**
+  - **Bug:** 41 controls failed the target check: digit keys, stake steppers, pills, table links, checkboxes,
+    and the withdrawals switch.
+  - **Fix:** under a coarse pointer every control is at least 44 pt, checkboxes are 24 px (WCAG 2.2), and
+    pill switches get an invisible 44 pt hit area.
+  - Digits are 5 × 2 keys on phones. Stake/Payout is a segment.
+- **#124:** inputs at 12–14 px made iOS zoom the page on focus. Fields are 16 px on phones; the amount heroes
+  stay large.
+- **#125:**
+  - Brand name and balance wrapped onto two lines at 320 px. They no longer wrap, and the mark stands alone
+    under 360 px.
+  - The chat placeholder was cut off; it is now "Message".
+  - Market names drop the redundant "Index", so "Volatility 10 (1s)" fits.
+- **#126:** native checkboxes were white on the dark theme. `color-scheme` and `accent-color` now follow the
+  theme and the brand.
+- **#127 (classic brands, e.g. invest254.com):** the SELL button was grey and looked disabled. The brand's
+  stored theme had `down: #8fa396`. Gain and loss now stay green and red on every brand: an up/down token
+  outside that colour family is ignored, and the default applies (`semanticColourOk`, brand.test.ts). All
+  56 preset themes pass.
+- **#128 (classic):**
+  - **Bug:** the duration was a hidden tap-to-cycle circle ("10 s"), undiscoverable.
+  - **Fix:** it is now a segmented control showing 10s · 30s · 1m · 2m at once.
+  - Stake pills and ± steppers are 44 pt on phones. The chart's interval keys are 44 wide on touch, and the
+    zoom buttons are hidden there (pinch zooms).
+- **#129 (classic, short phones):** at 320×568 the chart was about 100 px tall. The decorative ticker hides
+  on screens under 640 px tall, and the chart keeps at least 160 px.
+- **#130:**
+  - The account card said "Identity" twice.
+  - The auth switch link ("Log in") was 41 px wide; it is now at least 44 px.
+  - Selected segments use the brand accent, like every active pill. The old raised surface read as
+    recessed on dark themes.
+- **Result:** 172 screen×width checks (digits brand) and 70 (classic brand). COVERED 0, CLIP 0, HSCROLL 0,
+  ZOOM 0, TARGET<32 0. The only remaining note is the TradingView attribution logo (third-party, 35×44).
+- **Tests:** digits 57/57, account 65/65, roles 198/198, npm test 1208/1208 (new brand.test case), typecheck clean.
+
+## #115–#119 — Regressions caught by reviewing today's own diff — FIXED (branch `fix/hunt-regressions`)
+A line-by-line review of everything changed since 136a092 (web, API, both migrations). There were no hook-order
+or circular-import problems, and grants and scope checks were right. It found:
+- **#118 (high on weak currencies):** 10,000 of a weak currency (UGX ≈ KES 350) is below
+  `fn_topup_demo_account`'s KES 1,000 floor. The switch to Demo returned 400, although the wallet was already in
+  demo mode at 0, and every refill failed. The target is now clamped to the function's bounds, and funding is
+  best-effort after the switch.
+- **#115:**
+  - **Bug:** a multiplier closed while the socket was away (another page, a drop) stayed "open" in the new store.
+    It blocked new opens and the account switch until a reload.
+  - **Fix:** while a position is shown, the screen checks `/positions?status=open` (on mount and every 15 s)
+    and clears a position that is gone.
+- **#116:**
+  - **Bug:** the auth queue had no timer and dropped non-digit trades silently. A classic rise/fall open queued
+    behind a slow or failed sign-in stayed "Opening…" for good.
+  - **Fix:**
+    - The auth answer must come within 8 s. Every dropped open is reported (digits via the screen; classic
+      rolls back and toasts).
+    - An `ENGINE_ERROR` while waiting for auth is taken as the answer, because the engine binds the socket
+      before its wallet read.
+    - The heartbeat pings every 6 s, so brands with a slow tick rate never trip the 12 s dead-socket check.
+- **#117:** when a contract was given up on (refusal race or backstop) but DID open, its ack and result were
+  ignored. It is now kept as "last dropped", so a late ack still attributes the result.
+- **#119:**
+  - Changing a brand's currency keeps no stale stake limits (KES 50 must not become $50).
+  - The commission-rate field seeds once, so an admin can clear it.
+  - A demo refill that cannot cover a stake above 10,000 says "Demo max …" instead of "Demo refilled".
+- **Tests:**
+  - digits.e2e.mjs, new: sign-in held 10 s → dropped with "Not connected", nothing in play, the next trade
+    goes through. 57/57.
+  - app.demo1.test.ts: demo target bounds.
+  - npm test 1207/1207. account 65/65. demo1.pg 2/2.
+
+## #108–#114 — Operator console bug hunt + minimal copy — FIXED (branch `fix/console-hunt`; API: one read-only route)
+- **#108 (money):**
+  - **Bug:** pressing Cancel on the reference prompt still marked a commission payout PAID, and Cancel on the
+    note prompt still APPROVED an advance, because `window.prompt()` returns null and that was treated as an
+    empty note.
+  - **Fix:** Cancel now does nothing.
+  - **Also:** many console actions failed silently: payout approve/paid/reject with a wrong owner password,
+    advance decisions, expenses, the platform master switches and banner, the global economy saves, and
+    manual pool distribution. All of them now show the server's reason (`useFailToast`).
+- **#109:**
+  - **Bug:** users ticked under one filter stayed selected after switching filter, so a bulk Ban or
+    Clear-balance also hit people no longer on screen.
+  - **Fix:** the selection clears when the filter changes. The bulk toast is now "3/3 done", with no raw
+    exception text.
+- **#110:**
+  - **Bug:** brand Economy / Identity / Legal forms were overwritten whenever the brand refetched (for
+    example after saving the Stake card on the same tab), losing unsaved edits.
+  - **Fix:** `useSyncedForm` follows server changes only while nothing has been edited. The native
+    min-withdrawal field works the same way.
+- **#111:**
+  - **Bug:** a marketer's commission rate always showed 20%, and "Update rate" wrote 20%.
+  - **Fix:** a new `GET /admin/affiliates/:id/rate` (brand-scoped; the F-44 matrix covers it) feeds the real
+    value. The button is disabled until the value changes.
+- **#112:** player overrides took win rate and house edge as 0–1 fractions, unlike every other editor. They are now
+  entered in % with the brand limits in %.
+- **#113 and other fixes:**
+  - Confirmation is now required before removing a brand admin and before turning a brand's withdrawals OFF.
+  - The ban toast read "Account band".
+  - The user page showed the raw role code.
+  - Reconciliation tiles were labelled `success` / `pending`.
+  - "TypeError: Failed to fetch" was shown as an error.
+  - Tables nested inside `TableWrap` broke the 640 px scroll on phones.
+  - Credit and Clear no longer both run while one is in flight.
+- **#114:**
+  - **Bug:** overview windows used UTC or the browser's midnight, and "last 30 days" covered 31 days. A
+    half-picked or reversed custom range showed all-time totals under a custom label.
+  - **Fix:** days are EAT (UTC+3), the window is exactly 30 days, and an incomplete range shows "—".
+- **Copy:**
+  - Prose subtitles removed from 22 console pages. Config now reads "N active brands".
+  - Removed the withdrawal-switch helper text, the global-economy per-field hints (one of them was wrong: "Fraction
+    of positions that win" on a % input) and the overrides paragraph (now "Blank = brand · win ≤ 40% · edge ≥ 5% ·
+    ×≤ 5").
+  - Kept: the irreversible-money warnings and confirm dialogs.
+- **Tests:**
+  - roles.e2e.mjs 198/198 (updated for %).
+  - app.commissionrate.test.ts.
+  - The scope matrix caught the new route answering 501 before its scope check. Fixed: scope is checked first.
+  - npm test 1206/1206. account 65/65, digits 55/55.
+
+## #99–#107 — Player UI bug hunt, round 2 + minimal copy — FIXED (branch `fix/player-ui-hunt`, web only)
+- **#99:**
+  - **Bug:** signing out (or a 401 reset, or signing in as someone else) left the previous player's cached
+    queries on screen, because no key names the user. The next person saw that player's notification
+    banners (including blocking ones), chat and unread badge, identity status, referral earnings and
+    session list.
+  - **Fix:** `SessionCacheGuard` (global) clears the query cache and the session, multiplier, dialog and chat
+    stores whenever the signed-in account changes. The banners render only with a token.
+- **#100:**
+  - **Bug:** on the classic trade screen the floating chat button sat on top of SELL on phones.
+  - **Fix:** chat is now a CHAT item in the phone bottom bar, and the floating button is desktop-only.
+- **#101:**
+  - **Bug:** an autofilled or pasted "+254 712 345 678" was cut to "2547123456" and refused.
+  - **Fix:** it now becomes "0712345678". Login no longer applies the NEW-password rules (older passwords
+    reach the server), and Change password uses the server's rules.
+- **#102:** the welcome-bonus card said "Deposit $1.93" on a USD brand (raw KES cents). It now uses the enforced
+  minimum stake.
+- **#103:** the classic stake field re-seeded itself whenever it was emptied, so deleting "100" and typing "200"
+  gave "50200". It now seeds once.
+- **#104:** a chat voice note wiped the typed draft and a staged photo, and closing the chat while recording left
+  the microphone on. The composer now clears only what was sent and releases the mic on close.
+- **#105:** KES amounts in the digits UI were rounded UP (KES 99.50 showed as "100", and a 100 stake was then
+  refused). They now show cents when there are any.
+- **#106:**
+  - **Bug:** the win overlay put "+" on the gross payout, overstating a win by the stake. The near-miss
+    "Just missed the mark" line has gone.
+  - **Fix:** the big figure is now the net result, with the payout and stake on the line below.
+- **#107 (and minor fixes):**
+  - The Modal no longer steals focus from an autofocused field.
+  - Escape now closes the bell, the drawer, Change password, and a zoomed chat photo (and only the photo).
+  - The account switcher fits at 320 px.
+  - The price header re-renders only on a new tick; "24H H/L" becomes "H/L", since it is the buffer's
+    extremes.
+  - The referral card uses the brand currency and has separate "Copied" states.
+  - Hard-coded "Invest254" / "P" / "BTC/KES" are gone from the referral landing, offline and 404 pages.
+- **Copy cut (numbers first):**
+  - Auth subtitles and trust line.
+  - Classic BetPanel: "Trades settle automatically", "Auto-sell / Trade duration", the idle "Live P&L 0",
+    "Price rises / falls", "Deposit to buy or sell".
+  - The welcome-bonus sales sentence (now "Min stake $5 · Bonus · withdrawable once won").
+  - Chat greeting paragraph (now WhatsApp / email chips).
+  - Switcher toasts (now "Demo · 10,000 KES").
+  - KYC sub and toast text.
+  - Trade toasts ("Min $5", "Trade in progress").
+  - Offline / 404 / error bodies.
+  - Footer taglines. The risk sentence, 18+ badge, helpline 1190, licence and Terms / Responsible Gaming
+    links stay.
+- **Tests:**
+  - account.e2e.mjs, new: sign-out leaves no trace; "+254" autofill. 65/65.
+  - digits.e2e.mjs 55/55.
+
+## #90–#98 — Deriv client bug hunt, round 1 — FIXED (branch `fix/deriv-hunt`, web only; engine untouched)
+Found by a line-by-line audit of the digits screen, socket provider and wallet sheet, then checked against the code.
+- **#90 (money):**
+  - **Bug:** the deposit sheet said "Deposit received" when the balance rose. AUTO wins, a demo account or a
+    take-profit could do that with no deposit at all, and the sheet closed as if paid.
+  - **Fix:** success is now only THIS deposit's transaction status. A shortfall below the minimum deposit is
+    pre-filled at the minimum, so the pre-filled amount is never refused.
+- **#91:**
+  - **Bug:** the engine sends every `digit_settled` to all of a player's sockets. With two tabs or devices, one
+    tab's result cleared the other's contract, showed a mixed result card, and fed AUTO the wrong P&L.
+  - **Fix:** the provider passes on `digit_opened` (sent only to the opening socket). The screen keeps the
+    position ids it opened and ignores anyone else's settlements. A late answer after the 20 s backstop is
+    still counted, without a card.
+- **#92 (socket):**
+  - **Bugs:**
+    - A dead socket that still read "open" was never detected.
+    - The awaiting-ack counter leaked across reconnects, so a stray error could clear a live contract.
+    - The provider's value was a new object on every render, and brand-wide `online` counts re-rendered the
+      whole trade screen and chart.
+  - **Fix:**
+    - 12 s of silence (ticks arrive every 1–2 s) forces a reconnect.
+    - The counter resets on close, and only open-related errors count as refusals.
+    - The context is split into stable API / state / instrument key, and heavy consumers use the stable API.
+    - `useInvalidateDigitHistory` is stable, and FitText re-fits only when its figure changes, not with a
+      reflow on every render.
+- **#93:**
+  - **Bug:** signing out or in as someone else kept the socket bound to the previous user, who went on
+    receiving balance and settlements. Their wallet, history and session list also stayed on screen.
+  - **Fix:** a different user reconnects the socket and drops the user-scoped caches and the session stores.
+- **#94:** the result and insufficient-balance cards re-focused themselves on every tick (an inline `onClose`
+  in the deps), pulling keyboard and screen-reader users back. They now focus once per open.
+- **#95:**
+  - **Bug:** Session P/L summed demo and real (for example +5,000 demo and −200 real showed +4,800).
+  - **Fix:** the totals are per account. The footer is numbers only: "7 · 4W 3L  +240 KES".
+- **#96:**
+  - **Bug:** the scanner compared Over 5 (40% expected) with Under 5 (50%) on raw share, so it nearly always said
+    "Under". It also showed the base rate as a lean.
+  - **Fix:** each side is measured against its own expectation, and the edge (+x.x points) is ranked and shown.
+- **#97:**
+  - **Bug:** on phones a swipe detached the chart from live, with no way back.
+  - **Fix:** a phone live button. The instrument's old IN / result markers are cleared on switch, and each
+    buy button checks its own side's stake.
+- **#98:**
+  - **Bug:** an open multiplier lived in the panel's local state. Switching to a digits tab hid it (no Close,
+    and a second open was possible). The price of another instrument showed as "Current", and switching account
+    ignored it.
+  - **Fix:** the position lives in `multSession` and is synced by the always-mounted screen. "Current" shows
+    only for its own instrument, and an open multiplier blocks an account switch.
+- **Copy:**
+  - Removed: repeated sentences on the result card, the insufficient-balance card, the deposit sheet (both
+    paragraphs) and the positions empty states.
+  - Withdraw sheet: "Paid instantly" corrected to "M-Pesa · Secured", since payouts are held for approval.
+  - Foreign brands get the decimal keypad.
+  - "Min KES250" now has its space.
+  - The AUTO summary reads "· 7 trades".
+- **Tests:**
+  - digits.e2e.mjs, new: two tabs; scanner edge; footer format. 55/55.
+  - account.e2e.mjs, new: the multiplier survives a tab switch; the Real footer excludes demo. 63/63.
+
+## #89 — Saving the economy more than 6 times an hour showed "Something went wrong" (a bare 500) — FIXED (branch `feat/stake-ladder`, API only)
+- **What:** the DB guard `fn_guard_config_change_rate` (6 economy changes per brand per hour) raises
+  `CONFIG_CHANGE_RATE_LIMIT`. That code was not mapped, so the console showed a generic 500 and the admin could
+  not tell why the save failed.
+- **Fix:** it maps to 429 with "6 economy changes in the last hour for this brand. Try again later." The stake
+  card also skips re-writing an unchanged pair, so it does not use up the budget.
+
+## #88 — "Log in to trade" while signed in: a trade tapped right after the socket (re)connected was refused — FIXED (branch `feat/stake-ladder`, web only; engine untouched)
+- **What:** the engine verifies `auth` asynchronously (JWT, then a wallet read). A digit, multiplier or
+  rise/fall open that reached it before that finished was refused `AUTH_REQUIRED`. The player saw "Log in to
+  trade" while signed in. It hit anyone tapping during a reconnect (mobile networks), and it showed up as a
+  rare e2e flake.
+- **Fix:** the socket provider holds trades until the auth answer (the `balance` frame) and then sends them in
+  order.
+  - Anything older than 8 s is dropped as not sent, and the screen is told.
+  - On a close, or on `AUTH_INVALID` / `AUTH_SITE_MISMATCH`, queued digit opens are reported as not sent, so
+    nothing waits for ever.
+  - An unexpected `AUTH_REQUIRED` while signed in re-sends `auth` quietly.
+- **Test:** digits.e2e.mjs closes the socket, holds the next `auth` for 1.5 s and taps Buy during the gap. The trade
+  settles and there is no "Log in to trade".
+
+## #87 — Stake pills were fixed lists, not multiples of 5 from the admin's minimum; min/max only in KES — FIXED (branch `feat/stake-ladder`, migration 0170; engine untouched)
+- **What (owner):** "Stake pills should be in multiples of 5… if min is $5, the next pill is double, then quad,
+  then pent… dynamic based on the min stake… admin has UI to control min and max".
+- **Before:**
+  - Pills were hard-coded (USD 5 · 10 · 25 · 50 · 100 · 250; KES 50 · … · 5000). Some sat below the minimum and
+    were greyed out.
+  - Admins could set min/max stake only in KES cents.
+  - The classic panel had its own fixed chips, and Multipliers had none.
+- **Fix:**
+  - `site_stake_native` (0170, service_role only) holds min/max in the brand currency. Each is a multiple of
+    5, and the DB checks it too.
+  - `PUT /platform/sites/:id/stake-limits` validates the pair and writes the engine's KES-cents limits through the
+    normal economy path (versioned, audited): KES exactly, foreign currencies with a 10% FX margin so a rate move
+    never refuses a pill.
+  - `GET /game/config` returns `minStakeNative` / `maxStakeNative`.
+  - Player: `stakeLadder()` gives min ×1, 2, 4, 5, 10, 20, capped at max ($5 → 5 · 10 · 20 · 25 · 50 · 100). It is
+    never below what the server enforces. `useStakeLimits()` feeds the Deriv screen, Multipliers (new pills) and
+    the classic panel (first three pills).
+  - The stake starts at the minimum pill. The stepper moves in 5s ($) or 50s (KES) and never goes below the
+    minimum.
+  - Console → Economy has a Stake card: Min / Max in the brand currency, a live preview of the pills, and a
+    refusal before saving for any value that is not a multiple of 5.
+  - Server refetches no longer overwrite what the admin is typing.
+- **Tests:**
+  - stakeLadder.test.ts (7) and stakelimits.test.ts (3).
+  - app.stakelimits.test.ts: gate, validation, USD margin, KES exact, no re-write, no rate → 503.
+  - account.e2e.mjs: console refusal, preview, save → public config, and the player's pills and starting stake.
+
 ## #86 — Payout mode: the second side used the first side's stake, so it paid a different amount than typed — FIXED (branch `fix/deriv-auto-ai`, web only)
 - **What:** in Payout mode the stake was derived from the PRIMARY side's odds only. For example, a Matches/Differs
   payout typed as 100 staked the Matches stake on Differs and paid about 11, not 100.

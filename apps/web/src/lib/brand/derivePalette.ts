@@ -7,7 +7,7 @@
  */
 export type ThemeTokens = Record<string, string>;
 
-function hexToHsl(hex: string): [number, number, number] {
+export function hexToHsl(hex: string): [number, number, number] {
   const h = hex.replace('#', '');
   const r = parseInt(h.slice(0, 2), 16) / 255;
   const g = parseInt(h.slice(2, 4), 16) / 255;
@@ -24,6 +24,14 @@ function hexToHsl(hex: string): [number, number, number] {
     hue *= 60;
   }
   return [hue, s, l];
+}
+/** Gain must read as green and loss as red on every brand (docs/22). A stored token outside that family
+ *  (e.g. a grey "down" that makes SELL look disabled) is rejected so the semantic default applies. */
+export function semanticColourOk(kind: 'up' | 'down', hex: string): boolean {
+  if (!/^#[0-9a-f]{6}$/i.test(hex)) return false;
+  const [h, s, l] = hexToHsl(hex);
+  if (s < 0.35 || l < 0.2 || l > 0.8) return false;
+  return kind === 'up' ? h >= 90 && h <= 190 : h >= 330 || h <= 25;
 }
 function hsl(hue: number, s: number, l: number): string {
   hue = ((hue % 360) + 360) % 360; s = Math.max(0, Math.min(1, s)); l = Math.max(0, Math.min(1, l));

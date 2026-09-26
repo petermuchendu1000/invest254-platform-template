@@ -31,6 +31,8 @@ interface DigitSessionState {
   setPositionsOpen: (v: boolean) => void;
   setHistoryOpen: (v: boolean) => void;
   setHowToOpen: (v: boolean) => void;
+  /** Sign-out / another account: forget this session's contracts. */
+  reset: () => void;
 }
 
 export const useDigitSession = create<DigitSessionState>((set) => ({
@@ -46,6 +48,7 @@ export const useDigitSession = create<DigitSessionState>((set) => ({
   setPositionsOpen: (positionsOpen) => set({ positionsOpen }),
   setHistoryOpen: (historyOpen) => set({ historyOpen }),
   setHowToOpen: (howToOpen) => set({ howToOpen }),
+  reset: () => set({ open: null, closed: [], auto: null }),
 }));
 
 /** Session totals derived from the settled list. */

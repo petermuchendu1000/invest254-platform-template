@@ -25,11 +25,13 @@ export function PriceHeader() {
   // fluctuating crowd figure (social proof) — never the raw dev/low value.
   const displayOnline = useOnlineDisplay(online, role);
   const quote = useBrand().currency || 'KES';
+  // Re-render only when a new tick arrives (was 4 renders/s, each re-scanning the whole buffer).
   const [, force] = useState(0);
   useEffect(() => {
-    const id = setInterval(() => force((n) => (n + 1) % 1_000_000), 250);
+    let lastT = -1;
+    const id = setInterval(() => { const t = getLastTick()?.t ?? -1; if (t !== lastT) { lastT = t; force((n) => (n + 1) % 1_000_000); } }, 250);
     return () => clearInterval(id);
-  }, []);
+  }, [getLastTick]);
 
   const last = getLastTick();
   const value = last ? toValue(last.rate) : null;
@@ -74,8 +76,8 @@ export function PriceHeader() {
           ) : null}
         </div>
         <div className="flex min-w-0 items-center gap-3 text-right">
-          <Stat className="hidden sm:flex" label="24H H" value={hi !== null ? fmt(hi) : '\u2014'} />
-          <Stat className="hidden sm:flex" label="24H L" value={lo !== null ? fmt(lo) : '\u2014'} />
+          <Stat className="hidden sm:flex" label="H" value={hi !== null ? fmt(hi) : '\u2014'} />
+          <Stat className="hidden sm:flex" label="L" value={lo !== null ? fmt(lo) : '\u2014'} />
           <Stat
             label="Online"
             valueClassName="text-up"

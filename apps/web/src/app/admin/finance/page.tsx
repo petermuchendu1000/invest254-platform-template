@@ -51,9 +51,9 @@ function UserCell({ userId, username }: { userId: string; username: string }) {
 function PhoneCell({ phone }: { phone: string | null }) {
   if (!phone) return <span className="text-muted">—</span>;
   return (
-    <a href={`tel:${phone}`} className="tabular-nums text-fg hover:text-accent hover:underline">
+    <span className="tabular-nums text-fg">
       {phone}
-    </a>
+    </span>
   );
 }
 
@@ -114,7 +114,6 @@ export default function FinancePage() {
     <>
       <PageHeader
         title="Finance"
-        subtitle="Every deposit and withdrawal with the player, exact time, amount and status, plus a check for M-Pesa deposits stuck waiting on the player."
       />
 
       {/* UI-F: money in/out totals live on Overview and Reports; Finance keeps what only it answers. */}
@@ -141,7 +140,7 @@ export default function FinancePage() {
             {summary.map((b) => (
               <StatCard
                 key={b.status}
-                label={b.status}
+                label={({ success: 'Paid', pending: 'Pending', failed: 'Failed', reversed: 'Reversed', cancelled: 'Cancelled' } as Record<string, string>)[b.status] ?? b.status}
                 money={b.amountCents}
                 hint={`${b.count} ${b.count === 1 ? 'deposit' : 'deposits'}`}
                 tone={bucketTone(b.status)}

@@ -20,6 +20,10 @@
   --pp-warn: #F0B90B;
 }
 
+/* native checkboxes/radios/ranges follow the brand accent and the theme */
+:root { color-scheme: dark; accent-color: var(--pp-accent); }
+html.light { color-scheme: light; }
+
 html.light {
   --pp-bg: #F7F9FB;
   --pp-surface: #FFFFFF;
@@ -199,4 +203,31 @@ select:-webkit-autofill {
   border-radius: inherit;
   /* Defer the autofill background animation far into the future so it never flashes. */
   transition: background-color 600000s 0s, color 600000s 0s;
+}
+
+/* ── Touch & type standards (Apple HIG / WCAG 2.2 — BUGLOG #120) ────────────────────────────────── */
+/* Phones & tablets (coarse pointer): every control is at least 44 pt tall (HIG minimum hit target).
+   `:where()` keeps specificity at zero, so a component can still size itself — but never below 44. */
+@media (pointer: coarse) {
+  :where(button, [role="button"], [role="tab"], [role="option"], [role="radio"], [role="menuitem"], [role="menuitemradio"],
+         select, input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="file"]),
+         a:is(.flex, .inline-flex, .grid, .block, .inline-block), header a, nav a, footer a):not([role="switch"]):not([data-compact]):not([aria-hidden="true"]) {
+    min-height: 44px;
+  }
+  /* icon-only controls (named by aria-label) are 44 wide too */
+  :where(button[aria-label], a[aria-label]):not([role="switch"]):not([data-compact]):not([aria-hidden="true"]) { min-width: 44px; }
+  input[type="checkbox"], input[type="radio"] { width: 24px !important; height: 24px !important; }
+  /* links inside table cells and small text links become full-height targets */
+  :where(td a, a.text-sm, a.text-xs) { display: inline-flex; align-items: center; min-height: 44px; }
+  :where([role="tab"], footer nav a):not([data-compact]) { min-width: 44px; }
+  /* small pill switches keep their look but get a 44pt hit area */
+  button[role="switch"].rounded-full.relative::before { content: ""; position: absolute; inset: -10px -2px; }
+}
+/* iOS Safari zooms the whole page when a field under 16 px is focused. Fields never go below 16 px on
+   phones; larger type (e.g. amount heroes) is untouched. */
+@media (max-width: 1023px) {
+  /* element-only specificity: beats preflight's `font-size: 100%` (same weight, later), loses to any text-* utility */
+  input, select, textarea { font-size: 16px; }
+  :is(input, select, textarea):is(.text-xs, .text-sm, .text-\[9px\], .text-\[10px\], .text-\[11px\], .text-\[12px\], .text-\[13px\],
+      .text-\[14px\], .text-\[15px\], .text-base) { font-size: 16px !important; }
 }

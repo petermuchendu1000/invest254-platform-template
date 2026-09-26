@@ -2,6 +2,7 @@
 
 import {
   createContext,
+  useMemo,
   useCallback,
   useContext,
   useEffect,
@@ -82,6 +83,8 @@ interface GameSocketValue {
   onDigitSettled: (cb: (s: DigitSettledData) => void) => () => void;
   /** The engine refused a digit open (funds, limits, one-at-a-time…). Returns an unsubscribe fn. */
   onDigitRejected: (cb: (e: { code: string; message: string }) => void) => () => void;
+  /** The engine accepted a digit open from THIS socket (its position id). Returns an unsubscribe fn. */
+  onDigitOpened: (cb: (e: { positionId: string; instrumentId: string }) => void) => () => void;
   /** Place a MULTIPLIER contract; lifecycle arrives via `onMultiplier`. */
   openMultiplier: (input: OpenMultiplierInput) => void;
   /** Manually close an open multiplier (server may refuse in pool mode). */
@@ -90,7 +93,12 @@ interface GameSocketValue {
   onMultiplier: (cb: (e: MultEvent) => void) => () => void;
 }
 
-const Ctx = createContext<GameSocketValue | null>(null);
+/** Stable functions (never change identity) — consumers that only trade/read buffers never re-render. */
+type GameSocketApi = Omit<GameSocketValue, 'status' | 'online' | 'fairness' | 'activePosition' | 'instrumentResetKey'>;
+type GameSocketState = Pick<GameSocketValue, 'status' | 'online' | 'fairness' | 'activePosition'>;
+const ApiCtx = createContext<GameSocketApi | null>(null);
+const StateCtx = createContext<GameSocketState | null>(null);
+const InstKeyCtx = createContext<string>('');
 
 const SYNTH_SPACING_MS = 150;
 const SYNTH_SPAN_MS = 60_000;
@@ -165,6 +173,12 @@ function friendlyError(
   return raw.replace(/\b(min|max)\s+(\d{3,})\b/gi, (_s, w: string, c: string) => `${w} ${fmt(Number(c))}`);
 }
 
+/** The user a JWT belongs to (its `sub`), or null. Used only to tell "same user, refreshed token" apart. */
+function subOf(token: string | null): string | null {
+  if (!token) return null;
+  try { return (JSON.parse(atob(token.split('.')[1]!.replace(/-/g, '+').replace(/_/g, '/'))) as { sub?: string }).sub ?? null; } catch { return null; }
+}
+
 export function GameSocketProvider({ children }: { children: React.ReactNode }) {
   const token = useSession((s) => s.token);
   const tokenRef = useRef<string | null>(token);
@@ -206,6 +220,11 @@ export function GameSocketProvider({ children }: { children: React.ReactNode }) 
   // Digit opens sent and not yet acknowledged: an 'error' frame while one is outstanding is its refusal.
   const digitAwaitingRef = useRef(0);
   const digitRejectRef = useRef<Set<(e: { code: string; message: string }) => void>>(new Set());
+  const digitOpenedRef = useRef<Set<(e: { positionId: string; instrumentId: string }) => void>>(new Set());
+  const rejectDigit = (code: string, message: string) => {
+    digitAwaitingRef.current = Math.max(0, digitAwaitingRef.current - 1);
+    digitRejectRef.current.forEach((cb) => { try { cb({ code, message }); } catch { /* non-fatal */ } });
+  };
   const multListenersRef = useRef<Set<(e: MultEvent) => void>>(new Set());
 
   /** Keep ref + state in lockstep so socket handlers can read the current value. */
@@ -239,6 +258,42 @@ export function GameSocketProvider({ children }: { children: React.ReactNode }) 
     return false;
   }, []);
 
+  // BUGLOG #88: the engine verifies `auth` asynchronously, so a trade sent in the moments after a
+  // (re)connect was refused AUTH_REQUIRED ("Log in to trade" while signed in). Trades wait for the
+  // auth answer (the `balance` frame) — at most a few seconds — then go out in order.
+  const authedRef = useRef(false);
+  const lastFrameAtRef = useRef(0);
+  const authQueueRef = useRef<Array<{ type: string; data: unknown; at: number }>>([]);
+  const sendTrade = useCallback((type: string, data: unknown): boolean => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== ws.OPEN) return false;
+    if (authedRef.current) { ws.send(JSON.stringify({ type, data })); return true; }
+    authQueueRef.current.push({ type, data, at: Date.now() });
+    return true;
+  }, []);
+
+  // Trades that will never be sent (auth refused / timed out, socket closed): tell whoever waits
+  // (BUGLOG #116: only digit opens were told; a classic open stayed "Opening…" for good).
+  const dropQueued = (code: string) => {
+    const q = authQueueRef.current.splice(0);
+    let classic = false;
+    for (const m of q) {
+      if (m.type === 'open_digit') rejectDigit(code, '');     // the digits screen tells the player
+      if (m.type === 'open_position' && activeRef.current && !activeRef.current.positionId) {
+        activeRef.current = null; setActivePosition(null); classic = true;
+        void qc.invalidateQueries({ queryKey: ['wallet'] });
+      }
+    }
+    if (classic) toast.push({ tone: 'error', title: 'Not connected', description: 'Reconnecting…' });
+  };
+  // The auth answer must come within 8 s, or whatever waits behind it is dropped (was: no timer).
+  const authTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const armAuthTimer = () => {
+    if (authTimerRef.current) clearTimeout(authTimerRef.current);
+    authTimerRef.current = setTimeout(() => { authTimerRef.current = null; if (!authedRef.current) dropQueued('NOT_CONNECTED'); }, 8_000);
+  };
+  const authAnswered = () => { if (authTimerRef.current) { clearTimeout(authTimerRef.current); authTimerRef.current = null; } };
+
   const setWalletReal = useCallback(
     (real: number, currency?: string, bonus?: number) => {
       qc.setQueryData<WalletDto>(['wallet'], (old) =>
@@ -257,7 +312,7 @@ export function GameSocketProvider({ children }: { children: React.ReactNode }) 
         toast.push({ tone: 'error', title: 'Log in to trade' });
         return;
       }
-      if (!send('open_position', input)) {
+      if (!sendTrade('open_position', input)) {
         toast.push({ tone: 'error', title: 'Not connected', description: 'Reconnecting — try again shortly.' });
         return;
       }
@@ -312,7 +367,7 @@ export function GameSocketProvider({ children }: { children: React.ReactNode }) 
         toast.push({ tone: 'error', title: 'Log in to trade' });
         return false;
       }
-      if (!send('open_digit', input)) {
+      if (!sendTrade('open_digit', input)) {
         toast.push({ tone: 'error', title: 'Not connected', description: 'Reconnecting — try again shortly.' });
         return false;
       }
@@ -332,13 +387,18 @@ export function GameSocketProvider({ children }: { children: React.ReactNode }) 
     return () => { digitRejectRef.current.delete(cb); };
   }, []);
 
+  const onDigitOpened = useCallback((cb: (e: { positionId: string; instrumentId: string }) => void) => {
+    digitOpenedRef.current.add(cb);
+    return () => { digitOpenedRef.current.delete(cb); };
+  }, []);
+
   const openMultiplier = useCallback(
     (input: OpenMultiplierInput) => {
       if (!tokenRef.current) {
         toast.push({ tone: 'error', title: 'Log in to trade' });
         return;
       }
-      if (!send('open_multiplier', input)) {
+      if (!sendTrade('open_multiplier', input)) {
         toast.push({ tone: 'error', title: 'Not connected', description: 'Reconnecting — try again shortly.' });
       }
     },
@@ -455,6 +515,14 @@ export function GameSocketProvider({ children }: { children: React.ReactNode }) 
         case 'balance': {
           const d = data as BalanceData;
           if (typeof d?.real === 'number') setWalletReal(d.real, d.currency, d.bonus);
+          if (!authedRef.current) {
+            // the auth answer: release trades queued while it was verified
+            authedRef.current = true;
+            authAnswered();
+            const q = authQueueRef.current.splice(0);
+            const ws = wsRef.current;
+            for (const m of q) ws?.send(JSON.stringify({ type: m.type, data: m.data }));
+          }
           break;
         }
         case 'position_opened': {
@@ -549,9 +617,12 @@ export function GameSocketProvider({ children }: { children: React.ReactNode }) 
           if (buf.length > MAX_TICKS) buf.splice(0, buf.length - MAX_TICKS);
           break;
         }
-        case 'digit_opened':
+        case 'digit_opened': {
           digitAwaitingRef.current = Math.max(0, digitAwaitingRef.current - 1);
-          break; // ack only; the screen shows the pending contract locally until settlement
+          const d = data as { positionId: string; instrumentId: string };
+          digitOpenedRef.current.forEach((cb) => { try { cb(d); } catch { /* non-fatal */ } });
+          break;
+        }
         case 'digit_settled': {
           const d = data as DigitSettledData;
           if (typeof d.balance === 'number') setWalletReal(d.balance);
@@ -582,12 +653,26 @@ export function GameSocketProvider({ children }: { children: React.ReactNode }) 
         }
         case 'error': {
           const d = data as WsErrorData;
-          if (digitAwaitingRef.current > 0) {
-            // BUGLOG #85: a refused digit open used to leave the screen "in play" forever
-            digitAwaitingRef.current -= 1;
-            const e = { code: String(d.code ?? ''), message: String(d.message ?? '') };
-            digitRejectRef.current.forEach((cb) => { try { cb(e); } catch { /* non-fatal */ } });
+          // Signed in but the socket forgot us (restart / race): authenticate again, quietly.
+          if (d.code === 'AUTH_REQUIRED' && tokenRef.current) {
+            authedRef.current = false;
+            if (send('auth', { token: tokenRef.current })) armAuthTimer();
           }
+          if (d.code === 'AUTH_INVALID' || d.code === 'AUTH_SITE_MISMATCH') {
+            // auth will not come: nothing queued behind it may wait
+            authAnswered();
+            dropQueued(d.code);
+          } else if (d.code === 'ENGINE_ERROR' && authTimerRef.current && !authedRef.current) {
+            // the engine bound us, then failed to read the wallet for its reply: we ARE signed in
+            authedRef.current = true;
+            authAnswered();
+            const ws = wsRef.current;
+            for (const m of authQueueRef.current.splice(0)) ws?.send(JSON.stringify({ type: m.type, data: m.data }));
+          }
+          // BUGLOG #85: a refused digit open used to leave the screen "in play" forever. Only errors an
+          // open can produce count (a stray error from another request must not clear a live contract).
+          if (digitAwaitingRef.current > 0 && /^(ENGINE_ERROR|AUTH_|SYSTEM_DISABLED|INVALID_INSTRUMENT)/.test(String(d.code ?? '')))
+            rejectDigit(String(d.code ?? ''), String(d.message ?? ''));
           const a = activeRef.current;
           if (a && !a.positionId) {
             // optimistic open never acked → roll back and re-sync balance
@@ -623,14 +708,23 @@ export function GameSocketProvider({ children }: { children: React.ReactNode }) 
 
       ws.onopen = () => {
         attemptRef.current = 0;
+        authedRef.current = false;
         setStatus('open');
-        if (tokenRef.current) ws.send(JSON.stringify({ type: 'auth', data: { token: tokenRef.current } }));
+        if (tokenRef.current) { ws.send(JSON.stringify({ type: 'auth', data: { token: tokenRef.current } })); armAuthTimer(); }
+        // Heartbeat + dead-socket check (BUGLOG #92): on a network switch a socket can stay "OPEN" for
+        // minutes while nothing arrives. A ping every 6 s guarantees a frame (pong) even on a brand with a
+        // slow tick rate, so 12 s of silence = a dead socket = reconnect.
+        lastFrameAtRef.current = Date.now();
+        let beats = 0;
         heartbeat.current = setInterval(() => {
-          if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ type: 'ping', data: {} }));
-        }, 15_000);
+          if (ws.readyState !== ws.OPEN) return;
+          if (Date.now() - lastFrameAtRef.current > 12_000) { try { ws.close(); } catch { /* ignore */ } return; }
+          if (++beats % 2 === 0) ws.send(JSON.stringify({ type: 'ping', data: {} }));
+        }, 3_000);
       };
 
       ws.onmessage = (ev) => {
+        lastFrameAtRef.current = Date.now();
         let parsed: Envelope;
         try {
           parsed = JSON.parse(typeof ev.data === 'string' ? ev.data : '') as Envelope;
@@ -643,6 +737,16 @@ export function GameSocketProvider({ children }: { children: React.ReactNode }) 
       ws.onclose = () => {
         if (heartbeat.current) clearInterval(heartbeat.current);
         heartbeat.current = null;
+        authedRef.current = false;
+        // acks for opens in flight on this socket will never come (BUGLOG #85/#92); queued ones are
+        // dropped just below (each told once)
+        const queuedDigits = authQueueRef.current.filter((m) => m.type === 'open_digit').length;
+        const inflight = Math.max(0, digitAwaitingRef.current - queuedDigits);
+        for (let i = 0; i < inflight; i++) rejectDigit('NOT_CONNECTED', '');
+        // queued trades never left: nobody may wait for them
+        authAnswered();
+        dropQueued('NOT_CONNECTED');
+        digitAwaitingRef.current = 0;
         if (!closedRef.current) {
           setStatus('closed');
           scheduleReconnect();
@@ -678,44 +782,61 @@ export function GameSocketProvider({ children }: { children: React.ReactNode }) 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Authenticate the live socket the moment a token becomes available post-connect.
+  // Token changes. Sign-in on an open socket: authenticate it (trades wait for the answer). Sign-out
+  // or a different account (BUGLOG #93): the socket was bound to the previous user and kept receiving
+  // their balance and settlements — reconnect it, and drop that user's cached wallet/history/session.
+  const prevTokenRef = useRef<string | null>(token);
   useEffect(() => {
+    const prev = prevTokenRef.current;
+    prevTokenRef.current = token;
+    if (prev === token) return;
     const ws = wsRef.current;
+    if (prev && prev !== token && subOf(prev) !== subOf(token)) {
+      authedRef.current = false;
+      // caches and session stores are dropped app-wide by SessionCacheGuard
+      if (ws && (ws.readyState === ws.OPEN || ws.readyState === ws.CONNECTING)) { ws.close(); return; } // onclose reconnects; onopen authenticates
+    }
     if (token && ws && ws.readyState === ws.OPEN) {
+      authedRef.current = false;
       ws.send(JSON.stringify({ type: 'auth', data: { token } }));
+      armAuthTimer();
     }
   }, [token]);
 
+  // Perf (BUGLOG #92): the value used to be a new object every render, and `online` changes on every
+  // connect/disconnect across the brand — re-rendering the whole trade screen and chart each time.
+  const apiValue = useMemo<GameSocketApi>(() => ({
+    getTicks, getLastTick, openPosition, sell, getInstrumentTicks, getLastInstrumentTick, subscribeInstrument,
+    openDigit, onDigitSettled, onDigitRejected, onDigitOpened, openMultiplier, closeMultiplier, onMultiplier,
+  }), [getTicks, getLastTick, openPosition, sell, getInstrumentTicks, getLastInstrumentTick, subscribeInstrument,
+    openDigit, onDigitSettled, onDigitRejected, onDigitOpened, openMultiplier, closeMultiplier, onMultiplier]);
+  const stateValue = useMemo<GameSocketState>(() => ({ status, online, fairness, activePosition }), [status, online, fairness, activePosition]);
+
   return (
-    <Ctx.Provider
-      value={{
-        status,
-        online,
-        fairness,
-        getTicks,
-        getLastTick,
-        activePosition,
-        openPosition,
-        sell,
-        getInstrumentTicks,
-        getLastInstrumentTick,
-        instrumentResetKey,
-        subscribeInstrument,
-        openDigit,
-        onDigitSettled,
-        onDigitRejected,
-        openMultiplier,
-        closeMultiplier,
-        onMultiplier,
-      }}
-    >
-      {children}
-    </Ctx.Provider>
+    <ApiCtx.Provider value={apiValue}>
+      <StateCtx.Provider value={stateValue}>
+        <InstKeyCtx.Provider value={instrumentResetKey}>
+          {children}
+        </InstKeyCtx.Provider>
+      </StateCtx.Provider>
+    </ApiCtx.Provider>
   );
 }
 
 export function useGameSocket(): GameSocketValue {
-  const v = useContext(Ctx);
-  if (!v) throw new Error('useGameSocket must be used within <GameSocketProvider>');
-  return v;
+  const api = useContext(ApiCtx);
+  const state = useContext(StateCtx);
+  const instrumentResetKey = useContext(InstKeyCtx);
+  if (!api || !state) throw new Error('useGameSocket must be used within <GameSocketProvider>');
+  return { ...api, ...state, instrumentResetKey };
 }
+
+/** Only the stable trading/buffer functions: no re-render on status/online/position changes. */
+export function useGameSocketApi(): GameSocketApi {
+  const api = useContext(ApiCtx);
+  if (!api) throw new Error('useGameSocketApi must be used within <GameSocketProvider>');
+  return api;
+}
+
+/** Bumps when the subscribed instrument (re)seeds. */
+export function useInstrumentResetKey(): string { return useContext(InstKeyCtx); }

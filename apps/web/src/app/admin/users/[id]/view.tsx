@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { Card } from '@/components/ui/Card';
@@ -14,7 +14,7 @@ import { useToast } from '@/lib/toast/ToastProvider';
 import { formatDateTime, formatAgo, formatNumber } from '@/lib/format';
 import { useCan } from '@/lib/auth/can';
 import { PageHeader, StatCard, Section, Empty, ConfirmButton, TableWrap, Th, Td, Toolbar, FilterSelect } from '@/components/admin/ui';
-import { useUser, useUserActivity, useSetUserStatus, useAdjustBalance, useClearBalance, useResetBalance, useSetCommissionRate, useSetUserRole, useDeleteUser, useSetDefaultMarketer, useUpdateUserDetails, useUserNotifications, useSendNotification, useResolveNotification, useUserOverrides } from '@/lib/admin/hooks';
+import { useUser, useUserActivity, useSetUserStatus, useAdjustBalance, useClearBalance, useResetBalance, useSetCommissionRate, useCommissionRate, useSetUserRole, useDeleteUser, useSetDefaultMarketer, useUpdateUserDetails, useUserNotifications, useSendNotification, useResolveNotification, useUserOverrides } from '@/lib/admin/hooks';
 import type { AdminUserActivityRow, AdminNotificationRow, NotificationLevel } from '@/lib/admin/types';
 import { formatKes } from '@invest254/shared/money';
 import { useKycList, DOC_LABEL } from '@/lib/account/accountUi';
@@ -40,7 +40,7 @@ export default function UserDetailPage({ params }: { params: { id: string } }) {
         <>
           <PageHeader
             title={`@${q.data.username}`}
-            subtitle={`${q.data.role} · joined ${formatDateTime(q.data.createdAtMs)}`}
+            subtitle={`${({ player: 'Player', marketer: 'Marketer', admin: 'Brand admin', platform_admin: 'Platform admin', platform_superadmin: 'System owner' } as Record<string, string>)[q.data.role] ?? q.data.role} · ${formatDateTime(q.data.createdAtMs)}`}
             actions={<StatusBadge status={q.data.status} />}
           />
 
@@ -263,7 +263,7 @@ function StatusActions({ id, status }: { id: string; status: string }) {
       {
         onSuccess: () => {
           setReason('');
-          toast.push({ tone: 'success', title: `Account ${action}d` });
+          toast.push({ tone: 'success', title: ({ ban: 'Banned', suspend: 'Suspended', reactivate: 'Reactivated' } as const)[action] });
         },
         onError: (e) =>
           toast.push({ tone: 'error', title: 'Action failed', description: e instanceof ApiError ? e.message : 'Try again.' }),
@@ -291,7 +291,7 @@ function StatusActions({ id, status }: { id: string; status: string }) {
             <ConfirmButton label="Ban" variant="down" confirmLabel="Ban account" busy={m.isPending} onConfirm={() => run('ban')} />
           ) : null}
         </div>
-        <p className="text-xs text-muted">Suspended or banned accounts can still sign in and deposit, but cannot open trades or withdraw. Banned is permanent. Every change is audited.</p>
+        <p className="text-xs text-muted">Blocks trading and withdrawals. Audited.</p>
       </Card>
     </Section>
   );
@@ -676,15 +676,15 @@ function BalanceAdjust({ id }: { id: string }) {
           confirmLabel="Confirm adjustment"
           variant={dir === 'credit' ? 'primary' : 'down'}
           size="md"
-          busy={m.isPending}
+          busy={m.isPending || clear.isPending}
           disabled={!valid}
           onConfirm={run}
         />
         <div className="flex flex-wrap gap-2 border-t border-border pt-3">
           <span className="w-full text-xs font-semibold text-muted">Clear balance (needs a reason)</span>
-          <ConfirmButton label={`Clear ${spendableLabel.toLowerCase()}`} confirmLabel={`Confirm clear ${spendableLabel.toLowerCase()}`} variant="down" size="sm" busy={clear.isPending} disabled={!clearValid} onConfirm={() => runClear('real')} />
-          <ConfirmButton label="Clear bonus" confirmLabel="Confirm clear bonus" variant="down" size="sm" busy={clear.isPending} disabled={!clearValid} onConfirm={() => runClear('bonus')} />
-          <ConfirmButton label="Clear both" confirmLabel="Confirm clear both" variant="down" size="sm" busy={clear.isPending} disabled={!clearValid} onConfirm={() => runClear('both')} />
+          <ConfirmButton label={`Clear ${spendableLabel.toLowerCase()}`} confirmLabel={`Confirm clear ${spendableLabel.toLowerCase()}`} variant="down" size="sm" busy={clear.isPending || m.isPending} disabled={!clearValid} onConfirm={() => runClear('real')} />
+          <ConfirmButton label="Clear bonus" confirmLabel="Confirm clear bonus" variant="down" size="sm" busy={clear.isPending || m.isPending} disabled={!clearValid} onConfirm={() => runClear('bonus')} />
+          <ConfirmButton label="Clear both" confirmLabel="Confirm clear both" variant="down" size="sm" busy={clear.isPending || m.isPending} disabled={!clearValid} onConfirm={() => runClear('both')} />
         </div>
         <p className="text-xs text-muted">
           {isMarketer
@@ -699,7 +699,11 @@ function BalanceAdjust({ id }: { id: string }) {
 function CommissionRate({ id }: { id: string }) {
   const m = useSetCommissionRate();
   const toast = useToast();
-  const [ratePct, setRatePct] = useState('20');
+  const current = useCommissionRate(id);
+  const serverPct = current.data?.rate != null ? String(Math.round(current.data.rate * 10000) / 100) : '';
+  const [ratePct, setRatePct] = useState('');
+  const seeded = useRef(false);   // seed once: an admin can clear the field while typing
+  useEffect(() => { if (serverPct && !seeded.current) { seeded.current = true; setRatePct(serverPct); } }, [serverPct]);
   const pct = Number(ratePct);
   const valid = Number.isFinite(pct) && pct >= 0 && pct <= 100;
 
@@ -707,7 +711,7 @@ function CommissionRate({ id }: { id: string }) {
     m.mutate(
       { id, rate: pct / 100 },
       {
-        onSuccess: () => toast.push({ tone: 'success', title: 'Commission rate updated' }),
+        onSuccess: () => { toast.push({ tone: 'success', title: `Rate ${pct}%` }); void current.refetch(); },
         onError: (e) =>
           toast.push({ tone: 'error', title: 'Update failed', description: e instanceof ApiError ? e.message : 'Try again.' }),
       },
@@ -726,7 +730,7 @@ function CommissionRate({ id }: { id: string }) {
             className="h-10 w-full rounded-xl border border-border bg-surface-2 px-3 text-sm text-fg outline-none focus:border-accent"
           />
         </label>
-        <ConfirmButton label="Update rate" size="md" busy={m.isPending} disabled={!valid} onConfirm={run} />
+        <ConfirmButton label="Update rate" size="md" busy={m.isPending} disabled={!valid || ratePct === '' || ratePct === serverPct} onConfirm={run} />
       </Card>
     </Section>
   );

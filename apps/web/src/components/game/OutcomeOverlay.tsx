@@ -90,8 +90,9 @@ export function OutcomeOverlay() {
   const theme = current ? THEMES[current.headline] : THEMES.loss;
   const won = current?.result === 'win';
 
-  // Count-up the headline amount: gross payout on a win, stake lost on a loss.
-  const targetAmount = current ? (won ? current.payoutCents : Math.abs(current.pnlCents)) : 0;
+  // Count-up the headline amount: the NET result (BUGLOG #106: "+" on the gross payout overstated a
+  // win by the stake). The payout is on the line below.
+  const targetAmount = current ? Math.abs(current.pnlCents) : 0;
   const shown = useCountUp(visible ? targetAmount : 0, won ? 950 : 500, current?.id);
 
   // Show / auto-dismiss lifecycle.
@@ -248,7 +249,7 @@ export function OutcomeOverlay() {
 
   const netLine = useMemo(() => {
     if (!current) return null;
-    if (won) return `Net +${fmt(current.pnlCents)} · stake ${fmt(current.stakeCents)}`;
+    if (won) return `Payout ${fmt(current.payoutCents)} · stake ${fmt(current.stakeCents)}`;
     return `−${fmt(Math.abs(current.pnlCents))} · stake ${fmt(current.stakeCents)}`;
   }, [current, won, fmt]);
 
@@ -295,8 +296,6 @@ export function OutcomeOverlay() {
           <div className={cn('mt-2 text-sm font-semibold tabular-nums', theme.chipText)}>
             ×{current.lockedMultiplier.toFixed(2)}
           </div>
-        ) : current.headline === 'near_miss' ? (
-          <div className="mt-2 text-sm font-medium text-muted">Just missed the mark</div>
         ) : null}
 
         {/* Big count-up amount */}

@@ -16,6 +16,7 @@ import {
   type Querier, type FairnessRecord, type ListenClient,
 } from "@invest254/engine";
 import { makeWalletModeDeps } from "./demo.pg.js";
+import { makePgStakeNativeStore } from "./stakelimits.js";
 import { makePgLiveChatStore } from "./livechat.pg.js";
 import { makePgKycStore } from "./kyc.pg.js";
 import { createApp, type ApiDeps, type WalletBalance, type BonusStatus, type Brand } from "./app.js";
@@ -852,8 +853,10 @@ async function buildDeps(): Promise<ApiDeps> {
       if (!h) return null;
       const r = await q.query(
         `select c.house_edge, c.max_multiplier, c.min_stake, c.max_stake, c.min_withdrawal, c.min_withdrawal_native,
-                c.default_duration_s, c.tick_rate_ms, c.drift_bias, c.volatility, c.target_win_rate, c.version
+                c.default_duration_s, c.tick_rate_ms, c.drift_bias, c.volatility, c.target_win_rate, c.version,
+                n.min_native as min_stake_native, n.max_native as max_stake_native
            from site_game_config c join sites s on s.id = c.site_id
+           left join site_stake_native n on n.site_id = c.site_id
           where s.status = 'active'
             and (lower(s.slug) = $1
                  or lower(s.primary_domain) = $1
@@ -863,8 +866,16 @@ async function buildDeps(): Promise<ApiDeps> {
         [h],
       );
       if (!r.rows.length) return null;
-      return mapConfigRow(r.rows[0] as Record<string, unknown>);
+      const row = r.rows[0] as Record<string, unknown>;
+      const nat = (v: unknown) => (v == null ? null : Number(v));
+      return Object.assign(mapConfigRow(row), { minStakeNative: nat(row.min_stake_native), maxStakeNative: nat(row.max_stake_native) });
     },
+    stakeNative: makePgStakeNativeStore(q),
+    commissionRateOf: async (userId: string) => {
+      const r = await q.query("select commission_rate from affiliates where user_id = $1::uuid limit 1", [userId]);
+      return r.rows[0] ? Number(r.rows[0].commission_rate) : null;
+    },
+    fxRate: kesToCurrencyRate,
     fairnessById: async (gameDayId: number): Promise<FairnessRecord | null> => {
       const r = await q.query(
         "select id, trade_date, server_seed_hash, server_seed, revealed_at from v_fairness where id = $1",

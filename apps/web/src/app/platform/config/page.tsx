@@ -1,5 +1,6 @@
 'use client';
 
+import { useFailToast } from '@/lib/toast/useFailToast';
 import { useMemo, useState } from 'react';
 import { PageHeader, Section } from '@/components/admin/ui';
 import { Card } from '@/components/ui/Card';
@@ -27,6 +28,7 @@ export default function GlobalConfigPage() {
   const cfgQ = useGlobalConfig();
   const sitesQ = usePlatformSites();
   const setCfg = useSetGlobalConfig();
+  const failToast = useFailToast();
 
   const cfg = cfgQ.data?.config;
   const sites = useMemo(() => sitesQ.data?.sites ?? [], [sitesQ.data]);
@@ -41,12 +43,12 @@ export default function GlobalConfigPage() {
   function onToggle(sys: (typeof SYSTEMS)[number]) {
     if (!cfg) return;
     if (cfg[sys.key] === true) setConfirmOff(sys);          // turning OFF is disruptive → confirm
-    else setCfg.mutate({ [sys.api]: true });                // turning ON is safe → immediate
+    else setCfg.mutate({ [sys.api]: true }, { onError: (e) => failToast(e) });                // turning ON is safe → immediate
   }
 
   const bannerValue = bannerDraft ?? cfg?.maintenanceMessage ?? '';
   function saveBanner() {
-    setCfg.mutate({ maintenance_message: bannerValue.trim() || null }, { onSuccess: () => setBannerDraft(null) });
+    setCfg.mutate({ maintenance_message: bannerValue.trim() || null }, { onSuccess: () => setBannerDraft(null), onError: (e) => failToast(e) });
   }
 
   if (cfgQ.isLoading || sitesQ.isLoading) return <p className="text-sm text-muted">Loading global configuration…</p>;
@@ -56,7 +58,7 @@ export default function GlobalConfigPage() {
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Controls & economy"
-        subtitle={`One control plane over all ${activeSites.length} active brand${activeSites.length === 1 ? '' : 's'} · config v${cfg.version}`}
+        subtitle={`${activeSites.length} active brand${activeSites.length === 1 ? '' : 's'}`}
       />
 
       {anyOff && (
@@ -110,7 +112,7 @@ export default function GlobalConfigPage() {
           <div className="flex gap-2">
             <Button size="sm" onClick={saveBanner} disabled={setCfg.isPending || (bannerDraft === null)}>Save banner</Button>
             {cfg.maintenanceMessage && (
-              <Button size="sm" variant="outline" onClick={() => setCfg.mutate({ maintenance_message: null }, { onSuccess: () => setBannerDraft(null) })} disabled={setCfg.isPending}>
+              <Button size="sm" variant="outline" onClick={() => setCfg.mutate({ maintenance_message: null }, { onSuccess: () => setBannerDraft(null), onError: (e) => failToast(e) })} disabled={setCfg.isPending}>
                 Clear
               </Button>
             )}
@@ -165,7 +167,7 @@ export default function GlobalConfigPage() {
           <div className="flex justify-end gap-2">
             <Button variant="outline" size="sm" onClick={() => setConfirmOff(null)}>Cancel</Button>
             <Button variant="down" size="sm" disabled={setCfg.isPending}
-              onClick={() => { if (confirmOff) setCfg.mutate({ [confirmOff.api]: false }, { onSuccess: () => setConfirmOff(null) }); }}>
+              onClick={() => { if (confirmOff) setCfg.mutate({ [confirmOff.api]: false }, { onSuccess: () => setConfirmOff(null), onError: (e) => failToast(e) }); }}>
               Yes, turn off platform-wide
             </Button>
           </div>

@@ -91,7 +91,6 @@ export default function ReportsPage() {
     <>
       <PageHeader
         title="Reports"
-        subtitle="Pick a single day for a full breakdown, or scope a date range for trends and per-player totals. Export to CSV for accounting."
         actions={
           tab === 'day' || tab === 'health' ? undefined : (
             <Toolbar>

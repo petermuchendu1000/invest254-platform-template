@@ -23,9 +23,7 @@ export default function RouteError({
   return (
     <section className="flex min-h-[60vh] flex-col items-center justify-center gap-4 text-center">
       <h1 className="text-xl font-semibold tracking-tight">Something went wrong</h1>
-      <p className="max-w-sm text-sm text-muted">
-        We hit an unexpected error. Your balance and open trades are safe on the server — try again.
-      </p>
+      <p className="max-w-sm text-sm text-muted">Your balance is safe.</p>
       <div className="flex gap-3">
         <Button onClick={reset}>Try again</Button>
         <Button variant="outline" onClick={() => (window.location.href = '/')}>

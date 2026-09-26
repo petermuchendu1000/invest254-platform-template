@@ -43,7 +43,7 @@ export default function OnboardPage() {
 
   return (
     <>
-      <PageHeader title="Onboard a brand" subtitle="Create a brand with a working starting economy and, if you like, set up its domain automatically." />
+      <PageHeader title="Onboard a brand" />
 
       <OwnerPlatformPicker value={platformId} onChange={setPlatformId} label="Onboard into platform" hint="New brands, the domain import and the registrar used all follow this choice." />
 

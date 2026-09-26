@@ -33,7 +33,7 @@ export default function BillingPage() {
   const isOwner = useCan('console.system');
   return isOwner ? <OwnerBilling /> : (
     <div className="flex flex-col gap-6">
-      <PageHeader title="Billing" subtitle="Your plan, what you owe, and your invoices. Pay by M-Pesa right here." />
+      <PageHeader title="Billing" />
       <MyBilling />
     </div>
   );
@@ -48,7 +48,7 @@ function OwnerBilling() {
   const router = useRouter();
   return (
     <div className="flex flex-col gap-5">
-      <PageHeader title="Billing" subtitle="Plans, invoices and payments for every platform. Renewals are invoiced automatically; overdue platforms are reminded, then suspended."
+      <PageHeader title="Billing"
         actions={<>
           <Button variant="outline" size="sm" disabled={run.isPending} onClick={() => run.mutate(undefined, {
             onSuccess: (r) => toast.push({ tone: 'success', title: 'Billing run finished', description: `${r.issued} invoice${r.issued === 1 ? '' : 's'} sent · ${r.transitions} status change${r.transitions === 1 ? '' : 's'} · ${r.reminders} reminder${r.reminders === 1 ? '' : 's'}` }),

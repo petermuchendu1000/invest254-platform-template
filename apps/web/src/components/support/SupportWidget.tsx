@@ -134,7 +134,7 @@ export function SupportWidget() {
             <input
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
-              placeholder="Type your message"
+              placeholder="Message"
               aria-label="Message"
               maxLength={1000}
               className="h-11 flex-1 rounded-xl border border-border bg-surface-2 px-3 text-sm text-fg outline-none placeholder:text-muted focus:border-accent focus:ring-2 focus:ring-accent"

@@ -8,6 +8,7 @@ import { WelcomeBonusOverlay } from '@/components/game/WelcomeBonusOverlay';
 import { ReferralCapture } from '@/components/ReferralCapture';
 import { SecurityQuestionsGate } from '@/components/auth/SecurityQuestionsGate';
 import { MfaEnrolmentGate } from '@/components/auth/MfaEnrolmentGate';
+import { SessionCacheGuard } from '@/components/auth/SessionCacheGuard';
 
 export function Providers({ children }: { children: React.ReactNode }) {
   const [client] = useState(
@@ -22,6 +23,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
     <QueryClientProvider client={client}>
       <ToastProvider>
         {children}
+        <SessionCacheGuard />
         <ReferralCapture />
         <OutcomeOverlay />
         <WelcomeBonusOverlay />

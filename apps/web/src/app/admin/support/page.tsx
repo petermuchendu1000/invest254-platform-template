@@ -174,7 +174,7 @@ export default function SupportInboxPage() {
   const [tab, setTab] = useTabParam<Tab>(TABS.map((t) => t.id), 'live');
   return (
     <>
-      <PageHeader title="Player chats" subtitle="Answer players in real time. Photos, videos and voice notes open right in the conversation." />
+      <PageHeader title="Player chats" />
       <PageTabs tabs={[...TABS]} value={tab} onChange={setTab} label="Player chats" />
       {tab === 'live' ? <LiveChatInbox /> : <AssistantLog />}
     </>

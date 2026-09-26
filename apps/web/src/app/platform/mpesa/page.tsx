@@ -131,7 +131,6 @@ function MpesaBody() {
     <>
       <PageHeader
         title="M-Pesa defaults"
-        subtitle="The System M-Pesa account every brand uses unless it has its own payment accounts."
       />
 
       {cfgQ.isLoading ? (

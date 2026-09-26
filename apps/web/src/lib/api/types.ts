@@ -97,6 +97,9 @@ export interface GameConfigDto {
   /** Currency-native minimum withdrawal in the brand's display currency major units (docs/25 §16),
    *  e.g. 100 => $100. null => use minWithdrawalCents. Foreign brands enforce this exactly. */
   minWithdrawalNative?: number | null;
+  /** STAKE-1: the admin's stake limits in the brand currency (multiples of 5); null → derived from cents. */
+  minStakeNative?: number | null;
+  maxStakeNative?: number | null;
   /** Smallest deposit accepted — effective value (global economy over the static default). */
   minDepositCents: Cents;
   /** Largest single deposit accepted, or null for no cap (global economy). */

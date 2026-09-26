@@ -13,7 +13,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { MfaEnrollDto } from '@/lib/api/types';
 import { DIcon } from '@/components/game/digits/icons';
 
-function Shell({ title, sub, icon, onClose, children }: { title: string; sub: string; icon: Parameters<typeof DIcon>[0]['name']; onClose: () => void; children: React.ReactNode }) {
+function Shell({ title, sub, icon, onClose, children }: { title: string; sub?: string; icon: Parameters<typeof DIcon>[0]['name']; onClose: () => void; children: React.ReactNode }) {
   useEffect(() => {
     const k = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
     document.addEventListener('keydown', k);
@@ -25,7 +25,7 @@ function Shell({ title, sub, icon, onClose, children }: { title: string; sub: st
       <div className="relative flex max-h-[92vh] w-full max-w-[460px] flex-col overflow-hidden rounded-2xl border border-border bg-surface shadow-2xl">
         <header className="flex items-center gap-3 border-b border-border bg-gradient-to-r from-accent/10 to-transparent px-5 py-4">
           <span className="grid h-9 w-9 place-items-center rounded-xl border border-accent/40 bg-accent/10 text-accent"><DIcon name={icon} className="h-5 w-5" /></span>
-          <div className="flex-1"><h2 className="text-[14px] font-semibold text-fg">{title}</h2><p className="text-[11px] text-muted">{sub}</p></div>
+          <div className="flex-1"><h2 className="text-[14px] font-semibold text-fg">{title}</h2>{sub ? <p className="text-[11px] text-muted">{sub}</p> : null}</div>
           <button type="button" onClick={onClose} aria-label="Close" className="grid h-8 w-8 place-items-center rounded-lg text-muted hover:text-fg"><DIcon name="close" className="h-4 w-4" /></button>
         </header>
         <div className="min-h-0 flex-1 overflow-y-auto p-5">{children}</div>
@@ -141,20 +141,20 @@ export function VerifyIdentityDialog() {
     setErr(null);
     try {
       await submit.mutateAsync({ docType, fullName: fullName.trim(), idNumber: idNumber.trim(), dateOfBirth: dob, front: await shrink(front!), back: needsBack && back ? await shrink(back) : null, selfie: await shrink(selfie!) });
-      toast.push({ tone: 'success', title: 'Documents sent', description: 'We’ll review them and let you know here.' });
+      toast.push({ tone: 'success', title: 'Documents sent' });
       setRetry(false);
     } catch (e) { setErr(e instanceof ApiError ? e.message : 'Could not send your documents. Try again.'); }
   };
 
   const status = (
     st === 'approved' ? <p className="flex items-center gap-2 rounded-lg bg-up/10 px-3 py-2.5 text-sm font-semibold text-up"><DIcon name="shield" className="h-4 w-4" />Your identity is verified.</p>
-    : st === 'pending' ? <p className="rounded-lg bg-warn/10 px-3 py-2.5 text-sm text-warn"><b>Under review.</b> We received your {DOC_LABEL[me.data?.latest?.docType ?? ''] ?? 'documents'} and will update you here.</p>
+    : st === 'pending' ? <p className="rounded-lg bg-warn/10 px-3 py-2.5 text-sm text-warn"><b>Under review</b> · {DOC_LABEL[me.data?.latest?.docType ?? ''] ?? 'Documents'}</p>
     : st === 'rejected' ? <div className="rounded-lg bg-down/10 px-3 py-2.5 text-sm text-down"><b>Not approved.</b> {me.data?.latest?.reviewNote}</div>
     : null
   );
   const showForm = st === 'none' || (st === 'rejected' && retry);
   return (
-    <Shell title="Verify Identity" sub="Confirm who you are with an ID document" icon="idcard" onClose={close}>
+    <Shell title="Verify Identity" icon="idcard" onClose={close}>
       {me.isLoading ? <p className="text-sm text-muted">Loading…</p> : (
         <div className="flex flex-col gap-3">
           {status}

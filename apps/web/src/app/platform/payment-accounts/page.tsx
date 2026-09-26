@@ -14,7 +14,7 @@ function Inner() {
   const initial = (t === 'platform' || t === 'site') && id ? { type: t, id } as const : undefined;
   return (
     <>
-      <PageHeader title="Payment accounts" subtitle="Run your brands on the System's payment accounts, or bring your own M-Pesa / gateway accounts — for the whole platform or one brand." />
+      <PageHeader title="Payment accounts" />
       <PaymentAccounts initialScope={initial} />
     </>
   );

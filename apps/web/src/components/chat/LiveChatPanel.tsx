@@ -54,14 +54,13 @@ export function LiveChatPanel() {
         <span className="grid h-10 w-10 place-items-center rounded-full bg-accent text-accent-fg"><DIcon name="headset" className="h-5 w-5" /></span>
         <div className="flex-1">
           <div className="text-[14px] font-semibold text-fg">Customer Care</div>
-          <div className="flex items-center gap-1.5 text-[11px] text-muted"><span className="h-1.5 w-1.5 rounded-full bg-up" />Our support team replies here</div>
+          <div className="flex items-center gap-1.5 text-[11px] text-muted"><span className="h-1.5 w-1.5 rounded-full bg-up" />{name}</div>
         </div>
         <button type="button" onClick={() => setOpen(false)} aria-label="Close chat" className="grid h-9 w-9 place-items-center rounded-lg text-muted hover:text-fg"><DIcon name="close" className="h-4 w-4" /></button>
       </header>
 
       {!token ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
-          <p className="text-[14px] text-fg">Sign in to chat with {name} customer care.</p>
           <button type="button" onClick={() => { setOpen(false); openAuth('login'); }} className="rounded-lg bg-accent px-5 py-2.5 text-[13px] font-semibold text-accent-fg">Log in</button>
           {whatsapp ? <a href={waLink(whatsapp)} target="_blank" rel="noopener noreferrer" className="text-[13px] text-accent underline">Or WhatsApp {whatsapp}</a> : null}
         </div>
@@ -71,18 +70,15 @@ export function LiveChatPanel() {
             messages={msgs}
             mine={(m) => m.authorRole === 'player'}
             header={
-              <div className="mb-1 rounded-xl border border-border bg-surface-2 px-3.5 py-3 text-[13px] leading-relaxed text-fg">
-                <p>👋 Hi! You’re now connected to {name} customer care. Send us a message, photo or short video and an agent will reply as soon as possible.</p>
-                {whatsapp || email ? (
-                  <p className="mt-2 text-[11px] text-muted">
-                    For faster reach{whatsapp ? <>, WhatsApp <a href={waLink(whatsapp)} target="_blank" rel="noopener noreferrer" className="text-accent underline">{whatsapp}</a></> : null}
-                    {email ? <>{whatsapp ? ' or' : ','} email <a href={`mailto:${email}`} className="text-accent underline">{email}</a></> : null}.
-                  </p>
-                ) : null}
-              </div>
+              whatsapp || email ? (
+                <div className="mb-1 flex flex-wrap items-center justify-center gap-2 text-[12px]">
+                  {whatsapp ? <a href={waLink(whatsapp)} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1.5 rounded-full border border-border px-3 py-1 text-up"><DIcon name="whatsapp" className="h-3.5 w-3.5" />WhatsApp {whatsapp}</a> : null}
+                  {email ? <a href={`mailto:${email}`} className="flex items-center gap-1.5 rounded-full border border-border px-3 py-1 text-muted hover:text-fg"><DIcon name="mail" className="h-3.5 w-3.5" />{email}</a> : null}
+                </div>
+              ) : null
             }
           />
-          {q.data?.thread?.status === 'resolved' ? <p className="px-4 pb-1 text-center text-[11px] text-muted">This conversation was resolved. Send a message to start a new one.</p> : null}
+          {q.data?.thread?.status === 'resolved' ? <p className="px-4 pb-1 text-center text-[11px] text-muted">Resolved</p> : null}
           <ChatComposer busy={send.isPending} onSend={(v) => send.mutateAsync(v)} />
         </>
       )}
@@ -105,7 +101,7 @@ export function LiveChatLauncher() {
   if (open) return null;
   return (
     <button type="button" onClick={() => setOpen(true)} aria-label={`Live chat${unread ? ` (${unread} new)` : ''}`}
-      className="fixed bottom-[calc(5.5rem+env(safe-area-inset-bottom))] right-4 z-40 grid h-12 w-12 place-items-center rounded-full bg-accent text-accent-fg shadow-[0_6px_22px_-6px_var(--pp-accent)] md:bottom-6">
+      className="fixed bottom-6 right-4 z-40 hidden h-12 w-12 place-items-center rounded-full bg-accent text-accent-fg shadow-[0_6px_22px_-6px_var(--pp-accent)] md:grid">
       <DIcon name="chat" className="h-5 w-5" />
       {unread ? <span className="absolute -right-0.5 -top-0.5 grid h-5 min-w-5 place-items-center rounded-full bg-down px-1 text-[10px] font-bold text-white">{unread}</span> : null}
     </button>

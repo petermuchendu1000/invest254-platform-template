@@ -1,5 +1,6 @@
 'use client';
 
+import { useFailToast } from '@/lib/toast/useFailToast';
 import * as React from 'react';
 import { useMemo, useState } from 'react';
 import { PageHeader, Section, TableWrap, Th, Td, StatCard, Empty, ConfirmButton } from '@/components/admin/ui';
@@ -74,7 +75,6 @@ export default function PlatformPoolPage() {
     <>
       <PageHeader
         title="Withdrawal pool"
-        subtitle="Each brand’s daily payout budget. Winnings are paid from the brand’s remaining budget for the day."
       />
       {isSystem ? <PlatformSelect value={platformId} onChange={setPlatformId} /> : null}
 
@@ -324,6 +324,7 @@ function ManualSection({ target, rows }: { target: string | undefined; rows: Poo
   const sitesQ = usePlatformSites(target);
   const sites = useMemo(() => (sitesQ.data?.sites ?? []).filter((s) => s.status === 'active'), [sitesQ.data]);
   const distMut = useDistributePool(target);
+  const failToast = useFailToast();
   const toast = useToast();
   const [mode, setMode] = useState<'equal' | 'per_site'>('per_site');
   const [totalKes, setTotalKes] = useState('');
@@ -333,12 +334,12 @@ function ManualSection({ target, rows }: { target: string | undefined; rows: Poo
     if (mode === 'equal') {
       const c = toCents(totalKes);
       if (!Number.isInteger(c) || c < 0) return toast.push({ tone: 'error', title: 'Enter a valid total' });
-      distMut.mutate({ totalCents: c, mode: 'equal' }, { onSuccess: () => toast.push({ tone: 'success', title: 'Daily budgets set' }) });
+      distMut.mutate({ totalCents: c, mode: 'equal' }, { onSuccess: () => toast.push({ tone: 'success', title: 'Daily budgets set' }), onError: (e) => failToast(e) });
     } else {
       const overrides: Record<string, number> = {};
       for (const s of sites) { const v = perBrand[s.siteId]; if (v != null && v !== '') overrides[s.siteId] = toCents(v); }
       if (Object.keys(overrides).length === 0) return toast.push({ tone: 'error', title: 'Enter at least one brand’s budget' });
-      distMut.mutate({ mode: 'per_site', overrides }, { onSuccess: () => { setPerBrand({}); toast.push({ tone: 'success', title: 'Daily budgets saved' }); } });
+      distMut.mutate({ mode: 'per_site', overrides }, { onSuccess: () => { setPerBrand({}); toast.push({ tone: 'success', title: 'Daily budgets saved' }); }, onError: (e) => failToast(e) });
     }
   };
   return (

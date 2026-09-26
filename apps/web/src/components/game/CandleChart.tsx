@@ -251,7 +251,7 @@ export function CandleChart({
     };
   }, [getTicks, getLastTick, intervalMs, chartType, windowMs, setFollow, snapToLive, refreshIndicators, scaleMode]);
 
-  const pill = 'h-6 min-w-[1.75rem] rounded-md border px-1.5 text-[10px] font-semibold leading-none transition backdrop-blur';
+  const pill = 'h-6 min-w-[1.75rem] [@media(pointer:coarse)]:min-w-11 rounded-md border px-1.5 text-[10px] font-semibold leading-none transition backdrop-blur';
   const idle = 'border-border bg-surface/80 text-muted hover:text-fg';
   const active = 'border-accent bg-accent/15 text-accent';
   const up = (legend?.changePct ?? 0) >= 0;
@@ -296,8 +296,8 @@ export function CandleChart({
               </div>
             ) : null}
           </div>
-          <button type="button" onClick={() => zoom('out')} aria-label="Zoom out" className={cn(pill, idle, 'text-sm')}>−</button>
-          <button type="button" onClick={() => zoom('in')} aria-label="Zoom in" className={cn(pill, idle, 'text-sm')}>+</button>
+          <button type="button" onClick={() => zoom('out')} aria-label="Zoom out" className={cn(pill, idle, 'text-sm [@media(pointer:coarse)]:hidden')}>−</button>
+          <button type="button" onClick={() => zoom('in')} aria-label="Zoom in" className={cn(pill, idle, 'text-sm [@media(pointer:coarse)]:hidden')}>+</button>
         </div>
       </div>
 

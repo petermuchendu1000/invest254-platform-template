@@ -1,5 +1,7 @@
 'use client';
 
+import { useCallback } from 'react';
+
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api/endpoints';
 import { useSession } from '@/lib/auth/session';
@@ -22,5 +24,6 @@ export function useDigitHistory() {
 /** Invalidate the digit-history feed (call on `digit_settled` so the new receipt appears). */
 export function useInvalidateDigitHistory() {
   const qc = useQueryClient();
-  return () => { void qc.invalidateQueries({ queryKey: ['digit-history'] }); };
+  // stable identity: callers list it in effect/callback deps (was a new function every render)
+  return useCallback(() => { void qc.invalidateQueries({ queryKey: ['digit-history'] }); }, [qc]);
 }

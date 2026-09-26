@@ -167,6 +167,9 @@ export const platformApi = {
     apiFetch<SiteRow>(`/platform/sites/${id}`, { method: 'PATCH', token: t, body: patch }),
   setConfig: (t: string, id: string, patch: Record<string, unknown>) =>
     apiFetch<SiteConfig>(`/platform/sites/${id}/config`, { method: 'PATCH', token: t, body: patch }),
+  stakeLimits: (t: string, id: string) => apiFetch<StakeLimitsDto>(`/platform/sites/${id}/stake-limits`, { token: t }),
+  setStakeLimits: (t: string, id: string, min: number, max: number) =>
+    apiFetch<StakeLimitsDto>(`/platform/sites/${id}/stake-limits`, { method: 'PUT', token: t, body: { min, max } }),
   setSiteOwner: (t: string, id: string, ownerUserId: string | null) =>
     apiFetch<SiteRow>(`/platform/sites/${id}/owner`, { method: 'PATCH', token: t, body: { ownerUserId } }),
   setTheme: (t: string, id: string, tokens: Record<string, string>) =>
@@ -278,3 +281,6 @@ export interface DirectoryUserDto {
   userId: string; username: string | null; phone: string | null; role: string; status: string;
   siteId: string | null; siteName: string | null; platformId: string | null; platformName: string | null; isDefaultMarketer: boolean;
 }
+
+/** STAKE-1: a brand's stake limits in its own currency + the KES cents the engine enforces. */
+export interface StakeLimitsDto { currency: string; min: number | null; max: number | null; minStakeCents: number | null; maxStakeCents: number | null }

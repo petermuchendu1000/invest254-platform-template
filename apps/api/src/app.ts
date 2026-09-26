@@ -240,6 +240,11 @@ export interface ApiDeps {
    * case the route falls back to `config()`. Optional so tests/single-tenant deployments still work.
    */
   gameConfigForSite?(ref: string): Promise<(GameConfig | VersionedGameConfig) | null>;
+  /** STAKE-1 (0170): stake limits in the brand's own currency + the FX rate used to enforce them. */
+  stakeNative?: import("./stakelimits.js").StakeNativeStore | undefined;
+  /** A marketer's current commission rate (0..1), or null when not an affiliate. */
+  commissionRateOf?: ((userId: string) => Promise<number | null>) | undefined;
+  fxRate?: ((currency: string) => Promise<number>) | undefined;
   /** Public fairness record for a game-day id (commitment always; seed only after reveal). */
   fairnessById(gameDayId: number): Promise<FairnessRecord | null>;
   /** Public brand resolution (docs/22 Task E): host (or slug) → the `sites` brand DTO, or null. */
@@ -336,6 +341,9 @@ function gameConfigDto(cfg: GameConfig | VersionedGameConfig, economy: PlatformE
     // Currency-native minimum withdrawal (docs/25 §16): the brand's DISPLAY-currency floor (e.g. 100
     // => $100). The player app enforces this directly for foreign brands; null => use minWithdrawalCents.
     minWithdrawalNative: (cfg as GameConfig).minWithdrawalNative ?? null,
+    // STAKE-1: the admin's stake limits in the brand currency (multiples of 5); null = derive from cents.
+    minStakeNative: (cfg as { minStakeNative?: number | null }).minStakeNative ?? null,
+    maxStakeNative: (cfg as { maxStakeNative?: number | null }).maxStakeNative ?? null,
     minDepositCents: effectiveMinDeposit(MIN_DEPOSIT_CENTS, p),
     maxDepositCents: effectiveMaxDeposit(null, p),
     maxMultiplier: eff.maxMultiplier,

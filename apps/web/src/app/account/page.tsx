@@ -28,8 +28,7 @@ export default function AccountPage() {
   if (!token) {
     return (
       <EmptyState
-        title="Sign in to view your account"
-        description="Log in or create an account to manage your profile."
+        title="Account"
         action={<Button onClick={() => openAuth('login')}>Log in</Button>}
       />
     );
@@ -86,7 +85,7 @@ function PlayerSecurityCard() {
         </div>
       ) : null}
       <div className="flex items-center justify-between gap-3 text-sm">
-        <span className="text-muted">Identity · <span className={st === 'approved' ? 'text-up' : st === 'rejected' ? 'text-down' : 'text-fg'}>{label}</span></span>
+        <span className="text-muted">{PLAYER_TWO_FACTOR ? 'Identity · ' : null}<span className={st === 'approved' ? 'text-up' : st === 'rejected' ? 'text-down' : 'text-fg'}>{label}</span></span>
         <Button variant="secondary" size="sm" onClick={() => open('verify')}>{st === 'approved' ? 'View' : 'Verify'}</Button>
       </div>
     </Card>

@@ -27,7 +27,6 @@ export function RealCashRtpPanel() {
         <Empty title="Couldn't load real-cash RTP" description="Check your connection and try again." />
       ) : (
         <TableWrap>
-          <table className="w-full text-sm">
             <thead>
               <tr>
                 <Th>Window</Th>
@@ -51,7 +50,6 @@ export function RealCashRtpPanel() {
                 </tr>
               ))}
             </tbody>
-          </table>
         </TableWrap>
       )}
     </Section>
@@ -79,7 +77,6 @@ export function ConfigChangeReviewPanel() {
         <Empty title="No economy changes" description="No config versions recorded for this brand." />
       ) : (
         <TableWrap>
-          <table className="w-full text-sm">
             <thead>
               <tr><Th>Version</Th><Th>When (EAT)</Th><Th numeric>House edge</Th><Th numeric>Win rate</Th><Th>Changed</Th><Th>Review</Th></tr>
             </thead>
@@ -100,7 +97,6 @@ export function ConfigChangeReviewPanel() {
                 </tr>
               ))}
             </tbody>
-          </table>
         </TableWrap>
       )}
     </Section>

@@ -114,3 +114,18 @@ test('resolveBrand flags resolved and warns loudly on a fallback (GAP 5 visibili
     assert.ok(warnings.some((w) => w.includes('brandb.example') && w.toLowerCase().includes('offline')), 'warns on network error');
   } finally { globalThis.fetch = origFetch; console.warn = origWarn; }
 });
+
+/** BUGLOG #127: a stored grey "down" made SELL look disabled; gain/loss stay green/red on every brand. */
+test('brandCssVars: up/down outside the green/red family fall back to the semantic defaults', async () => {
+  const { SITE_THEMES } = await import('./siteThemes.js');
+  const { semanticColourOk } = await import('./derivePalette.js');
+  for (const th of SITE_THEMES) {
+    assert.ok(semanticColourOk('up', th.tokens.up), `${th.id} up ${th.tokens.up}`);
+    assert.ok(semanticColourOk('down', th.tokens.down), `${th.id} down ${th.tokens.down}`);
+  }
+  const t = { ...DEFAULT_BRAND.themeTokens!, up: '#2cdd6d', down: '#8fa396' };
+  const vars = brandCssVars({ ...DEFAULT_BRAND, themeTokens: t });
+  assert.equal(vars['--brand-up'], '#2cdd6d');
+  assert.equal(vars['--brand-down'], undefined);
+  assert.equal(brandCssVars({ ...DEFAULT_BRAND, themeTokens: { ...t, down: '#EA3943' } })['--brand-down'], '#EA3943');
+});

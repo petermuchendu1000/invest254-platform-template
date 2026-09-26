@@ -50,7 +50,7 @@ export function IndexBadge({ inst, active = false, size = 'md' }: { inst: Instru
 function IndexName({ inst }: { inst: Instrument }) {
   const m = inst.label.match(/^(Volatility \d+)( \(1s\))?( Index)$/);
   if (!m) return <>{inst.label}</>;
-  return <>{m[1]}{m[2] ? <b className="font-semibold">{m[2]}</b> : null}{m[3]}</>;
+  return <>{m[1]}{m[2] ? <b className="font-semibold">{m[2]}</b> : null}</>;
 }
 
 export function MarketsPanel({ current, onSelect, onClose }: { current: Instrument; onSelect: (inst: Instrument) => void; onClose: () => void }) {

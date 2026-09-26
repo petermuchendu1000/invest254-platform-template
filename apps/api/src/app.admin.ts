@@ -397,6 +397,13 @@ export function registerAdminRoutes(router: Router, deps: ApiDeps): void {
     return domain(() => deps.admin.updateUserDetails(ctx.claims!.userId, ctx.claims!.role ?? "player", ctx.params.id!, phone, username));
   });
 
+  // The marketer's CURRENT rate, so the console edits the real value (BUGLOG #111: it always showed 20%).
+  router.get(`${BASE}/admin/affiliates/:id/rate`, auth, admin, async (ctx: Ctx) => {
+    await ensureUserInScope(deps, ctx, ctx.params.id!);   // scope first: never reveal anything cross-tenant
+    if (!deps.commissionRateOf) throw new ApiError("NOT_AVAILABLE", "not available", 501);
+    return { rate: await deps.commissionRateOf(ctx.params.id!) };
+  });
+
   router.patch(`${BASE}/admin/affiliates/:id/rate`, auth, admin, async (ctx: Ctx) => {
     const body = ctx.body && typeof ctx.body === "object" ? (ctx.body as Record<string, unknown>) : {};
     const rate = typeof body.rate === "number" ? body.rate : Number(body.rate);

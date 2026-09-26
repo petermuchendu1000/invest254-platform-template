@@ -5,6 +5,7 @@ import { cn } from '@/lib/cn';
 import { useDigitSession, sessionStats, type ClosedContract } from '@/lib/game/digitSession';
 import { useDigitHistory } from '@/lib/game/useDigitHistory';
 import { useAmountText } from '@/lib/game/useAmountText';
+import { useWallet } from '@/lib/wallet/hooks';
 import { DIcon } from '@/components/game/digits/icons';
 import type { DigitHistoryDto } from '@/lib/api/types';
 
@@ -37,7 +38,10 @@ export function PositionsPanel({ onClose, className }: { onClose?: () => void; c
   const [tab, setTab] = useState<Tab>('open');
   const open = useDigitSession((s) => s.open);
   const closed = useDigitSession((s) => s.closed);
-  const stats = sessionStats(closed);
+  // Totals for the account in use (BUGLOG #95: demo and real results were summed together).
+  const { data: wallet } = useWallet();
+  const demo = wallet?.mode === 'demo';
+  const stats = sessionStats(closed.filter((c) => !!c.demo === demo));
   const amt = useAmountText();
   const openCount = open ? 1 : 0;
 
@@ -60,8 +64,7 @@ export function PositionsPanel({ onClose, className }: { onClose?: () => void; c
               tab === id ? 'text-fg' : 'text-muted hover:text-fg',
             )}
           >
-            <span>{label}</span>
-            {n != null ? <span className="tabular-nums">({n})</span> : null}
+            <span className="flex items-center gap-1.5">{label}{n != null ? <span className="rounded-full bg-surface-2 px-1.5 text-[11px] tabular-nums text-muted">{n}</span> : null}</span>
             {tab === id ? <span aria-hidden className="absolute inset-x-2 bottom-0 h-0.5 rounded-full bg-accent" /> : null}
           </button>
         ))}
@@ -88,29 +91,24 @@ export function PositionsPanel({ onClose, className }: { onClose?: () => void; c
               </li>
             </ul>
           ) : (
-            <Empty title="No open positions" body="Your active trades will appear here" />
+            <Empty title="No open positions" />
           )
         ) : tab === 'closed' ? (
           closed.length ? (
             <ul>{closed.map((c) => <ClosedRow key={c.id} c={c} />)}</ul>
           ) : (
-            <Empty title="No closed positions" body="Trades you settle this session will appear here" />
+            <Empty title="No closed positions" />
           )
         ) : (
           <HistoryList />
         )}
       </div>
 
-      <footer className="mt-auto flex flex-col gap-1.5 border-t border-border px-4 py-3 text-[12px]">
-        <div className="flex items-center justify-between">
-          <span className="text-muted">Session</span>
-          <span className="text-muted tabular-nums">{stats.trades} trades ({stats.wins}W / {stats.losses}L)</span>
-        </div>
-        <div className="flex items-center justify-between">
-          <span className="text-muted">Session P/L:</span>
-          <span className={cn('font-mono text-[13px] font-bold tabular-nums', stats.pnlCents > 0 ? 'text-up' : stats.pnlCents < 0 ? 'text-down' : 'text-up')}>{amt.signed(stats.pnlCents)}</span>
-        </div>
-        <div className="text-[11px] text-muted">{openCount} open position{openCount === 1 ? '' : 's'}</div>
+      <footer className="mt-auto flex items-center justify-between gap-3 border-t border-border px-4 py-3 text-[12px]" aria-label={`Session${demo ? ' (demo)' : ''}`}>
+        <span className="tabular-nums text-muted" data-testid="session-trades" title="Trades · wins · losses">
+          {stats.trades} · <span className="text-up">{stats.wins}W</span> <span className="text-down">{stats.losses}L</span>
+        </span>
+        <span className={cn('font-mono text-[13px] font-bold tabular-nums', stats.pnlCents < 0 ? 'text-down' : 'text-up')} data-testid="session-pnl">{amt.signed(stats.pnlCents)}</span>
       </footer>
     </section>
   );
@@ -141,7 +139,7 @@ function HistoryList() {
   const rows: DigitHistoryDto[] = (data?.pages ?? []).flatMap((p) => p.items);
   if (isLoading) return <p className="px-4 py-4 text-sm text-muted">Loading your trades…</p>;
   if (isError) return <p className="px-4 py-4 text-sm text-down">Couldn’t load your trades.</p>;
-  if (!rows.length) return <Empty title="No trades yet" body="Every contract you place is saved here" />;
+  if (!rows.length) return <Empty title="No trades yet" />;
   return (
     <>
       <ul>
@@ -185,14 +183,13 @@ function DemoTag() {
   return <span className="rounded bg-warn/15 px-1 py-px font-sans text-[9px] font-bold text-warn">DEMO</span>;
 }
 
-function Empty({ title, body }: { title: string; body: string }) {
+function Empty({ title }: { title: string }) {
   return (
     <div className="flex h-full min-h-[240px] flex-col items-center justify-center gap-2 px-6 py-10 text-center">
       <span className="mb-2 grid h-16 w-16 place-items-center rounded-full border border-border bg-surface-2 text-muted">
         <DIcon name="target" className="h-7 w-7" />
       </span>
       <p className="text-[15px] font-semibold text-fg">{title}</p>
-      <p className="text-[13px] text-muted">{body}</p>
     </div>
   );
 }

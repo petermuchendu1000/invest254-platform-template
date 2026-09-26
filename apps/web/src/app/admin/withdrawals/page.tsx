@@ -37,7 +37,7 @@ const MARKPAYABLE = new Set(['pending', 'requested', 'processing']);
 /** Clickable player identity → user detail page. */
 function UserCell({ userId, username }: { userId: string; username: string }) {
   return (
-    <Link href={`/admin/users/${userId}`} className="font-medium text-accent hover:underline">@{username || 'unknown'}</Link>
+    <Link href={`/admin/users/${userId}`} className="relative font-medium text-accent before:absolute before:-inset-x-1 before:-inset-y-3 before:content-[''] hover:underline">@{username || 'unknown'}</Link>
   );
 }
 
@@ -144,7 +144,6 @@ export default function WithdrawalsPage() {
     <>
       <PageHeader
         title="Withdrawals"
-        subtitle="Approve to pay the player by M-Pesa, or reject to return the money to their balance."
         actions={<WithdrawalAlertsToggle />}
       />
 
@@ -251,13 +250,17 @@ function WithdrawalsSwitch() {
 
   if (q.isLoading) return <div className="mb-4"><Skeleton className="h-16 w-full" /></div>;
 
-  const flip = () =>
+  // Turning withdrawals OFF halts every payout for the brand: ask first (BUGLOG #113). ON is safe.
+  const flip = () => {
+    if (enabled && !window.confirm('Stop all withdrawals for this brand?')) return;
+    doFlip();
+  };
+  const doFlip = () =>
     setEnabled.mutate(!enabled, {
       onSuccess: (r) =>
         toast.push({
           tone: r.enabled ? 'success' : 'error',
           title: r.enabled ? 'Withdrawals enabled' : 'Withdrawals DISABLED',
-          description: r.enabled ? 'Payouts resume for this brand.' : 'All new withdrawals (players + marketers) are halted.',
         }),
       onError: (e) => toast.push({ tone: 'error', title: "Couldn't change setting", description: e instanceof ApiError ? e.message : 'Try again.' }),
     });
@@ -268,12 +271,7 @@ function WithdrawalsSwitch() {
       <div className="flex min-w-0 flex-col">
         <span className="flex items-center gap-2 text-sm font-medium text-fg">
           <span className={`inline-flex h-2 w-2 shrink-0 rounded-full ${enabled ? 'bg-up' : 'bg-down'}`} />
-          {enabled ? 'Withdrawals are on for this brand' : 'Withdrawals are OFF for this brand'}
-        </span>
-        <span className="mt-0.5 text-xs text-muted">
-          {enabled
-            ? 'Turn off to stop all new withdrawals (players and marketers) straight away.'
-            : 'New requests are refused. You can still review the pending ones below.'}
+          {enabled ? 'Withdrawals on' : 'Withdrawals OFF'}
         </span>
       </div>
       <button
@@ -283,9 +281,11 @@ function WithdrawalsSwitch() {
         disabled={setEnabled.isPending}
         aria-checked={enabled}
         aria-label={enabled ? 'Turn withdrawals off' : 'Turn withdrawals on'}
-        className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition disabled:opacity-50 ${enabled ? 'bg-up' : 'bg-down'}`}
+        className="inline-flex h-11 w-14 shrink-0 items-center justify-center disabled:opacity-50"
       >
-        <span className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition ${enabled ? 'translate-x-5' : 'translate-x-0.5'}`} />
+        <span className={`relative inline-flex h-6 w-11 items-center rounded-full transition ${enabled ? 'bg-up' : 'bg-down'}`}>
+          <span className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition ${enabled ? 'translate-x-5' : 'translate-x-0.5'}`} />
+        </span>
       </button>
     </div>
   );
@@ -346,7 +346,7 @@ function PlayerCell({ r }: { r: AdminWithdrawalRow }) {
   return (
     <span className="flex flex-col leading-tight">
       <UserCell userId={r.userId} username={r.username} />
-      <a href={`tel:${r.phone}`} className="mt-0.5 text-xs tabular-nums text-muted hover:text-accent hover:underline">{r.phone}</a>
+      <span className="mt-0.5 text-xs tabular-nums text-muted">{r.phone}</span>
       {r.mpesaReceipt ? <span className="font-mono text-[10px] text-muted">{r.mpesaReceipt}</span> : null}
     </span>
   );

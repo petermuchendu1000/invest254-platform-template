@@ -52,7 +52,6 @@ function SystemLogsPageInner() {
     <>
       <PageHeader
         title="System logs"
-        subtitle="Errors and warnings from the API and the game engine, newest first. Search a message or page address; every entry of one request shares its request id, so one payment can be followed end to end."
       />
 
       <Section>

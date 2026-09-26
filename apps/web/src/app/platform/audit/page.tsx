@@ -33,7 +33,7 @@ function AuditInner() {
 
   return (
     <>
-      <PageHeader title="Audit log" subtitle={isOwner ? 'Every privileged action on every platform and brand — who did what, where, and when.' : 'Every privileged action on your platform and its brands — who did what, where, and when.'} />
+      <PageHeader title="Audit log" />
       <div className="flex flex-wrap items-center gap-3">
         {isOwner ? (
           <FilterSelect label="Platform" value={platformId} onChange={(v) => { setPlatformId(v); setSiteId(''); }}

@@ -30,6 +30,9 @@ function Stat({ label, value, hint }: { label: string; value: string; hint?: str
   );
 }
 
+/** 0.4999 → 49.99 (display %). */
+const pctOf = (f: number) => Math.round(f * 10000) / 100;
+
 export function PlayerSummary({ siteId, uid }: { siteId: string; uid: string }) {
   const q = usePlatformUserDetail(siteId, uid);
   const d = q.data;
@@ -125,7 +128,7 @@ export function PlayerOverridesForm({ site, uid }: { site: SiteWithConfig; uid: 
     const o = q.data;
     if (!o) return;
     setForm({
-      winRate: o.winRate != null ? String(o.winRate) : '', houseEdge: o.houseEdge != null ? String(o.houseEdge) : '',
+      winRate: o.winRate != null ? String(pctOf(o.winRate)) : '', houseEdge: o.houseEdge != null ? String(pctOf(o.houseEdge)) : '',
       maxWinMultiplier: o.maxWinMultiplier != null ? String(o.maxWinMultiplier) : '', tradeDurationS: o.tradeDurationS != null ? String(o.tradeDurationS) : '',
       minStake: o.minStakeCents != null ? String(o.minStakeCents / 100) : '', maxStake: o.maxStakeCents != null ? String(o.maxStakeCents / 100) : '',
       notes: o.notes ?? '',
@@ -135,10 +138,12 @@ export function PlayerOverridesForm({ site, uid }: { site: SiteWithConfig; uid: 
   const num = (s: string): number | null => { const t = s.trim(); if (!t) return null; const n = Number(t); return Number.isFinite(n) ? n : NaN; };
   const cfg = site.config;
   // The database's fairness fence (0135): an override may only be as good for the player as the brand itself.
-  const wr = num(form.winRate), he = num(form.houseEdge), mm = num(form.maxWinMultiplier), dur = num(form.tradeDurationS);
+  // Entered in % like every other economy editor (BUGLOG #112: these two alone took 0–1 fractions).
+  const frac = (v: number | null) => (v == null || Number.isNaN(v) ? v : Math.round(v * 1000) / 100000);
+  const wr = frac(num(form.winRate)), he = frac(num(form.houseEdge)), mm = num(form.maxWinMultiplier), dur = num(form.tradeDurationS);
   const errors: string[] = [];
-  if (wr != null && (Number.isNaN(wr) || wr <= 0 || wr > cfg.targetWinRate)) errors.push(`Win rate must be above 0 and at most the brand's ${cfg.targetWinRate}.`);
-  if (he != null && (Number.isNaN(he) || he < cfg.houseEdge || he >= 1)) errors.push(`House edge must be at least the brand's ${cfg.houseEdge} and below 1.`);
+  if (wr != null && (Number.isNaN(wr) || wr <= 0 || wr > cfg.targetWinRate)) errors.push(`Win rate: above 0%, at most ${pctOf(cfg.targetWinRate)}%.`);
+  if (he != null && (Number.isNaN(he) || he < cfg.houseEdge || he >= 1)) errors.push(`House edge: at least ${pctOf(cfg.houseEdge)}%, below 100%.`);
   if (mm != null && (Number.isNaN(mm) || mm <= 1 || mm > cfg.maxMultiplier)) errors.push(`Max win multiplier must be above 1 and at most the brand's ×${cfg.maxMultiplier}.`);
   if (dur != null && (Number.isNaN(dur) || !Number.isInteger(dur) || dur < 1 || dur > 3600)) errors.push('Auto-sell duration must be a whole number of seconds (1–3600).');
   for (const k of ['minStake', 'maxStake'] as const) { const v = num(form[k]); if (v != null && (Number.isNaN(v) || v <= 0)) errors.push(`${k === 'minStake' ? 'Min' : 'Max'} stake must be a positive amount.`); }
@@ -151,7 +156,7 @@ export function PlayerOverridesForm({ site, uid }: { site: SiteWithConfig; uid: 
       notes: form.notes.trim() ? form.notes.trim() : null,
     };
     m.mutate(patch, {
-      onSuccess: () => toast.push({ tone: 'success', title: 'Overrides saved', description: "Applied to the player's next trades." }),
+      onSuccess: () => toast.push({ tone: 'success', title: 'Overrides saved' }),
       onError: (e) => toast.push({ tone: 'error', title: 'Save failed', description: e instanceof ApiError ? e.message : 'Try again.' }),
     });
   }
@@ -165,13 +170,12 @@ export function PlayerOverridesForm({ site, uid }: { site: SiteWithConfig; uid: 
 
   return (
     <div className="flex flex-col gap-2" aria-label="Player overrides">
-      <p className="text-xs text-muted">
-        Blank = the brand&apos;s value. Brand limits: win rate ≤ <b className="text-fg">{cfg.targetWinRate}</b>, house edge ≥ <b className="text-fg">{cfg.houseEdge}</b>,
-        max multiplier ≤ <b className="text-fg">×{cfg.maxMultiplier}</b> — an override can never be better for the player than the brand itself.
+      <p className="text-xs tabular-nums text-muted">
+        Blank = brand · win ≤ <b className="text-fg">{pctOf(cfg.targetWinRate)}%</b> · edge ≥ <b className="text-fg">{pctOf(cfg.houseEdge)}%</b> · ×≤ <b className="text-fg">{cfg.maxMultiplier}</b>
       </p>
       <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-        {input('winRate', 'Win rate (0–1)', `brand ${cfg.targetWinRate}`)}
-        {input('houseEdge', 'House edge (0–1)', `brand ${cfg.houseEdge}`)}
+        {input('winRate', 'Win rate (%)', `brand ${pctOf(cfg.targetWinRate)}`)}
+        {input('houseEdge', 'House edge (%)', `brand ${pctOf(cfg.houseEdge)}`)}
         {input('maxWinMultiplier', 'Max win multiplier', `brand ×${cfg.maxMultiplier}`)}
         {input('tradeDurationS', 'Auto-sell duration (s)', `brand ${cfg.defaultDurationS}`)}
         {input('minStake', 'Min stake (KES)', `brand ${cfg.minStakeCents / 100}`)}

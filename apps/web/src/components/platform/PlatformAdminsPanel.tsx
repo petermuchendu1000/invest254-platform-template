@@ -54,7 +54,7 @@ export function PlatformAdminsPanel({ platforms }: { platforms: PlatformDto[] })
   const [newRole, setNewRole] = useState('admin');
 
   const platformName = (id: string | null) => platforms.find((p) => p.platformId === id)?.name ?? 'this platform';
-  const fail = (e: unknown) => toast.push({ tone: 'error', title: 'Failed', description: e instanceof ApiError ? e.message : String(e) });
+  const fail = (e: unknown) => toast.push({ tone: 'error', title: 'Failed', description: e instanceof ApiError ? e.message : 'Try again.' });
 
   async function appoint() {
     if (!picked || !platformId) return;

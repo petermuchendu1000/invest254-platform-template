@@ -314,6 +314,21 @@ export function useSetSiteConfig() {
   });
 }
 
+/** STAKE-1: stake limits in the brand currency. */
+export function useStakeLimitsAdmin(siteId: string) {
+  const t = useTok();
+  return useQuery({ queryKey: ['platform', 'stake-limits', siteId], queryFn: () => platformApi.stakeLimits(t, siteId), enabled: !!t && !!siteId });
+}
+export function useSetStakeLimits(siteId: string) {
+  const t = useTok();
+  const qc = useQueryClient();
+  const invalidate = useInvalidate();
+  return useMutation({
+    mutationFn: (v: { min: number; max: number }) => platformApi.setStakeLimits(t, siteId, v.min, v.max),
+    onSuccess: (r) => { qc.setQueryData(['platform', 'stake-limits', siteId], r); invalidate(); },
+  });
+}
+
 /** Assign/clear a brand's marketer (owner_user_id) — site-owner commission model. */
 export function useSetSiteOwner() {
   const t = useTok();

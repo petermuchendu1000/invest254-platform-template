@@ -3,6 +3,7 @@
 import { cn } from '@/lib/cn';
 import { useMyNotifications, useDismissNotification } from '@/lib/notifications/hooks';
 import type { NotificationDto } from '@/lib/api/types';
+import { useSession } from '@/lib/auth/session';
 
 // Per-level palette with dark-mode counterparts. Blocking (non-dismissible) notices use the
 // same colour but keep the X hidden, so they persist until an admin resolves them.
@@ -19,9 +20,10 @@ const LEVEL_STYLES: Record<NotificationDto['level'], string> = {
  * (e.g. account limits) have no X and stay until an admin resolves them.
  */
 export function NotificationBanners() {
+  const token = useSession((s) => s.token);
   const q = useMyNotifications();
   const dismiss = useDismissNotification();
-  const items = q.data?.items ?? [];
+  const items = token ? q.data?.items ?? [] : [];   // never the previous user's notices
   if (items.length === 0) return null;
 
   return (

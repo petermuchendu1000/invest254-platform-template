@@ -28,10 +28,17 @@ async function session(viewport) {
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
   // Pass-through socket so a test can make the engine "refuse" the next digit open (BUGLOG #85).
-  const ws = { refuseNext: false };
+  const ws = { refuseNext: false, holdAuthMs: 0, opens: 0, kill: () => {} };
   await page.routeWebSocket(/:8791|\/ws/, (sock) => {
     const server = sock.connectToServer();
+    ws.opens++;
+    ws.kill = () => sock.close();
     sock.onMessage((m) => {
+      if (ws.holdAuthMs && typeof m === 'string' && m.includes('"type":"auth"')) {
+        const hold = ws.holdAuthMs; ws.holdAuthMs = 0;
+        setTimeout(() => server.send(m), hold);                  // a slow auth after a reconnect
+        return;
+      }
       if (ws.refuseNext && typeof m === 'string' && m.includes('"open_digit"')) {
         ws.refuseNext = false;
         sock.send(JSON.stringify({ type: 'error', data: { code: 'ENGINE_ERROR', message: 'INSUFFICIENT_FUNDS' } }));
@@ -70,7 +77,7 @@ try {
     await page.getByRole('button', { name: 'Even / Odd' }).click();
 
     // DERIV-UI: Markets picker (category rail, search, favourites) and the Trade types sheet
-    await page.getByRole('button', { name: /Volatility \d+ (\(1s\) )?Index/ }).first().click();
+    await page.getByRole('button', { name: /Volatility \d+( \(1s\))?/ }).first().click();
     const mp = page.getByRole('dialog', { name: 'Markets' });
     check('markets: picker opens with Favorites + Synthetic indices and 12 indices', await mp.isVisible()
       && await mp.getByRole('navigation', { name: 'Market categories' }).getByText('Favorites').isVisible()
@@ -82,7 +89,7 @@ try {
     await mp.getByRole('navigation', { name: 'Market categories' }).getByRole('button', { name: /Favorites/ }).click();
     check('markets: a starred index is listed under Favorites', (await mp.getByRole('option').count()) === 1 && /250/.test(await mp.getByRole('option').first().innerText()));
     await mp.getByRole('option').first().click();
-    check('markets: picking an index switches the chart', await page.getByRole('button', { name: /Volatility 250 \(1s\) Index/ }).first().isVisible() && !(await mp.isVisible()));
+    check('markets: picking an index switches the chart', await page.getByRole('button', { name: /Volatility 250 \(1s\)/ }).first().isVisible() && !(await mp.isVisible()));
     await page.getByRole('button', { name: 'All trade types' }).filter({ visible: true }).first().click();
     const tt = page.getByRole('dialog', { name: 'Trade types' });
     check('trade types: sheet lists Multipliers + the three Digits types', /Multipliers[\s\S]*Matches\/Differs[\s\S]*Even\/Odd[\s\S]*Over\/Under/.test(await tt.innerText()));
@@ -92,7 +99,7 @@ try {
     await tt.getByRole('button', { name: /Over\/Under/ }).click();
     check('trade types: picking Over/Under switches the console', await page.getByText('Select digit').isVisible());
     await page.getByRole('button', { name: 'Even / Odd' }).click();
-    await page.getByRole('button', { name: /Volatility 250 \(1s\) Index/ }).first().click();
+    await page.getByRole('button', { name: /Volatility 250 \(1s\)/ }).first().click();
     await page.getByRole('dialog', { name: 'Markets' }).getByLabel('Search markets').fill('10 (1s)');
     await page.getByRole('dialog', { name: 'Markets' }).getByRole('option').first().click();
 
@@ -111,24 +118,37 @@ try {
     let sawOpen = false, openTab = '';
     for (let t = 0; t < 60 && !sawOpen; t++) {
       openTab = await rail.getByRole('tab', { name: /Open/ }).innerText();
-      sawOpen = /\(1\)/.test(openTab) || (await rail.getByText('settling…').count()) > 0 || (await page.getByText(/Even · /).count()) > 0;
+      sawOpen = /Open\s*1\b/.test(openTab) || (await rail.getByText('settling…').count()) > 0 || (await page.getByText(/Even · /).count()) > 0;
       if (!sawOpen) await page.waitForTimeout(50);
     }
     const modal = page.getByRole('dialog', { name: /You won|Trade lost/ });
     await modal.waitFor({ timeout: 10000 }).catch(() => {});
     check('desktop: a manual trade shows as open while it settles', sawOpen, openTab);
     const m = await modal.innerText().catch(() => '');
-    check('desktop: result card shows P/L, stake, payout, result digit, duration and the contract', /PROFIT \/ LOSS/i.test(m) && /STAKE/i.test(m) && /PAYOUT/i.test(m) && /RESULT DIGIT/i.test(m) && /DURATION/i.test(m) && /EVEN/.test(m), m);
+    check('desktop: result card shows P/L, stake, payout, result digit, duration and the contract', /\bP\/L\b/i.test(m) && /STAKE/i.test(m) && /PAYOUT/i.test(m) && /\bDIGIT\b/i.test(m) && /DURATION/i.test(m) && /EVEN/.test(m), m);
     await page.keyboard.press('Escape');
     await rail.getByRole('tab', { name: /Closed/ }).click();
     check('desktop: the settled trade is listed under Closed', /EVEN/i.test(await rail.innerText()));
-    check('desktop: session footer counts the trade', /1 trades \(\dW \/ \dL\)/.test(await rail.locator('footer').innerText()));
+    check('desktop: session footer counts the trade (1 · xW yL)', /^1 · \dW \dL$/.test((await rail.getByTestId('session-trades').innerText()).trim()), await rail.getByTestId('session-trades').innerText());
     await rail.getByRole('tab', { name: /History/ }).click();
     await page.waitForTimeout(800);
     check('desktop: History tab lists saved contracts', /EVEN/i.test(await rail.innerText()));
 
+    // ── BUGLOG #91: another tab's settlement never lands on this screen ──
+    const page2 = await ctx.newPage();
+    await page2.goto(`http://${HOST}/`, { waitUntil: 'networkidle' });
+    await page2.waitForTimeout(2500);
+    const rail2 = page2.locator('aside').first();
+    const t2before = (await rail2.getByTestId('session-trades').innerText()).trim();
+    await page.getByRole('button', { name: /^Buy Even/ }).click();
+    await page.getByRole('dialog', { name: /You won|Trade lost/ }).waitFor({ timeout: 10000 }).catch(() => {});
+    await page2.waitForTimeout(1500);
+    check('two tabs: the other tab shows no result card and keeps its own count', (await page2.getByRole('dialog', { name: /You won|Trade lost/ }).count()) === 0 && (await rail2.getByTestId('session-trades').innerText()).trim() === t2before, `${t2before} -> ${await rail2.getByTestId('session-trades').innerText()}`);
+    await page2.close();
+    await page.keyboard.press('Escape');
+
     // ── BUGLOG #85: a refused open never freezes the screen ──
-    const closedCount = async () => Number((/(\d+) trades/.exec(await rail.locator('footer').innerText()) ?? [])[1] ?? 0);
+    const closedCount = async () => Number((/^(\d+) ·/.exec((await rail.getByTestId('session-trades').innerText()).trim()) ?? [])[1] ?? 0);
     const toastText = () => page.locator('[role="status"], [role="alert"]').allInnerTexts().then((a) => a.join(' | '));
     page.ws.refuseNext = true;
     await page.getByRole('button', { name: /^Buy Even/ }).click();
@@ -138,6 +158,32 @@ try {
     await page.getByRole('button', { name: /^Buy Even/ }).click();
     await page.getByRole('dialog', { name: /You won|Trade lost/ }).waitFor({ timeout: 10000 }).catch(() => {});
     check('refused open: the next trade goes through', await until(async () => (await closedCount()) === n0 + 1, 8000), String(await closedCount()));
+    await page.keyboard.press('Escape');
+
+    // ── BUGLOG #88: a trade tapped while a fresh socket is still signing in waits for it ──
+    const opens0 = page.ws.opens;
+    page.ws.holdAuthMs = 1500;
+    page.ws.kill();
+    await until(async () => page.ws.opens > opens0, 8000, 25);
+    const n1 = await closedCount();
+    await page.getByRole('button', { name: /^Buy Even/ }).click();
+    await page.getByRole('dialog', { name: /You won|Trade lost/ }).waitFor({ timeout: 12000 }).catch(() => {});
+    check('reconnect: a trade during sign-in goes through (no "Log in to trade")', await until(async () => (await closedCount()) === n1 + 1, 8000) && !/Log in to trade/.test(await toastText()), `${await closedCount()} ${await toastText()}`);
+    await page.keyboard.press('Escape');
+
+    // ── BUGLOG #116: sign-in that never answers in 8 s: the tap is dropped with a reason, nothing hangs ──
+    const opens1 = page.ws.opens;
+    page.ws.holdAuthMs = 10_000;
+    page.ws.kill();
+    await until(async () => page.ws.opens > opens1, 8000, 25);
+    const n2 = await closedCount();
+    await page.getByRole('button', { name: /^Buy Even/ }).click();
+    check('slow sign-in: after 8 s the trade is dropped with "Not connected" and nothing stays in play',
+      await until(async () => /Not connected/.test(await toastText()), 11000, 100) && await until(async () => (await page.getByText(/Even · /).count()) === 0, 2000), await toastText());
+    await page.waitForTimeout(2500);   // the held sign-in now completes
+    await page.getByRole('button', { name: /^Buy Even/ }).click();
+    await page.getByRole('dialog', { name: /You won|Trade lost/ }).waitFor({ timeout: 12000 }).catch(() => {});
+    check('slow sign-in: once signed in, the next trade goes through', await until(async () => (await closedCount()) === n2 + 1, 8000), String(await closedCount()));
     await page.keyboard.press('Escape');
 
     // ── AUTO: a finished run can be started again (BUGLOG #84) ──
@@ -164,7 +210,7 @@ try {
     await sc.getByRole('button', { name: 'Scan' }).click();
     check('scanner: shows progress while scanning', await until(async () => /\d+%/.test(await sc.innerText()), 3000, 100));
     const runBtn = sc.getByRole('button', { name: 'Run' });
-    check('scanner: finds a best entry with its share', await until(() => runBtn.isVisible(), 15000) && /\d+%/.test(await sc.innerText()));
+    check('scanner: finds a best entry with its share and edge', await until(() => runBtn.isVisible(), 15000) && /\d+%/.test(await sc.innerText()) && /[+-]\d+\.\d/.test(await sc.innerText()), await sc.innerText());
     const beforeAi = await closedCount();
     await runBtn.click();
     check('scanner: Run closes the sheet and starts AUTO', !(await sc.isVisible()) && await until(() => stopBtn.isVisible(), 3000, 50));
@@ -193,8 +239,8 @@ try {
     const menu = await page.getByRole('menu').innerText();
     check('desktop: account menu has Profile, Change Password, Referrals, Sign Out', ['Profile', 'Change Password', 'Referrals', 'Sign Out'].every((x) => menu.includes(x)), menu);
     await page.getByRole('button', { name: 'Change Password' }).click();
-    await page.getByPlaceholder('New password', { exact: true }).fill('abcdefgh');
-    await page.getByPlaceholder('Repeat new password').fill('abcdefgX');
+    await page.getByPlaceholder('New password', { exact: true }).fill('abcdefg1');
+    await page.getByPlaceholder('Repeat new password').fill('abcdefg2');
     check('desktop: change password catches a mismatch before sending', await page.getByText('The new passwords do not match.').isVisible());
     await page.keyboard.press('Escape');
     check('desktop: no page errors', errors.length === 0, errors.join(' | '));

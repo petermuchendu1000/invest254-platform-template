@@ -1,15 +1,17 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { centsToKes, kesToCents } from '@invest254/shared/money';
 import type { Direction } from '@invest254/shared';
 import { cn } from '@/lib/cn';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
-import { DisplayMoney as Money } from '@/lib/money';
-import { useDisplayMoney, USD_LIMITS } from '@/lib/money';
+import { useStakeLimits } from '@/lib/game/useStakeLimits';
+import { pillLabel } from '@/lib/game/stakeLadder';
+import { useDisplayMoney } from '@/lib/money';
 import { Skeleton } from '@/components/ui/Skeleton';
+import { Segmented } from '@/components/ui/Segmented';
 import { api } from '@/lib/api/endpoints';
 import { useSession } from '@/lib/auth/session';
 import { useDepositUi } from '@/lib/wallet/depositUi';
@@ -19,7 +21,6 @@ import { useGameSocket } from '@/lib/game/GameSocketProvider';
 import { useBrand } from '@/lib/brand/BrandProvider';
 import { LivePnl } from '@/components/game/LivePnl';
 
-const CHIP_CENTS = [25000, 50000, 100000];
 const DURATION_OPTIONS = [10, 30, 60, 120];
 // Stepper granularity for the +/- buttons on the stake field (KES).
 const STEP_KES = 50;
@@ -34,13 +35,11 @@ export function BetPanel() {
   const clearPending = useDepositUi((s) => s.clearPending);
 
   const brand = useBrand();
-  const { fmt, both, symbol, isForeign, toDisplay, toKesCents, currency, limit } = useDisplayMoney();
-  // Quick stakes in the ENTRY unit: fixed $ presets for foreign brands ($5/$10/$50/$100), the KES
-  // presets otherwise. Each chip's value is what lands in the stake field; KES cents are derived
-  // from it for validation/placing the trade.
-  const chips = isForeign
-    ? [5, 25, 100].map((v) => ({ key: v, value: v, label: `${symbol}${v}` }))
-    : CHIP_CENTS.slice(0, 3).map((c) => ({ key: c, value: centsToKes(c), label: String(centsToKes(c)) }));
+  const { fmt, both, symbol, isForeign, toDisplay, toKesCents, currency } = useDisplayMoney();
+  // Quick stakes (STAKE-1): the first pills of the brand's ladder — the admin's minimum, ×2, ×4 —
+  // every one a multiple of 5 in the brand currency.
+  const limits = useStakeLimits();
+  const chips = limits.ladder.slice(0, 3).map((v) => ({ key: v, value: v, label: `${isForeign ? symbol : ''}${pillLabel(v)}` }));
   const { data: config } = useQuery({
     queryKey: ['gameConfig', brand.slug],
     queryFn: () => api.gameConfig(brand.slug),
@@ -49,8 +48,8 @@ export function BetPanel() {
   const { data: wallet } = useWallet();
   const { status, activePosition, openPosition, sell } = useGameSocket();
 
-  const minStakeCents = limit(USD_LIMITS.minStake, config?.minStakeCents ?? 25000);
-  const maxStakeCents = config?.maxStakeCents;
+  const minStakeCents = limits.minCents;
+  const maxStakeCents = limits.maxCents;
   const defaultDurationS = config?.defaultDurationS ?? 10;
 
   const [stake, setStake] = useState<string>('');
@@ -61,13 +60,14 @@ export function BetPanel() {
   // "funds added" hint after a deposit settles. It never gates or re-fires the trade.
   const [resumeDir, setResumeDir] = useState<Direction | null>(null);
 
-  // Seed the stake with a sensible default (KES 250) once config arrives, never below the minimum.
+  // Seed the stake with the minimum pill ONCE when the limits load (BUGLOG #103: re-seeding whenever
+  // the field was empty turned "delete, type 200" into "50200").
+  const seededRef = useRef(false);
   useEffect(() => {
-    if (stake === '') {
-      const cents = Math.max(minStakeCents, 25000);
-      setStake(isForeign ? String(USD_LIMITS.minStake) : String(centsToKes(cents)));
-    }
-  }, [minStakeCents, stake, isForeign]);
+    if (seededRef.current || !limits.ready) return;
+    seededRef.current = true;
+    if (stake === '') setStake(String(limits.min));
+  }, [limits.ready, limits.min, stake]);
   useEffect(() => {
     if (config) setDurationS((d) => (d === 10 && defaultDurationS !== 10 ? defaultDurationS : d));
   }, [config, defaultDurationS]);
@@ -106,7 +106,7 @@ export function BetPanel() {
 
   const errorHint = (() => {
     if (!Number.isFinite(stakeCents)) return null;
-    if (!validStake) return `Minimum stake is ${both(minStakeCents)}.`;
+    if (!validStake) return `Min ${both(minStakeCents)}`;
     if (overMax && maxStakeCents !== undefined) return `Maximum stake is ${both(maxStakeCents)}.`;
     return null;
   })();
@@ -130,10 +130,10 @@ export function BetPanel() {
     setStake(String(next));
   }
 
-  function cycleDuration() {
-    const i = durations.indexOf(durationS);
-    setDurationS(durations[(i + 1) % durations.length] ?? durations[0]!);
-  }
+  const durationOptions = useMemo(
+    () => durations.map((d) => ({ id: String(d), label: d < 60 || d % 60 ? `${d}s` : `${d / 60}m` })),
+    [durations],
+  );
 
   function handleDirection(dir: Direction) {
     if (!validStake || overMax) return;
@@ -180,9 +180,6 @@ export function BetPanel() {
               ? 'Cash Out'
               : 'Auto-sells at expiry'}
         </Button>
-        <p className="text-center text-[11px] text-muted">
-          Trades settle automatically at the timer.
-        </p>
       </Card>
     );
   }
@@ -198,7 +195,7 @@ export function BetPanel() {
             type="button"
             onClick={() => { setStake(String(chip.value)); setCustomOpen(false); }}
             className={cn(
-              'h-9 rounded-lg border text-sm font-semibold tabular-nums transition',
+              'h-11 rounded-xl border text-sm font-semibold tabular-nums transition lg:h-9 lg:rounded-lg',
               !customOpen && chipActive(chip.value)
                 ? 'border-accent bg-accent/10 text-accent'
                 : 'border-border bg-surface-2 text-fg hover:border-accent/60',
@@ -212,7 +209,7 @@ export function BetPanel() {
           onClick={() => setCustomOpen((v) => !v)}
           aria-expanded={customOpen}
           className={cn(
-            'h-9 rounded-lg border text-sm font-semibold transition',
+            'h-11 rounded-xl border text-sm font-semibold transition lg:h-9 lg:rounded-lg',
             customOpen || !chips.some((c) => chipActive(c.value))
               ? 'border-accent bg-accent/10 text-accent'
               : 'border-border bg-surface-2 text-fg hover:border-accent/60',
@@ -223,7 +220,7 @@ export function BetPanel() {
       </div>
 
       {customOpen ? (
-      <div className="flex items-center gap-2 rounded-xl border border-border bg-surface-2 px-3 transition focus-within:border-accent focus-within:ring-1 focus-within:ring-accent">
+      <label className="flex cursor-text items-center gap-2 rounded-xl border border-border bg-surface-2 py-1 pl-3 pr-1 transition focus-within:border-accent focus-within:ring-1 focus-within:ring-accent">
         <span className="rounded-md bg-surface px-2 py-1 text-xs font-semibold text-muted">{symbol}</span>
         <input
           inputMode="decimal"
@@ -239,7 +236,7 @@ export function BetPanel() {
             type="button"
             aria-label="Decrease stake"
             onClick={() => bumpStake(isForeign ? -1 : -STEP_KES)}
-            className="flex h-8 w-8 items-center justify-center rounded-lg border border-border bg-surface text-lg font-bold leading-none text-muted transition hover:text-fg"
+            className="flex h-11 w-11 items-center justify-center rounded-lg border border-border bg-surface text-lg font-bold leading-none text-muted transition hover:text-fg lg:h-9 lg:w-9"
           >
             −
           </button>
@@ -247,35 +244,21 @@ export function BetPanel() {
             type="button"
             aria-label="Increase stake"
             onClick={() => bumpStake(isForeign ? 1 : STEP_KES)}
-            className="flex h-8 w-8 items-center justify-center rounded-lg border border-border bg-surface text-lg font-bold leading-none text-muted transition hover:text-fg"
+            className="flex h-11 w-11 items-center justify-center rounded-lg border border-border bg-surface text-lg font-bold leading-none text-muted transition hover:text-fg lg:h-9 lg:w-9"
           >
             +
           </button>
         </div>
-      </div>
+      </label>
       ) : null}
 
       {errorHint ? <p className="text-xs text-down">{errorHint}</p> : null}
 
-      {/* Auto-sell duration + idle Live P&L */}
-      <div className="flex items-center justify-between gap-3 rounded-xl border border-border bg-surface-2 px-3 py-1.5">
-        <button type="button" onClick={cycleDuration} className="flex items-center gap-3" aria-label="Cycle trade duration">
-          <span className="flex h-8 w-8 items-center justify-center rounded-full border-2 border-accent text-xs font-bold tabular-nums text-accent">
-            {durationS}
-          </span>
-          <span className="flex flex-col text-left leading-tight">
-            <span className="text-[10px] uppercase tracking-wide text-muted">Auto-sell</span>
-            <span className="text-xs text-fg">Trade duration</span>
-          </span>
-        </button>
-        <div className="flex flex-col items-end leading-tight">
-          <span className="text-[10px] uppercase tracking-wide text-muted">Live P&amp;L</span>
-          <Money cents={0} className="text-sm font-semibold text-fg" />
-        </div>
-      </div>
+      {/* Auto-sell duration: every option visible, one tap (was a hidden tap-to-cycle circle). */}
+      <Segmented label="Duration" value={String(durationS)} onChange={(v) => setDurationS(Number(v))} options={durationOptions} />
 
       {connecting ? (
-        <p className="text-center text-xs text-muted">Connecting to the live market…</p>
+        <p className="text-center text-xs text-muted">Connecting…</p>
       ) : null}
 
       {/* BUY / SELL — primary CTAs: largest, most saturated, gain/loss framed. */}
@@ -294,7 +277,6 @@ export function BetPanel() {
             </svg>
             BUY
           </span>
-          <span className="text-[10px] font-medium opacity-90">Price rises</span>
         </Button>
         <Button
           variant="down"
@@ -310,16 +292,11 @@ export function BetPanel() {
             </svg>
             SELL
           </span>
-          <span className="text-[10px] font-medium opacity-90">Price falls</span>
         </Button>
       </div>
 
       {resumeDir ? (
-        <p className="text-center text-[11px] font-medium text-up">
-          Funds added — tap {resumeDir === 'buy' ? 'BUY' : 'SELL'} to place your {fmt(stakeCents)} trade.
-        </p>
-      ) : !token ? (
-        <p className="text-center text-[11px] text-muted">Deposit to buy or sell.</p>
+        <p className="text-center text-[11px] font-semibold tabular-nums text-up">{resumeDir === 'buy' ? 'BUY' : 'SELL'} · {fmt(stakeCents)}</p>
       ) : null}
     </Card>
   );

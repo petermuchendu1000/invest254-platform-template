@@ -41,15 +41,18 @@ export function InsufficientBalanceModal({
 
   useEffect(() => { setReduce(prefersReducedMotion()); }, []);
 
+  // Focus once per open (BUGLOG #94: an inline onClose re-ran this on every tick and pulled focus back).
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
   useEffect(() => {
     if (!open) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onCloseRef.current(); };
     document.addEventListener('keydown', onKey);
     const prevOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     cardRef.current?.focus();
     return () => { document.removeEventListener('keydown', onKey); document.body.style.overflow = prevOverflow; };
-  }, [open, onClose]);
+  }, [open]);
 
   if (!info) return null;
   const shortfall = Math.max(0, info.requiredCents - info.currentCents);
@@ -87,7 +90,6 @@ export function InsufficientBalanceModal({
         </div>
 
         <h2 className="mt-3 text-base font-bold text-fg">Not enough balance</h2>
-        <p className="mt-1 text-[12px] leading-snug text-muted">Top up to place this trade. You only need the shortfall below.</p>
 
         {/* Figures */}
         <dl className="mt-4 flex flex-col gap-px overflow-hidden rounded-xl border border-border bg-border text-left">

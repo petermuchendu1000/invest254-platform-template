@@ -176,6 +176,7 @@ export const adminApi = {
   // Bulk payout moderation (partial success per row; approve dispatches M-Pesa B2C each).
   bulkPayouts: (t: string, body: { action: 'approve' | 'reject'; payoutIds: string[]; password?: string }) =>
     apiFetch<AdminBulkResult>('/admin/affiliate/payouts/bulk', { method: 'POST', token: t, body }),
+  commissionRate: (t: string, id: string) => apiFetch<{ rate: number | null }>(`/admin/affiliates/${id}/rate`, { token: t }),
   setCommissionRate: (t: string, id: string, rate: number) =>
     apiFetch<unknown>(`/admin/affiliates/${id}/rate`, { method: 'PATCH', token: t, body: { rate } }),
   // 0068 — marketer expenses (transparency): log a cost against a marketer, and list them.

@@ -30,7 +30,7 @@ export default function IdentityChecksPage() {
   const rows = list.data?.items ?? [];
   return (
     <>
-      <PageHeader title="Identity checks" subtitle="Players who sent an ID document and a selfie. Nothing here blocks deposits or withdrawals." />
+      <PageHeader title="Identity checks" />
       <PageTabs tabs={[...TABS]} value={tab} onChange={setTab} label="Identity checks" />
       <p className="text-sm text-muted">{TABS.find((t) => t.id === tab)?.hint}</p>
       {list.isLoading ? <p className="text-sm text-muted">Loading…</p> : rows.length === 0 ? (

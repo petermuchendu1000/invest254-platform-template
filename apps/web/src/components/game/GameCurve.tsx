@@ -1,6 +1,6 @@
 'use client';
 
-import { useGameSocket } from '@/lib/game/GameSocketProvider';
+import { useGameSocketApi } from '@/lib/game/GameSocketProvider';
 import { CurveCanvas } from '@/components/game/CurveCanvas';
 import { CandleChart } from '@/components/game/CandleChart';
 import { useBrand } from '@/lib/brand/BrandProvider';
@@ -15,7 +15,7 @@ const WINDOW_MS = 60_000;
  * so brands paid for a chart their players never saw. Both views share the authoritative tick stream.
  */
 export function GameCurve() {
-  const { getTicks, getLastTick } = useGameSocket();
+  const { getTicks, getLastTick } = useGameSocketApi();
   const brand = useBrand();
   const tvType = tradingViewTypeOf(chartStyleOf(brand.chartStyle));
 

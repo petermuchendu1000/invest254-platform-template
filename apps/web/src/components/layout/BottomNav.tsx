@@ -4,6 +4,9 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/cn';
+import { useLiveChat } from '@/lib/chat/liveChat';
+import { useLiveChatUnread } from '@/components/chat/LiveChatPanel';
+import { DIcon } from '@/components/game/digits/icons';
 
 type IconProps = { className?: string };
 
@@ -50,6 +53,8 @@ const items = [
 
 export function BottomNav() {
   const pathname = usePathname();
+  const setChat = useLiveChat((s) => s.setOpen);
+  const unread = useLiveChatUnread();
   return (
     <nav className="pb-safe fixed inset-x-0 bottom-0 z-30 border-t border-border bg-surface md:hidden">
       <ul className="mx-auto flex w-full max-w-app items-stretch px-2 py-1.5">
@@ -73,6 +78,15 @@ export function BottomNav() {
             </li>
           );
         })}
+        {/* Chat lives in the bar on phones (BUGLOG #100: the floating button covered SELL). */}
+        <li className="flex-1">
+          <button type="button" onClick={() => setChat(true)} aria-label={`Chat${unread ? ` (${unread} new)` : ''}`}
+            className="relative mx-auto flex w-full flex-col items-center justify-center gap-1 rounded-xl py-1.5 text-[10px] font-semibold tracking-wide text-muted transition hover:text-fg">
+            <DIcon name="chat" className="h-5 w-5" />
+            CHAT
+            {unread ? <span className="absolute right-[22%] top-0.5 grid h-4 min-w-4 place-items-center rounded-full bg-down px-1 text-[9px] font-bold text-white">{unread}</span> : null}
+          </button>
+        </li>
       </ul>
     </nav>
   );

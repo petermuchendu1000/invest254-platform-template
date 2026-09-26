@@ -21,15 +21,18 @@ type RangePreset = 'all' | 'today' | 'yesterday' | '7d' | '30d' | 'custom';
 function resolveRange(preset: RangePreset, from: string, to: string): { fromMs: number | null; toMs: number | null } {
   const now = Date.now();
   const DAY = 24 * 60 * 60 * 1000;
+  // Days are EAT (UTC+3, no DST) — the business day of every brand, whatever the viewer's device says
+  // (BUGLOG #114: "today" used the browser's midnight).
+  const EAT = 3 * 60 * 60 * 1000;
+  const midnight = Math.floor((now + EAT) / DAY) * DAY - EAT;
   if (preset === 'all') return { fromMs: null, toMs: null };
-  if (preset === 'today') { const d = new Date(); d.setHours(0, 0, 0, 0); return { fromMs: d.getTime(), toMs: now }; }
-  // yesterday: local midnight yesterday .. local midnight today (a full closed calendar day).
-  if (preset === 'yesterday') { const end = new Date(); end.setHours(0, 0, 0, 0); return { fromMs: end.getTime() - DAY, toMs: end.getTime() }; }
+  if (preset === 'today') return { fromMs: midnight, toMs: now };
+  if (preset === 'yesterday') return { fromMs: midnight - DAY, toMs: midnight };
   if (preset === '7d') return { fromMs: now - 7 * DAY, toMs: now };
   if (preset === '30d') return { fromMs: now - 30 * DAY, toMs: now };
   // custom: local midnight of `from` .. end-of-day of `to` (inclusive). Fall back to all-time if unset.
-  const f = from ? new Date(`${from}T00:00:00`).getTime() : NaN;
-  const t = to ? new Date(`${to}T00:00:00`).getTime() + DAY : NaN;
+  const f = from ? new Date(`${from}T00:00:00+03:00`).getTime() : NaN;
+  const t = to ? new Date(`${to}T00:00:00+03:00`).getTime() + DAY : NaN;
   return { fromMs: Number.isFinite(f) ? f : null, toMs: Number.isFinite(t) ? t : null };
 }
 
@@ -63,6 +66,8 @@ export default function PlatformOverviewPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const { fromMs, toMs } = useMemo(() => resolveRange(preset, customFrom, customTo), [preset, customFrom, customTo]);
   const rangeActive = fromMs != null && toMs != null;
+  // A half-picked or reversed custom range shows "—", never all-time totals under a custom label.
+  const customPending = preset === 'custom' && !(fromMs != null && toMs != null && fromMs < toMs);
   const perf = usePlatformPerformance(fromMs, toMs);
   const perfById = useMemo(
     () => new Map((perf.data?.sites ?? []).map((p: SitePerformance) => [p.siteId, p])),
@@ -160,7 +165,6 @@ export default function PlatformOverviewPage() {
     <>
       <PageHeader
         title="Overview"
-        subtitle="Every brand at a glance: live players, live deposits and performance for the period you pick."
         actions={<Button size="sm" onClick={() => router.push('/platform/onboard')}>Onboard brand</Button>}
       />
 
@@ -171,8 +175,13 @@ export default function PlatformOverviewPage() {
         <StatCard label="Brands" value={siteList.length} hint={`${kpis.filter((k) => k.status === 'active').length} active`} />
         {!live.denied ? <LiveOnlineCard total={live.totalOnline} connected={live.connected} /> : null}
         <StatCard label="Players" value={formatNumber(totals.users)} hint="registered" />
-        <StatCard label={`Deposits · ${rangeLabel}`} money={windowTotals.deposits} tone="up" className="col-span-2 sm:col-span-1 2xl:col-span-2" />
-        <StatCard label={`House revenue · ${rangeLabel}`} money={windowTotals.ggr} tone={windowTotals.ggr >= 0 ? 'up' : 'down'} className="col-span-2 sm:col-span-1 2xl:col-span-2" />
+        {customPending ? (<>
+          <StatCard label={`Deposits · ${rangeLabel}`} value="—" className="col-span-2 sm:col-span-1 2xl:col-span-2" />
+          <StatCard label={`House revenue · ${rangeLabel}`} value="—" className="col-span-2 sm:col-span-1 2xl:col-span-2" />
+        </>) : (<>
+          <StatCard label={`Deposits · ${rangeLabel}`} money={windowTotals.deposits} tone="up" className="col-span-2 sm:col-span-1 2xl:col-span-2" />
+          <StatCard label={`House revenue · ${rangeLabel}`} money={windowTotals.ggr} tone={windowTotals.ggr >= 0 ? 'up' : 'down'} className="col-span-2 sm:col-span-1 2xl:col-span-2" />
+        </>)}
         <StatCard label="Open positions" value={formatNumber(totals.open)} />
         <StatCard label="Needs setup" value={needsSetup} tone={needsSetup > 0 ? 'warn' : 'up'} hint="website address not live yet" />
       </div>

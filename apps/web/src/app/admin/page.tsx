@@ -7,16 +7,15 @@ import { PageHeader, Section, Empty } from '@/components/admin/ui';
 import { KpiCard, kesCompact, trendDelta, type Point } from '@/components/admin/charts';
 import { useOverview, useRtp, useReportDaily } from '@/lib/admin/hooks';
 
+/** yyyy-mm-dd of the EAT (UTC+3) calendar day `days` ago — the brands' business day (BUGLOG #114). */
 function isoDaysAgo(days: number): string {
-  const d = new Date();
-  d.setDate(d.getDate() - days);
-  return d.toISOString().slice(0, 10);
+  return new Date(Date.now() + 3 * 3_600_000 - days * 86_400_000).toISOString().slice(0, 10);
 }
 
 export default function AdminOverviewPage() {
   return (
     <>
-      <PageHeader title="Overview" subtitle="The last 30 days at a glance, and what needs you now. Details live on the page each item links to." />
+      <PageHeader title="Overview" />
       <TrendsSection />
       <Attention />
     </>
@@ -57,7 +56,7 @@ function Attention() {
 
 /** 30-day financial trend charts, derived from the daily report time series. */
 function TrendsSection() {
-  const from = useMemo(() => isoDaysAgo(30), []);
+  const from = useMemo(() => isoDaysAgo(29), []);   // 30 days including today
   const to = useMemo(() => isoDaysAgo(0), []);
   const q = useReportDaily({ from, to });
 
@@ -98,7 +97,7 @@ function TrendsSection() {
           {/* Full daily cash-flow + GGR charts and per-day/per-player breakdowns live on Reports —
               linked here (not duplicated) so the Overview stays a compact launchpad. */}
           <Link href="/admin/reports" className="self-start text-xs font-medium text-accent hover:underline">
-            Full daily / date-range breakdowns → Reports
+            Reports →
           </Link>
         </div>
       )}

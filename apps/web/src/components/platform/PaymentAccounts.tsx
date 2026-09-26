@@ -126,7 +126,7 @@ function GoLive({ type, id, name, state, status, affected, configs }: {
   const canGo = ready.length > 0 && (payouts || depositsOnly);
   const shortcode = configs.mpesa?.settings.shortcode;
   const b2c = configs.mpesa?.settings.b2c_shortcode || shortcode;
-  const fail = (e: unknown) => toast.push({ tone: 'error', title: 'Not changed', description: e instanceof ApiError ? e.message : String(e) });
+  const fail = (e: unknown) => toast.push({ tone: 'error', title: 'Not changed', description: e instanceof ApiError ? e.message : 'Try again.' });
 
   return (
     <div className="flex flex-col gap-3 rounded-2xl border border-border bg-surface p-4">
@@ -206,7 +206,7 @@ function GatewayCard({ type, id, code, schema, config, status, open, onToggle }:
     for (const f of schema.fields) { const g = f.group ?? 'Account'; m.set(g, [...(m.get(g) ?? []), f]); }
     return [...m.entries()];
   }, [schema]);
-  const fail = (e: unknown) => toast.push({ tone: 'error', title: 'Not saved', description: e instanceof ApiError ? e.message : String(e) });
+  const fail = (e: unknown) => toast.push({ tone: 'error', title: 'Not saved', description: e instanceof ApiError ? e.message : 'Try again.' });
   const statusChip = !status.configured ? <Chip tone="muted">Not set up</Chip>
     : status.depositsReady || status.payoutsReady ? <Chip tone="up">{[status.depositsReady && 'Deposits', status.payoutsReady && 'Payouts'].filter(Boolean).join(' + ')} ready</Chip>
     : <Chip tone="warn">Incomplete</Chip>;

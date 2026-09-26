@@ -4,6 +4,7 @@ import type { MarketerRollupRow } from "@invest254/engine";
 import type { ApiDeps } from "./app.js";
 import type { ProvisionResult, DomainStatus } from "./domains.js";
 import { parseOverridePatch } from "./app.admin.js";
+import { enforcedCents, validateNative } from "./stakelimits.js";
 
 // ── Instant client onboarding (docs/21) — brand + economy + optional domain provisioning ──
 export interface OnboardColors { primary?: string; bg?: string; accent?: string }
@@ -128,6 +129,8 @@ const PLATFORM_STATUS: Readonly<Record<string, number>> = {
   PLATFORM_REQUIRED: 400,
   TOTAL_REQUIRED: 400,
   INVALID_LOOKBACK: 400,
+  // Economy guard (DB trigger): more than 6 economy changes in an hour for one brand. Was a bare 500.
+  CONFIG_CHANGE_RATE_LIMIT: 429,
 };
 
 async function domain<T>(fn: () => Promise<T>): Promise<T> {
@@ -139,6 +142,7 @@ async function domain<T>(fn: () => Promise<T>): Promise<T> {
     // Surface the Postgres CHECK name for an infeasible economy as a clean 422.
     const code = /site_cfg_feasible/.test(message) ? "site_cfg_feasible" : message.split(":")[0]!.trim();
     const status = PLATFORM_STATUS[code];
+    if (code === "CONFIG_CHANGE_RATE_LIMIT") throw new ApiError(code, "6 economy changes in the last hour for this brand. Try again later.", 429);
     if (status) throw new ApiError(code, message, status);
     throw err;
   }
@@ -455,7 +459,45 @@ export function registerPlatformRoutes(router: Router, deps: ApiDeps): void {
     // may not set them via a site patch — it requests them (addon flow) and the system admin grants.
     if ((ctx.claims?.role ?? "") !== "platform_superadmin" && ("chart_style" in patch || "trade_ui" in patch))
       throw new ApiError("ADDON_SYSTEM_ADMIN_ONLY", "price chart and trade interface are assigned by the system admin — request the change instead", 403);
-    return domain(() => deps.platform.updateSite(ctx.claims!.userId, ctx.claims!.role ?? "player", ctx.params.id!, patch));
+    const out = await domain(() => deps.platform.updateSite(ctx.claims!.userId, ctx.claims!.role ?? "player", ctx.params.id!, patch));
+    // a currency change voids stake limits set in the old currency (KES 50 must not become $50)
+    if ("currency" in patch && deps.stakeNative) await deps.stakeNative.clear(ctx.params.id!);
+    return out;
+  });
+
+  // ── STAKE-1 (0170): stake limits in the brand's own currency (multiples of 5). The engine keeps
+  //    enforcing KES cents, written here from the native values at the live rate (stakelimits.ts). ──
+  const stakeLimitsView = async (siteId: string) => {
+    const [cur, nat, cfg] = await Promise.all([
+      deps.stakeNative!.currency(siteId), deps.stakeNative!.get(siteId),
+      deps.gameConfigForSite ? deps.gameConfigForSite(siteId) : Promise.resolve(null),
+    ]);
+    if (!cur) throw new ApiError("SITE_NOT_FOUND", "no such brand", 404);
+    return { currency: cur, min: nat?.min ?? null, max: nat?.max ?? null,
+      minStakeCents: cfg?.minStakeCents ?? null, maxStakeCents: cfg?.maxStakeCents ?? null };
+  };
+  router.get(`${BASE}/platform/sites/:id/stake-limits`, auth, platformAdmin, scopeSiteParam, async (ctx: Ctx) => {
+    if (!deps.stakeNative) throw new ApiError("NOT_AVAILABLE", "stake limits are not available", 501);
+    return stakeLimitsView(ctx.params.id!);
+  });
+  router.put(`${BASE}/platform/sites/:id/stake-limits`, auth, platformAdmin, scopeSiteParam, async (ctx: Ctx) => {
+    if (!deps.stakeNative) throw new ApiError("NOT_AVAILABLE", "stake limits are not available", 501);
+    const body = asObject(ctx.body);
+    const v = validateNative(body.min, body.max);
+    if (typeof v === "string") throw new ApiError("VALIDATION", v, 400);
+    const siteId = ctx.params.id!;
+    const currency = await deps.stakeNative.currency(siteId);
+    if (!currency) throw new ApiError("SITE_NOT_FOUND", "no such brand", 404);
+    const rate = currency === "KES" ? 1 : await (deps.fxRate ?? (async () => 0))(currency).catch(() => 0);
+    const cents = enforcedCents(v.min, v.max, currency, rate);
+    if (!cents) throw new ApiError("FX_UNAVAILABLE", "no exchange rate for this currency right now; try again shortly", 503);
+    // the engine's own validation + versioning + audit apply to the enforced cents; an unchanged pair is
+    // not re-written (the economy guard allows 6 changes an hour per brand)
+    const now = deps.gameConfigForSite ? await deps.gameConfigForSite(siteId) : null;
+    if (!now || now.minStakeCents !== cents.minCents || now.maxStakeCents !== cents.maxCents)
+      await domain(() => deps.platform.setSiteConfig(ctx.claims!.userId, ctx.claims!.role ?? "player", siteId, { min_stake: cents.minCents, max_stake: cents.maxCents }));
+    await deps.stakeNative.set(siteId, ctx.claims!.userId, v.min, v.max);
+    return stakeLimitsView(siteId);
   });
 
   router.patch(`${BASE}/platform/sites/:id/config`, auth, platformAdmin, scopeSiteParam, async (ctx: Ctx) => {

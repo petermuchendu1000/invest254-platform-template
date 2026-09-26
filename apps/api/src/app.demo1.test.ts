@@ -78,3 +78,12 @@ test("DEMO-2 API: a player in demo mode cannot withdraw; a demo-locked marketer 
     assert.equal(calls, 2, "real mode reaches the payments service");
   } finally { await api.close(); }
 });
+
+test("DEMO-2: the demo target stays inside the refill bounds for any currency (BUGLOG #118)", async () => {
+  const { demoTargetCents } = await import("./demo.pg.js");
+  assert.equal(demoTargetCents(1, "KES"), 1_000_000);
+  assert.equal(demoTargetCents(28.7, "UGX"), 100_000, "UGX 10,000 ≈ KES 350 → the KES 1,000 floor");
+  assert.equal(demoTargetCents(0.0077226, "USD"), Math.ceil((10_000 / 0.0077226) * 100));
+  assert.equal(demoTargetCents(0.0000001, "XXX"), 10_000_000_000, "capped");
+  assert.equal(demoTargetCents(0, "USD"), 1_000_000, "no rate → KES 10,000");
+});

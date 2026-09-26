@@ -86,7 +86,6 @@ export default function AnnouncementsPage() {
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Announcements"
-        subtitle="Send a notice to your players: pick a template, adjust the wording, choose who gets it."
       />
 
       {templatesQ.isLoading ? (

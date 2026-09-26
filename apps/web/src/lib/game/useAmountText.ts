@@ -16,7 +16,9 @@ export function useAmountText() {
       const v = toDisplay(Math.abs(cents));
       return isForeign
         ? v.toLocaleString(locale, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-        : Math.round(v).toLocaleString(locale);
+        // whole shillings, but never rounded UP (BUGLOG #105: KES 99.50 read "100" and a 100 stake was refused)
+        : Number.isInteger(Math.round(v * 100) / 100) ? Math.round(v).toLocaleString(locale)
+          : v.toLocaleString(locale, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     };
     return {
       code,
