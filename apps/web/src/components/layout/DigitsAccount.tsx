@@ -9,6 +9,8 @@ import { useBrand } from '@/lib/brand/BrandProvider';
 import { useSession } from '@/lib/auth/session';
 import { useAuthActions } from '@/lib/auth/useAuthActions';
 import { useWallet, useSetAccountMode, useTopupDemo } from '@/lib/wallet/hooks';
+// aliased: this file already exports its own `AccountMenu` (the avatar menu).
+import { AccountMenu as AccountPanel } from '@/components/wallet/AccountMenu';
 import { useDepositUi } from '@/lib/wallet/depositUi';
 import { useAmountText } from '@/lib/game/useAmountText';
 import { useDigitSession } from '@/lib/game/digitSession';
@@ -24,11 +26,13 @@ function useDismiss(open: boolean, close: () => void) {
   const ref = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     if (!open) return;
-    const onDown = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) close(); };
+    // `pointerdown`, not `mousedown`: on a touch screen the synthetic mouse event only arrives after
+    // the tap completes, so a mousedown-only handler makes the popover feel slow to dismiss.
+    const onDown = (e: PointerEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) close(); };
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close(); };
-    document.addEventListener('mousedown', onDown);
+    document.addEventListener('pointerdown', onDown);
     document.addEventListener('keydown', onKey);
-    return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey); };
+    return () => { document.removeEventListener('pointerdown', onDown); document.removeEventListener('keydown', onKey); };
   }, [open, close]);
   return ref;
 }
@@ -62,9 +66,6 @@ export function AccountPill({ compact = false }: { compact?: boolean }) {
   if (!data) return null;
   const demo = data.mode === 'demo';
   const spend = (data.real ?? 0) + (data.bonus ?? 0);
-  const realB = data.realBalance ?? (demo ? 0 : data.real ?? 0);
-  const bonusB = data.bonusBalance ?? (demo ? 0 : data.bonus ?? 0);
-  const demoB = data.demoBalance ?? (demo ? data.real ?? 0 : 0);
 
   const switchTo = (mode: 'real' | 'demo') => {
     if (mode === data.mode || setMode.isPending) return;
@@ -73,24 +74,6 @@ export function AccountPill({ compact = false }: { compact?: boolean }) {
       onSuccess: (r) => { setOpen(false); toast.push({ tone: 'success', title: r.mode === 'demo' ? 'Demo' : 'Real', description: amt.text(r.wallet.real + r.wallet.bonus) }); },
       onError: (e) => toast.push({ tone: 'error', title: 'Could not switch', description: e instanceof ApiError ? e.message : 'Try again.' }),
     });
-  };
-
-  const Row = ({ mode, label, cents, dot }: { mode: 'real' | 'demo'; label: string; cents: number; dot: string }) => {
-    const active = (data.mode ?? 'real') === mode;
-    return (
-      <button type="button" role="menuitemradio" aria-checked={active} onClick={() => switchTo(mode)}
-        disabled={mode === 'real' && data.modeLocked}
-        className={cn('flex w-full items-center justify-between rounded-lg px-3 py-2.5 text-left transition disabled:opacity-50', active ? 'bg-surface-2' : 'hover:bg-surface-2/60')}>
-        <span className="flex items-center gap-2.5">
-          <span className={cn('h-2 w-2 rounded-full', dot)} />
-          <span>
-            <span className="block text-[13px] font-semibold text-fg">{label}</span>
-            <span className="block font-mono text-[12px] tabular-nums text-muted">{amt.prefix}{amt.num(cents)}</span>
-          </span>
-        </span>
-        {active ? <span className="text-[11px] font-semibold text-accent">Active</span> : null}
-      </button>
-    );
   };
 
   return (
@@ -103,7 +86,7 @@ export function AccountPill({ compact = false }: { compact?: boolean }) {
         aria-label={`${demo ? 'Demo' : 'Real'} account, ${amt.text(spend)}. Switch account`}
         className={cn('flex items-center rounded-xl border bg-surface/70 py-1 pl-1 transition hover:border-accent/50', demo ? 'border-warn/50' : 'border-border', compact ? 'h-10 gap-1.5 pr-1.5' : 'h-11 gap-2 pr-2')}
       >
-        <span className={cn('grid shrink-0 place-items-center rounded-full font-bold', demo ? 'bg-warn text-black' : 'bg-down text-white', compact ? 'h-6 w-6 text-[10px]' : 'h-7 w-7 text-[11px]')}>{demo ? 'D' : 'R'}</span>
+        <span className={cn('grid shrink-0 place-items-center rounded-full font-bold', demo ? 'bg-warn/15 text-warn' : 'bg-accent/15 text-accent', compact ? 'h-6 w-6 text-[10px]' : 'h-7 w-7 text-[11px]')}>{demo ? 'D' : 'R'}</span>
         {auto && compact ? (
           <span className="flex items-center gap-1.5 whitespace-nowrap rounded-full bg-bg px-2.5 py-1 text-[11px] font-semibold text-fg">
             <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent" />Auto · {auto.side.toUpperCase()}
@@ -119,26 +102,19 @@ export function AccountPill({ compact = false }: { compact?: boolean }) {
         <DIcon name="chevronDown" className={cn('h-3.5 w-3.5 text-muted', compact && 'hidden min-[360px]:block')} />
       </button>
       {open ? (
-        <div className="fixed inset-x-2 top-[3.75rem] z-50 rounded-xl border border-border bg-surface p-2 shadow-2xl sm:absolute sm:inset-x-auto sm:right-0 sm:top-[calc(100%+8px)] sm:w-72" role="dialog" aria-label="Switch account">
-          <div className="px-2 pb-2 pt-1 text-[10px] font-semibold uppercase tracking-wider text-muted">Switch account</div>
-          <div role="menu" className="flex flex-col gap-1">
-            <Row mode="real" label="Real Account" cents={realB + bonusB} dot="bg-blue-500" />
-            <Row mode="demo" label="Demo Account" cents={demoB} dot="bg-down" />
-          </div>
-          {bonusB > 0 ? <p className="px-3 pt-1 text-[11px] tabular-nums text-muted">incl. {amt.prefix}{amt.num(bonusB)} bonus</p> : null}
-          <button type="button" disabled={topup.isPending}
-            onClick={() => topup.mutate(undefined, {
-              onSuccess: (r) => toast.push({ tone: 'success', title: 'Demo', description: amt.text(r.demoBalance) }),
-              onError: (e) => toast.push({ tone: 'error', title: 'Could not refresh', description: e instanceof ApiError ? e.message : 'Try again.' }),
-            })}
-            className="mt-2 flex w-full items-center justify-center gap-2 border-t border-border pt-2.5 text-[12px] font-medium text-muted hover:text-fg disabled:opacity-50">
-            <DIcon name="refresh" className="h-3.5 w-3.5" />Refresh demo balance
-          </button>
-          <div className="mt-2 grid grid-cols-2 gap-2">
-            <button type="button" onClick={() => { setOpen(false); openDeposit(); }} className="rounded-lg bg-accent py-2 text-[12px] font-bold text-accent-fg">Deposit</button>
-            <button type="button" onClick={() => { setOpen(false); openWithdraw(); }} className="rounded-lg border border-border py-2 text-[12px] font-semibold text-fg hover:border-accent/50">Withdraw</button>
-          </div>
-        </div>
+        <AccountPanel
+          wallet={data}
+          fmt={(c: number) => amt.text(c)}
+          switching={setMode.isPending}
+          toppingUp={topup.isPending}
+          onSwitch={switchTo}
+          onDeposit={() => { setOpen(false); openDeposit(); }}
+          onWithdraw={() => { setOpen(false); openWithdraw(); }}
+          onTopupDemo={() => topup.mutate(undefined, {
+            onSuccess: (r) => toast.push({ tone: 'success', title: 'Demo balance topped up', description: amt.text(r.demoBalance) }),
+            onError: (e) => toast.push({ tone: 'error', title: 'Could not top up', description: e instanceof ApiError ? e.message : 'Try again.' }),
+          })}
+        />
       ) : null}
     </div>
   );

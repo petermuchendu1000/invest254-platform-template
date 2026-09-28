@@ -58,3 +58,44 @@ test("payhero deposit: refused when the gateway is switched off for the brand", 
     assert.equal((await json(res)).error.code, "PROVIDER_DISABLED");
   } finally { await api.close(); }
 });
+
+// ── PayHero Lipwa (hosted multi-channel) route ───────────────────────────────────────────────────
+
+test("payhero lipwa: POST /deposits/payhero/lipwa -> 202 with a checkout URL referencing the txId", async () => {
+  const api = await startTestApi();
+  try {
+    api.payRepo.setProviders([{ code: "payhero", displayName: "PayHero" }]);
+    const res = await req(api, "POST", "/api/v1/deposits/payhero/lipwa", { token: PLAYER, body: { amount: 50_000 } });
+    assert.equal(res.status, 202);
+    const b = await json(res);
+    assert.ok(b.transactionId && b.lipwaUrl);
+    assert.equal(b.reference, b.transactionId);           // reference === txId (unambiguous ledger match)
+    assert.match(b.lipwaUrl, new RegExp(`reference=${b.transactionId}`));
+  } finally { await api.close(); }
+});
+
+test("payhero lipwa: refused when PayHero is switched off, and honours the deposit floor", async () => {
+  const api = await startTestApi();
+  try {
+    api.payRepo.setProviders([{ code: "mpesa", displayName: "M-Pesa" }]); // PayHero off
+    assert.equal((await req(api, "POST", "/api/v1/deposits/payhero/lipwa", { token: PLAYER, body: { amount: 50_000 } })).status, 403);
+    api.payRepo.setProviders([{ code: "payhero", displayName: "PayHero" }]);
+    assert.equal((await req(api, "POST", "/api/v1/deposits/payhero/lipwa", { token: PLAYER, body: { amount: 9_999 } })).status, 400);
+    assert.equal((await req(api, "POST", "/api/v1/deposits/payhero/lipwa", { token: PLAYER, body: {} })).status, 400);
+  } finally { await api.close(); }
+});
+
+// ── PayHero manual Pay Bill claim route ──────────────────────────────────────────────────────────
+
+test("payhero paybill claim: gated on PayHero + validates the code + unknown code is not_found (no credit)", async () => {
+  const api = await startTestApi({ startingBalanceCents: 0 });
+  try {
+    api.payRepo.setProviders([{ code: "mpesa", displayName: "M-Pesa" }]); // PayHero off
+    assert.equal((await req(api, "POST", "/api/v1/deposits/payhero/paybill/claim", { token: PLAYER, body: { code: "X" } })).status, 403);
+    api.payRepo.setProviders([{ code: "payhero", displayName: "PayHero" }]);
+    assert.equal((await req(api, "POST", "/api/v1/deposits/payhero/paybill/claim", { token: PLAYER, body: {} })).status, 400);
+    const unknown = await req(api, "POST", "/api/v1/deposits/payhero/paybill/claim", { token: PLAYER, body: { code: "NOPE123" } });
+    assert.equal(unknown.status, 200);
+    assert.equal((await json(unknown)).status, "not_found");
+  } finally { await api.close(); }
+});

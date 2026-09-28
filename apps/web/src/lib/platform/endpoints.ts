@@ -113,6 +113,21 @@ export interface PoolOverviewRowDto {
   reservedCents: number; availableCents: number; todaySet: boolean; pendingCount: number; pendingCents: number;
   paid7dCents: number; lastChangedAtMs: number | null;
 }
+/**
+ * 0173 — the bonuses switch console. `effective` is the composed answer (system AND platform AND
+ * brand): a brand whose own switch is on still grants nothing while a level above it is off, and the
+ * screen says so rather than showing a switch with no effect.
+ */
+export interface BonusBrandDto { siteId: string; name: string; slug: string; status: string; enabled: boolean; effective: boolean }
+export interface BonusesDto {
+  platformId: string; platformName: string | null;
+  platformEnabled: boolean; systemEnabled: boolean; brands: BonusBrandDto[];
+}
+export interface BonusSwitchesDto {
+  siteId: string; platformId: string | null;
+  system: boolean; platform: boolean; brand: boolean; effective: boolean;
+  amountCents: number; wageringX: number;
+}
 export type PoolAutoMode = 'dynamic' | 'equal' | 'off';
 export interface PoolAutoSettingsDto {
   platformId: string; mode: PoolAutoMode; dailyTotalCents: number | null; lookbackDays: number; isDefault: boolean;
@@ -209,6 +224,13 @@ export const platformApi = {
     apiFetch<Page<PlatformAuditRowDto>>('/platform/audit-log', { token: t, query: { platform: q.platformId, site: q.siteId, cursor: q.cursor, limit: q.limit } }),
   // ── Global config console (migration 0092) ──
   globalConfig: (t: string) => apiFetch<{ config: GlobalConfigDto }>('/platform/global-config', { token: t }),
+  // ── Bonuses on/off, per platform and per brand (migration 0173) ──
+  bonuses: (t: string, platformId?: string) =>
+    apiFetch<BonusesDto>('/platform/bonuses', { token: t, query: { platform: platformId } }),
+  setPlatformBonuses: (t: string, enabled: boolean, platformId?: string) =>
+    apiFetch<BonusesDto>('/platform/bonuses', { method: 'PUT', token: t, body: { enabled }, query: { platform: platformId } }),
+  setBrandBonuses: (t: string, siteId: string, enabled: boolean) =>
+    apiFetch<BonusSwitchesDto>(`/platform/sites/${siteId}/bonuses`, { method: 'PUT', token: t, body: { enabled } }),
   // ── Payment-gateway provider switches (migration 0116) ──
   paymentProviders: (t: string) => apiFetch<PaymentProvidersDto>('/platform/payment-providers', { token: t }),
   setProviderGlobal: (t: string, code: string, enabled: boolean) =>

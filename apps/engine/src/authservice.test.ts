@@ -98,14 +98,68 @@ test("login is NOT gated on status — a limited account can still sign in to de
   const { auth } = svc(repo);
   const reg = await auth.register({ phone: "0712345678", username: "alice", password: "Password1" });
   // A suspended (limited) player can still log in — trading/withdrawal are blocked at the money
-  // layer, but the account must be able to deposit and view its balance.
-  repo.setStatus("254712345678", "suspended");
+  // layer, but the account must be able to deposit and view its balance. (Set by id so the mutation
+  // definitely lands on the account — the #7 operator gate must NOT bleed onto players.)
+  repo.adminSetStatus(reg.userId, "suspended");
   const s1 = await auth.login({ phone: "0712345678", password: "Password1" });
   assert.equal(s1.userId, reg.userId);
   // Even a banned account can sign in (so it can still deposit); cash-out is blocked elsewhere.
-  repo.setStatus("254712345678", "banned");
+  repo.adminSetStatus(reg.userId, "banned");
   const s2 = await auth.login({ phone: "0712345678", password: "Password1" });
   assert.equal(s2.userId, reg.userId);
+});
+
+test("login refuses a SUSPENDED operator — an admin must be active to sign in (#7)", async () => {
+  const repo = new InMemoryIdentityRepository();
+  const { auth } = svc(repo);
+  const reg = await auth.register({ phone: "0712345678", username: "boss", password: "Password1" });
+  repo._setRole(reg.userId, "admin");          // promote to a privileged operator
+  repo.adminSetStatus(reg.userId, "suspended");
+  await assert.rejects(() => auth.login({ phone: "0712345678", password: "Password1" }), /ACCOUNT_SUSPENDED/);
+});
+
+test("login refuses a BANNED operator with ACCOUNT_BANNED (#7)", async () => {
+  const repo = new InMemoryIdentityRepository();
+  const { auth } = svc(repo);
+  const reg = await auth.register({ phone: "0712345678", username: "boss", password: "Password1" });
+  repo._setRole(reg.userId, "platform_admin");
+  repo.adminSetStatus(reg.userId, "banned");
+  await assert.rejects(() => auth.login({ phone: "0712345678", password: "Password1" }), /ACCOUNT_BANNED/);
+  // Restoring the operator to active lets them back in — the gate tracks live status, not a one-way flag.
+  repo.adminSetStatus(reg.userId, "active");
+  const s = await auth.login({ phone: "0712345678", password: "Password1" });
+  assert.equal(s.userId, reg.userId);
+});
+
+test("assertAccountActive revokes a banned/suspended operator's live token but admits an active one (#7)", async () => {
+  const repo = new InMemoryIdentityRepository();
+  const { auth } = svc(repo);
+  const reg = await auth.register({ phone: "0712345678", username: "boss", password: "Password1" });
+  repo._setRole(reg.userId, "admin");
+  // Active admin: the token stays usable.
+  await auth.assertAccountActive(reg.userId, "admin");
+  // Banned after the token was issued: the NEXT request is rejected, without waiting for expiry.
+  repo.adminSetStatus(reg.userId, "banned");
+  await assert.rejects(() => auth.assertAccountActive(reg.userId, "admin"), /ACCOUNT_INACTIVE/);
+  repo.adminSetStatus(reg.userId, "suspended");
+  await assert.rejects(() => auth.assertAccountActive(reg.userId, "admin"), /ACCOUNT_INACTIVE/);
+});
+
+test("assertAccountActive never gates a player token — no status check, no DB read (#7)", async () => {
+  const repo = new InMemoryIdentityRepository();
+  const { auth } = svc(repo);
+  const reg = await auth.register({ phone: "0712345678", username: "alice", password: "Password1" });
+  // Even if the profile read would blow up, a non-privileged token must short-circuit before it.
+  repo.getProfile = async () => { throw new Error("should not be read for a player"); };
+  await auth.assertAccountActive(reg.userId, "player");     // resolves — player is never gated
+  await auth.assertAccountActive(reg.userId, "marketer");   // marketer is not a privileged operator
+});
+
+test("assertAccountActive fails CLOSED when a privileged profile is missing (#7)", async () => {
+  const repo = new InMemoryIdentityRepository();
+  const { auth } = svc(repo);
+  // No such account: a privileged token pointing at a vanished profile is rejected, not admitted.
+  await assert.rejects(() => auth.assertAccountActive("00000000-0000-0000-0000-000000000000", "admin"), /ACCOUNT_INACTIVE/);
 });
 
 test("AuthService requires a jwt secret", () => {

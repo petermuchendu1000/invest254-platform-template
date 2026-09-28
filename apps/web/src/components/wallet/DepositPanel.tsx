@@ -4,39 +4,45 @@ import { useState } from 'react';
 import { cn } from '@/lib/cn';
 import { DepositForm } from '@/components/wallet/DepositForm';
 import { PayBillDeposit } from '@/components/wallet/PayBillDeposit';
+import { LipwaDeposit } from '@/components/wallet/LipwaDeposit';
 import { useDepositProviders } from '@/lib/wallet/hooks';
-
-type Method = 'stk' | 'megapay' | 'payhero' | 'paybill';
-interface MethodDef { id: Method; label: string }
+import type { DepositMethodDto, DepositProviderDto } from '@/lib/api/types';
 
 /**
- * Deposit surface with a method switch, driven ENTIRELY by the system owner's gateway switches
- * (migration 0116, GET /deposits/providers). The 'mpesa' provider governs the Daraja rails
- * ("STK Push" + "Pay Bill"); the 'megapay' provider governs the "Mega Pay" tab. A gateway the
- * system owner switched off for this brand disappears here — so turning M-Pesa off hides both
- * STK Push and Pay Bill, and turning Mega Pay on adds its tab. Each body owns its own state; the
- * `key` forces a clean remount when switching so a half-typed amount/code never leaks across methods.
+ * Deposit surface, driven ENTIRELY by what the server says this brand can actually serve
+ * (GET /deposits/providers → `methods`).
+ *
+ * The server resolves the system owner's gateway switches (migration 0116) AND each channel's real
+ * readiness, so a channel only appears here if a player can complete it. That distinction matters:
+ * an enabled gateway does NOT imply every rail works — PayHero's Lipwa checkout additionally needs
+ * `lipwa_url`, and the manual Pay Bill is the System owner's and is hidden for a brand on its own
+ * accounts. This panel previously inferred tabs from provider codes and so rendered a "Card & Bank"
+ * tab that threw PAYHERO_LIPWA_NOT_CONFIGURED on submit.
+ *
+ * The gateway BRAND is never shown (docs/35) — the server labels every STK rail "M-Pesa". With one
+ * method the tab strip is hidden entirely. Each body owns its state; `key` forces a clean remount so
+ * a half-typed amount/code never leaks across methods.
  */
+
+/** Legacy fallback: older API builds return only `providers`. One "M-Pesa" STK entry per gateway. */
+function methodsFromProviders(providers: DepositProviderDto[]): DepositMethodDto[] {
+  return providers.map((p, i) => ({
+    id: `${p.code}-stk`,
+    provider: p.code,
+    channel: 'stk' as const,
+    label: providers.length > 1 ? `M-Pesa (${i + 1})` : 'M-Pesa',
+  }));
+}
+
 export function DepositPanel() {
-  const { data: providers, isLoading } = useDepositProviders();
-  const mpesaOn = (providers ?? []).some((p) => p.code === 'mpesa');
-  const megapayOn = (providers ?? []).some((p) => p.code === 'megapay');
-  const payheroOn = (providers ?? []).some((p) => p.code === 'payhero');
+  const { data, isLoading } = useDepositProviders();
+  const methods: DepositMethodDto[] = data?.methods ?? methodsFromProviders(data?.providers ?? []);
 
-  // Gateway brand is hidden from players — every M-Pesa STK rail shows as "M-Pesa" (numbered only when
-  // more than one is enabled at once, which is the rare multi-gateway case).
-  const priorStk = (mpesaOn ? 1 : 0) + (megapayOn ? 1 : 0);
-  const methods: MethodDef[] = [
-    ...(mpesaOn ? [{ id: 'stk' as Method, label: 'M-Pesa' }] : []),
-    ...(megapayOn ? [{ id: 'megapay' as Method, label: mpesaOn ? 'M-Pesa (2)' : 'M-Pesa' }] : []),
-    ...(payheroOn ? [{ id: 'payhero' as Method, label: priorStk > 0 ? `M-Pesa (${priorStk + 1})` : 'M-Pesa' }] : []),
-    ...(mpesaOn ? [{ id: 'paybill' as Method, label: 'Pay Bill' }] : []),
-  ];
-
-  const [method, setMethod] = useState<Method | null>(null);
+  const [method, setMethod] = useState<string | null>(null);
   // Default to the first available method; if the chosen one disappears (switched off mid-session),
   // fall back to the first still-available method.
   const active = method && methods.some((m) => m.id === method) ? method : methods[0]?.id ?? null;
+  const activeMethod = methods.find((m) => m.id === active) ?? null;
 
   if (isLoading) {
     return <p className="px-5 py-6 text-center text-sm text-muted">Loading payment options…</p>;
@@ -75,10 +81,11 @@ export function DepositPanel() {
           </div>
         </div>
       ) : null}
-      {active === 'stk' ? <DepositForm key="stk" provider="mpesa" /> : null}
-      {active === 'megapay' ? <DepositForm key="megapay" provider="megapay" /> : null}
-      {active === 'payhero' ? <DepositForm key="payhero" provider="payhero" /> : null}
-      {active === 'paybill' ? <PayBillDeposit key="paybill" /> : null}
+      {activeMethod?.channel === 'stk' ? (
+        <DepositForm key={activeMethod.id} provider={activeMethod.provider as 'mpesa' | 'megapay' | 'payhero'} />
+      ) : null}
+      {activeMethod?.channel === 'lipwa' ? <LipwaDeposit key={activeMethod.id} /> : null}
+      {activeMethod?.channel === 'paybill' ? <PayBillDeposit key={activeMethod.id} /> : null}
     </div>
   );
 }

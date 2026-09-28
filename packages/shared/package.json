@@ -21,6 +21,7 @@
     "./chatfilter": "./src/chatfilter.ts",
     "./logger": "./src/logger.ts",
     "./fx": "./src/fx.ts",
+    "./geo": "./src/geo.ts",
     "./capabilities": "./src/capabilities.ts"
   }
 }

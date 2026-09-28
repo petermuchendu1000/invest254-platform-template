@@ -4,6 +4,7 @@ import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { useSession } from '@/lib/auth/session';
+import { useIsMarketer } from '@/lib/marketer/isMarketer';
 import { useHydrated } from '@/lib/useHydrated';
 import { MarketerDashboardView } from '@/components/marketer/MarketerDashboardView';
 
@@ -18,16 +19,18 @@ export default function DashboardPage() {
   const token = useSession((s) => s.token);
   const user = useSession((s) => s.user);
   const router = useRouter();
-  const isMarketer = user?.role === 'marketer';
+  const { isMarketer, resolved } = useIsMarketer();
 
   useEffect(() => {
     if (!hydrated) return;
     // No token, or a resolved profile that isn't a marketer -> this page isn't for them.
-    if (!token || (user && !isMarketer)) router.replace('/');
-  }, [hydrated, token, user, isMarketer, router]);
+    // Only bounce once the answer is RESOLVED: redirecting on an unresolved wallet would throw a
+    // marketer back to the trade screen before their own app had a chance to load.
+    if (!token || (resolved && !isMarketer)) router.replace('/');
+  }, [hydrated, token, resolved, isMarketer, router]);
 
   // While hydrating, awaiting the profile, or redirecting a non-marketer, show a neutral skeleton.
-  if (!hydrated || !token || !user || !isMarketer) return <Skeleton className="h-64 w-full" />;
+  if (!hydrated || !token || !user || !resolved || !isMarketer) return <Skeleton className="h-64 w-full" />;
 
   return <MarketerDashboardView />;
 }

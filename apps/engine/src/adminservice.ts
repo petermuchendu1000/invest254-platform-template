@@ -10,6 +10,7 @@ import type {
   ReportRange, DailyReportRow, UserReportRow, AdminDayReport,
   GameConfigRow, GameConfigPatch, RtpMonitor, RealCashRtp, ConfigChangeRow, AdminSeedRow, SeedRotateResult,
   WithdrawalPoolRow,
+  BonusSwitches,
   MpesaConfigRow, MpesaConfigPatch, SetUserRoleResult, UpdateUserDetailsResult,
   AdminPayoutRow, AdminPayoutListQuery, AdminChatModRow,
   AdminUserActivityRow, AdminUserActivityQuery,
@@ -134,6 +135,13 @@ export class AdminService {
   getWithdrawalsEnabled(siteId: string): Promise<boolean> { return this.repo.getWithdrawalsEnabled(siteId); }
   setWithdrawalsEnabled(actorId: string, actorRole: string, siteId: string, enabled: boolean): Promise<boolean> {
     return this.repo.setWithdrawalsEnabled(actorId, actorRole, siteId, enabled);
+  }
+
+  /** 0173 — this brand's bonuses switch plus the system/platform levels above it. */
+  getBonusSwitches(siteId: string): Promise<BonusSwitches> { return this.repo.getBonusSwitches(siteId); }
+  /** 0173 — flip THIS brand's bonuses switch (audited in the RPC). Returns the recomposed levels. */
+  setBonusesEnabled(actorId: string, actorRole: string, siteId: string, enabled: boolean): Promise<BonusSwitches> {
+    return this.repo.setBonusesEnabled(actorId, actorRole, siteId, enabled);
   }
 
   /** Admin-visible M-Pesa config (secrets masked). */

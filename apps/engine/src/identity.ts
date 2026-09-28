@@ -496,10 +496,17 @@ export class InMemoryIdentityRepository implements IdentityRepository, Affiliate
   private seq = 0;
   /** Test knob: cents the in-memory welcome-bonus grant credits (default 0 = inert in tests). */
   welcomeBonusCents = 0;
+  /**
+   * Mirror of fn_bonuses_enabled (0173): the effective switch for a brand — system AND platform AND
+   * brand. Unset = always on, which is the behaviour before the switch existed.
+   */
+  bonusesEnabledForSite?: (siteId: string | null) => boolean;
   private readonly welcomeGranted = new Set<string>();
-  /** Mirror of fn_grant_welcome_bonus: idempotent, returns cents granted (0 = none). */
+  /** Mirror of fn_grant_welcome_bonus: idempotent, brand-aware, returns cents granted (0 = none). */
   async grantWelcomeBonus(userId: string): Promise<number> {
     if (this.welcomeBonusCents <= 0 || this.welcomeGranted.has(userId)) return 0;
+    // Switched off by the system owner, by this brand's platform, or by the brand itself.
+    if (this.bonusesEnabledForSite && !this.bonusesEnabledForSite(this.byId.get(userId)?.siteId ?? null)) return 0;
     this.welcomeGranted.add(userId);
     return this.welcomeBonusCents;
   }

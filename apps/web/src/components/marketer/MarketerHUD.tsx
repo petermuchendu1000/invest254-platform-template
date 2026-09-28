@@ -1,7 +1,7 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import { useSession } from '@/lib/auth/session';
+import { useIsMarketer } from '@/lib/marketer/isMarketer';
 
 /**
  * Covert marketer entry point.
@@ -14,9 +14,11 @@ import { useSession } from '@/lib/auth/session';
  * inline modal). The page owns loading, self-heal enrollment, and the full marketer portal UI.
  */
 export function MarketerHUD() {
-  const role = useSession((s) => s.user?.role);
+  const { isMarketer } = useIsMarketer();
   const router = useRouter();
-  if (role !== 'marketer') return null;
+  // Gated on the money layer's own answer, not the JWT role claim — a marketer whose profile still
+  // reads `player` was previously left with no entry point to the app they withdraw from.
+  if (!isMarketer) return null;
 
   return (
     <button

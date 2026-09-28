@@ -101,3 +101,9 @@ jobs:
           (cd apps/web && npx next start -p 3100 > ../../web.log 2>&1 &)
           for i in $(seq 1 60); do curl -sf -o /dev/null http://127.0.0.1:3100/console && break; sleep 1; done
           WEB_URL=http://127.0.0.1:3100 node apps/web/e2e/roles.e2e.mjs
+          # DEMO-3: the account switcher on a phone viewport (taps, 44px targets, no demo withdrawal).
+          # Reuses the same build + browser, so it costs seconds.
+          SHOTS=0 WEB_URL=http://127.0.0.1:3100 node apps/web/e2e/accountswitcher.e2e.mjs
+          SHOTS=0 PROBE_PATH=/ WEB_URL=http://127.0.0.1:3100 node apps/web/e2e/accountswitcher.e2e.mjs
+          # …and the mode-locked wallet, which must refuse Real WITH a reason rather than look broken.
+          SHOTS=0 MODE_LOCKED=1 WEB_URL=http://127.0.0.1:3100 node apps/web/e2e/accountswitcher.e2e.mjs

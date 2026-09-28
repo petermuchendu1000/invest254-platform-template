@@ -115,7 +115,8 @@ export const GATEWAY_SCHEMAS: Record<string, GatewaySchema> = {
       { key: "account_id", label: "Account ID", kind: "text", secret: false, required: false, placeholder: "e.g. 12038", help: "Your PayHero account ID." },
       { key: "channel_id", label: "Payment channel ID", kind: "text", secret: false, required: true, placeholder: "e.g. 1487", help: "The channel STK pushes are routed through (Get Payment Channels). REQUIRED — deposits fail with PAYHERO_NOT_CONFIGURED without it." },
       { key: "callback_url", label: "Callback URL", kind: "url", secret: false, required: false, placeholder: "https://your-api/…/payhero/callback", help: "Where PayHero posts the STK result." },
-      { key: "base_url", label: "API base URL", kind: "url", secret: false, required: false, default: "https://backend.payhero.co.ke/api/v2", help: "PayHero API base. Override only if instructed." },
+      { key: "lipwa_url", label: "Lipwa checkout link", kind: "url", secret: false, required: false, placeholder: "https://app.payhero.africa/lipwa/12038", help: "Your PayHero Lipwa hosted-checkout link. Enables the in-app card / bank / multi-country deposit option. Leave blank to offer only M-Pesa STK + manual paybill." },
+      { key: "base_url", label: "API base URL", kind: "url", secret: false, required: false, default: "https://backend.payhero.co.ke/api/v2", help: "PayHero API base (use https://backend.payhero.africa/api/v2 for Pay Hero Africa). Override only if instructed." },
     ],
   },
 };

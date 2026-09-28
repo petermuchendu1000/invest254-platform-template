@@ -42,7 +42,11 @@ export interface SiteKpis {
 export interface CreateSiteInput { slug: string; name: string; currency?: string | undefined; primaryDomain?: string | null | undefined; }
 
 // ── Platform tier (Issue 1) — grouping entity above sites ────────────────────────────────────────
-export interface PlatformRow { platformId: string; slug: string; name: string; status: string; ownerUserId: string | null; notes: string | null; }
+export interface PlatformRow {
+  platformId: string; slug: string; name: string; status: string; ownerUserId: string | null; notes: string | null;
+  /** 0173 — platform-wide bonuses switch. Every brand under it needs this ON to grant a bonus. */
+  bonusesEnabled: boolean;
+}
 export interface PlatformKpis { platformId: string; slug: string; name: string; status: string; sites: number; users: number; siteAdmins: number; platformAdmins: number; }
 export interface AppointResult { userId: string; role: string; platformId: string | null; }
 /** docs/42 UI-9: a current platform admin, as the System console lists them (never by raw id alone). */
@@ -176,6 +180,11 @@ export interface PlatformRepository {
   createPlatform(actorId: string, actorRole: string, slug: string, name: string, ownerUserId?: string | null): Promise<string>;
   /** Edit a platform (name/status/owner_user_id/notes). */
   updatePlatform(actorId: string, actorRole: string, platformId: string, patch: JsonPatch): Promise<PlatformRow>;
+  /**
+   * 0173 — flip the PLATFORM-wide bonuses switch (audited). The system owner may flip any platform;
+   * a platform admin only the one its profile is bound to — re-checked in the RPC, not trusted here.
+   */
+  setPlatformBonusesEnabled(actorId: string, actorRole: string, platformId: string, enabled: boolean): Promise<boolean>;
   /** Move a site into a platform (re-parent a brand). */
   assignSiteToPlatform(actorId: string, actorRole: string, siteId: string, platformId: string): Promise<{ siteId: string; platformId: string }>;
   /** Appoint a user as platform_admin of a platform (sets role + platform_id atomically). */
@@ -336,10 +345,11 @@ export class PgPlatformRepository implements PlatformRepository {
 
   async listPlatforms(): Promise<PlatformRow[]> {
     const r = await this.q.query(
-      "select id, slug, name, status, owner_user_id, notes from platforms order by created_at asc", []);
+      "select id, slug, name, status, owner_user_id, notes, bonuses_enabled from platforms order by created_at asc", []);
     return r.rows.map((x: Record<string, unknown>) => ({
       platformId: String(x.id), slug: String(x.slug), name: String(x.name), status: String(x.status),
       ownerUserId: x.owner_user_id == null ? null : String(x.owner_user_id), notes: x.notes == null ? null : String(x.notes),
+      bonusesEnabled: x.bonuses_enabled !== false,
     }));
   }
 
@@ -362,7 +372,14 @@ export class PgPlatformRepository implements PlatformRepository {
       [actorId, actorRole, platformId, JSON.stringify(patch)]);
     const x = r.rows[0] as Record<string, unknown>;
     return { platformId: String(x.id), slug: String(x.slug), name: String(x.name), status: String(x.status),
-      ownerUserId: x.owner_user_id == null ? null : String(x.owner_user_id), notes: x.notes == null ? null : String(x.notes) };
+      ownerUserId: x.owner_user_id == null ? null : String(x.owner_user_id), notes: x.notes == null ? null : String(x.notes),
+      bonusesEnabled: x.bonuses_enabled !== false };
+  }
+
+  async setPlatformBonusesEnabled(actorId: string, actorRole: string, platformId: string, enabled: boolean): Promise<boolean> {
+    const r = await this.q.query("select fn_platform_set_bonuses_enabled($1,$2,$3::uuid,$4) as enabled",
+      [actorId, actorRole, platformId, enabled]);
+    return (r.rows[0] as Record<string, unknown>).enabled !== false;
   }
 
   async assignSiteToPlatform(actorId: string, actorRole: string, siteId: string, platformId: string): Promise<{ siteId: string; platformId: string }> {
@@ -687,6 +704,13 @@ export class InMemoryPlatformRepository implements PlatformRepository {
   kpis: (siteId: string) => Omit<SiteKpis, "siteId" | "slug" | "name" | "status"> = () => ({
     users: 0, depositsCents: 0, withdrawalsCents: 0, ggrCents: 0, openPositions: 0, bets: 0,
   });
+  /**
+   * 0173 — in Postgres the platform switch and the site→platform mapping live in tables the bonus
+   * resolver joins. In memory those live in a different store, so the rig mirrors them across these
+   * two hooks and the composition stays truthful end to end.
+   */
+  onPlatformBonuses?: (platformId: string, enabled: boolean) => void;
+  onSitePlatform?: (siteId: string, platformId: string) => void;
 
   constructor() {
     this.sites.set(DEFAULT_SITE_ID, {
@@ -700,7 +724,7 @@ export class InMemoryPlatformRepository implements PlatformRepository {
       ownerUserId: null,
       config: { ...DEFAULT_CONFIG },
     });
-    this.platforms.set(DEFAULT_PLATFORM_ID, { platformId: DEFAULT_PLATFORM_ID, slug: "default", name: "Default Platform", status: "active", ownerUserId: null, notes: null });
+    this.platforms.set(DEFAULT_PLATFORM_ID, { platformId: DEFAULT_PLATFORM_ID, slug: "default", name: "Default Platform", status: "active", ownerUserId: null, notes: null, bonusesEnabled: true });
     this.sitePlatform.set(DEFAULT_SITE_ID, DEFAULT_PLATFORM_ID);
   }
   private gate(role: string) { if (role !== "platform_superadmin") throw new Error("NOT_AUTHORIZED"); }
@@ -790,7 +814,7 @@ export class InMemoryPlatformRepository implements PlatformRepository {
     if (!s || !n) throw new Error("INVALID_PLATFORM");
     if ([...this.platforms.values()].some((p) => p.slug === s)) throw new Error("SLUG_TAKEN");
     const id = randomUUID();
-    this.platforms.set(id, { platformId: id, slug: s, name: n, status: "active", ownerUserId: ownerUserId ?? null, notes: null });
+    this.platforms.set(id, { platformId: id, slug: s, name: n, status: "active", ownerUserId: ownerUserId ?? null, notes: null, bonusesEnabled: true });
     return id;
   }
 
@@ -804,11 +828,25 @@ export class InMemoryPlatformRepository implements PlatformRepository {
     return { ...p };
   }
 
+  async setPlatformBonusesEnabled(actorId: string, actorRole: string, platformId: string, enabled: boolean): Promise<boolean> {
+    const p = this.platforms.get(platformId);
+    // Mirrors fn_platform_set_bonuses_enabled: the system owner may flip any platform; a platform
+    // admin only its own. Scope comes from the appointed-admin map, never from the caller's word.
+    if (actorRole === "platform_admin") {
+      if (this.platformAdmins.get(actorId) !== platformId) throw new Error("NOT_AUTHORIZED");
+    } else if (actorRole !== "platform_superadmin") throw new Error("NOT_AUTHORIZED");
+    if (!p) throw new Error("PLATFORM_NOT_FOUND");
+    p.bonusesEnabled = enabled;
+    this.onPlatformBonuses?.(platformId, enabled);
+    return enabled;
+  }
+
   async assignSiteToPlatform(_actorId: string, actorRole: string, siteId: string, platformId: string): Promise<{ siteId: string; platformId: string }> {
     this.gate(actorRole);
     if (!this.platforms.has(platformId)) throw new Error("PLATFORM_NOT_FOUND");
     if (!this.sites.has(siteId)) throw new Error("SITE_NOT_FOUND");
     this.sitePlatform.set(siteId, platformId);
+    this.onSitePlatform?.(siteId, platformId);
     return { siteId, platformId };
   }
 
@@ -872,6 +910,18 @@ export class InMemoryPlatformRepository implements PlatformRepository {
     affiliateUserId: string; siteId: string; marketerGlobalId: string | null;
     clients: number; ggrCents: number; commissionCents: number;
   }> = [];
+
+  /**
+   * Test seam: register a brand at a KNOWN id (the API rig resolves brands by host to fixed ids, so
+   * a test that needs a second brand in this store cannot use `createSite`, which mints a fresh id).
+   */
+  seedSite(siteId: string, slug: string, name: string): void {
+    if (this.sites.has(siteId)) return;
+    const base = this.sites.get(DEFAULT_SITE_ID)!;
+    this.sites.set(siteId, { ...base, siteId, slug, name, primaryDomain: null, wordmarkText: null,
+      config: { ...base.config } });
+    this.sitePlatform.set(siteId, DEFAULT_PLATFORM_ID);
+  }
 
   /** Test seam: register a per-site affiliate row with its client/GGR/commission facts. */
   seedMarketer(row: { affiliateUserId: string; siteId: string; clients: number; ggrCents: number; commissionCents: number; marketerGlobalId?: string | null }): void {
@@ -1117,6 +1167,12 @@ export class PlatformService {
     if (!patch || typeof patch !== "object" || Array.isArray(patch)) throw new Error("INVALID_PATCH");
     if (typeof platformId !== "string" || !platformId) throw new Error("INVALID_PLATFORM");
     return this.repo.updatePlatform(actorId, actorRole, platformId, patch);
+  }
+  /** 0173 — platform-wide bonuses switch. Authorization + scope are enforced in the RPC. */
+  setPlatformBonusesEnabled(actorId: string, actorRole: string, platformId: string, enabled: boolean): Promise<boolean> {
+    if (typeof platformId !== "string" || !platformId) throw new Error("INVALID_PLATFORM");
+    if (typeof enabled !== "boolean") throw new Error("INVALID_ARGS");
+    return this.repo.setPlatformBonusesEnabled(actorId, actorRole, platformId, enabled);
   }
   assignSiteToPlatform(actorId: string, actorRole: string, siteId: string, platformId: string): Promise<{ siteId: string; platformId: string }> {
     if (typeof siteId !== "string" || !siteId || typeof platformId !== "string" || !platformId) throw new Error("INVALID_ARGS");

@@ -37,6 +37,9 @@ stake or bump the bonus — removing the gap would remove the deposit trigger.
   `idx_bonuses_one_welcome_per_user`). Demo/marketer (social-proof) accounts are excluded.
 - **Scope:** global + default-on via the `bonus_config` singleton, so every brand (current and future)
   inherits it. Admin-tunable: `welcome_enabled`, `welcome_amount_cents` (20000), `welcome_wagering_x` (3).
+  Since migration `0173` that global flag is only the **first** of three levels — it is ANDed with
+  `platforms.bonuses_enabled` and `sites.bonuses_enabled`, so a platform or a single brand can stop
+  the grant without touching every client. See `docs/50-bonus-switches.md`.
 
 ## 3. Critical pre-existing finding this feature also fixes
 

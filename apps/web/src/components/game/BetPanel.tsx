@@ -27,6 +27,24 @@ const STEP_KES = 50;
 const round2 = (n: number) => Math.round(n * 100) / 100;
 const ceil2 = (n: number) => Math.ceil(n * 100) / 100;
 
+/**
+ * Early close ("Cash Out", then "Close Trade") is HIDDEN.
+ *
+ * `GameService.sell` refuses outright while a brand is in pool mode:
+ *   `if (this.pool?.enabled()) throw new Error("SELL_DISABLED: manual sell is disabled in pool mode")`
+ * — a player must not cash the green peak of a trade the pool controller already decided will lose
+ * (docs/25 decision B). ALL 15 production brands run `pool_mode = true`, so the control could never
+ * do what it said: every tap ended in SELL_DISABLED.
+ *
+ * It is hidden rather than deleted — `sell` stays wired end to end, so turning pool mode off on a
+ * brand brings the feature back by flipping this one flag. The player is told what happens instead,
+ * which is the truth in pool mode: the trade settles itself at expiry.
+ *
+ * (The player's /game/config does not expose poolMode — only the admin one does — so this cannot
+ * currently be derived per brand at runtime.)
+ */
+const EARLY_CLOSE_ENABLED = false;
+
 export function BetPanel() {
   const hydrated = useHydrated();
   const token = useSession((s) => s.token);
@@ -150,7 +168,7 @@ export function BetPanel() {
       return;
     }
     // One tap = one trade. No confirmation step: the stake is already explicit on screen,
-    // the position is reversible via Cash Out, and every extra tap is measurable drop-off.
+    // the position is reversible via Close Trade, and every extra tap is measurable drop-off.
     openPosition({ stakeCents, direction: dir, durationS });
     setResumeDir(null);
   }
@@ -166,20 +184,26 @@ export function BetPanel() {
     );
   }
 
-  // ── A position is in flight — live P&L + cash-out (single-open rule) ─────────
+  // ── A position is in flight — live P&L (single-open rule) ─────────
   if (activePosition) {
-    const canCashOut =
+    const canClose =
       activePosition.phase === 'open' && activePosition.sellable && !!activePosition.positionId;
     return (
       <Card className="flex flex-col gap-2.5 rounded-xl p-3">
         <LivePnl pos={activePosition} />
-        <Button variant="secondary" size="md" fullWidth className="!h-11" disabled={!canCashOut} onClick={sell}>
-          {activePosition.phase === 'settling'
-            ? 'Cashing out…'
-            : canCashOut
-              ? 'Cash Out'
-              : 'Auto-sells at expiry'}
-        </Button>
+        {/* HIDDEN — see EARLY_CLOSE_ENABLED. Kept, not deleted: the moment pool mode is off on any
+            brand this is a working feature again, and `sell` is still wired end to end. */}
+        {EARLY_CLOSE_ENABLED ? (
+          <Button variant="secondary" size="md" fullWidth className="!h-11" disabled={!canClose} onClick={sell}>
+            {activePosition.phase === 'settling'
+              ? 'Closing…'
+              : canClose
+                ? 'Close Trade'
+                : 'Closes at expiry'}
+          </Button>
+        ) : (
+          <p className="text-center text-xs text-muted">Settles automatically when the timer ends</p>
+        )}
       </Card>
     );
   }

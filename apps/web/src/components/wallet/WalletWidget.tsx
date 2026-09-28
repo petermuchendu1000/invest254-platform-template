@@ -4,6 +4,7 @@ import { Card } from '@/components/ui/Card';
 import { DisplayMoney as Money } from '@/lib/money';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { useWallet } from '@/lib/wallet/hooks';
+import { walletFigures } from '@/lib/wallet/figures';
 
 function WageringBar({ wagered, required }: { wagered: number; required: number }) {
   const pct = required > 0 ? Math.min(100, Math.round((wagered / required) * 100)) : 100;
@@ -34,23 +35,31 @@ export function WalletWidget() {
     );
 
   const activeBonuses = (data.bonuses ?? []).filter((b) => b.status === 'active');
+  // DEMO-3: `data.real` is the ACTIVE account's spendable balance — the DEMO balance in demo mode.
+  // Labelling that "Withdrawable (real cash)" told a demo player their play money was cashable, which
+  // it never is. On the Demo account the row names the balance for what it is and offers no way out.
+  const figures = walletFigures(data);
 
   return (
     <Card className="flex flex-col gap-3">
       <div>
-        <p className="text-sm text-muted">Balance</p>
+        <p className="text-sm text-muted">{figures.demo ? 'Demo balance' : 'Balance'}</p>
         <Money cents={data.real + data.bonus} className="text-3xl font-semibold" />
-        {data.bonus > 0 ? (
+        {figures.demo ? (
+          <p className="mt-1 text-xs text-muted">Practice money — not real cash, and never withdrawable.</p>
+        ) : data.bonus > 0 ? (
           <p className="mt-1 text-xs text-muted">
             Includes <Money cents={data.bonus} className="font-medium text-fg" /> bonus — stakeable now,
             withdrawable after wagering.
           </p>
         ) : null}
       </div>
-      <div className="flex items-center justify-between border-t border-border pt-3 text-sm">
-        <span className="text-muted">Withdrawable (real cash)</span>
-        <Money cents={data.real} className="font-medium" />
-      </div>
+      {figures.canWithdraw ? (
+        <div className="flex items-center justify-between border-t border-border pt-3 text-sm">
+          <span className="text-muted">Withdrawable (real cash)</span>
+          <Money cents={figures.withdrawable} className="font-medium" />
+        </div>
+      ) : null}
       {activeBonuses.map((b) => (
         <div key={b.bonusId} className="flex flex-col gap-1 border-t border-border pt-3">
           <div className="flex items-center justify-between text-sm">

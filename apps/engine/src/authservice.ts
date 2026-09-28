@@ -254,10 +254,19 @@ export class AuthService {
     // deleted user can never sign in and the deletion can't be enumerated. (suspended/banned still
     // sign in — see below — so deposits/support stay open; only 'deleted' is a hard login block.)
     if (rec.status === "deleted") throw new Error("INVALID_CREDENTIALS");
-    // Account status does NOT gate login. A limited/suspended/banned player can still sign in
-    // so they can DEPOSIT and see their balance. Trading and withdrawal are gated separately at
-    // the money layer (fn_open_position / fn_create_withdrawal reject a non-active account), so a
-    // limited account can top up but cannot open new trades or cash out. Deposits stay open.
+    // For a PLAYER/MARKETER, account status does NOT gate login: a limited/suspended/banned player can
+    // still sign in so they can DEPOSIT and see their balance. Trading and withdrawal are gated
+    // separately at the money layer (fn_open_position / fn_create_withdrawal reject a non-active
+    // account), so a limited account can top up but cannot open new trades or cash out.
+    //
+    // But a PRIVILEGED account (operator) MUST be active to obtain a session (#7): a suspended/banned
+    // admin can no longer sign in or mint a fresh admin token. There is no "deposits stay open"
+    // rationale for an operator, and banning must actually remove their authority — not just their
+    // status badge. The live-status gate on the API verifier (assertAccountActive) closes the same
+    // hole for admin tokens issued BEFORE the ban; this closes it at the point of issuance.
+    if (isPrivilegedRole(rec.role) && rec.status !== "active") {
+      throw new Error(rec.status === "banned" ? "ACCOUNT_BANNED" : "ACCOUNT_SUSPENDED");
+    }
     const mfa = await this.repo.getMfa(rec.userId);
     if (mfa?.enabled) await this.assertSecondFactor(rec.userId, mfa, input.totp, input.recoveryCode);
     // The brand is the matched account's own site (falling back to an explicit siteId for the web).
@@ -486,6 +495,24 @@ export class AuthService {
     const va = await this.repo.getSessionsValidAfterMs(userId);
     const iatSeconds = typeof iat === "number" ? iat : undefined;
     if (!isTokenSessionValid(iatSeconds, va)) throw new Error("SESSION_REVOKED");
+  }
+
+  /**
+   * Live-status gate for the API verifier (#7). Reject a PRIVILEGED token whose account is no longer
+   * active (suspended / banned / deleted / missing). Because admin authorization elsewhere trusts the
+   * token's role claim and `fn_admin_set_user_status` does NOT force-logout, a banned admin would
+   * otherwise keep full authority on an unexpired token; this revokes it on the very next request.
+   *
+   * Runs for privileged roles ONLY — a player/marketer token returns immediately with no DB read, so
+   * high-volume traffic is unaffected (mirrors assertSessionValid). Status is checked, never role, so
+   * an impersonation token (a platform_admin's real profile role while carrying a site `admin` token)
+   * is judged on the operator's own live status, which is exactly right. Fails CLOSED: a missing
+   * profile or a read error throws, so a revoked operator can never be admitted on an old token.
+   */
+  async assertAccountActive(userId: string, role: string | undefined): Promise<void> {
+    if (!isPrivilegedRole(role)) return;
+    const profile = await this.repo.getProfile(userId);
+    if (!profile || profile.status !== "active") throw new Error("ACCOUNT_INACTIVE");
   }
 
   /** Read the caller's profile. Throws NOT_FOUND if no such identity. */  async me(userId: string): Promise<Profile> {

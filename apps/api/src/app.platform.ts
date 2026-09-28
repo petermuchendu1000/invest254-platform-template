@@ -340,6 +340,52 @@ export function registerPlatformRoutes(router: Router, deps: ApiDeps): void {
     return domain(() => deps.platform.updatePlatform(ctx.claims!.userId, ctx.claims!.role ?? "player", ctx.params.id!, patch));
   });
 
+  // ── 0173 — bonuses on/off, per PLATFORM and per BRAND ─────────────────────────────────────────
+  // One screen answers both: the platform switch the operator owns, and every brand under it with
+  // its own switch and its EFFECTIVE state (system AND platform AND brand). A platform admin acts on
+  // its own platform and its own brands; the system owner may name another with ?platform=<uuid>.
+  const bonusesView = async (ctx: Ctx) => {
+    const platformId = actingPlatform(ctx) ?? DEFAULT_PLATFORM_ID;
+    const [platforms, sites] = await Promise.all([
+      deps.platform.listPlatforms(),
+      deps.platform.listSites(platformId),
+    ]);
+    const row = platforms.find((p) => p.platformId === platformId);
+    const platformEnabled = row?.bonusesEnabled !== false;
+    const switches = await Promise.all(sites.map((s) => deps.admin.getBonusSwitches(s.siteId)));
+    // The system switch is the same for every brand, so it is read once (off the first brand).
+    const systemEnabled = switches.length ? switches[0]!.system : true;
+    // `effective` is recomposed here from the three authoritative parts rather than taken from one
+    // brand's row, because the platform level on THIS screen may have just been flipped above. The
+    // composition is the same AND the grant enforces in `fn_bonuses_enabled`.
+    const brands = sites.map((s, i) => ({
+      siteId: s.siteId, name: s.name, slug: s.slug, status: s.status,
+      enabled: switches[i]!.brand,
+      effective: systemEnabled && platformEnabled && switches[i]!.brand,
+    }));
+    return { platformId, platformName: row?.name ?? null, platformEnabled, systemEnabled, brands };
+  };
+
+  router.get(`${BASE}/platform/bonuses`, auth, platformAdmin, async (ctx: Ctx) => domain(() => bonusesView(ctx)));
+
+  router.put(`${BASE}/platform/bonuses`, auth, platformAdmin, async (ctx: Ctx) => {
+    const b = asObject(ctx.body);
+    if (typeof b.enabled !== "boolean") throw new ApiError("VALIDATION", "enabled must be a boolean", 400);
+    const platformId = actingPlatform(ctx) ?? DEFAULT_PLATFORM_ID;
+    await domain(() => deps.platform.setPlatformBonusesEnabled(
+      ctx.claims!.userId, ctx.claims!.role ?? "player", platformId, b.enabled as boolean));
+    return domain(() => bonusesView(ctx));
+  });
+
+  // Per-brand switch from the console. `scopeSiteParam` refuses a brand outside a platform admin's
+  // own platform before the RPC is even reached.
+  router.put(`${BASE}/platform/sites/:id/bonuses`, auth, platformAdmin, scopeSiteParam, async (ctx: Ctx) => {
+    const b = asObject(ctx.body);
+    if (typeof b.enabled !== "boolean") throw new ApiError("VALIDATION", "enabled must be a boolean", 400);
+    return domain(() => deps.admin.setBonusesEnabled(
+      ctx.claims!.userId, ctx.claims!.role ?? "player", ctx.params.id!, b.enabled as boolean));
+  });
+
   // Re-parent a brand into a platform.
   router.post(`${BASE}/platform/sites/:id/assign`, auth, platform, async (ctx: Ctx) => {
     const b = asObject(ctx.body);

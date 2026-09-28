@@ -512,6 +512,12 @@ export async function startTestApi(opts: TestApiOptions = {}): Promise<TestApi> 
   adminRepoRef = adminRepo;
   const admin = new AdminService(adminRepo);
   const platformRepo = new InMemoryPlatformRepository();
+  // 0173 — keep the bonus switch truthful across the two in-memory stores: the platform switch and
+  // the site→platform mapping live in the platform repo, the system/brand switches in the admin repo,
+  // and the grant asks the composed answer. In Postgres this is one join inside fn_bonuses_enabled.
+  platformRepo.onPlatformBonuses = (platformId, enabled) => adminRepo.setPlatformBonuses(platformId, enabled);
+  platformRepo.onSitePlatform = (siteId, platformId) => adminRepo.platformOfSite.set(siteId, platformId);
+  identity.bonusesEnabledForSite = (siteId) => adminRepo.bonusesEffective(siteId ?? TU_DEFAULT_SITE_ID);
   const platform = new PlatformService(platformRepo);
   const subscriptionRepo = new InMemorySubscriptionRepository();
   const subscriptions = new SubscriptionService(subscriptionRepo);

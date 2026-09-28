@@ -200,11 +200,12 @@ async function buildDeps(): Promise<ApiDeps> {
     if (!c) return null;
     const token = c.secrets.basic_auth_token
       || (c.secrets.api_username && c.secrets.api_password ? Buffer.from(`${c.secrets.api_username}:${c.secrets.api_password}`).toString("base64") : "");
-    const over: { baseUrl?: string; basicAuthToken?: string; channelId?: string; callbackUrl?: string } = {};
+    const over: { baseUrl?: string; basicAuthToken?: string; channelId?: string; callbackUrl?: string; lipwaUrl?: string } = {};
     if (token) over.basicAuthToken = token;
     if (c.settings.channel_id) over.channelId = c.settings.channel_id;
     if (c.settings.base_url) over.baseUrl = c.settings.base_url;
     if (c.settings.callback_url) over.callbackUrl = c.settings.callback_url;
+    if (c.settings.lipwa_url) over.lipwaUrl = c.settings.lipwa_url;
     return over;
   });
   log.info("payhero client ready", { dbConfigLayered: true });
@@ -619,7 +620,17 @@ async function buildDeps(): Promise<ApiDeps> {
   const verifier = baseVerifier
     ? (async (token: string) => {
         const claims = await baseVerifier(token);
-        await auth.assertSessionValid(claims.userId, claims.role, (claims.raw as { iat?: unknown })?.iat);
+        // Two privileged-only gates, run concurrently (a player token no-ops both with no DB read):
+        //  - 0097 force-logout: reject a token issued before the account's sessions_valid_after epoch.
+        //  - #7 live-status: reject a banned/suspended/deleted operator's token even before it expires
+        //    (banning does not force-logout, and admin authz trusts the role claim, so without this a
+        //    banned admin keeps authority until the token lapses).
+        // Fails CLOSED — any throw becomes a 401 in requireAuth, forcing re-login, which the login
+        // gate then refuses for a non-active operator.
+        await Promise.all([
+          auth.assertSessionValid(claims.userId, claims.role, (claims.raw as { iat?: unknown })?.iat),
+          auth.assertAccountActive(claims.userId, claims.role),
+        ]);
         return claims;
       })
     : null;
@@ -1045,6 +1056,21 @@ if (Number.isFinite(RECONCILE_MS) && RECONCILE_MS > 0) {
       .catch((err: unknown) => recLog.error("payhero reconcile sweep failed", err as Error));
   }, RECONCILE_MS);
   payheroTimer.unref();
+
+  // PayHero LEDGER sweep — settlement for Lipwa (card/bank/multi-country) and manual paybill C2B.
+  // Reads PayHero's authoritative account ledger once (one shared account) and either auto-credits a
+  // payment to its pending tx (by our reference) or makes a manual payment claimable by code. Runs a
+  // little more often than the status sweep so a hosted-checkout payer sees their balance quickly.
+  const PAYHERO_LEDGER_MS = Number(process.env.PAYHERO_LEDGER_RECONCILE_INTERVAL_MS ?? Math.min(RECONCILE_MS, 60_000));
+  if (Number.isFinite(PAYHERO_LEDGER_MS) && PAYHERO_LEDGER_MS > 0) {
+    const ledgerTimer = setInterval(() => {
+      void deps.payments
+        .reconcilePayHeroLedger()
+        .then((r) => { if (r.settled || r.ingested || r.errors) recLog.info("payhero ledger sweep", { provider: "payhero", ...r }); })
+        .catch((err: unknown) => recLog.error("payhero ledger sweep failed", err as Error));
+    }, PAYHERO_LEDGER_MS);
+    ledgerTimer.unref();
+  }
 }
 
 // BILL-1: settle invoice Pay-now payments whose STK callback never arrived (Safaricom's STKPushQuery decides),

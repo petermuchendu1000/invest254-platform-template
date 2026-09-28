@@ -167,3 +167,47 @@ test("assertSessionValid revokes a privileged token issued before the force-logo
   repo._forceLogout(p.userId, Date.now() + 10_000);
   await auth.assertSessionValid(p.userId, "player", 0); // no throw
 });
+
+test("assertAccountActive revokes a privileged token once the operator is banned/suspended, ignores players (#7)", async () => {
+  const repo = new InMemoryIdentityRepository();
+  const auth = new AuthService(repo, { jwtSecret: SECRET });
+  const { userId } = await seedAdmin(repo, auth);
+
+  // Active operator: the live token stays usable.
+  await auth.assertAccountActive(userId, "admin");
+
+  // Banned/suspended AFTER issuance → the very next request is rejected (banning does not force-logout,
+  // so this app-layer gate is what actually removes the authority before the token expires).
+  repo.adminSetStatus(userId, "banned");
+  await assert.rejects(() => auth.assertAccountActive(userId, "admin"), /ACCOUNT_INACTIVE/);
+  repo.adminSetStatus(userId, "suspended");
+  await assert.rejects(() => auth.assertAccountActive(userId, "admin"), /ACCOUNT_INACTIVE/);
+
+  // Reinstated → admitted again (tracks live status, not a one-way trip).
+  repo.adminSetStatus(userId, "active");
+  await auth.assertAccountActive(userId, "admin");
+
+  // A player token is never status-gated (deposits stay open) and pays no DB read.
+  const p = await auth.register({ phone: "0700000000", username: "player1", password: "Password1" });
+  repo.adminSetStatus(p.userId, "banned");
+  await auth.assertAccountActive(p.userId, "player"); // no throw
+});
+
+test("the verifier guards compose: a banned operator is rejected even with a still-valid session epoch (#7)", async () => {
+  const repo = new InMemoryIdentityRepository();
+  const auth = new AuthService(repo, { jwtSecret: SECRET });
+  const { userId } = await seedAdmin(repo, auth);
+  const nowSec = Math.floor(Date.now() / 1000);
+  repo.adminSetStatus(userId, "banned");
+
+  // Mirror the server.ts verifier wrapper: force-logout PASSES (no epoch stamped), but the live-status
+  // gate FAILS — so the composed guard rejects, which becomes a 401 → forced re-login (then blocked).
+  await auth.assertSessionValid(userId, "admin", nowSec); // ok on its own
+  await assert.rejects(
+    () => Promise.all([
+      auth.assertSessionValid(userId, "admin", nowSec),
+      auth.assertAccountActive(userId, "admin"),
+    ]),
+    /ACCOUNT_INACTIVE/,
+  );
+});

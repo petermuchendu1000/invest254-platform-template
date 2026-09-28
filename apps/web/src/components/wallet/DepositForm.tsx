@@ -1,6 +1,10 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+
+/** Seconds the deposit button is held after an attempt — at least the server's own minimum gap
+ *  (DEPOSIT_MIN_INTERVAL_MS, 6s), so the UI never invites a request the API would refuse with 429. */
+const COOLDOWN_S = 6;
 import { useQuery } from '@tanstack/react-query';
 import { centsToKes, formatKes, kesToCents } from '@invest254/shared/money';
 import { normalizeMsisdn, MIN_DEPOSIT_CENTS } from '@invest254/shared/payments';
@@ -88,6 +92,13 @@ export function DepositForm({ provider = 'mpesa' }: { provider?: 'mpesa' | 'mega
   const [phone, setPhone] = useState('');
   const [errors, setErrors] = useState<Record<string, string | undefined>>({});
   const [serverError, setServerError] = useState<string | null>(null);
+  // Seconds the submit button stays held after an attempt (mirrors the server's own minimum gap).
+  const [cooldown, setCooldown] = useState(0);
+  useEffect(() => {
+    if (cooldown <= 0) return;
+    const id = setTimeout(() => setCooldown((s) => s - 1), 1000);
+    return () => clearTimeout(id);
+  }, [cooldown]);
   const [done, setDone] = useState(false);
   const [txId, setTxId] = useState<string | null>(null);
 
@@ -143,6 +154,10 @@ export function DepositForm({ provider = 'mpesa' }: { provider?: 'mpesa' | 'mega
       openAuth('register');
       return;
     }
+    // A prompt is now on its way to the handset. Hold the button for a few seconds either way:
+    // hammering it is what tripped PayHero's merchant-wide spam block (six requests in 27 seconds),
+    // and a second prompt cannot help a player who is still looking at the first one.
+    setCooldown(COOLDOWN_S);
     try {
       const res = await deposit.mutateAsync({ amount: amountKesCents, phone: effectivePhone });
       setTxId(res.transactionId);
@@ -294,14 +309,32 @@ export function DepositForm({ provider = 'mpesa' }: { provider?: 'mpesa' | 'mega
         </p>
       ) : null}
 
-      <Button type="submit" size="lg" fullWidth disabled={deposit.isPending}>
-        {!token
-          ? 'Sign up to deposit'
-          : deposit.isPending
-            ? 'Sending payment prompt…'
-            : 'Continue to Pay'}
+      <Button type="submit" size="lg" fullWidth disabled={deposit.isPending || cooldown > 0}>
+        {!token ? (
+          'Sign up to deposit'
+        ) : deposit.isPending ? (
+          <span className="inline-flex items-center justify-center gap-2">
+            <ButtonSpinner />Sending payment prompt…
+          </span>
+        ) : cooldown > 0 ? (
+          <span className="inline-flex items-center justify-center gap-2">
+            <ButtonSpinner />Check your phone · {cooldown}s
+          </span>
+        ) : (
+          'Continue to Pay'
+        )}
       </Button>
     </form>
+  );
+}
+
+/** Button-sized spinner: the page `Spinner` is 40px, far too big to sit inside a label. */
+function ButtonSpinner() {
+  return (
+    <svg className="h-4 w-4 shrink-0 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden>
+      <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="3" opacity="0.3" />
+      <path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+    </svg>
   );
 }
 

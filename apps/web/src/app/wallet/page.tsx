@@ -8,6 +8,7 @@ import { HistoryTabs } from '@/components/wallet/HistoryTabs';
 import { useSession } from '@/lib/auth/session';
 import { useAuthUi } from '@/lib/auth/ui';
 import { useDepositUi } from '@/lib/wallet/depositUi';
+import { useWalletFigures } from '@/lib/wallet/hooks';
 import { useHydrated } from '@/lib/useHydrated';
 
 export default function WalletPage() {
@@ -16,6 +17,7 @@ export default function WalletPage() {
   const openAuth = useAuthUi((s) => s.openAuth);
   const openDeposit = useDepositUi((s) => s.openDeposit);
   const openWithdraw = useDepositUi((s) => s.openWithdraw);
+  const figures = useWalletFigures();
 
   if (!hydrated) return <Skeleton className="h-48 w-full" />;
 
@@ -35,9 +37,11 @@ export default function WalletPage() {
 
       <WalletWidget />
 
-      <div className="grid grid-cols-2 gap-3">
+      {/* DEMO-3: on the Demo account Deposit is the only money action — Withdraw is absent, not
+          disabled, because play money must never be presented as cashable. */}
+      <div className={figures.canWithdraw ? 'grid grid-cols-2 gap-3' : 'grid grid-cols-1 gap-3'}>
         <Button size="lg" onClick={() => openDeposit()}>Deposit</Button>
-        <Button size="lg" variant="secondary" onClick={openWithdraw}>Withdraw</Button>
+        {figures.canWithdraw ? <Button size="lg" variant="secondary" onClick={openWithdraw}>Withdraw</Button> : null}
       </div>
 
       <h2 className="mt-2 text-base font-semibold">History</h2>

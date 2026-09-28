@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { useBrand } from '@/lib/brand/BrandProvider';
+import { CurrencySwitcher } from '@/components/layout/CurrencySwitcher';
 
 // Global footer: responsible-gaming messaging, 18+ badge and legal links.
 // Required by FE7 (responsible gaming is first-class, not an afterthought).
@@ -49,9 +50,13 @@ export function Footer() {
         {brand.licenceLine ? (
           <p className="text-[11px] text-muted">{brand.licenceLine}</p>
         ) : null}
-        <p className="text-[11px] text-muted">
-          © {year} {brand.name}
-        </p>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <p className="text-[11px] text-muted">
+            © {year} {brand.name}
+          </p>
+          {/* #10 geo-currency: display-currency picker (presentation only; balances stay in KES). */}
+          <CurrencySwitcher />
+        </div>
       </div>
     </footer>
   );

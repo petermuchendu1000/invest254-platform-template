@@ -25,7 +25,9 @@ export function LivePnl({ pos }: { pos: ActivePosition }) {
   const pnlUp = pos.livePnlCents >= 0;
 
   const phaseLabel =
-    pos.phase === 'pending' ? 'Opening…' : pos.phase === 'settling' ? 'Cashing out…' : `${secs}s left`;
+    // "Cashing out" implied money leaving the platform; closing a trade only returns the payout to
+    // the in-app balance (the demo balance on a Demo account). Same vocabulary as the button.
+    pos.phase === 'pending' ? 'Opening…' : pos.phase === 'settling' ? 'Closing…' : `${secs}s left`;
 
   return (
     <div className="flex flex-col gap-3">

@@ -65,6 +65,19 @@ export function PayBillDeposit() {
     );
   }
 
+  // Defence in depth: the server only offers the Pay Bill channel when it is actually available for
+  // this brand (a brand on its own payment accounts must never be told to pay the System owner's
+  // paybill — docs/43 §3.6). If this body is ever reached with the paybill disabled (a stale cached
+  // method list, say), show the unavailable state rather than an instruction card whose business and
+  // account numbers render as '—'.
+  if (!isLoading && info && !info.enabled) {
+    return (
+      <p className="px-5 py-6 text-center text-sm text-muted">
+        Pay Bill is not available for this account. Please use another deposit method.
+      </p>
+    );
+  }
+
   return (
     <form className="mx-auto flex w-full max-w-sm flex-col gap-4 px-5 pb-6 pt-4" onSubmit={onSubmit} noValidate>
       {/* Pay Bill card — one-tap copy for every value */}

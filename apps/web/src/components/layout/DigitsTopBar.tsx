@@ -6,6 +6,7 @@ import { cn } from '@/lib/cn';
 import { useBrand } from '@/lib/brand/BrandProvider';
 import { brandWordmark } from '@/lib/brand/brand';
 import { useDepositUi } from '@/lib/wallet/depositUi';
+import { useWalletFigures } from '@/lib/wallet/hooks';
 import { useAuthUi } from '@/lib/auth/ui';
 import { useSession } from '@/lib/auth/session';
 import { useAuthActions } from '@/lib/auth/useAuthActions';
@@ -152,12 +153,15 @@ export function DigitsTopBar() {
   }, [menuOpen]);
 
   const authed = hydrated && !!token;
+  const figures = useWalletFigures();
   const needAuth = (fn: () => void) => () => (authed ? fn() : openAuth('login'));
 
   const drawer: { icon: IconName; label: string; onClick?: () => void; href?: string }[] = [
     { icon: 'trend', label: "Trader's Hub", href: '/' },
     { icon: 'deposit', label: 'Deposit', onClick: needAuth(() => openDeposit()) },
-    { icon: 'withdraw', label: 'Withdraw', onClick: needAuth(openWithdraw) },
+    // DEMO-3: no way out of the Demo account — the item is absent, not disabled. Signed-out visitors
+    // still see it (they have no account yet, so nothing is being hidden from them).
+    ...(!authed || figures.canWithdraw ? [{ icon: 'withdraw' as IconName, label: 'Withdraw', onClick: needAuth(openWithdraw) }] : []),
     { icon: 'history', label: 'History', onClick: needAuth(() => setHistoryOpen(true)) },
     { icon: 'chat', label: 'Live Chat', onClick: () => setSupportOpen(true) },
     { icon: 'book', label: 'How to Trade', onClick: () => setHowToOpen(true) },
@@ -181,7 +185,7 @@ export function DigitsTopBar() {
           </Link>
           <Link href="/" className="ml-2 hidden whitespace-nowrap px-2 text-[14px] font-semibold text-fg xl:inline">Trader’s Hub</Link>
           <NavButton icon="deposit" label="Deposit" onClick={needAuth(() => openDeposit())} />
-          <NavButton icon="withdraw" label="Withdraw" onClick={needAuth(openWithdraw)} />
+          {!authed || figures.canWithdraw ? <NavButton icon="withdraw" label="Withdraw" onClick={needAuth(openWithdraw)} /> : null}
           <NavButton icon="history" label="History" onClick={needAuth(() => setHistoryOpen(true))} />
           <NavButton icon="sparkles" label="AI" variant="accent" onClick={() => openScanner(true)} />
           <span className="relative"><NavButton icon="chat" label="Live Chat" variant="pill" onClick={() => setSupportOpen(true)} />{chatUnread ? <span data-badge="chat" className="absolute -right-1 -top-1 grid h-4 min-w-4 place-items-center rounded-full bg-down px-1 text-[9px] font-bold text-white">{chatUnread}</span> : null}</span>

@@ -165,6 +165,7 @@ export interface ApiDeps {
     | "adjustBalance" | "resetBalanceToLastFunded" | "listDeposits" | "depositsReconcile" | "reportDaily" | "reportByUser" | "reportDay"
     | "getGameConfig" | "updateGameConfig" | "getMpesaConfig" | "updateMpesaConfig" | "rtpMonitor" | "realCashRtp" | "configChangeReview" | "listSeeds" | "rotateSeed"
     | "getWithdrawalPool" | "setWithdrawalPool" | "setDefaultPool" | "getWithdrawalsEnabled" | "setWithdrawalsEnabled"
+    | "getBonusSwitches" | "setBonusesEnabled"
     | "listAffiliatePayouts" | "recordAction"
     | "adjustBalanceKind" | "clearBalance" | "getUserOverrides" | "setUserOverrides"
     | "siteOfUser" | "siteOfTransaction">;
@@ -175,7 +176,7 @@ export interface ApiDeps {
     | "poolDemand" | "distributePoolDynamic"
     | "listPaymentProviders" | "setProviderGlobal" | "setProviderSite" | "clearProviderSite"
     | "gatewaySchemas" | "getProviderConfig" | "setProviderConfig" | "testProviderConnection"
-    | "listPlatforms" | "platformsOverview" | "createPlatform" | "updatePlatform" | "assignSiteToPlatform"
+    | "listPlatforms" | "platformsOverview" | "createPlatform" | "updatePlatform" | "assignSiteToPlatform" | "setPlatformBonusesEnabled"
     | "appointPlatformAdmin" | "revokePlatformAdmin" | "platformOfSite" | "listPlatformAdmins" | "searchUsers">;
   /** Subscription plans + per-platform billing/status (Issue 2). Absent -> /subscriptions routes off. */
   subscriptions?: SubscriptionService | undefined;
@@ -265,7 +266,8 @@ export interface ApiDeps {
     "initiateDeposit" | "requestWithdrawal" | "handleStkCallback" | "handleB2cResult" | "approveWithdrawal" | "rejectWithdrawal" | "markWithdrawalPaid" | "reconcileDeposits"
     | "ingestC2b" | "claimPaybillDeposit" | "paybillConfig"
     | "initiateMegaPayDeposit" | "handleMegaPayCallback" | "reconcileMegaPayDeposits"
-    | "initiatePayHeroDeposit" | "handlePayHeroCallback" | "reconcilePayHeroDeposits" | "listDepositProviders">;
+    | "initiatePayHeroDeposit" | "initiateLipwaDeposit" | "handlePayHeroCallback" | "reconcilePayHeroDeposits" | "reconcilePayHeroLedger" | "listDepositProviders"
+    | "listDepositMethods">;
   /** Resolve a player's display handle (falls back to a guest handle). */
   resolveHandle(userId: string): Promise<string>;
   /** docs/42 UI-8: display names of the brand/platform a session is scoped to (for the shells' scope chip).

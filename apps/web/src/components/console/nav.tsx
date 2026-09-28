@@ -86,12 +86,13 @@ export function consoleNav(isSystem: boolean): NavGroup[] {
   const accounts: NavItem = { href: '/platform/payment-accounts', label: 'Payment accounts', icon: Icons.accounts, hint: 'Your own M-Pesa and gateway accounts' };
   const pool: NavItem = { href: '/platform/pool', label: 'Withdrawal pool', icon: Icons.pool, hint: 'Daily payout budget per brand' };
   const billing: NavItem = { href: '/platform/billing', label: 'Billing', icon: Icons.billing, hint: 'Invoices, plans and payments' };
+  const bonuses: NavItem = { href: '/platform/bonuses', label: 'Bonuses', icon: Icons.bonuses, hint: 'Sign-up bonus on or off, per platform and per brand' };
   if (!isSystem) {
     return [
       { id: 'home', items: [overview, tickets] },
       { id: 'brands', label: 'Brands', items: [onboard, registrar,
         { href: '/platform/addons', label: 'Add-ons', icon: Icons.addons, hint: 'Charts, trade screens and gateways for your brands' }] },
-      { id: 'money', label: 'Money', items: [accounts, pool] },
+      { id: 'money', label: 'Money', items: [accounts, pool, bonuses] },
       { id: 'oversight', label: 'Oversight', items: [
         { href: '/platform/audit', label: 'Audit log', icon: Icons.audit, hint: 'Who did what, on which brand' },
       ] },
@@ -110,6 +111,7 @@ export function consoleNav(isSystem: boolean): NavGroup[] {
       accounts,
       { href: '/platform/payments', label: 'Gateways', icon: Icons.gateways, hint: 'M-Pesa and every gateway: set-up and who is offered it', also: (p: string) => p.startsWith('/platform/mpesa') },
       pool,
+      bonuses,
     ] },
     { id: 'commercial', label: 'Commercial', items: [
       billing,

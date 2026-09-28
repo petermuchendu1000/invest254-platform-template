@@ -11,6 +11,7 @@ import { api, type TransactionFilter } from '@/lib/api/endpoints';
 import type { Paginated, TransactionDto, LedgerEntryDto } from '@/lib/api/types';
 import { useSession } from '@/lib/auth/session';
 import { siteFromToken } from '@/lib/auth/token';
+import { walletFigures, type WalletFigures } from '@/lib/wallet/figures';
 
 export function useWallet() {
   const token = useSession((s) => s.token);
@@ -19,6 +20,14 @@ export function useWallet() {
     queryFn: () => api.wallet(token as string),
     enabled: !!token,
   });
+}
+
+/**
+ * DEMO-2: the figures every wallet surface renders from, resolved once. `canWithdraw` is the gate a
+ * surface asks before offering ANY way out — see `walletFigures`.
+ */
+export function useWalletFigures(): WalletFigures {
+  return walletFigures(useWallet().data);
 }
 
 /** DEMO-1: switch between the Real and Demo account; the server returns the new wallet. */
@@ -119,14 +128,38 @@ export function useDepositPayhero() {
   });
 }
 
-/** Deposit gateways effective-enabled for this player's brand (system owner switch + per-site override). */
+/**
+ * PayHero Lipwa hosted-checkout deposit (card / bank / mobile money / cross-border). Returns the
+ * checkout URL, which the UI opens in an IN-APP modal. Settlement is by the ledger reconcile; the
+ * sheet then polls this deposit's transaction status to react the instant it lands.
+ */
+export function useDepositLipwa() {
+  const token = useSession((s) => s.token);
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { amount: number }) => api.createPayheroLipwaDeposit(token as string, vars),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['wallet'] });
+      void qc.invalidateQueries({ queryKey: ['transactions'] });
+    },
+  });
+}
+
+/**
+ * The deposit CHANNELS the server says this player can actually complete (plus the raw gateway list).
+ * The sheet renders `methods` verbatim — see DepositMethodDto. Older API builds omit `methods`; the
+ * panel falls back to deriving a single M-Pesa entry per gateway in that case.
+ */
 export function useDepositProviders() {
   const token = useSession((s) => s.token);
   return useQuery({
     queryKey: ['deposit-providers'],
     enabled: !!token,
     staleTime: 60_000,
-    queryFn: async () => (await api.depositProviders(token as string)).providers,
+    queryFn: async () => {
+      const r = await api.depositProviders(token as string);
+      return { providers: r.providers ?? [], methods: r.methods };
+    },
   });
 }
 

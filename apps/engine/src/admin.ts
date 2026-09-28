@@ -221,6 +221,18 @@ export interface WithdrawalPoolRow {
   /** Per-brand recurring default that auto-seeds each new EAT day (migration 0064). */
   defaultDailyPoolCents: Cents;
 }
+/**
+ * 0173 — the three levels of the bonuses switch for one brand. They compose with AND: a bonus is
+ * granted only when `system && platform && brand`, which is what `effective` reports. The individual
+ * levels are returned so the console can say WHICH level switched bonuses off rather than showing a
+ * brand switch that is on but has no effect.
+ */
+export interface BonusSwitches {
+  siteId: string; platformId: string | null;
+  system: boolean; platform: boolean; brand: boolean; effective: boolean;
+  /** The welcome-bonus grant this switch governs (cents, and its wagering multiple). */
+  amountCents: Cents; wageringX: number;
+}
 /** Realised RTP over one rolling window (J5). `realisedRtp` is null when there is no turnover yet. */
 export interface RtpWindowRow { window: string; settledPositions: number; turnoverCents: Cents; payoutCents: Cents; realisedRtp: number | null; }
 /** RTP monitor: realised vs target across rolling windows, with a drift alert (J5). */
@@ -369,6 +381,10 @@ export interface AdminRepository {
   // 0067 — per-brand withdrawal kill switch. Read + admin/owner toggle (audited).
   getWithdrawalsEnabled(siteId: string): Promise<boolean>;
   setWithdrawalsEnabled(actorId: string, actorRole: string, siteId: string, enabled: boolean): Promise<boolean>;
+  // 0173 — bonuses switch for THIS brand, plus the levels above it (system + platform) so the console
+  // can explain why an on-looking brand switch has no effect. Read + admin/owner toggle (audited).
+  getBonusSwitches(siteId: string): Promise<BonusSwitches>;
+  setBonusesEnabled(actorId: string, actorRole: string, siteId: string, enabled: boolean): Promise<BonusSwitches>;
   getMpesaConfig(): Promise<MpesaConfigRow>;
   updateMpesaConfig(actorId: string, actorRole: string, patch: MpesaConfigPatch): Promise<MpesaConfigRow>;
   rtpMonitor(siteId?: string): Promise<RtpMonitor>;
@@ -1296,6 +1312,24 @@ export class PgAdminRepository implements AdminRepository {
     return this.getWithdrawalsEnabled(siteId);
   }
 
+  async getBonusSwitches(siteId: string): Promise<BonusSwitches> {
+    const r = await this.q.query("select fn_bonus_switches($1::uuid) as s", [siteId]);
+    const s = (r.rows.length ? r.rows[0].s : null) as Record<string, unknown> | null;
+    // Fail-open on a missing brand row, matching the DB defaults and fn_bonuses_enabled's own fallback.
+    if (!s) return { siteId, platformId: null, system: true, platform: true, brand: true, effective: true, amountCents: 0, wageringX: 0 };
+    return {
+      siteId, platformId: s.platform_id == null ? null : String(s.platform_id),
+      system: s.system !== false, platform: s.platform !== false, brand: s.brand !== false,
+      effective: s.effective !== false,
+      amountCents: Number(s.amount_cents ?? 0), wageringX: Number(s.wagering_x ?? 0),
+    };
+  }
+  async setBonusesEnabled(actorId: string, actorRole: string, siteId: string, enabled: boolean): Promise<BonusSwitches> {
+    try { await this.q.query("select fn_admin_set_bonuses_enabled($1,$2,$3::uuid,$4)", [actorId, actorRole, siteId, enabled]); }
+    catch (e) { mapAdminError(e); }
+    return this.getBonusSwitches(siteId);
+  }
+
   async getMpesaConfig(): Promise<MpesaConfigRow> {
     const r = await this.q.query(
       `select environment, shortcode, stk_callback_url, b2c_initiator, b2c_result_url, b2c_timeout_url,
@@ -1529,6 +1563,28 @@ export class InMemoryAdminRepository implements AdminRepository {
   private readonly pools = new Map<string, WithdrawalPoolRow>();
   private readonly poolDefaults = new Map<string, number>();  // siteId -> default daily budget (0064)
   private readonly withdrawalsEnabledBySite = new Map<string, boolean>(); // siteId -> kill switch (0067); absent = enabled
+  // 0173 — the three bonus switch levels. Absent = enabled, matching the DB column defaults.
+  private readonly bonusesEnabledBySite = new Map<string, boolean>();
+  private readonly bonusesEnabledByPlatform = new Map<string, boolean>();
+  /** siteId -> platformId, so a platform-level flip is visible to every brand under it (tests set this). */
+  readonly platformOfSite = new Map<string, string>();
+  /** Every brand belongs to a platform in the DB (sites.platform_id is NOT NULL); unmapped = this one. */
+  defaultPlatformId = "10000000-0000-0000-0000-000000000001";
+  /** The system-wide switch (bonus_config.welcome_enabled). */
+  bonusesEnabledSystem = true;
+  /** Mirrors bonus_config.welcome_amount_cents / welcome_wagering_x for the switch read. */
+  welcomeAmountCents = 20_000;
+  welcomeWageringX = 3;
+  /** Flip a platform's switch the way fn_platform_set_bonuses_enabled does (used by the platform repo). */
+  setPlatformBonuses(platformId: string, enabled: boolean): void { this.bonusesEnabledByPlatform.set(platformId, enabled); }
+  /** Synchronous mirror of fn_bonuses_enabled — system AND platform AND brand. */
+  bonusesEffective(siteId: string | null): boolean {
+    if (!this.bonusesEnabledSystem) return false;
+    if (siteId == null) return true;                      // unknown brand -> system switch only
+    const platformId = this.platformOfSite.get(siteId) ?? this.defaultPlatformId;
+    if (this.bonusesEnabledByPlatform.get(platformId) === false) return false;
+    return this.bonusesEnabledBySite.get(siteId) !== false;
+  }
   private mpesa: MpesaInternal = defaultMpesaInternal();
   private readonly seedRows = new Map<string, AdminSeedRow>();
   // J8 in-memory stores (bonus wallet + per-user overrides) for the test harness.
@@ -2109,6 +2165,25 @@ export class InMemoryAdminRepository implements AdminRepository {
     this.withdrawalsEnabledBySite.set(siteId, enabled);
     this.record(actorId, actorRole, "withdrawals.toggle", "site", siteId, { withdrawals_enabled: enabled });
     return enabled;
+  }
+
+  async getBonusSwitches(siteId: string): Promise<BonusSwitches> {
+    const platformId = this.platformOfSite.get(siteId) ?? this.defaultPlatformId;
+    return {
+      siteId, platformId,
+      system: this.bonusesEnabledSystem,
+      platform: this.bonusesEnabledByPlatform.get(platformId) !== false,
+      brand: this.bonusesEnabledBySite.get(siteId) !== false,
+      effective: this.bonusesEffective(siteId),
+      amountCents: this.welcomeAmountCents, wageringX: this.welcomeWageringX,
+    };
+  }
+  async setBonusesEnabled(actorId: string, actorRole: string, siteId: string, enabled: boolean): Promise<BonusSwitches> {
+    // The legacy `superadmin` tier was removed (docs/42 UI-11), so the live operator roles are these.
+    if (!["admin", "platform_admin", "platform_superadmin"].includes(actorRole)) throw new Error("NOT_AUTHORIZED");
+    this.bonusesEnabledBySite.set(siteId, enabled);
+    this.record(actorId, actorRole, "bonuses.toggle", "site", siteId, { bonuses_enabled: enabled });
+    return this.getBonusSwitches(siteId);
   }
 
   async getMpesaConfig(): Promise<MpesaConfigRow> { return maskMpesaInternal(this.mpesa); }

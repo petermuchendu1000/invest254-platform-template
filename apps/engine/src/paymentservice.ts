@@ -1,5 +1,5 @@
 import { normalizeMsisdn, MIN_DEPOSIT_CENTS, MIN_WITHDRAWAL_CENTS, type Cents } from "@invest254/shared";
-import type { PaymentRepository, CompleteResult, CreateWithdrawalResult, WithdrawalOutcome, C2bPayment, ClaimResult, PaybillConfig, DepositProvider } from "./payments.js";
+import type { PaymentRepository, CompleteResult, CreateWithdrawalResult, WithdrawalOutcome, C2bPayment, ClaimResult, PaybillConfig, DepositProvider, DepositMethod } from "./payments.js";
 import type { DarajaClient } from "./daraja.js";
 import type { MegaPayClient } from "./megapay.js";
 import type { PayHeroClient } from "./payhero.js";
@@ -151,6 +151,69 @@ export class PaymentService {
   }
 
   // ── Deposit (STK Push) ──
+  // ── Initiate gate (docs/52, migration 0175) ─────────────────────────────────────────────────────
+  // PayHero answers a burst of STK initiations with
+  //   400 {"error_code":"BAD_REQUEST","error_message":"The merchant has been blocked for spamming"}
+  // and the block is MERCHANT-WIDE, so one player's retry loop stops deposits for every brand sharing
+  // those credentials. The route's rate limit is per USER (20/min), which the observed loop — six
+  // requests in 27 seconds — slipped under.
+  //
+  // The gate lives in POSTGRES, not in this process. An in-process counter bounds each API machine
+  // independently, so with N machines the real ceiling is N x the configured one and a player's
+  // post-rejection hold is honoured only by the machine that served the rejection. `fn_deposit_gate`
+  // takes a row lock per key, so the count is exact however many machines are running.
+  //
+  // FAILS CLOSED. If the gate cannot be consulted the initiate is refused (429), never sent to the
+  // gateway — so there is no path to a provider without a granted slot. The cost is nearly
+  // theoretical: the deposit row is created in the same database on the same request, so a gate that
+  // cannot be reached is a request that was about to fail anyway.
+  //
+  // What is throttled is deliberately NARROW: a retry that follows a REJECTION, plus a per-merchant
+  // ceiling. A normal sequence of deposits is untouched — throttling every attempt would break a real
+  // contract (a player whose deposit just succeeded may immediately make another).
+  private static readonly REJECT_COOLDOWN_MS = Number(process.env.DEPOSIT_REJECT_COOLDOWN_MS ?? 6_000);
+  private static readonly MERCHANT_PER_MIN = Number(process.env.DEPOSIT_MERCHANT_PER_MIN ?? 60);
+  private static gateUserKey(provider: string, userId: string): string { return `dep:reject:${provider}:${userId}`; }
+  private static gateMerchantKey(provider: string, scope: string): string { return `dep:merchant:${provider}:${scope}`; }
+
+  private async guardInitiate(userId: string, provider: string, scope: string): Promise<void> {
+    let verdict: "ok" | "too_soon" | "busy";
+    try {
+      verdict = await this.repo.depositGate(
+        PaymentService.gateUserKey(provider, userId),
+        PaymentService.gateMerchantKey(provider, scope),
+        PaymentService.MERCHANT_PER_MIN, 60_000);
+    } catch {
+      // Fail closed: a gate we cannot consult is a slot we cannot grant.
+      throw new Error("PROVIDER_BUSY: payments are briefly unavailable, try again shortly");
+    }
+    if (verdict === "too_soon") throw new Error("DEPOSIT_TOO_SOON: that payment was refused a moment ago — wait a few seconds before trying again");
+    if (verdict === "busy") throw new Error("PROVIDER_BUSY: too many payment requests right now, try again shortly");
+  }
+
+  /**
+   * Run the gateway call for a deposit whose row already exists. If the gateway REFUSES:
+   *   * close the row out (0174) — otherwise a rejection leaves a `pending` deposit nothing will ever
+   *     settle, because the callback and the reconcile sweep both key on `checkout_request_id`, which
+   *     a refused deposit never receives (199 such ghosts had accumulated);
+   *   * record the rejection in the shared gate, so this player's next attempt is held off on EVERY
+   *     machine, not just this one.
+   * The original error is always rethrown; the clean-up never masks it.
+   */
+  private async withAbandonOnReject<T>(txId: string, userId: string, provider: string, fn: () => Promise<T>): Promise<T> {
+    try {
+      return await fn();
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      try {
+        await this.repo.depositGateReject(PaymentService.gateUserKey(provider, userId), PaymentService.REJECT_COOLDOWN_MS);
+      } catch { /* never let the gate hide the provider error */ }
+      try { await this.repo.abandonDeposit(txId, `abandoned:${reason}`.slice(0, 200)); }
+      catch { /* likewise */ }
+      throw err;
+    }
+  }
+
   async initiateDeposit(userId: string, amountCents: number, phoneRaw: string, siteId?: string): Promise<{ txId: string; checkoutRequestId: string }> {
     if (!Number.isInteger(amountCents) || amountCents <= 0) throw new Error("INVALID_AMOUNT");
     const minDep = await this.currentMinDeposit();
@@ -162,13 +225,14 @@ export class PaymentService {
     // re-routed, when that owner has no complete M-Pesa account).
     const owner = await this.ownerOf(siteId);
     await this.assertRail(owner, "mpesa");
+    await this.guardInitiate(userId, "mpesa", owner.scope);
     const txId = await this.repo.createDeposit(userId, amountCents, msisdn, siteId);
     await this.stamp(txId, owner.scope);
     // Site-aware AccountReference: show the depositing brand's account, not a hardcoded one. And
     // route through the brand's OWN Daraja client when it has registered its own paybill (else shared).
     const accountRef = await this.resolveAccountRef(siteId);
     const client = owner.scope === "global" ? await this.resolveDaraja(siteId) : await this.darajaForScope(owner.scope);
-    const stk = await client.stkPush({ amountCents, msisdn, accountRef, desc: "Deposit" });
+    const stk = await this.withAbandonOnReject(txId, userId, "mpesa", () => client.stkPush({ amountCents, msisdn, accountRef, desc: "Deposit" }));
     await this.repo.attachStk(txId, stk.merchantRequestId, stk.checkoutRequestId);
     return { txId, checkoutRequestId: stk.checkoutRequestId };
   }
@@ -192,12 +256,13 @@ export class PaymentService {
     const msisdn = normalizeMsisdn(phoneRaw);
     await this.assertRail(owner, "megapay");
     const client = await this.megapayForScope(owner.scope);
+    await this.guardInitiate(userId, "megapay", owner.scope);
     const txId = await this.repo.createDepositProvider(userId, amountCents, msisdn, "megapay", siteId);
     await this.stamp(txId, owner.scope);
     // The reference becomes the "Account no." shown to the payer — send the brand/site name in
     // UPPERCASE for a clean, consistent prompt (e.g. "Account no. TAMUTRADERS").
     const reference = (await this.resolveAccountRef(siteId)).toUpperCase();
-    const res = await client.initiateStk({ amountCents, msisdn, reference });
+    const res = await this.withAbandonOnReject(txId, userId, "megapay", () => client.initiateStk({ amountCents, msisdn, reference }));
     await this.repo.attachStk(txId, res.merchantRequestId, res.transactionRequestId);
     return { txId, transactionRequestId: res.transactionRequestId, checkoutRequestId: res.checkoutRequestId };
   }
@@ -266,13 +331,43 @@ export class PaymentService {
     const msisdn = normalizeMsisdn(phoneRaw);
     await this.assertRail(owner, "payhero");
     const client = await this.payheroForScope(owner.scope);
+    await this.guardInitiate(userId, "payhero", owner.scope);
     const txId = await this.repo.createDepositProvider(userId, amountCents, msisdn, "payhero", siteId);
     await this.stamp(txId, owner.scope);
-    const res = await client.initiateStk({ amountCents, msisdn, externalReference: txId });
+    const res = await this.withAbandonOnReject(txId, userId, "payhero", () => client.initiateStk({ amountCents, msisdn, externalReference: txId }));
     // Store PayHero's `reference` in checkout_request_id (its status endpoint + reconcile query by it);
     // keep the ws_CO CheckoutRequestID in merchant_request_id for reference.
     await this.repo.attachStk(txId, res.checkoutRequestId, res.reference);
     return { txId, reference: res.reference, checkoutRequestId: res.checkoutRequestId };
+  }
+
+  /**
+   * Initiate a PayHero **Lipwa** (hosted multi-channel) deposit — card, bank, mobile-money, cross-border.
+   * We do NOT collect card data (PayHero's PCI-hosted page does); we only mint a pending 'payhero'
+   * transaction keyed by its own id and hand back the Lipwa URL (embedded in-app). PayHero echoes our
+   * txId as the ledger row's external_reference, so `reconcilePayHeroLedger` credits it through the SAME
+   * idempotent fn_complete_deposit as every other rail. Same floors/limits as STK — no rail bypasses them.
+   */
+  async initiateLipwaDeposit(userId: string, amountCents: number, siteId?: string): Promise<{ txId: string; lipwaUrl: string; reference: string }> {
+    const owner = await this.ownerOf(siteId);
+    if (owner.scope === "global" && !this.payhero) throw new Error("PAYHERO_NOT_CONFIGURED");
+    if (!Number.isInteger(amountCents) || amountCents <= 0) throw new Error("INVALID_AMOUNT");
+    const minDep = await this.currentMinDeposit();
+    if (amountCents < minDep) throw new Error("BELOW_MIN");
+    const maxDep = await this.currentMaxDeposit();
+    if (maxDep !== null && amountCents > maxDep) throw new Error("ABOVE_MAX");
+    await this.assertRail(owner, "payhero");
+    const client = await this.payheroForScope(owner.scope);
+    if (!(await client.lipwaLink({ reference: "probe" }))) throw new Error("PAYHERO_LIPWA_NOT_CONFIGURED");
+    // external_reference we pass to Lipwa === our txId === the tx's checkout_request_id, so the ledger match is unambiguous.
+    await this.guardInitiate(userId, "payhero", owner.scope);
+    const txId = await this.repo.createDepositProvider(userId, amountCents, "", "payhero", siteId);
+    await this.stamp(txId, owner.scope);
+    // Mint the link FIRST: attaching the checkout id before the call would make a refused deposit
+    // un-abandonable (fn_abandon_deposit refuses any row that carries one, by design).
+    const lipwaUrl = (await this.withAbandonOnReject(txId, userId, "payhero", () => client.lipwaLink({ amountKes: Math.round(amountCents / 100), reference: txId })))!;
+    await this.repo.attachStk(txId, `lipwa:${txId}`, txId);
+    return { txId, lipwaUrl, reference: txId };
   }
 
   /**
@@ -283,8 +378,13 @@ export class PaymentService {
    */
   async handlePayHeroCallback(_raw: unknown): Promise<{ settled: number }> {
     if (!this.payhero && !this.gateways) throw new Error("PAYHERO_NOT_CONFIGURED");
-    const r = await this.reconcilePayHeroDeposits({ olderThanMs: 0 });
-    return { settled: r.settled };
+    // Run BOTH authoritative sweeps: the status sweep settles STK deposits by reference, and the ledger
+    // sweep settles Lipwa (card/bank) + ingests manual paybill payments. The body is never trusted.
+    const [status, ledger] = await Promise.all([
+      this.reconcilePayHeroDeposits({ olderThanMs: 0 }),
+      this.reconcilePayHeroLedger().catch(() => ({ settled: 0 })),
+    ]);
+    return { settled: status.settled + ledger.settled };
   }
 
   /**
@@ -310,6 +410,50 @@ export class PaymentService {
       }
     }
     return { scanned: rows.length, settled, stillPending, errors };
+  }
+
+  /**
+   * Ledger reconcile — the settlement path for Lipwa (card/bank/multi-country) AND manual paybill C2B.
+   * Reads PayHero's authoritative account ledger (GET /transactions, one shared account) and, per inbound
+   * payment:
+   *   • external_reference set (STK/Lipwa) → credit the matching pending tx via fn_complete_deposit.
+   *     A row whose tx is already terminal returns applied=false and is left alone (no double credit);
+   *     TX_NOT_FOUND means no tx owns that reference, so it falls through to be claimable by code.
+   *   • no external_reference (manual paybill) → ingest into c2b_payments so the payer claims it by
+   *     M-PESA code through the SAME fraud-safe fn_claim_c2b_deposit as the Daraja paybill.
+   * Money-safe by construction: a payment is EITHER auto-credited to its own tx OR made claimable once —
+   * never both — and every write (fn_complete_deposit, fn_ingest_c2b) is idempotent, so re-runs are no-ops.
+   */
+  async reconcilePayHeroLedger(opts: { page?: number } = {}): Promise<{ scanned: number; settled: number; ingested: number; errors: number }> {
+    if (!this.payhero && !this.gateways) return { scanned: 0, settled: 0, ingested: 0, errors: 0 };
+    let rows: Awaited<ReturnType<PayHeroClient["listInboundPayments"]>> = [];
+    try { rows = await (await this.payheroForScope(null)).listInboundPayments({ page: opts.page ?? 1 }); }
+    catch { return { scanned: 0, settled: 0, ingested: 0, errors: 1 }; }
+    let settled = 0, ingested = 0, errors = 0;
+    for (const p of rows) {
+      try {
+        if (p.externalReference) {
+          try {
+            const res = await this.repo.completeDeposit(p.externalReference, 0, "ledger:payhero", p.mpesaCode,
+              { ledger: true, provider: "payhero", mpesaCode: p.mpesaCode, at: new Date().toISOString() });
+            if (res.applied) settled += 1;
+            continue; // a tx owns this reference (credited now, or already terminal) — never also ingest it
+          } catch (err) {
+            if (!/TX_NOT_FOUND/.test((err as Error).message)) throw err; // real error -> count it, don't lose the payment
+            // else: reference we don't own -> fall through to claimable-by-code so nothing is stranded
+          }
+        }
+        const stored = await this.repo.ingestC2b({
+          transId: p.mpesaCode, amountCents: p.amountCents, msisdn: p.msisdn,
+          billRef: p.externalReference ?? p.reference, shortcode: "payhero", raw: { provider: "payhero", ledger: true },
+        });
+        if (stored) ingested += 1;
+      } catch (err) {
+        errors += 1;
+        console.warn(`[payments] PayHero ledger reconcile failed for ${p.mpesaCode}: ${(err as Error).message}`);
+      }
+    }
+    return { scanned: rows.length, settled, ingested, errors };
   }
 
   /**
@@ -343,6 +487,65 @@ export class PaymentService {
     } catch (err) {
       console.warn(`[payments] listDepositProviders failed (${(err as Error).message}); falling back to M-Pesa only`);
       return [{ code: "mpesa", displayName: "M-Pesa" }];
+    }
+  }
+
+  /**
+   * The deposit CHANNELS a player on this brand can actually complete — the single source of truth for
+   * the deposit sheet. Built on top of listDepositProviders (the 0116 enable/disable resolution) and
+   * then narrowed by per-channel readiness, because an enabled gateway does not imply every one of its
+   * rails works:
+   *   - STK: one entry per effective gateway. The gateway BRAND is never shown (docs/35) — every STK
+   *     rail reads "M-Pesa", numbered only in the rare case that several are enabled at once.
+   *   - Lipwa (card/bank): PayHero only, and ONLY when `lipwa_url` is configured. It is optional for
+   *     `depositsReady`, so without this probe the tab renders and then throws
+   *     PAYHERO_LIPWA_NOT_CONFIGURED on submit — which is exactly what it did.
+   *   - Pay Bill: the System owner's Daraja paybill, so it needs M-Pesa live for this brand AND
+   *     `paybillConfig().enabled` (false for a brand on its own accounts, docs/43 §3.6).
+   * Never throws: any probe failure omits that channel rather than hiding the whole sheet.
+   */
+  async listDepositMethods(siteId?: string): Promise<DepositMethod[]> {
+    const providers = await this.listDepositProviders(siteId);
+    const enabled = new Set(providers.map((p) => p.code));
+    const methods: DepositMethod[] = [];
+
+    providers.forEach((p, i) => {
+      methods.push({
+        id: `${p.code}-stk`,
+        provider: p.code,
+        channel: "stk",
+        label: providers.length > 1 ? `M-Pesa (${i + 1})` : "M-Pesa",
+      });
+    });
+
+    if (enabled.has("payhero") && (await this.lipwaAvailable(siteId))) {
+      methods.push({ id: "payhero-lipwa", provider: "payhero", channel: "lipwa", label: "Card & Bank" });
+    }
+
+    if (enabled.has("mpesa")) {
+      try {
+        const cfg = await this.paybillConfig(siteId);
+        if (cfg.enabled) methods.push({ id: "mpesa-paybill", provider: "mpesa", channel: "paybill", label: "Pay Bill" });
+      } catch { /* paybill unavailable for this brand -> simply not offered */ }
+    }
+    return methods;
+  }
+
+  /**
+   * True when PayHero's hosted Lipwa checkout is actually usable for this brand. Mirrors EVERY
+   * precondition initiateLipwaDeposit enforces, so the sheet can never offer a channel the initiate
+   * call would reject: the global scope needs a configured PayHero client (`payheroForScope` returns a
+   * stub rather than throwing, which is why initiate guards on `!this.payhero` first), and the account
+   * needs `lipwa_url` (absent → `lipwaLink` resolves null). Any probe failure ⇒ not offered.
+   */
+  private async lipwaAvailable(siteId?: string): Promise<boolean> {
+    try {
+      const owner = await this.ownerOf(siteId);
+      if (owner.scope === "global" && !this.payhero) return false;
+      const client = await this.payheroForScope(owner.scope);
+      return Boolean(await client.lipwaLink({ reference: "probe" }));
+    } catch {
+      return false;
     }
   }
 

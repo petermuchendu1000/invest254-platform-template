@@ -211,6 +211,20 @@ export interface DepositProviderDto {
   displayName: string;
 }
 
+/**
+ * A deposit CHANNEL the server says this player can actually complete right now. The sheet renders
+ * these verbatim — it must never infer tabs from provider codes, because an enabled gateway does not
+ * imply every rail is usable (PayHero's Lipwa checkout additionally needs `lipwa_url`, and the manual
+ * Pay Bill is hidden for a brand on its own accounts). `label` is consumer-facing; the gateway brand
+ * is deliberately never exposed.
+ */
+export interface DepositMethodDto {
+  id: string;
+  provider: string;
+  channel: 'stk' | 'lipwa' | 'paybill';
+  label: string;
+}
+
 export interface WithdrawalResult {
   transactionId: string;
   newBalance: Cents;

@@ -1,5 +1,6 @@
-import { PLATFORM_ALL_ON } from "@invest254/shared";
+import { PLATFORM_ALL_ON, resolveDisplayCurrency } from "@invest254/shared";
 import { Router, ApiError, requireAuth, requireSite, type Ctx } from "./http.js";
+import { kesToCurrencyRate } from "./fx.js";
 import type { ApiDeps } from "./app.js";
 
 const BASE = "/api/v1";
@@ -25,6 +26,21 @@ export function registerSiteRoutes(router: Router, deps: ApiDeps): void {
     if (!host) throw new ApiError("VALIDATION", "host query parameter is required", 400);
     const brand = await deps.brandByHost(host);
     if (!brand) throw new ApiError("SITE_NOT_FOUND", `no active brand for host '${host}'`, 404);
+    // #10 geo-currency (presentation only; money of record stays KES cents). The web may pass:
+    //   - `country`  = the visitor's ISO country (Cloudflare CF-IPCountry) → a geo-default currency;
+    //   - `currency` = the user's saved/selected preference (top priority).
+    // Resolution: preference → geo → the brand's own currency. When the resolved currency differs
+    // from the brand default AND we can price it live, override the DTO's `currency`+`fxRateFromKes`
+    // so every downstream renderer/deposit converts against the right rate. A currency we cannot
+    // price (rate ≤ 0) is ignored — the brand currency stands, so amounts never render at a wrong
+    // implicit rate. These params vary the CDN cache key, so each currency caches independently.
+    const country = ctx.query.get("country");
+    const preferred = ctx.query.get("currency");
+    const resolved = resolveDisplayCurrency({ userPreference: preferred, countryCode: country, brandCurrency: brand.currency });
+    if (resolved !== brand.currency) {
+      const fxRateFromKes = await kesToCurrencyRate(resolved);
+      if (fxRateFromKes > 0) return { ...brand, currency: resolved, fxRateFromKes };
+    }
     return brand;
   });
 

@@ -94,6 +94,25 @@ export function useSetGlobalConfig() {
     onSuccess: () => { void qc.invalidateQueries({ queryKey: ['platform', 'global-config'] }); },
   });
 }
+// ── Bonuses on/off, per platform and per brand (migration 0173) ──
+export function useBonuses(platformId?: string) {
+  const t = useTok();
+  return useQuery({ queryKey: ['platform', 'bonuses', platformId ?? 'own'], queryFn: () => platformApi.bonuses(t, platformId), enabled: !!t });
+}
+export function useSetPlatformBonuses(platformId?: string) {
+  const t = useTok(); const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (enabled: boolean) => platformApi.setPlatformBonuses(t, enabled, platformId),
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: ['platform', 'bonuses'] }); },
+  });
+}
+export function useSetBrandBonuses(platformId?: string) {
+  const t = useTok(); const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { siteId: string; enabled: boolean }) => platformApi.setBrandBonuses(t, v.siteId, v.enabled),
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: ['platform', 'bonuses', platformId ?? 'own'] }); },
+  });
+}
 export function useDistributePool(platformId?: string) {
   const t = useTok(); const qc = useQueryClient();
   return useMutation({

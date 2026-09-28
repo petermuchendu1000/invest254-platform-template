@@ -9,7 +9,7 @@ import { ConfirmButton } from '@/components/admin/ui';
 import { Input } from '@/components/ui/Input';
 import { useToast } from '@/lib/toast/ToastProvider';
 import { checkFeasible } from '@invest254/shared/config';
-import { useStakeLimitsAdmin, useSetStakeLimits, useUpdateSite, useSetSiteConfig, useSetSiteTheme, usePlatformSiteUsers, usePlatformUserAction } from '@/lib/platform/hooks';
+import { useStakeLimitsAdmin, useSetStakeLimits, useUpdateSite, useSetSiteConfig, useSetSiteTheme, usePlatformSiteUsers, usePlatformUserAction, useBonuses } from '@/lib/platform/hooks';
 import type { SiteWithConfig, SiteConfig, SiteUserRow } from '@/lib/platform/endpoints';
 import { deriveMinimalPalette } from '@/lib/brand/derivePalette';
 import { groupedPresets, presetForSeed } from '@/lib/brand/presets';
@@ -275,6 +275,7 @@ function EconomySection({ site }: { site: SiteWithConfig }) {
         <span title="Return to player: the share of stakes paid back over time">Return to player: <span className="font-medium text-fg tabular-nums">{((1 - c.houseEdge) * 100).toFixed(2)}%</span></span>
         <span>Settings version <span className="font-medium text-fg tabular-nums">{c.version}</span></span>
         <PoolModeNote siteId={site.siteId} />
+        <BonusNote siteId={site.siteId} />
       </div>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         {EFIELDS.map((f) => (
@@ -450,6 +451,23 @@ function PeopleSection({ site }: { site: SiteWithConfig }) {
         ) : <p className="text-xs text-muted">Select a player to see their summary and game overrides.</p>}
       </section>
     </div>
+  );
+}
+
+/**
+ * Bonuses are switched on the Bonuses page (per platform and per brand, migration 0173); the Economy
+ * tab only reports whether THIS brand is currently granting, and why not when it is not.
+ */
+function BonusNote({ siteId }: { siteId: string }) {
+  const q = useBonuses();
+  const row = q.data?.brands.find((b) => b.siteId === siteId);
+  if (!row) return null;
+  const heldOff = row.enabled && !row.effective;
+  return (
+    <span>
+      Sign-up bonus: <span className={`font-medium ${row.effective ? 'text-fg' : 'text-down'}`}>{row.effective ? 'granting' : 'off'}</span>
+      {heldOff ? ' (switched off above this brand)' : ''} · <Link href="/platform/bonuses" className="text-accent hover:underline">Bonuses</Link>
+    </span>
   );
 }
 

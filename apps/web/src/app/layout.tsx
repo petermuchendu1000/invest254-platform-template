@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from 'next';
-import { headers } from 'next/headers';
+import { headers, cookies } from 'next/headers';
 import './globals.css';
 import { AppShell } from '@/components/layout/AppShell';
 import { Providers } from '@/components/Providers';
@@ -18,9 +18,28 @@ function requestHost(): string {
   return (h.get('x-forwarded-host') ?? h.get('host') ?? '').split(',')[0]!.trim();
 }
 
+/**
+ * #10 geo-currency: the visitor's ISO country from the CDN edge (Cloudflare `cf-ipcountry`, with a
+ * Vercel fallback for preview deploys). Sentinels like 'XX'/'T1' are left as-is — the API ignores an
+ * unmapped country and keeps the brand currency. Empty string when the header is absent (local dev).
+ */
+function requestCountry(): string {
+  const h = headers();
+  return (h.get('cf-ipcountry') ?? h.get('x-vercel-ip-country') ?? '').trim();
+}
+
+/**
+ * #10: the user's chosen display currency, read from the `pp-currency` cookie so it survives into SSR
+ * (the bearer token lives only in localStorage, invisible to the server). The switcher sets this
+ * cookie, and a signed-in user's saved server preference is synced into it after login.
+ */
+function preferredCurrency(): string {
+  return cookies().get('pp-currency')?.value?.trim() ?? '';
+}
+
 /** Resolve the brand for the current request (host → API `sites` row, cached briefly upstream). */
 async function currentBrand(): Promise<Brand> {
-  return resolveBrand(env.apiBaseUrl, requestHost());
+  return resolveBrand(env.apiBaseUrl, requestHost(), { country: requestCountry(), currency: preferredCurrency() });
 }
 
 // Per-brand document metadata: title/description/icons/theme-colour all come from the resolved

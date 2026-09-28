@@ -1,5 +1,5 @@
 import { AuthButtons } from '@/components/auth/AuthButtons';
-import { BalancePill } from '@/components/wallet/BalancePill';
+import { AccountSwitcher } from '@/components/wallet/AccountSwitcher';
 import { Logo } from '@/components/layout/Logo';
 
 export function TopBar() {
@@ -9,7 +9,9 @@ export function TopBar() {
         <Logo />
 
         <div className="ml-auto flex items-center gap-1.5 sm:gap-2">
-          <BalancePill />
+          {/* DEMO-3: the balance is now the Real/Demo switcher (it used to open the Withdraw tab,
+              which on a Demo account offered a way out of play money). */}
+          <AccountSwitcher />
           <AuthButtons />
         </div>
       </div>

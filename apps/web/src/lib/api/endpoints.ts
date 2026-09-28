@@ -7,6 +7,7 @@ import type {
   CommissionRecord,
   DepositResult,
   DepositProviderDto,
+  DepositMethodDto,
   MegaPayDepositResult,
   DigitHistoryDto,
   GameConfigDto,
@@ -162,12 +163,18 @@ export const api = {
     apiFetch<DepositResult>('/deposits', { method: 'POST', token, body }),
   // Deposit gateways to render for the player's brand (migration 0116) + the Mega Pay STK deposit.
   depositProviders: (token: string) =>
-    apiFetch<{ providers: DepositProviderDto[] }>('/deposits/providers', { token }),
+    apiFetch<{ providers: DepositProviderDto[]; methods?: DepositMethodDto[] }>('/deposits/providers', { token }),
   createMegapayDeposit: (token: string, body: { amount: number; phone: string }) =>
     apiFetch<MegaPayDepositResult>('/deposits/megapay', { method: 'POST', token, body }),
   // PayHero (Lipwa) STK deposit — the third rail.
   createPayheroDeposit: (token: string, body: { amount: number; phone: string }) =>
     apiFetch<{ transactionId: string; reference: string; checkoutRequestId: string }>('/deposits/payhero', { method: 'POST', token, body }),
+  // PayHero Lipwa hosted checkout (card / bank / mobile money / cross-border) — opened in an in-app modal.
+  createPayheroLipwaDeposit: (token: string, body: { amount: number }) =>
+    apiFetch<{ transactionId: string; reference: string; lipwaUrl: string }>('/deposits/payhero/lipwa', { method: 'POST', token, body }),
+  // PayHero manual Pay Bill: claim a payment made to the PayHero paybill by its M-PESA code.
+  claimPayheroPaybill: (token: string, body: { code: string }) =>
+    apiFetch<PaybillClaimDto>('/deposits/payhero/paybill/claim', { method: 'POST', token, body }),
   // Pay Bill (manual C2B) deposit: public display config + authed claim-by-code.
   paybillInfo: (site?: string) => apiFetch<PaybillInfoDto>('/deposits/paybill/info', { query: { site } }),
   claimPaybill: (token: string, body: { code: string }) =>

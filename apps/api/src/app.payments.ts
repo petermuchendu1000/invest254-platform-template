@@ -37,6 +37,9 @@ const DOMAIN_STATUS: Readonly<Record<string, number>> = {
   // Mega Pay rail (migration 0116)
   PROVIDER_NOT_FOUND: 400,
   PROVIDER_DISABLED: 403,
+  // 0174 / docs/52 — the initiate guard. Client-safe by design: these say "slow down", never "failed".
+  DEPOSIT_TOO_SOON: 429,
+  PROVIDER_BUSY: 429,
   MEGAPAY_NOT_CONFIGURED: 503,
   MEGAPAY_INITIATE_REJECTED: 502,
   MEGAPAY_VERIFY_PENDING: 409,   // callback arrived but status not yet final -> caller/retry + reconcile settles it
@@ -250,12 +253,21 @@ export function registerProtectedRoutes(router: Router, deps: ApiDeps): void {
     return { status: 202, body: { transactionId: out.txId, checkoutRequestId: out.checkoutRequestId } };
   });
 
-  // The deposit gateways to render for THIS player's brand (migration 0116): the superadmin's global
-  // switch resolved against any per-site override. Fail-open to M-Pesa inside the service, so this
-  // never returns an empty list that would hide the working rail.
+  // What the deposit sheet may render for THIS player's brand.
+  //  - `providers`: the effective-enabled gateways (migration 0116) — kept for compatibility.
+  //  - `methods`:   the deposit CHANNELS that can actually be completed right now. The client renders
+  //                 these verbatim instead of inferring tabs from provider codes, which is what made it
+  //                 offer PayHero's Lipwa checkout on brands where `lipwa_url` is unset (submitting
+  //                 threw PAYHERO_LIPWA_NOT_CONFIGURED) and hid Pay Bill behind the wrong condition.
+  // The platform deposits kill-switch is honoured here too: every deposit POST refuses with
+  // SYSTEM_DISABLED while it is off, so offering methods the server will reject is a broken promise.
+  // We still return 200 with an empty `methods` (rather than 403) so the sheet shows its normal
+  // "temporarily unavailable" state instead of an error.
   router.get(`${BASE}/deposits/providers`, auth, site, async (ctx: Ctx) => {
     const providers = await deps.payments.listDepositProviders(ctx.siteId);
-    return { providers };
+    const depositsOn = deps.platformGate ? await deps.platformGate.allows("deposits") : true;
+    const methods = depositsOn ? await deps.payments.listDepositMethods(ctx.siteId) : [];
+    return { providers, methods };
   });
 
   // Mega Pay STK deposit (migration 0116). Mirrors /deposits but routes through the Mega Pay rail.
@@ -285,6 +297,35 @@ export function registerProtectedRoutes(router: Router, deps: ApiDeps): void {
     const phone = requirePhone(body);
     const out = await domain(() => deps.payments.initiatePayHeroDeposit(ctx.claims!.userId, amount, phone, ctx.siteId), ctx);
     return { status: 202, body: { transactionId: out.txId, reference: out.reference, checkoutRequestId: out.checkoutRequestId } };
+  });
+
+  // PayHero Lipwa — hosted multi-channel checkout (card / bank / mobile money / cross-border), kept IN-APP
+  // by the web client via an embedded modal. We only mint a pending tx and hand back the checkout URL;
+  // PayHero's PCI-hosted page takes the card details (they never touch us), and the ledger reconcile
+  // credits the payment by our reference. Same server-authoritative enable gate + deposits master switch.
+  router.post(`${BASE}/deposits/payhero/lipwa`, auth, site, depositLimit, async (ctx: Ctx) => {
+    if (deps.platformGate && !(await deps.platformGate.allows("deposits")))
+      throw new ApiError("SYSTEM_DISABLED", "Deposits are temporarily disabled by the platform.", 403);
+    if (!(await deps.payments.listDepositProviders(ctx.siteId)).some((p) => p.code === "payhero"))
+      throw new ApiError("PROVIDER_DISABLED", "PayHero is not available.", 403);
+    const body = asObject(ctx.body);
+    const amount = requireIntAmount(body);
+    const out = await domain(() => deps.payments.initiateLipwaDeposit(ctx.claims!.userId, amount, ctx.siteId), ctx);
+    return { status: 202, body: { transactionId: out.txId, reference: out.reference, lipwaUrl: out.lipwaUrl } };
+  });
+
+  // PayHero manual Pay Bill — the player paid the PayHero paybill directly, then submits the M-PESA code.
+  // The ledger reconcile ingests that payment into c2b_payments; claim credits the Safaricom-recorded
+  // amount once through the SAME fraud-safe fn_claim_c2b_deposit as the Daraja paybill.
+  router.post(`${BASE}/deposits/payhero/paybill/claim`, auth, site, depositLimit, async (ctx: Ctx) => {
+    if (deps.platformGate && !(await deps.platformGate.allows("deposits")))
+      throw new ApiError("SYSTEM_DISABLED", "Deposits are temporarily disabled by the platform.", 403);
+    if (!(await deps.payments.listDepositProviders(ctx.siteId)).some((p) => p.code === "payhero"))
+      throw new ApiError("PROVIDER_DISABLED", "PayHero is not available.", 403);
+    const body = asObject(ctx.body);
+    const code = body.code;
+    if (typeof code !== "string" || code.trim() === "") throw new ApiError("VALIDATION", "code is required", 400);
+    return domain(() => deps.payments.claimPaybillDeposit(ctx.claims!.userId, code, ctx.siteId), ctx);
   });
 
   router.post(`${BASE}/withdrawals`, auth, site, withdrawLimit, async (ctx: Ctx) => {

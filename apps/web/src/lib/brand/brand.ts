@@ -92,9 +92,18 @@ export const DEFAULT_BRAND: Brand = {
 };
 
 /** Resolve the brand for a host by asking the API. Falls back to DEFAULT_BRAND on any error. */
-export async function resolveBrand(apiBaseUrl: string, host: string): Promise<Brand> {
+export async function resolveBrand(
+  apiBaseUrl: string,
+  host: string,
+  opts: { country?: string | null; currency?: string | null } = {},
+): Promise<Brand> {
+  // #10 geo-currency: forward the visitor's country (Cloudflare geo) and/or a saved/selected currency
+  // preference so the API resolves the DISPLAY currency + live rate server-side (money stays KES cents).
+  const params = new URLSearchParams({ host });
+  if (opts.country) params.set('country', opts.country);
+  if (opts.currency) params.set('currency', opts.currency);
   try {
-    const res = await fetch(`${apiBaseUrl}/site/brand?host=${encodeURIComponent(host)}`, {
+    const res = await fetch(`${apiBaseUrl}/site/brand?${params.toString()}`, {
       // Brand rarely changes; let the platform CDN cache it briefly.
       headers: { accept: "application/json" },
     });

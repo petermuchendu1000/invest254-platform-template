@@ -29,11 +29,18 @@ export function WalletModal() {
   const close = useDepositUi((s) => s.close);
   const token = useSession((s) => s.token);
   const { data: wallet } = useWallet();
+  const f = walletFigures(wallet);
+
+  // DEMO-3: the Demo account has no way out. Any caller that still asks for the Withdraw tab (a stale
+  // store value, a deep link, a mode switched while the sheet was open) lands on Deposit instead —
+  // the sheet never renders a withdrawal surface for play money, and the tab strip is hidden because
+  // there is only one action left. The server refuses a demo withdrawal anyway; this is the UI half.
+  const active: WalletMode = f.canWithdraw ? mode : 'deposit';
 
   if (!open) return null;
 
   return (
-    <Modal open={open} onClose={close} title={mode === 'deposit' ? 'Deposit' : 'Withdraw'} chrome={false}>
+    <Modal open={open} onClose={close} title={active === 'deposit' ? 'Deposit' : 'Withdraw'} chrome={false}>
       {/* Header */}
       <div className="flex items-center justify-between border-b border-border p-4">
         <h2 className="text-lg font-semibold">M-Pesa wallet</h2>
@@ -43,13 +50,12 @@ export function WalletModal() {
       {/* Balance — the anchor for both actions */}
       <div className="px-4 pt-4">
         <div className="flex flex-col items-center gap-0.5 rounded-2xl bg-surface-2 px-4 py-3 text-center">
-          <span className="text-xs text-muted">{mode === 'deposit' ? 'Real balance' : 'Withdrawable'}</span>
+          <span className="text-xs text-muted">{active === 'deposit' ? 'Real balance' : 'Withdrawable'}</span>
           {token && !wallet ? (
             <Skeleton className="h-7 w-32" />
           ) : (() => {
             // DEMO-2: money in and out is always the Real account, never the demo balance.
-            const f = walletFigures(wallet);
-            const bal = parts(mode === 'deposit' ? f.realTotal : f.withdrawable);
+            const bal = parts(active === 'deposit' ? f.realTotal : f.withdrawable);
             return (
               <>
                 <span className="text-2xl font-extrabold leading-tight tracking-tight text-accent">{bal.display}</span>
@@ -60,32 +66,34 @@ export function WalletModal() {
         </div>
       </div>
 
-      {/* Deposit / Withdraw toggle */}
-      <div className="px-4 pt-3">
-        <div className="flex rounded-xl border border-border bg-surface-2 p-1" role="tablist" aria-label="Wallet action">
-          {TABS.map(({ mode: m, label }) => {
-            const active = mode === m;
-            return (
-              <button
-                key={m}
-                type="button"
-                role="tab"
-                aria-selected={active}
-                onClick={() => setMode(m)}
-                className={cn(
-                  'flex-1 rounded-lg py-2 text-sm font-semibold transition',
-                  active ? 'bg-accent text-accent-fg shadow-sm' : 'text-muted hover:text-fg',
-                )}
-              >
-                {label}
-              </button>
-            );
-          })}
+      {/* Deposit / Withdraw toggle — hidden entirely on the Demo account (Deposit is the only action) */}
+      {f.canWithdraw ? (
+        <div className="px-4 pt-3">
+          <div className="flex rounded-xl border border-border bg-surface-2 p-1" role="tablist" aria-label="Wallet action">
+            {TABS.map(({ mode: m, label }) => {
+              const on = active === m;
+              return (
+                <button
+                  key={m}
+                  type="button"
+                  role="tab"
+                  aria-selected={on}
+                  onClick={() => setMode(m)}
+                  className={cn(
+                    'flex-1 rounded-lg py-2 text-sm font-semibold transition',
+                    on ? 'bg-accent text-accent-fg shadow-sm' : 'text-muted hover:text-fg',
+                  )}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
         </div>
-      </div>
+      ) : null}
 
       {/* Active form — key forces a clean remount (fresh state) when switching tabs */}
-      {mode === 'deposit' ? <DepositPanel key="deposit" /> : <WithdrawForm key="withdraw" />}
+      {active === 'deposit' ? <DepositPanel key="deposit" /> : <WithdrawForm key="withdraw" />}
     </Modal>
   );
 }

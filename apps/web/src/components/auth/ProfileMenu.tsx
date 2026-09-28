@@ -6,6 +6,7 @@ import type { MeDto } from '@/lib/api/types';
 import { cn } from '@/lib/cn';
 import { useAuthActions } from '@/lib/auth/useAuthActions';
 import { useDepositUi } from '@/lib/wallet/depositUi';
+import { useWalletFigures } from '@/lib/wallet/hooks';
 
 /* ── icons (currentColor, inherit row colour) ─────────────────────────────── */
 const ic = 'h-[18px] w-[18px] shrink-0';
@@ -51,6 +52,7 @@ export function ProfileMenu({ user }: { user: MeDto }) {
   const { logout } = useAuthActions();
   const openDeposit = useDepositUi((s) => s.openDeposit);
   const openWithdraw = useDepositUi((s) => s.openWithdraw);
+  const figures = useWalletFigures();
 
   useEffect(() => {
     if (!open) return;
@@ -103,9 +105,12 @@ export function ProfileMenu({ user }: { user: MeDto }) {
           <button role="menuitem" className={itemCls} onClick={() => { setOpen(false); openDeposit(); }}>
             <span className="text-accent"><DepositIcon /></span> Deposit
           </button>
-          <button role="menuitem" className={itemCls} onClick={() => { setOpen(false); openWithdraw(); }}>
-            <span className="text-accent"><WithdrawIcon /></span> Withdraw
-          </button>
+          {/* DEMO-3: the Demo account has no way out — the item is absent, not disabled. */}
+          {figures.canWithdraw ? (
+            <button role="menuitem" className={itemCls} onClick={() => { setOpen(false); openWithdraw(); }}>
+              <span className="text-accent"><WithdrawIcon /></span> Withdraw
+            </button>
+          ) : null}
 
           <div className="my-1 h-px bg-border" />
 

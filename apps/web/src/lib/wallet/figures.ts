@@ -12,8 +12,19 @@ export interface WalletLike {
 }
 
 export interface WalletFigures {
-  /** The player is in demo mode (not a demo-locked marketer): withdrawals need a switch to Real. */
+  /** The player is in demo mode (not a demo-locked marketer). */
   demo: boolean;
+  /**
+   * May a withdrawal be OFFERED at all? This is the single gate every surface asks before rendering
+   * a Withdraw button, tab, menu item or tap target — the demo balance is play money and must never
+   * be presented as cashable, not even as a disabled control or a "switch to Real to withdraw" hint.
+   *
+   * False while the wallet is still unknown: which account is active decides whether money can leave,
+   * so nothing offers a way out before the answer is in (a Withdraw button that appears and then
+   * vanishes is exactly the hint this is meant to remove). The server refuses a demo withdrawal with
+   * DEMO_ACCOUNT regardless — this keeps the UI from ever asking.
+   */
+  canWithdraw: boolean;
   /** The Real account: cash + bonus. */
   realTotal: number;
   /** What can be withdrawn right now (0 while in demo). */
@@ -24,16 +35,17 @@ export interface WalletFigures {
 }
 
 export function walletFigures(w: WalletLike | null | undefined): WalletFigures {
-  if (!w) return { demo: false, realTotal: 0, withdrawable: 0, realCash: 0, demoBalance: 0 };
+  if (!w) return { demo: false, canWithdraw: false, realTotal: 0, withdrawable: 0, realCash: 0, demoBalance: 0 };
   const inDemo = w.mode === 'demo';
   if (inDemo && w.modeLocked) {
-    // marketer: always demo; their withdraw is the demo transfer
-    return { demo: false, realTotal: w.real + w.bonus, withdrawable: w.real, realCash: w.real, demoBalance: w.demoBalance ?? w.real };
+    // marketer: always demo; their withdraw is the demo transfer, so it stays offered
+    return { demo: false, canWithdraw: true, realTotal: w.real + w.bonus, withdrawable: w.real, realCash: w.real, demoBalance: w.demoBalance ?? w.real };
   }
   const realCash = w.realBalance ?? (inDemo ? 0 : w.real);
   const bonus = w.bonusBalance ?? (inDemo ? 0 : w.bonus);
   return {
     demo: inDemo,
+    canWithdraw: !inDemo,
     realTotal: realCash + bonus,
     withdrawable: inDemo ? 0 : realCash,
     realCash,

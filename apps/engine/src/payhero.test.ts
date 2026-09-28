@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   StubPayHeroClient, HttpPayHeroClient, UnconfiguredPayHeroClient, ConfiguredPayHeroClient,
   mapPayHeroStatus, toLocalMsisdn, resolvePayHeroConfig, missingPayHeroCredentials, type PayHeroConfig,
+  parsePayerMsisdn, toInboundPayment, buildLipwaUrl,
 } from "./payhero.js";
 
 function fakeFetch(spec: { status?: number; body?: unknown; capture?: (url: string, init: any) => void }): typeof fetch {
@@ -75,4 +76,85 @@ test("ConfiguredPayHeroClient: complete override w/ prod env + missing channel -
   const prod = { NODE_ENV: "production" } as unknown as NodeJS.ProcessEnv;
   const c = new ConfiguredPayHeroClient(async () => ({ basicAuthToken: "t" }), prod); // channel_id missing
   await assert.rejects(() => c.queryStatus("x"), /PAYHERO_NOT_CONFIGURED/);
+});
+
+// ── C2B ledger ingest (GET /transactions) — the authoritative source for manual paybill deposits ──
+
+test("parsePayerMsisdn extracts the payer phone from PayHero's inbound description", () => {
+  assert.equal(parsePayerMsisdn("Received KES 200 from 0798661061"), "0798661061");
+  assert.equal(parsePayerMsisdn("Received KES 10 from 254712345678"), "254712345678");
+  assert.equal(parsePayerMsisdn("Received KES 5 from +254712345678"), "+254712345678");
+  assert.equal(parsePayerMsisdn("no phone here"), null);
+  assert.equal(parsePayerMsisdn(null), null);
+});
+
+test("toInboundPayment maps a real inbound_payment row and rejects non-payments", () => {
+  const row = {
+    id: 5605294, account_id: 12038, transaction_type: "inbound_payment",
+    description: "Received KES 200 from 0798661061", amount: 200,
+    transaction_reference: "a9e7-44b5-968c-d43e11ff8d4f1118113", provider_reference: "UISMX7V2JV",
+    external_reference: "0ff6dc63-48a4-4be5-82bc-0bb1b4a8cdf5", channel_id: 12226,
+    created_at: "2026-09-28T09:12:19.620043Z",
+  };
+  const p = toInboundPayment(row);
+  assert.ok(p);
+  assert.equal(p!.mpesaCode, "UISMX7V2JV");
+  assert.equal(p!.amountCents, 20_000);           // 200 KES -> 20000 cents
+  assert.equal(p!.msisdn, "0798661061");
+  assert.equal(p!.externalReference, "0ff6dc63-48a4-4be5-82bc-0bb1b4a8cdf5");
+  // a fee row / non-inbound / zero / missing code are all skipped
+  assert.equal(toInboundPayment({ ...row, transaction_type: "service_charge", amount: -8.9 }), null);
+  assert.equal(toInboundPayment({ ...row, amount: 0 }), null);
+  assert.equal(toInboundPayment({ ...row, provider_reference: "" }), null);
+  assert.equal(toInboundPayment(null), null);
+});
+
+test("HttpPayHeroClient.listInboundPayments filters to inbound payments on our channel", async () => {
+  const body = { transactions: [
+    { transaction_type: "inbound_payment", amount: 200, provider_reference: "CODE200", description: "Received KES 200 from 0798661061", channel_id: 1487, transaction_reference: "r1", external_reference: "tx1", created_at: "t" },
+    { transaction_type: "service_charge",  amount: -8.9, provider_reference: "cost_X",  description: "fee", channel_id: 1487, created_at: "t" },
+    { transaction_type: "inbound_payment", amount: 50,  provider_reference: "OTHERCHAN", description: "Received KES 50 from 0711111111", channel_id: 9999, transaction_reference: "r2", external_reference: null, created_at: "t" },
+  ] };
+  const client = new HttpPayHeroClient(cfg, fakeFetch({ body })); // cfg.channelId = "1487"
+  const out = await client.listInboundPayments();
+  assert.equal(out.length, 1);
+  assert.equal(out[0]!.mpesaCode, "CODE200");
+  assert.equal(out[0]!.amountCents, 20_000);
+});
+
+test("HttpPayHeroClient.listInboundPayments returns [] on a transient error (never invents money)", async () => {
+  const client = new HttpPayHeroClient(cfg, fakeFetch({ status: 502, body: {} }));
+  assert.deepEqual(await client.listInboundPayments(), []);
+});
+
+test("initiateStk defaults provider m-pesa and forwards provider/network_code when given", async () => {
+  let sent: any = null;
+  const c1 = new HttpPayHeroClient(cfg, fakeFetch({ status: 201, body: { success: true, reference: "R", CheckoutRequestID: "ws" }, capture: (_u, i) => { sent = JSON.parse(i.body); } }));
+  await c1.initiateStk({ amountCents: 20_000, msisdn: "0712345678", externalReference: "t" });
+  assert.equal(sent.provider, "m-pesa");
+  assert.equal("network_code" in sent, false);
+  await c1.initiateStk({ amountCents: 20_000, msisdn: "0712345678", externalReference: "t", provider: "sasapay", networkCode: "63902" });
+  assert.equal(sent.provider, "sasapay");
+  assert.equal(sent.network_code, "63902");
+});
+
+test("StubPayHeroClient.listInboundPayments is empty (no network in dev/tests)", async () => {
+  assert.deepEqual(await new StubPayHeroClient().listInboundPayments(), []);
+});
+
+test("buildLipwaUrl composes amount + reference and is robust to a messy base", () => {
+  assert.equal(buildLipwaUrl("https://app.payhero.africa/lipwa/12038", { amountKes: 200, reference: "tx-1" }),
+    "https://app.payhero.africa/lipwa/12038?amount=200&reference=tx-1");
+  // trailing slash / stray query on the base are stripped; amount omitted when absent/invalid
+  assert.equal(buildLipwaUrl("https://app.payhero.africa/lipwa/12038/?x=1", { reference: "tx-2" }),
+    "https://app.payhero.africa/lipwa/12038?reference=tx-2");
+  assert.equal(buildLipwaUrl("https://app.payhero.africa/lipwa/12038", { amountKes: 0, reference: "t" }),
+    "https://app.payhero.africa/lipwa/12038?reference=t");
+});
+
+test("HttpPayHeroClient.lipwaLink returns null unless a Lipwa URL is configured", async () => {
+  const withLipwa = new HttpPayHeroClient({ ...cfg, lipwaUrl: "https://app.payhero.africa/lipwa/12038" }, fakeFetch({}));
+  assert.match((await withLipwa.lipwaLink({ amountKes: 200, reference: "r" }))!, /reference=r/);
+  const noLipwa = new HttpPayHeroClient(cfg, fakeFetch({}));
+  assert.equal(await noLipwa.lipwaLink({ reference: "r" }), null);
 });

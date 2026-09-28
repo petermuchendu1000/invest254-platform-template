@@ -716,6 +716,18 @@ export function registerAdminRoutes(router: Router, deps: ApiDeps): void {
     return domain(async () => ({ enabled: await deps.admin.setWithdrawalsEnabled(actor, role, site, body.enabled as boolean) }));
   });
 
+  // 0173 — per-brand bonuses switch. Same shape and scoping as withdrawals-enabled above; the read
+  // also returns the system + platform levels so the UI can say WHICH level switched bonuses off.
+  router.get(`${BASE}/admin/bonuses-enabled`, auth, admin, async (ctx: Ctx) =>
+    deps.admin.getBonusSwitches(configSiteId(ctx)));
+
+  router.put(`${BASE}/admin/bonuses-enabled`, auth, admin, async (ctx: Ctx) => {
+    const body = ctx.body && typeof ctx.body === "object" ? (ctx.body as Record<string, unknown>) : {};
+    if (typeof body.enabled !== "boolean") throw new ApiError("VALIDATION", "enabled must be a boolean", 400);
+    const actor = ctx.claims!.userId, role = ctx.claims!.role ?? "player", site = configSiteId(ctx);
+    return domain(() => deps.admin.setBonusesEnabled(actor, role, site, body.enabled as boolean));
+  });
+
   router.get(`${BASE}/admin/rtp`, auth, admin, async (ctx: Ctx) => deps.admin.rtpMonitor(adminScopeSite(ctx) ?? undefined));
   // Real-cash RTP (rec #7): committed-money truth from the ledger, marketer cohort shown separately.
   router.get(`${BASE}/admin/real-cash-rtp`, auth, admin, async (ctx: Ctx) => deps.admin.realCashRtp(adminScopeSite(ctx) ?? undefined));
