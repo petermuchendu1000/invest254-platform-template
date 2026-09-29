@@ -370,3 +370,64 @@ test("F-49: a withdrawal is paid only to the account's registered number (any fo
   const ok = await svc.requestWithdrawal("victim", 50_000, "+254 712 345 678");
   assert.equal(ok.mode, "daraja", "the registered number in another format is fine");
 });
+
+// ── PayHero payout rail (OFF by default; routes via PayHero only when payoutReady) ───────────────
+function fakePayHero(over: Partial<{ ready: boolean; result: { resultCode: number | null; processing: boolean; receipt: string | null }; onWithdraw: (a: any) => void }> = {}) {
+  const ready = over.ready ?? true;
+  const result = over.result ?? { resultCode: 0, processing: false, receipt: "PHRCPT" };
+  return {
+    async initiateStk() { return { reference: "r", checkoutRequestId: "c" }; },
+    async queryStatus() { return result; },
+    async listInboundPayments() { return []; },
+    async lipwaLink() { return null; },
+    async withdraw(a: any) { over.onWithdraw?.(a); return { reference: "VAD1.eO", checkoutRequestId: "VAD1.eO" }; },
+    async payoutReady() { return ready; },
+  } as any;
+}
+
+test("PaymentService: PayHero payout rail routes via PayHero when ready, settles via authoritative re-query", async () => {
+  const repo = new InMemoryPaymentRepository(); repo.seed("u", 100_000);
+  const fired: any[] = []; let seenRef = "";
+  const payhero = fakePayHero({ ready: true, onWithdraw: (a) => (seenRef = a.externalReference) });
+  const svc = new PaymentService(repo, new StubDarajaClient(), { payhero, events: { onWithdrawalSuccess: (e: any) => fired.push(e) } });
+  const w = await svc.requestWithdrawal("u", 25_000, "0712345678");
+  const ap = await svc.approveWithdrawal(w.txId, "admin");
+  assert.ok(ap.approved);
+  assert.equal(seenRef, w.txId);                                // external_reference == our txId
+  const c = await svc.handlePayHeroWithdrawResult(w.txId, "VAD1.eO", {});
+  assert.deepEqual(c, { applied: true, status: "success", newBalance: 75_000 }); // success keeps the debit
+  assert.deepEqual(fired, [{ userId: "u", amountCents: 25_000 }]);
+  assert.equal(await repo.getBalance("u"), 75_000);
+});
+
+test("PaymentService: PayHero NOT payout-ready falls back to Daraja B2C (behaviour-neutral)", async () => {
+  const repo = new InMemoryPaymentRepository(); repo.seed("u", 100_000);
+  const payhero = fakePayHero({ ready: false, onWithdraw: () => { throw new Error("PayHero must not be called when not ready"); } });
+  const svc = new PaymentService(repo, new StubDarajaClient(), { payhero });
+  const w = await svc.requestWithdrawal("u", 25_000, "0712345678");
+  const ap = await svc.approveWithdrawal(w.txId, "admin");
+  assert.ok(ap.approved && ap.conversationId?.startsWith("stub-conv")); // Daraja stub dispatched
+});
+
+test("PaymentService: PayHero payout callback while still PROCESSING never releases money", async () => {
+  const repo = new InMemoryPaymentRepository(); repo.seed("u", 100_000);
+  const payhero = fakePayHero({ ready: true, result: { resultCode: null, processing: true, receipt: null } });
+  const svc = new PaymentService(repo, new StubDarajaClient(), { payhero });
+  const w = await svc.requestWithdrawal("u", 25_000, "0712345678");
+  await svc.approveWithdrawal(w.txId, "admin");
+  const c = await svc.handlePayHeroWithdrawResult(w.txId, "VAD1.eO", {});
+  assert.equal(c.applied, false);                    // unresolved -> not settled
+  assert.equal(await repo.getBalance("u"), 75_000);  // debit held, neither released nor reversed
+});
+
+test("PaymentService: PayHero payout failure reverses the debit (no success event)", async () => {
+  const repo = new InMemoryPaymentRepository(); repo.seed("u", 100_000);
+  const fired: any[] = [];
+  const payhero = fakePayHero({ ready: true, result: { resultCode: 1, processing: false, receipt: null } });
+  const svc = new PaymentService(repo, new StubDarajaClient(), { payhero, events: { onWithdrawalSuccess: (e: any) => fired.push(e) } });
+  const w = await svc.requestWithdrawal("u", 25_000, "0712345678");
+  await svc.approveWithdrawal(w.txId, "admin");
+  const c = await svc.handlePayHeroWithdrawResult(w.txId, "VAD1.eO", {});
+  assert.deepEqual(c, { applied: true, status: "failed", newBalance: 100_000 }); // reversed
+  assert.equal(fired.length, 0);
+});

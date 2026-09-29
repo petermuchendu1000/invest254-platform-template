@@ -400,6 +400,22 @@ export function registerProtectedRoutes(router: Router, deps: ApiDeps): void {
   router.post(`${BASE}/deposits/payhero/callback`, payheroOnly, payheroCallback);
   router.post(`${BASE}/s/:slug/deposits/payhero/callback`, payheroOnly, resolveSlug, payheroCallback);
 
+  // PayHero PAYOUT (withdrawal) webhook. PayHero POSTs here when a payout it queued resolves. Our txId
+  // is echoed as `external_reference`; the handler RE-QUERIES PayHero for the authoritative status
+  // (using the `reference` PayHero returned) before it settles the withdrawal — a forged/failed callback
+  // can never release or reverse money on its own. Same IP allow-list as the deposit webhook.
+  const payheroWithdrawCallback = async (ctx: Ctx) => {
+    const b = (ctx.body && typeof ctx.body === "object" ? ctx.body : {}) as Record<string, unknown>;
+    const txId = typeof b.external_reference === "string" ? b.external_reference : "";
+    const reference = typeof b.reference === "string" && b.reference !== ""
+      ? b.reference
+      : (typeof b.merchant_reference === "string" && b.merchant_reference !== "" ? b.merchant_reference : null);
+    if (txId) await domain(() => deps.payments.handlePayHeroWithdrawResult(txId, reference, ctx.body));
+    return { ok: true };
+  };
+  router.post(`${BASE}/withdrawals/payhero/result`, payheroOnly, payheroWithdrawCallback);
+  router.post(`${BASE}/s/:slug/withdrawals/payhero/result`, payheroOnly, resolveSlug, payheroWithdrawCallback);
+
   // ── Pay Bill (C2B) — auto-verified manual deposits (migration 0115) ──
   // Public C2B endpoints Safaricom calls for every payment to our Pay Bill. Network-allowlisted to
   // Safaricom's IPs (same defence as the STK callback). Validation accepts all; Confirmation ingests

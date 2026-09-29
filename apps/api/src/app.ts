@@ -270,6 +270,7 @@ export interface ApiDeps {
     | "ingestC2b" | "claimPaybillDeposit" | "paybillConfig"
     | "initiateMegaPayDeposit" | "handleMegaPayCallback" | "reconcileMegaPayDeposits"
     | "initiatePayHeroDeposit" | "initiateLipwaDeposit" | "handlePayHeroCallback" | "reconcilePayHeroDeposits" | "reconcilePayHeroLedger" | "listDepositProviders"
+    | "handlePayHeroWithdrawResult"
     | "listDepositMethods">;
   /** Resolve a player's display handle (falls back to a guest handle). */
   resolveHandle(userId: string): Promise<string>;

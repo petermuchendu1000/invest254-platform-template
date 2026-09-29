@@ -31,6 +31,25 @@ export interface PayHeroStkResult { reference: string; checkoutRequestId: string
 export interface PayHeroStatusResult { resultCode: number | null; processing: boolean; receipt: string | null; }
 
 /**
+ * A payout (withdrawal) to a customer — POST {base}/api/v2/withdraw. Mirrors Daraja B2C's role but for
+ * PayHero: money leaves OUR PayHero service wallet to the recipient. `channel` selects mobile money vs
+ * bank; a bank payout also needs `accountNumber`. Amount crosses as integer cents → whole KES on the wire.
+ */
+export interface PayHeroWithdrawArgs {
+  amountCents: Cents;
+  msisdn: string;
+  externalReference: string;
+  /** "mobile" (default, M-Pesa/SasaPay) or "bank". */
+  channel?: "mobile" | "bank";
+  /** Bank account number — REQUIRED when channel is "bank". */
+  accountNumber?: string;
+  /** Optional network code (e.g. "63902" Safaricom). */
+  networkCode?: string;
+}
+/** PayHero echoes our external_reference and returns a merchant/checkout reference for the queued payout. */
+export interface PayHeroWithdrawResult { reference: string; checkoutRequestId: string; }
+
+/**
  * A settled inbound payment on the PayHero account ledger (GET {base}/transactions). This is the
  * AUTHORITATIVE source for C2B (manual paybill) deposits: a customer pays the PayHero paybill directly,
  * PayHero records it here, and we ingest it — we never trust an unverified callback to mint balance.
@@ -53,6 +72,11 @@ export interface PayHeroClient {
   listInboundPayments(opts?: { page?: number }): Promise<PayHeroInboundPayment[]>;
   /** Build the hosted Lipwa checkout URL for a multi-channel deposit, or null when not configured. */
   lipwaLink(opts: { amountKes?: number; reference: string }): Promise<string | null>;
+  /** Dispatch a payout (withdrawal) from the PayHero service wallet — the B2C-equivalent rail. */
+  withdraw(a: PayHeroWithdrawArgs): Promise<PayHeroWithdrawResult>;
+  /** True only when the payout rail is fully configured (creds + account_id + withdraw channel). The
+   *  service asks this before routing a payout through PayHero; false => keep the default Daraja B2C. */
+  payoutReady(): Promise<boolean>;
 }
 
 /** Extract the payer MSISDN from PayHero's inbound description, e.g. "Received KES 200 from 0798661061". */
@@ -114,6 +138,11 @@ export class StubPayHeroClient implements PayHeroClient {
   async lipwaLink(opts: { amountKes?: number; reference: string }): Promise<string | null> {
     return `https://lipwa.stub/pay?amount=${opts.amountKes ?? 0}&reference=${encodeURIComponent(opts.reference)}`;
   }
+  async withdraw(_a: PayHeroWithdrawArgs): Promise<PayHeroWithdrawResult> {
+    const i = ++this.n;
+    return { reference: `stub-ph-wd-${i}`, checkoutRequestId: `stub-ph-wd-co-${i}` };
+  }
+  async payoutReady(): Promise<boolean> { return true; }
 }
 
 export interface PayHeroConfig {
@@ -123,8 +152,15 @@ export interface PayHeroConfig {
   basicAuthToken: string;
   /** Registered payment channel id (required to route the STK). */
   channelId: string;
+  /** Account id on the PayHero side (required by the /withdraw payout endpoint; sent as account_id). */
+  accountId?: string;
+  /** Withdrawal channel id — the B2C/payout channel (DISTINCT from the STK channelId). Payouts are
+   *  offered ONLY when this is set, so the rail stays dark until an operator configures it. */
+  withdrawChannelId?: string;
   /** Optional callback URL PayHero posts the result to. */
   callbackUrl?: string;
+  /** Optional callback URL for payout (withdrawal) results; falls back to callbackUrl when unset. */
+  withdrawCallbackUrl?: string;
   /** Optional hosted Lipwa checkout link for this account, e.g. https://app.payhero.africa/lipwa/12038.
    *  When set, card / bank / other-country deposits route through it (embedded in-app), settling via the
    *  same authoritative ledger. Absent => the Lipwa (multi-channel) option is simply not offered. */
@@ -145,6 +181,11 @@ export function buildLipwaUrl(lipwaUrl: string, opts: { amountKes?: number; refe
   return s ? `${base}?${s}` : base;
 }
 
+// Kenya host is the default. NOTE: backend.payhero.africa/api/v2 shares the same account/token and
+// serves reads (GET /transactions) identically, but its POST /payments (STK push) REJECTS our request
+// with HTTP 400 — it is NOT a drop-in for the STK rail (prod incident 2026-09-29). Continental payments
+// need the separate Pay Hero Africa v1 API (api.payhero.africa), not a base-URL swap. Do not default to
+// backend.payhero.africa here.
 const DEFAULT_BASE = "https://backend.payhero.co.ke/api/v2";
 
 /**
@@ -211,6 +252,40 @@ export class HttpPayHeroClient implements PayHeroClient {
     if (!this.cfg.lipwaUrl) return null;
     return buildLipwaUrl(this.cfg.lipwaUrl, opts);
   }
+
+  async withdraw(a: PayHeroWithdrawArgs): Promise<PayHeroWithdrawResult> {
+    if (!this.cfg.withdrawChannelId) throw new Error("PAYHERO_WITHDRAW_NOT_CONFIGURED:withdraw_channel_id");
+    if (!this.cfg.accountId) throw new Error("PAYHERO_WITHDRAW_NOT_CONFIGURED:account_id");
+    const channel = a.channel ?? "mobile";
+    const body: Record<string, unknown> = {
+      external_reference: a.externalReference,
+      account_id: Number(this.cfg.accountId),
+      channel_id: Number(this.cfg.withdrawChannelId),
+      amount: centsToKes(a.amountCents),
+      phone_number: toLocalMsisdn(a.msisdn),
+      channel,
+    };
+    if (a.networkCode) body.network_code = a.networkCode;
+    if (channel === "bank") {
+      if (!a.accountNumber) throw new Error("PAYHERO_WITHDRAW_BANK_ACCOUNT_REQUIRED");
+      body.account_number = a.accountNumber;
+    }
+    const cb = this.cfg.withdrawCallbackUrl ?? this.cfg.callbackUrl;
+    if (cb) body.callback_url = cb;
+    const res = await this.fetchImpl(`${this.base()}/withdraw`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: this.authHeader() },
+      body: JSON.stringify(body),
+    });
+    const j: any = await res.json().catch(() => ({}));
+    // PayHero returns { status: "QUEUED", merchant_reference, checkout_request_id, external_reference }.
+    const ref = j.merchant_reference ?? j.checkout_request_id ?? j.reference;
+    if (!res.ok || j.success === false || !ref) {
+      throw new Error(`PAYHERO_WITHDRAW_REJECTED_${res.status}:${JSON.stringify(j).slice(0, 300)}`);
+    }
+    return { reference: String(ref), checkoutRequestId: String(j.checkout_request_id ?? j.CheckoutRequestID ?? ref) };
+  }
+  async payoutReady(): Promise<boolean> { return payHeroPayoutReady(this.cfg); }
 }
 
 /**
@@ -227,6 +302,9 @@ export class UnconfiguredPayHeroClient implements PayHeroClient {
   async listInboundPayments(): Promise<PayHeroInboundPayment[]> { return []; }
   /** Not configured => the Lipwa (multi-channel) option is simply not offered. */
   async lipwaLink(): Promise<string | null> { return null; }
+  async withdraw(_a: PayHeroWithdrawArgs): Promise<PayHeroWithdrawResult> { return this.fail(); }
+  /** Unconfigured => payouts are never offered (missing at least the deposit credentials). */
+  async payoutReady(): Promise<boolean> { return false; }
 }
 
 /** The credentials the real PayHero path cannot run without. Empty array = fully configured. */
@@ -240,13 +318,35 @@ export function missingPayHeroCredentials(cfg: PayHeroConfig): string[] {
 export function resolvePayHeroConfig(over: Partial<PayHeroConfig> = {}, env: NodeJS.ProcessEnv = process.env): PayHeroConfig {
   const callbackUrl = over.callbackUrl ?? env.PAYHERO_CALLBACK_URL;
   const lipwaUrl = over.lipwaUrl ?? env.PAYHERO_LIPWA_URL;
+  const accountId = over.accountId ?? env.PAYHERO_ACCOUNT_ID;
+  const withdrawChannelId = over.withdrawChannelId ?? env.PAYHERO_WITHDRAW_CHANNEL_ID;
+  const withdrawCallbackUrl = over.withdrawCallbackUrl ?? env.PAYHERO_WITHDRAW_CALLBACK_URL;
   return {
     baseUrl: over.baseUrl ?? env.PAYHERO_API_BASE ?? DEFAULT_BASE,
     basicAuthToken: over.basicAuthToken ?? env.PAYHERO_BASIC_AUTH_TOKEN ?? "",
     channelId: over.channelId ?? env.PAYHERO_CHANNEL_ID ?? "",
+    ...(accountId ? { accountId } : {}),
+    ...(withdrawChannelId ? { withdrawChannelId } : {}),
     ...(callbackUrl ? { callbackUrl } : {}),
+    ...(withdrawCallbackUrl ? { withdrawCallbackUrl } : {}),
     ...(lipwaUrl ? { lipwaUrl } : {}),
   };
+}
+
+/**
+ * The extra config the PAYOUT (withdraw) rail needs on top of the deposit credentials. Empty array =
+ * payouts are ready. Kept separate from `missingPayHeroCredentials` so a missing withdraw channel never
+ * blocks deposits — it only gates whether PayHero payouts are OFFERED (else Daraja B2C stays the rail).
+ */
+export function missingPayHeroPayoutConfig(cfg: PayHeroConfig): string[] {
+  const missing = missingPayHeroCredentials(cfg);
+  if (!cfg.accountId) missing.push("account_id");
+  if (!cfg.withdrawChannelId) missing.push("withdraw_channel_id");
+  return missing;
+}
+/** True only when the PayHero payout rail is fully configured (creds + account_id + withdraw channel). */
+export function payHeroPayoutReady(cfg: PayHeroConfig): boolean {
+  return missingPayHeroPayoutConfig(cfg).length === 0;
 }
 
 /** Build the real client when credentials resolve; else Unconfigured (fails loudly) / Stub (dev). */
@@ -284,10 +384,13 @@ export class ConfiguredPayHeroClient implements PayHeroClient {
     if (over.baseUrl) clean.baseUrl = over.baseUrl;
     if (over.basicAuthToken) clean.basicAuthToken = over.basicAuthToken;
     if (over.channelId) clean.channelId = over.channelId;
+    if (over.accountId) clean.accountId = over.accountId;
+    if (over.withdrawChannelId) clean.withdrawChannelId = over.withdrawChannelId;
     if (over.callbackUrl) clean.callbackUrl = over.callbackUrl;
+    if (over.withdrawCallbackUrl) clean.withdrawCallbackUrl = over.withdrawCallbackUrl;
     if (over.lipwaUrl) clean.lipwaUrl = over.lipwaUrl;
     const cfg = resolvePayHeroConfig(clean, this.env);
-    const fp = `${cfg.baseUrl}|${cfg.basicAuthToken}|${cfg.channelId}|${cfg.callbackUrl ?? ""}|${cfg.lipwaUrl ?? ""}`;
+    const fp = `${cfg.baseUrl}|${cfg.basicAuthToken}|${cfg.channelId}|${cfg.accountId ?? ""}|${cfg.withdrawChannelId ?? ""}|${cfg.callbackUrl ?? ""}|${cfg.withdrawCallbackUrl ?? ""}|${cfg.lipwaUrl ?? ""}`;
     if (!this.cache || this.cache.fp !== fp) this.cache = { fp, client: makePayHeroClientFromConfig(clean, this.env) };
     return this.cache.client;
   }
@@ -295,4 +398,7 @@ export class ConfiguredPayHeroClient implements PayHeroClient {
   async queryStatus(reference: string): Promise<PayHeroStatusResult> { return (await this.pick()).queryStatus(reference); }
   async listInboundPayments(opts?: { page?: number }): Promise<PayHeroInboundPayment[]> { return (await this.pick()).listInboundPayments(opts); }
   async lipwaLink(opts: { amountKes?: number; reference: string }): Promise<string | null> { return (await this.pick()).lipwaLink(opts); }
+  async withdraw(a: PayHeroWithdrawArgs): Promise<PayHeroWithdrawResult> { return (await this.pick()).withdraw(a); }
+  /** Delegates to the picked client: Http checks its resolved (DB-over-env) config, stub true, unconfigured false. */
+  async payoutReady(): Promise<boolean> { return (await this.pick()).payoutReady(); }
 }

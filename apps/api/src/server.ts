@@ -200,11 +200,14 @@ async function buildDeps(): Promise<ApiDeps> {
     if (!c) return null;
     const token = c.secrets.basic_auth_token
       || (c.secrets.api_username && c.secrets.api_password ? Buffer.from(`${c.secrets.api_username}:${c.secrets.api_password}`).toString("base64") : "");
-    const over: { baseUrl?: string; basicAuthToken?: string; channelId?: string; callbackUrl?: string; lipwaUrl?: string } = {};
+    const over: { baseUrl?: string; basicAuthToken?: string; channelId?: string; accountId?: string; withdrawChannelId?: string; callbackUrl?: string; withdrawCallbackUrl?: string; lipwaUrl?: string } = {};
     if (token) over.basicAuthToken = token;
     if (c.settings.channel_id) over.channelId = c.settings.channel_id;
+    if (c.settings.account_id) over.accountId = c.settings.account_id;
+    if (c.settings.withdraw_channel_id) over.withdrawChannelId = c.settings.withdraw_channel_id;   // gates the PayHero payout rail (0130)
     if (c.settings.base_url) over.baseUrl = c.settings.base_url;
     if (c.settings.callback_url) over.callbackUrl = c.settings.callback_url;
+    if (c.settings.withdraw_callback_url) over.withdrawCallbackUrl = c.settings.withdraw_callback_url;
     if (c.settings.lipwa_url) over.lipwaUrl = c.settings.lipwa_url;
     return over;
   });

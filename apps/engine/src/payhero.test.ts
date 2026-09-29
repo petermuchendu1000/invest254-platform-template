@@ -4,6 +4,7 @@ import {
   StubPayHeroClient, HttpPayHeroClient, UnconfiguredPayHeroClient, ConfiguredPayHeroClient,
   mapPayHeroStatus, toLocalMsisdn, resolvePayHeroConfig, missingPayHeroCredentials, type PayHeroConfig,
   parsePayerMsisdn, toInboundPayment, buildLipwaUrl,
+  missingPayHeroPayoutConfig, payHeroPayoutReady,
 } from "./payhero.js";
 
 function fakeFetch(spec: { status?: number; body?: unknown; capture?: (url: string, init: any) => void }): typeof fetch {
@@ -157,4 +158,48 @@ test("HttpPayHeroClient.lipwaLink returns null unless a Lipwa URL is configured"
   assert.match((await withLipwa.lipwaLink({ amountKes: 200, reference: "r" }))!, /reference=r/);
   const noLipwa = new HttpPayHeroClient(cfg, fakeFetch({}));
   assert.equal(await noLipwa.lipwaLink({ reference: "r" }), null);
+});
+
+// ── Payout (withdraw) rail ────────────────────────────────────────────────────────────────────
+const payoutCfg: PayHeroConfig = { ...cfg, accountId: "12038", withdrawChannelId: "1523" };
+
+test("payHeroPayoutReady: needs creds + account_id + withdraw_channel_id", () => {
+  assert.equal(payHeroPayoutReady(cfg), false);                                    // no account_id / withdraw channel
+  assert.deepEqual(missingPayHeroPayoutConfig(cfg), ["account_id", "withdraw_channel_id"]);
+  assert.equal(payHeroPayoutReady(payoutCfg), true);
+  assert.deepEqual(missingPayHeroPayoutConfig(payoutCfg), []);
+});
+
+test("HttpPayHeroClient.withdraw posts the exact /withdraw contract + parses merchant_reference", async () => {
+  let seen: any = {};
+  const c = new HttpPayHeroClient(payoutCfg, fakeFetch({ status: 200, body: { status: "QUEUED", merchant_reference: "VAD145207801.eO", checkout_request_id: "VAD145207801.eO" }, capture: (_u, i) => (seen = i) }));
+  const r = await c.withdraw({ amountCents: 2_100, msisdn: "254708344101", externalReference: "wd-1" });
+  assert.deepEqual(r, { reference: "VAD145207801.eO", checkoutRequestId: "VAD145207801.eO" });
+  const body = JSON.parse(seen.body);
+  assert.equal(body.amount, 21);                 // cents -> whole KES
+  assert.equal(body.phone_number, "0708344101"); // local form
+  assert.equal(body.account_id, 12038);
+  assert.equal(body.channel_id, 1523);           // the WITHDRAW channel, not the STK channel
+  assert.equal(body.channel, "mobile");
+  assert.equal(body.external_reference, "wd-1");
+  assert.equal(seen.headers.Authorization, "Basic dXNlcjpwYXNz");
+});
+
+test("HttpPayHeroClient.withdraw refuses when the payout config is missing (never a blind payout)", async () => {
+  const noChan = new HttpPayHeroClient(cfg, fakeFetch({ status: 200, body: {} }));
+  await assert.rejects(() => noChan.withdraw({ amountCents: 2_100, msisdn: "0708344101", externalReference: "wd-1" }), /PAYHERO_WITHDRAW_NOT_CONFIGURED/);
+  // bank channel requires an account number
+  const bank = new HttpPayHeroClient(payoutCfg, fakeFetch({ status: 200, body: { merchant_reference: "x" } }));
+  await assert.rejects(() => bank.withdraw({ amountCents: 2_100, msisdn: "0708344101", externalReference: "wd-1", channel: "bank" }), /PAYHERO_WITHDRAW_BANK_ACCOUNT_REQUIRED/);
+});
+
+test("HttpPayHeroClient.withdraw throws on rejection (no reference / !ok)", async () => {
+  const c = new HttpPayHeroClient(payoutCfg, fakeFetch({ status: 400, body: { error_message: "bad" } }));
+  await assert.rejects(() => c.withdraw({ amountCents: 2_100, msisdn: "0708344101", externalReference: "wd-1" }), /PAYHERO_WITHDRAW_REJECTED/);
+});
+
+test("payoutReady: Http reflects config; Unconfigured false; Configured delegates", async () => {
+  assert.equal(await new HttpPayHeroClient(payoutCfg).payoutReady(), true);
+  assert.equal(await new HttpPayHeroClient(cfg).payoutReady(), false);
+  assert.equal(await new UnconfiguredPayHeroClient(["basic_auth_token"]).payoutReady(), false);
 });

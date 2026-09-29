@@ -18,6 +18,8 @@ function fakePayHero(ledger: { rows: PayHeroInboundPayment[] }, lipwa: string | 
     async queryStatus() { return { resultCode: null, processing: true, receipt: null }; },
     async listInboundPayments() { return ledger.rows; },
     async lipwaLink(o) { return lipwa ? `${lipwa}?amount=${o.amountKes ?? 0}&reference=${o.reference}` : null; },
+    async withdraw() { return { reference: "ph-wd", checkoutRequestId: "ph-wd-co" }; },
+    async payoutReady() { return false; },
   };
 }
 const inbound = (over: Partial<PayHeroInboundPayment>): PayHeroInboundPayment => ({
@@ -104,6 +106,8 @@ test("ledger reconcile tolerates a transient ledger read failure without crediti
     async queryStatus() { return { resultCode: null, processing: true, receipt: null }; },
     async listInboundPayments() { throw new Error("network"); },
     async lipwaLink() { return null; },
+    async withdraw() { return { reference: "ph-wd", checkoutRequestId: "ph-wd-co" }; },
+    async payoutReady() { return false; },
   };
   const svc = new PaymentService(repo, daraja, { payhero: throwing });
   const r = await svc.reconcilePayHeroLedger();

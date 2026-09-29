@@ -763,12 +763,16 @@ export class PaymentService {
     }
     return null;
   }
-  /** Finance admin approves: flips to processing and dispatches the B2C payment. */
+  /** Finance admin approves: flips to processing and dispatches the payout (Daraja B2C, or PayHero). */
   async approveWithdrawal(txId: string, adminId: string): Promise<{ approved: boolean; conversationId?: string }> {
     // PAY-1: payouts follow the brand's payment OWNER. Decide (and refuse) BEFORE the approval flips the
     // row to 'processing', so a missing payout account never strands a withdrawal mid-flight.
     let payoutScope: PaymentScopeRef = "global";
     let payoutClient: DarajaClient = this.daraja;
+    // PayHero payout rail: used ONLY for the GLOBAL (system-owner) scope, and ONLY when it is fully
+    // configured (creds + account_id + withdraw channel). Absent that config it stays dark and every
+    // payout goes through Daraja B2C exactly as before — brand-OWNED payouts always use their own Daraja.
+    let usePayHeroPayout = false;
     if (this.gateways) {
       const tx = await this.repo.getTransaction(txId);
       if (tx && tx.kind === "withdrawal" && tx.provider !== "internal") {
@@ -778,8 +782,12 @@ export class PaymentService {
           if (!owner.payoutsEnabled || !(await this.gateways.payoutsReady(sc))) throw new Error("MPESA_B2C_NOT_CONFIGURED");
           payoutScope = owner.scope;
           payoutClient = (await this.gateways.clients(sc)).daraja;
+        } else {
+          usePayHeroPayout = !!this.payhero && (await this.payhero.payoutReady().catch(() => false));
         }
       }
+    } else {
+      usePayHeroPayout = !!this.payhero && (await this.payhero.payoutReady().catch(() => false));
     }
     const ap = await this.repo.approveWithdrawal(txId, adminId);
     if (!ap.approved || ap.amountCents === null) return { approved: false };
@@ -791,8 +799,34 @@ export class PaymentService {
     }
     if (ap.phone === null) return { approved: false };
     await this.stamp(txId, payoutScope);
+    if (usePayHeroPayout && this.payhero) {
+      // Dispatch the payout from PayHero's service wallet. The result arrives via the PayHero withdraw
+      // callback (handlePayHeroWithdrawResult), which re-queries PayHero authoritatively before it
+      // settles — the QUEUED response here is NOT trusted to release money, mirroring the B2C model.
+      const r = await this.payhero.withdraw({ amountCents: ap.amountCents, msisdn: ap.phone, externalReference: txId });
+      return { approved: true, conversationId: r.checkoutRequestId };
+    }
     const b2c = await payoutClient.b2cPayment({ amountCents: ap.amountCents, msisdn: ap.phone, remarks: "Withdrawal", resultId: txId });
     return { approved: true, conversationId: b2c.conversationId };
+  }
+
+  /**
+   * PayHero withdraw (payout) result handler. Like the B2C/Daraja model, the callback body is NEVER
+   * trusted to settle: we re-query PayHero server-to-server for the authoritative status, then settle
+   * through the SAME idempotent completeWithdrawal RPC (success keeps the debit; a terminal failure
+   * reverses it). While PayHero still reports the payout as processing we leave the row untouched so a
+   * later callback / the reconcile job resolves it — money is never released on an unverified callback.
+   */
+  async handlePayHeroWithdrawResult(txId: string, reference: string | null, raw: unknown): Promise<CompleteResult> {
+    if (!this.payhero) return { applied: false, status: "processing" } as CompleteResult;
+    const status = reference ? await this.payhero.queryStatus(reference) : { resultCode: null, processing: true, receipt: null };
+    if (status.processing || status.resultCode === null) return { applied: false, status: "processing" } as CompleteResult;
+    const res = await this.repo.completeWithdrawal(txId, status.resultCode, reference, status.receipt, raw);
+    if (res.applied && res.status === "success") {
+      const tx = await this.repo.getTransaction(txId);
+      if (tx) this.events.onWithdrawalSuccess?.({ userId: tx.userId, amountCents: tx.amountCents });
+    }
+    return res;
   }
   /** Finance admin rejects a pending withdrawal: reverses the hold. */
   rejectWithdrawal(txId: string, adminId: string): Promise<{ reversed: boolean; newBalance: Cents }> {

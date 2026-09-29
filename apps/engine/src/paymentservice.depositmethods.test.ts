@@ -28,6 +28,8 @@ function fakePayHero(lipwa: string | null = LIPWA): PayHeroClient {
     async queryStatus() { return { resultCode: null, processing: true, receipt: null }; },
     async listInboundPayments() { return []; },
     async lipwaLink(o) { return lipwa ? `${lipwa}?reference=${o.reference}` : null; },
+    async withdraw() { return { reference: "ph-wd", checkoutRequestId: "ph-wd-co" }; },
+    async payoutReady() { return false; },
   };
 }
 
@@ -96,6 +98,8 @@ test("a PayHero client whose lipwa probe THROWS omits Card & Bank instead of bre
   const exploding: PayHeroClient = {
     ...fakePayHero(LIPWA),
     async lipwaLink() { throw new Error("PAYHERO_UNREACHABLE"); },
+    async withdraw() { return { reference: "ph-wd", checkoutRequestId: "ph-wd-co" }; },
+    async payoutReady() { return false; },
   };
   const { svc } = rig([PAYHERO], exploding);
   const methods = await svc.listDepositMethods();
