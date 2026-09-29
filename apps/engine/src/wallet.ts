@@ -509,7 +509,12 @@ export class PgGameRepository implements GameRepository {
     const limit = clampLimit(q.limit);
     const cur = decodeKeyset(q.cursor);
     const r = await this.q.query(
-      `select id, stake, entry_rate, exit_rate, payout, pnl, result, status, opened_at, settled_at, contract, demo
+      // A MARKETER's account_mode stays 'demo', so their funny-money (REAL) trades are stored demo=true
+      // and their practice-bucket trades demo=false/practice=true (0176). The client presents the funny
+      // money as the Real account, so the DEMO tag must follow `practice` for a marketer — not `demo`,
+      // which would wrongly tag every real trade and miss every practice one. Players are unchanged.
+      `select id, stake, entry_rate, exit_rate, payout, pnl, result, status, opened_at, settled_at, contract,
+              (case when fn_is_marketer_account(user_id) then coalesce(practice, false) else demo end) as demo
          from positions
         where user_id = $1 and kind = 'digit'
           and ($4::uuid is null or site_id = $4)

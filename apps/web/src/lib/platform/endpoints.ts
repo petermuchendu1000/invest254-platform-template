@@ -118,7 +118,17 @@ export interface PoolOverviewRowDto {
  * brand): a brand whose own switch is on still grants nothing while a level above it is off, and the
  * screen says so rather than showing a switch with no effect.
  */
-export interface BonusBrandDto { siteId: string; name: string; slug: string; status: string; enabled: boolean; effective: boolean }
+export interface BonusBrandDto {
+  siteId: string; name: string; slug: string; status: string; enabled: boolean; effective: boolean;
+  // Welcome-bonus amount (migration 0177), in the brand's own display currency.
+  currency: string; fxRateFromKes: number;
+  amountCents: number;                 // effective (brand override else default), authoritative KES cents
+  amountNative: number | null;         // per-brand override in display currency (null = inheriting the default)
+  wageringX: number;                   // effective wagering multiple
+  wageringXOverride: number | null;    // per-brand override (null = inheriting the default)
+  defaultAmountCents: number;          // the global default (shown as the placeholder)
+  defaultWageringX: number;
+}
 export interface BonusesDto {
   platformId: string; platformName: string | null;
   platformEnabled: boolean; systemEnabled: boolean; brands: BonusBrandDto[];
@@ -231,6 +241,10 @@ export const platformApi = {
     apiFetch<BonusesDto>('/platform/bonuses', { method: 'PUT', token: t, body: { enabled }, query: { platform: platformId } }),
   setBrandBonuses: (t: string, siteId: string, enabled: boolean) =>
     apiFetch<BonusSwitchesDto>(`/platform/sites/${siteId}/bonuses`, { method: 'PUT', token: t, body: { enabled } }),
+  // Per-brand welcome bonus amount + wagering (migration 0177). `amountNative`/`wageringX` are in the
+  // brand's display currency (null clears the override back to the global default). Returns the page.
+  setBrandBonusAmount: (t: string, siteId: string, amountNative: number | null, wageringX: number | null) =>
+    apiFetch<BonusesDto>(`/platform/sites/${siteId}/bonus-amount`, { method: 'PUT', token: t, body: { amountNative, wageringX } }),
   // ── Payment-gateway provider switches (migration 0116) ──
   paymentProviders: (t: string) => apiFetch<PaymentProvidersDto>('/platform/payment-providers', { token: t }),
   setProviderGlobal: (t: string, code: string, enabled: boolean) =>

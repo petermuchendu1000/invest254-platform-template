@@ -230,8 +230,16 @@ export interface WithdrawalPoolRow {
 export interface BonusSwitches {
   siteId: string; platformId: string | null;
   system: boolean; platform: boolean; brand: boolean; effective: boolean;
-  /** The welcome-bonus grant this switch governs (cents, and its wagering multiple). */
+  /** The brand's DISPLAY currency, so the console can show/enter the amount in it (0177). */
+  currency: string;
+  /** The EFFECTIVE welcome-bonus grant this switch governs — the brand override if set, else the
+   *  global default (cents = money of record, wageringX = its wagering multiple). */
   amountCents: Cents; wageringX: number;
+  /** The per-brand override itself (null => inheriting the global default), for the console (0177).
+   *  `amountNative` is in the brand's display-currency major units. */
+  amountNative: number | null; amountCentsOverride: Cents | null; wageringXOverride: number | null;
+  /** The global default, shown as the inherited/placeholder value when a brand has no override. */
+  defaultAmountCents: Cents; defaultWageringX: number;
 }
 /** Realised RTP over one rolling window (J5). `realisedRtp` is null when there is no turnover yet. */
 export interface RtpWindowRow { window: string; settledPositions: number; turnoverCents: Cents; payoutCents: Cents; realisedRtp: number | null; }
@@ -385,6 +393,8 @@ export interface AdminRepository {
   // can explain why an on-looking brand switch has no effect. Read + admin/owner toggle (audited).
   getBonusSwitches(siteId: string): Promise<BonusSwitches>;
   setBonusesEnabled(actorId: string, actorRole: string, siteId: string, enabled: boolean): Promise<BonusSwitches>;
+  setWelcomeBonus(actorId: string, actorRole: string, siteId: string,
+    native: number | null, cents: number | null, wageringX: number | null): Promise<BonusSwitches>;
   getMpesaConfig(): Promise<MpesaConfigRow>;
   updateMpesaConfig(actorId: string, actorRole: string, patch: MpesaConfigPatch): Promise<MpesaConfigRow>;
   rtpMonitor(siteId?: string): Promise<RtpMonitor>;
@@ -1316,17 +1326,38 @@ export class PgAdminRepository implements AdminRepository {
     const r = await this.q.query("select fn_bonus_switches($1::uuid) as s", [siteId]);
     const s = (r.rows.length ? r.rows[0].s : null) as Record<string, unknown> | null;
     // Fail-open on a missing brand row, matching the DB defaults and fn_bonuses_enabled's own fallback.
-    if (!s) return { siteId, platformId: null, system: true, platform: true, brand: true, effective: true, amountCents: 0, wageringX: 0 };
+    if (!s) return { siteId, platformId: null, system: true, platform: true, brand: true, effective: true,
+      currency: "KES", amountCents: 0, wageringX: 0, amountNative: null, amountCentsOverride: null,
+      wageringXOverride: null, defaultAmountCents: 0, defaultWageringX: 0 };
+    const numOrNull = (v: unknown): number | null => (v == null ? null : Number(v));
     return {
       siteId, platformId: s.platform_id == null ? null : String(s.platform_id),
       system: s.system !== false, platform: s.platform !== false, brand: s.brand !== false,
       effective: s.effective !== false,
+      currency: s.currency == null ? "KES" : String(s.currency),
       amountCents: Number(s.amount_cents ?? 0), wageringX: Number(s.wagering_x ?? 0),
+      amountNative: numOrNull(s.amount_native), amountCentsOverride: numOrNull(s.amount_cents_override),
+      wageringXOverride: numOrNull(s.wagering_x_override),
+      defaultAmountCents: Number(s.default_amount_cents ?? 0), defaultWageringX: Number(s.default_wagering_x ?? 0),
     };
   }
   async setBonusesEnabled(actorId: string, actorRole: string, siteId: string, enabled: boolean): Promise<BonusSwitches> {
     try { await this.q.query("select fn_admin_set_bonuses_enabled($1,$2,$3::uuid,$4)", [actorId, actorRole, siteId, enabled]); }
     catch (e) { mapAdminError(e); }
+    return this.getBonusSwitches(siteId);
+  }
+  /**
+   * Set (or clear) a brand's welcome-bonus amount + wagering (0177). The API resolves the operator's
+   * brand-currency figure to KES cents at the live FX rate and passes BOTH; `null` amount/wagering
+   * clears the override back to the global default. Returns the refreshed switches.
+   */
+  async setWelcomeBonus(actorId: string, actorRole: string, siteId: string,
+    native: number | null, cents: number | null, wageringX: number | null): Promise<BonusSwitches> {
+    try {
+      await this.q.query(
+        "select fn_admin_set_welcome_bonus($1,$2,$3::uuid,$4::numeric,$5::bigint,$6::numeric)",
+        [actorId, actorRole, siteId, native, cents, wageringX]);
+    } catch (e) { mapAdminError(e); }
     return this.getBonusSwitches(siteId);
   }
 
@@ -1572,9 +1603,14 @@ export class InMemoryAdminRepository implements AdminRepository {
   defaultPlatformId = "10000000-0000-0000-0000-000000000001";
   /** The system-wide switch (bonus_config.welcome_enabled). */
   bonusesEnabledSystem = true;
-  /** Mirrors bonus_config.welcome_amount_cents / welcome_wagering_x for the switch read. */
+  /** Mirrors bonus_config.welcome_amount_cents / welcome_wagering_x for the switch read (the default). */
   welcomeAmountCents = 20_000;
   welcomeWageringX = 3;
+  /** 0177 — per-brand welcome-bonus override (absent = inherit the default). */
+  private readonly welcomeBonusBySite = new Map<string, { native: number; cents: number }>();
+  private readonly welcomeWageringBySite = new Map<string, number>();
+  /** siteId -> display currency; absent = KES. Tests may set it to exercise the currency path. */
+  readonly currencyOfSite = new Map<string, string>();
   /** Flip a platform's switch the way fn_platform_set_bonuses_enabled does (used by the platform repo). */
   setPlatformBonuses(platformId: string, enabled: boolean): void { this.bonusesEnabledByPlatform.set(platformId, enabled); }
   /** Synchronous mirror of fn_bonuses_enabled — system AND platform AND brand. */
@@ -2169,13 +2205,21 @@ export class InMemoryAdminRepository implements AdminRepository {
 
   async getBonusSwitches(siteId: string): Promise<BonusSwitches> {
     const platformId = this.platformOfSite.get(siteId) ?? this.defaultPlatformId;
+    const override = this.welcomeBonusBySite.get(siteId);
+    const wxOverride = this.welcomeWageringBySite.get(siteId) ?? null;
     return {
       siteId, platformId,
       system: this.bonusesEnabledSystem,
       platform: this.bonusesEnabledByPlatform.get(platformId) !== false,
       brand: this.bonusesEnabledBySite.get(siteId) !== false,
       effective: this.bonusesEffective(siteId),
-      amountCents: this.welcomeAmountCents, wageringX: this.welcomeWageringX,
+      currency: this.currencyOfSite.get(siteId) ?? "KES",
+      amountCents: override?.cents ?? this.welcomeAmountCents,
+      wageringX: wxOverride ?? this.welcomeWageringX,
+      amountNative: override?.native ?? null,
+      amountCentsOverride: override?.cents ?? null,
+      wageringXOverride: wxOverride,
+      defaultAmountCents: this.welcomeAmountCents, defaultWageringX: this.welcomeWageringX,
     };
   }
   async setBonusesEnabled(actorId: string, actorRole: string, siteId: string, enabled: boolean): Promise<BonusSwitches> {
@@ -2183,6 +2227,18 @@ export class InMemoryAdminRepository implements AdminRepository {
     if (!["admin", "platform_admin", "platform_superadmin"].includes(actorRole)) throw new Error("NOT_AUTHORIZED");
     this.bonusesEnabledBySite.set(siteId, enabled);
     this.record(actorId, actorRole, "bonuses.toggle", "site", siteId, { bonuses_enabled: enabled });
+    return this.getBonusSwitches(siteId);
+  }
+  async setWelcomeBonus(actorId: string, actorRole: string, siteId: string,
+    native: number | null, cents: number | null, wageringX: number | null): Promise<BonusSwitches> {
+    if (!["admin", "platform_admin", "platform_superadmin"].includes(actorRole)) throw new Error("NOT_AUTHORIZED");
+    if ((native == null) !== (cents == null)) throw new Error("INVALID_BONUS_AMOUNT");
+    if ((native != null && native < 0) || (cents != null && cents < 0) || (wageringX != null && wageringX < 0)) throw new Error("INVALID_BONUS_AMOUNT");
+    if (native == null || cents == null) this.welcomeBonusBySite.delete(siteId);
+    else this.welcomeBonusBySite.set(siteId, { native, cents });
+    if (wageringX == null) this.welcomeWageringBySite.delete(siteId);
+    else this.welcomeWageringBySite.set(siteId, wageringX);
+    this.record(actorId, actorRole, "bonuses.amount", "site", siteId, { native, cents, wagering_x: wageringX });
     return this.getBonusSwitches(siteId);
   }
 

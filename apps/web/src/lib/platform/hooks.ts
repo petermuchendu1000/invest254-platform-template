@@ -113,6 +113,15 @@ export function useSetBrandBonuses(platformId?: string) {
     onSuccess: () => { void qc.invalidateQueries({ queryKey: ['platform', 'bonuses', platformId ?? 'own'] }); },
   });
 }
+// Per-brand welcome bonus amount + wagering, in the brand's display currency (migration 0177).
+export function useSetBrandBonusAmount(platformId?: string) {
+  const t = useTok(); const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { siteId: string; amountNative: number | null; wageringX: number | null }) =>
+      platformApi.setBrandBonusAmount(t, v.siteId, v.amountNative, v.wageringX),
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: ['platform', 'bonuses', platformId ?? 'own'] }); },
+  });
+}
 export function useDistributePool(platformId?: string) {
   const t = useTok(); const qc = useQueryClient();
   return useMutation({

@@ -27,6 +27,7 @@ import { pillLabel } from '@/lib/game/stakeLadder';
 import { Segmented } from '@/components/ui/Segmented';
 import { useDisplayMoney } from '@/lib/money';
 import { useWallet, useTopupDemo } from '@/lib/wallet/hooks';
+import { walletFigures } from '@/lib/wallet/figures';
 import { afterSettle, nextAuto, runPnl, startRun, type AutoRun, type AutoStop } from '@/lib/game/autoBot';
 import { useSession } from '@/lib/auth/session';
 import { useDepositUi } from '@/lib/wallet/depositUi';
@@ -338,7 +339,10 @@ export function DigitsTradeScreen() {
       const label = contractLabel(outcome, barrier, pick);
       const openedAtMs = Date.now();
       if (!openDigit({ instrumentId: instId, kind: outcome, target, stakeCents: cents })) return false; // offline: nothing in play
-      pendingRef.current = { stakeCents: cents, outcome, manual, label, openedAtMs, demo: wallet?.mode === 'demo' };
+      // Play-money tag follows the PRESENTED account: a marketer's funny money is their Real account,
+      // so only their practice bucket (walletFigures().demo) counts as demo — never `wallet.mode`,
+      // which stays 'demo' for a marketer even on Real (0176).
+      pendingRef.current = { stakeCents: cents, outcome, manual, label, openedAtMs, demo: walletFigures(wallet).demo };
       setPendingView({ label, stakeCents: cents });
       publishOpen({ label, stakeCents: cents, openedAtMs });
       if (manual) play('place');

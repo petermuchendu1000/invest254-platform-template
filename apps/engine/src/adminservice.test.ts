@@ -415,3 +415,38 @@ test("resetBalanceToLastFunded: guards (no funding, reason, role, superadmin)", 
   const sup = (await identity.register("254700000212", "root2", HASH)).userId; identity.adminSetRole(sup, "platform_superadmin");
   await assert.rejects(admin.resetBalanceToLastFunded("actor", "admin", sup, "x"), /SUPERADMIN_PROTECTED/);
 });
+
+// ── 0177: per-brand welcome bonus amount + wagering ──────────────────────────────────────────────
+test("welcome bonus: per-brand amount + wagering override, inherit default, and clear", async () => {
+  const { admin } = stack();
+  const repo = (admin as unknown as { repo: InMemoryAdminRepository }).repo;
+  const site = "20000000-0000-0000-0000-000000000abc";
+  repo.currencyOfSite.set(site, "USD");
+
+  // Default (no override): effective = the global default (20000 cents / 3x), no override reported.
+  let sw = await admin.getBonusSwitches(site);
+  assert.equal(sw.currency, "USD");
+  assert.deepEqual([sw.amountCents, sw.wageringX], [20_000, 3]);
+  assert.deepEqual([sw.amountNative, sw.amountCentsOverride, sw.wageringXOverride], [null, null, null]);
+  assert.deepEqual([sw.defaultAmountCents, sw.defaultWageringX], [20_000, 3]);
+
+  // Set a brand override: $5 (the API resolved it to 64_900 KES cents) at 5x.
+  sw = await admin.setWelcomeBonus("actor", "platform_admin", site, 5, 64_900, 5);
+  assert.deepEqual([sw.amountNative, sw.amountCentsOverride, sw.wageringXOverride], [5, 64_900, 5]);
+  assert.deepEqual([sw.amountCents, sw.wageringX], [64_900, 5]);       // effective = the override
+  assert.deepEqual([sw.defaultAmountCents, sw.defaultWageringX], [20_000, 3]); // default unchanged
+
+  // Clear back to the global default (null amount + null wagering).
+  sw = await admin.setWelcomeBonus("actor", "platform_admin", site, null, null, null);
+  assert.deepEqual([sw.amountNative, sw.amountCentsOverride, sw.wageringXOverride], [null, null, null]);
+  assert.deepEqual([sw.amountCents, sw.wageringX], [20_000, 3]);
+});
+
+test("welcome bonus: role gate and validation", async () => {
+  const { admin } = stack();
+  const site = "20000000-0000-0000-0000-000000000def";
+  await assert.rejects(admin.setWelcomeBonus("actor", "player", site, 5, 500, 3), /NOT_AUTHORIZED/);
+  await assert.rejects(admin.setWelcomeBonus("actor", "admin", site, -1, -100, 3), /INVALID_BONUS_AMOUNT/);
+  // amount native without its resolved cents (or vice versa) is rejected — they move together.
+  await assert.rejects(admin.setWelcomeBonus("actor", "admin", site, 5, null, 3), /INVALID_BONUS_AMOUNT/);
+});

@@ -42,10 +42,17 @@ export interface AccountMenuProps {
   onTopupDemo: () => void;
   switching?: boolean;
   toppingUp?: boolean;
+  /**
+   * Which edge of the trigger the card hangs from. A RIGHT-anchored trigger (the classic top bar,
+   * the digits desktop bar) drops the card to its left with `right-0`. A LEFT-anchored trigger (the
+   * digits phone bar, where the pill sits by the menu button) must use `left-0`, or the 280px card
+   * runs off the LEFT edge of the screen. Default 'right' keeps every existing caller unchanged.
+   */
+  align?: 'left' | 'right';
 }
 
 export function AccountMenu({
-  wallet, fmt, onSwitch, onDeposit, onWithdraw, onTopupDemo, switching, toppingUp,
+  wallet, fmt, onSwitch, onDeposit, onWithdraw, onTopupDemo, switching, toppingUp, align = 'right',
 }: AccountMenuProps) {
   const f = walletFigures(wallet);
   // A MARKETER's Real/Demo switch is `marketerPractice` (account_mode stays 'demo' server-side); a
@@ -99,7 +106,13 @@ export function AccountMenu({
         role="dialog"
         aria-label="Switch account"
         className={cn(
-          'pp-pop-in absolute right-0 top-[calc(100%+10px)] z-50 w-[min(17.5rem,calc(100vw-1.5rem))]',
+          'pp-pop-in absolute top-[calc(100%+10px)] z-50',
+          // Right-anchored (classic + digits desktop): drop to the left, clamped to the viewport.
+          // Left-anchored (digits phone, pill by the menu button): open to the right, and reserve
+          // room for the pill's offset from the screen edge so it still fits a 320px phone.
+          align === 'left'
+            ? 'left-0 w-[min(17.5rem,calc(100vw-4rem))]'
+            : 'right-0 w-[min(17.5rem,calc(100vw-1.5rem))]',
           'overflow-hidden rounded-2xl border border-border bg-surface shadow-2xl shadow-black/50',
         )}
       >

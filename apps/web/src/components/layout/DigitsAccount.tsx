@@ -113,6 +113,9 @@ export function AccountPill({ compact = false }: { compact?: boolean }) {
         <AccountPanel
           wallet={data}
           fmt={(c: number) => amt.text(c)}
+          // The compact pill lives on the LEFT of the phone bar (by the menu button); the full pill
+          // is right-anchored in the desktop bar. Open the card away from the nearer screen edge.
+          align={compact ? 'left' : 'right'}
           switching={setMode.isPending}
           toppingUp={topup.isPending}
           onSwitch={switchTo}

@@ -1,5 +1,5 @@
 import { Router, ApiError, requireAuth, requireRole, adminScopePlatform, assertTargetPlatformInScope, type Ctx, type Middleware } from "./http.js";
-import { COHORT_KEYS, PAYMENT_KEYS } from "@invest254/shared";
+import { COHORT_KEYS, PAYMENT_KEYS, displayToKesCents } from "@invest254/shared";
 import type { MarketerRollupRow } from "@invest254/engine";
 import type { ApiDeps } from "./app.js";
 import type { ProvisionResult, DomainStatus } from "./domains.js";
@@ -355,14 +355,35 @@ export function registerPlatformRoutes(router: Router, deps: ApiDeps): void {
     const switches = await Promise.all(sites.map((s) => deps.admin.getBonusSwitches(s.siteId)));
     // The system switch is the same for every brand, so it is read once (off the first brand).
     const systemEnabled = switches.length ? switches[0]!.system : true;
+    // Live FX per DISTINCT display currency (0177), so the console can show/enter the welcome bonus in
+    // the brand's own currency. KES is always 1; a foreign currency with no live rate reports 0 so the
+    // UI can fall back to the KES-cents figure rather than a wrong conversion.
+    const currencies = [...new Set(switches.map((sw) => sw.currency).filter((c) => c && c !== "KES"))];
+    const fxByCurrency = new Map<string, number>([["KES", 1]]);
+    await Promise.all(currencies.map(async (cur) => {
+      const r = deps.fxRate ? await deps.fxRate(cur).catch(() => 0) : 0;
+      fxByCurrency.set(cur, Number.isFinite(r) && r > 0 ? r : 0);
+    }));
     // `effective` is recomposed here from the three authoritative parts rather than taken from one
     // brand's row, because the platform level on THIS screen may have just been flipped above. The
     // composition is the same AND the grant enforces in `fn_bonuses_enabled`.
-    const brands = sites.map((s, i) => ({
-      siteId: s.siteId, name: s.name, slug: s.slug, status: s.status,
-      enabled: switches[i]!.brand,
-      effective: systemEnabled && platformEnabled && switches[i]!.brand,
-    }));
+    const brands = sites.map((s, i) => {
+      const sw = switches[i]!;
+      return {
+        siteId: s.siteId, name: s.name, slug: s.slug, status: s.status,
+        enabled: sw.brand,
+        effective: systemEnabled && platformEnabled && sw.brand,
+        // Welcome-bonus amount (0177), in the brand's own currency:
+        currency: sw.currency,
+        fxRateFromKes: fxByCurrency.get(sw.currency) ?? 0,
+        amountCents: sw.amountCents,                 // effective (brand override else default), KES cents
+        amountNative: sw.amountNative,               // per-brand override in display currency (null = default)
+        wageringX: sw.wageringX,                      // effective wagering multiple
+        wageringXOverride: sw.wageringXOverride,      // per-brand override (null = default)
+        defaultAmountCents: sw.defaultAmountCents,    // the global default, for the placeholder
+        defaultWageringX: sw.defaultWageringX,
+      };
+    });
     return { platformId, platformName: row?.name ?? null, platformEnabled, systemEnabled, brands };
   };
 
@@ -384,6 +405,34 @@ export function registerPlatformRoutes(router: Router, deps: ApiDeps): void {
     if (typeof b.enabled !== "boolean") throw new ApiError("VALIDATION", "enabled must be a boolean", 400);
     return domain(() => deps.admin.setBonusesEnabled(
       ctx.claims!.userId, ctx.claims!.role ?? "player", ctx.params.id!, b.enabled as boolean));
+  });
+
+  // 0177 — per-brand welcome bonus AMOUNT + WAGERING, entered in the brand's display currency. The
+  // operator's figure is resolved to authoritative KES cents at the brand's live FX rate HERE (the DB
+  // grant stays FX-free). `amountNative: null` clears the override back to the global default. Body
+  // carries the full intended state of BOTH amount and wagering (the DB setter is a replace, not a patch).
+  router.put(`${BASE}/platform/sites/:id/bonus-amount`, auth, platformAdmin, scopeSiteParam, async (ctx: Ctx) => {
+    const b = asObject(ctx.body);
+    const parseAmt = (v: unknown, name: string, cap: number): number | null => {
+      if (v === null || v === undefined) return null;
+      if (typeof v !== "number" || !Number.isFinite(v) || v < 0 || v > cap) throw new ApiError("VALIDATION", `${name} must be a number between 0 and ${cap}, or null`, 400);
+      return v;
+    };
+    const amountNative = parseAmt(b.amountNative, "amountNative", 10_000_000);
+    const wageringX = parseAmt(b.wageringX, "wageringX", 1000);
+    const siteId = ctx.params.id!;
+    // The brand's display currency + live rate come from the same switches read the console uses.
+    const sw = await domain(() => deps.admin.getBonusSwitches(siteId));
+    const currency = sw.currency || "KES";
+    const rate = currency === "KES" ? 1 : await (deps.fxRate ?? (async () => 0))(currency).catch(() => 0);
+    let cents: number | null = null;
+    if (amountNative !== null) {
+      if (currency !== "KES" && !(rate > 0)) throw new ApiError("FX_UNAVAILABLE", "no exchange rate for this currency right now; try again shortly", 503);
+      cents = displayToKesCents(amountNative, rate);
+    }
+    await domain(() => deps.admin.setWelcomeBonus(
+      ctx.claims!.userId, ctx.claims!.role ?? "player", siteId, amountNative, cents, wageringX));
+    return domain(() => bonusesView(ctx));
   });
 
   // Re-parent a brand into a platform.

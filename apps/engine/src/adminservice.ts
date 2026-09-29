@@ -143,6 +143,12 @@ export class AdminService {
   setBonusesEnabled(actorId: string, actorRole: string, siteId: string, enabled: boolean): Promise<BonusSwitches> {
     return this.repo.setBonusesEnabled(actorId, actorRole, siteId, enabled);
   }
+  /** 0177 — set/clear this brand's welcome-bonus amount + wagering (audited in the RPC). The API has
+   *  already resolved the brand-currency figure to KES cents; a null amount/wagering clears it. */
+  setWelcomeBonus(actorId: string, actorRole: string, siteId: string,
+    native: number | null, cents: number | null, wageringX: number | null): Promise<BonusSwitches> {
+    return this.repo.setWelcomeBonus(actorId, actorRole, siteId, native, cents, wageringX);
+  }
 
   /** Admin-visible M-Pesa config (secrets masked). */
   getMpesaConfig(): Promise<MpesaConfigRow> { return this.repo.getMpesaConfig(); }

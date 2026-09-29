@@ -5,6 +5,7 @@ import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { cn } from '@/lib/cn';
 import { api } from '@/lib/api/endpoints';
 import { useSession } from '@/lib/auth/session';
+import { useWallet } from '@/lib/wallet/hooks';
 import { useDigitSession } from '@/lib/game/digitSession';
 import { useAmountText } from '@/lib/game/useAmountText';
 import { instrumentById } from '@/lib/game/instruments';
@@ -19,10 +20,14 @@ function kindText(d: DigitHistoryDto): string {
   return ({ even: 'even', odd: 'odd', over: `over ${t}`, under: `under ${t}`, matches: `matches ${t}`, differs: `differs ${t}` } as Record<string, string>)[d.kind] ?? d.kind;
 }
 
-/** Title + subtitle for one ledger line, enriched with the digit contract it belongs to (if any). */
-function describe(e: LedgerEntryDto, contract: DigitHistoryDto | undefined): { title: string; sub: string } {
+/**
+ * Title + subtitle for one ledger line, enriched with the digit contract it belongs to (if any).
+ * `marketer`: a marketer's funny money is recorded under the 'demo' balance kind but PRESENTED as their
+ * Real account (0176), so its lines are never described as demo/play money.
+ */
+function describe(e: LedgerEntryDto, contract: DigitHistoryDto | undefined, marketer: boolean): { title: string; sub: string } {
   const bonus = e.balanceKind === 'bonus' ? ' · bonus' : '';
-  if (e.type === 'adjustment' && e.balanceKind === 'demo') return { title: 'Demo balance refreshed', sub: 'play money' };
+  if (!marketer && e.type === 'adjustment' && e.balanceKind === 'demo') return { title: 'Demo balance refreshed', sub: 'play money' };
   switch (e.type) {
     case 'stake':
       return { title: 'Trade Stake', sub: contract ? `${kindText(contract)} · ${instrumentById(contract.instrumentId ?? '').short}` : `trade${bonus}` };
@@ -46,6 +51,8 @@ export function TransactionHistoryModal() {
   const open = useDigitSession((s) => s.historyOpen);
   const setOpen = useDigitSession((s) => s.setHistoryOpen);
   const token = useSession((s) => s.token);
+  const { data: wallet } = useWallet();
+  const marketer = wallet?.modeLocked === true;   // funny money is recorded 'demo' but presented as Real (0176)
   const amt = useAmountText();
 
   const ledger = useInfiniteQuery({
@@ -99,7 +106,7 @@ export function TransactionHistoryModal() {
             <ul className="divide-y divide-border">
               {rows.map((e) => {
                 const credit = e.amountCents >= 0;
-                const { title, sub } = describe(e, e.refId ? byId.get(e.refId) : undefined);
+                const { title, sub } = describe(e, e.refId ? byId.get(e.refId) : undefined, marketer);
                 return (
                   <li key={e.id} className="flex items-center gap-3 px-3 py-3">
                     <span className={cn('grid h-9 w-9 shrink-0 place-items-center rounded-xl border',
@@ -108,7 +115,7 @@ export function TransactionHistoryModal() {
                     </span>
                     <div className="min-w-0 flex-1">
                       <div className="truncate text-[13px] font-semibold text-fg">{title}</div>
-                      <div className="truncate text-[11px] text-muted">{sub}{e.balanceKind === 'demo' ? <span className="ml-1.5 rounded bg-warn/15 px-1 text-[9px] font-bold text-warn">DEMO</span> : null}</div>
+                      <div className="truncate text-[11px] text-muted">{sub}{!marketer && e.balanceKind === 'demo' ? <span className="ml-1.5 rounded bg-warn/15 px-1 text-[9px] font-bold text-warn">DEMO</span> : null}</div>
                     </div>
                     <div className="text-right">
                       <div className={cn('font-mono text-[13px] font-bold tabular-nums', credit ? 'text-up' : 'text-warn')}>

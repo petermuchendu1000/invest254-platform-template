@@ -6,6 +6,7 @@ import { useDigitSession, sessionStats, type ClosedContract } from '@/lib/game/d
 import { useDigitHistory } from '@/lib/game/useDigitHistory';
 import { useAmountText } from '@/lib/game/useAmountText';
 import { useWallet } from '@/lib/wallet/hooks';
+import { walletFigures } from '@/lib/wallet/figures';
 import { DIcon } from '@/components/game/digits/icons';
 import type { DigitHistoryDto } from '@/lib/api/types';
 
@@ -38,9 +39,11 @@ export function PositionsPanel({ onClose, className }: { onClose?: () => void; c
   const [tab, setTab] = useState<Tab>('open');
   const open = useDigitSession((s) => s.open);
   const closed = useDigitSession((s) => s.closed);
-  // Totals for the account in use (BUGLOG #95: demo and real results were summed together).
+  // Totals for the account in use (BUGLOG #95: demo and real results were summed together). The active
+  // account is the PRESENTED bucket — for a marketer that is `marketerPractice`, not `mode` (which stays
+  // 'demo' even on their Real funny money), so use walletFigures().demo, the one source of truth (0176).
   const { data: wallet } = useWallet();
-  const demo = wallet?.mode === 'demo';
+  const demo = walletFigures(wallet).demo;
   const stats = sessionStats(closed.filter((c) => !!c.demo === demo));
   const amt = useAmountText();
   const openCount = open ? 1 : 0;
