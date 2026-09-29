@@ -28,10 +28,22 @@ const TOKEN = jwt({ sub: 'u-player', role: 'player', site: SITE });
 
 const ME = { userId: 'u-player', role: 'player', username: 'punter', phone: '254700000009' };
 const LOCKED = process.env.MODE_LOCKED === '1';
-const wallet = (mode) => ({
-  real: mode === 'demo' ? 1_000_000 : 523_400, bonus: mode === 'demo' ? 0 : 20_000, currency: 'KES',
-  mode, modeLocked: LOCKED, realBalance: 523_400, bonusBalance: 20_000, demoBalance: 1_000_000, bonuses: [],
-});
+// A MARKETER (0176) is a normal player with two accounts: Real = their funny money (demo_balance,
+// withdrawn via the instant marketer transfer) and Demo = a SEPARATE practice bucket (practice_balance)
+// that starts empty and is top-up-able. account_mode stays 'demo' server-side; the Real/Demo switch is
+// the `marketerPractice` flag. A player instead switches `mode` between real_balance and demo_balance.
+const MARKETER_FUNNY = 523_400;
+const wallet = (st) => (LOCKED
+  ? {
+      real: st.practice ? st.practiceBal : MARKETER_FUNNY, bonus: 0, currency: 'KES',
+      mode: 'demo', modeLocked: true, marketerPractice: st.practice,
+      realBalance: 0, bonusBalance: 0, demoBalance: MARKETER_FUNNY, practiceBalance: st.practiceBal, bonuses: [],
+    }
+  : {
+      real: st.mode === 'demo' ? 1_000_000 : 523_400, bonus: st.mode === 'demo' ? 0 : 20_000, currency: 'KES',
+      mode: st.mode, modeLocked: false, realBalance: 523_400, bonusBalance: 20_000, demoBalance: 1_000_000,
+      practiceBalance: 0, marketerPractice: false, bonuses: [],
+    });
 
 const results = [];
 const check = (n, ok, d = '') => { results.push({ n, ok }); console.log(`  [${ok ? 'PASS' : 'FAIL'}] ${n}${!ok && d ? ` -- ${d}` : ''}`); };
@@ -47,7 +59,9 @@ async function session({ width = 390, height = 844, mode = 'real', touch = true 
     userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
   });
   const calls = [];
-  let cur = mode;
+  // Server-side state the mock mutates: a player toggles `mode`; a marketer toggles `practice` (their
+  // account_mode stays 'demo') and tops up `practiceBal` (their Demo starts empty).
+  const st = { mode, practice: false, practiceBal: 0 };
   await ctx.route(`${API}/**`, async (route) => {
     const req = route.request();
     const cors = { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'access-control-allow-methods': '*' };
@@ -56,9 +70,17 @@ async function session({ width = 390, height = 844, mode = 'real', touch = true 
     calls.push(`${req.method()} ${path}`);
     let body;
     if (path === '/auth/me') body = ME;
-    else if (path === '/wallet') body = wallet(cur);
-    else if (path === '/wallet/mode') { let b = {}; try { b = req.postDataJSON(); } catch {} cur = b.mode ?? cur; body = { mode: cur, wallet: wallet(cur) }; }
-    else if (path === '/wallet/demo/topup') body = { wallet: wallet(cur), demoBalance: 1_000_000 };
+    else if (path === '/wallet') body = wallet(st);
+    else if (path === '/wallet/mode') {
+      let b = {}; try { b = req.postDataJSON(); } catch {}
+      if (LOCKED) {
+        st.practice = b.mode === 'demo';
+        // DEMO-2 parity: entering practice opens the Demo bucket funded to 10,000 (like a player's demo).
+        if (st.practice && st.practiceBal < 25_000) st.practiceBal = 1_000_000;
+      } else st.mode = b.mode ?? st.mode;
+      body = { mode: LOCKED ? (st.practice ? 'demo' : 'real') : st.mode, wallet: wallet(st) };
+    }
+    else if (path === '/wallet/demo/topup') { if (LOCKED) st.practiceBal = 1_000_000; body = { wallet: wallet(st), demoBalance: LOCKED ? st.practiceBal : 1_000_000 }; }
     else if (path === '/game/config') body = { currency: 'KES', minStakeCents: 25_000, maxStakeCents: 1_000_000, minWithdrawalCents: 200_000, minWithdrawalNative: null };
     else if (path === '/me/referral') body = { referralCode: 'X', referralPath: '/r/X', isMarketer: false, totalReferrals: 0, earnedCents: 0, heldCents: 0, paidCents: 0, availableCents: 0, minPayoutCents: 50000, marketerEarnedCents: 0 };
     else body = { items: [], providers: [], methods: [], enabled: true };
@@ -100,16 +122,20 @@ try {
         db ? `y=${db.y} h=${db.height} x=${db.x} w=${db.width}` : 'no box');
     }
 
-    // A marketer has no Real/Demo rows at all (they have one account), so the row assertions below
-    // only apply to a player's wallet.
-    const demoRow = page.getByRole('menuitemradio', { name: /Demo account/ });
+    // A MARKETER (0176) is a normal player with a Real account (funny money) and a separate Demo
+    // practice bucket — the SAME two-row switcher a player sees. It starts on Real (accent), and the
+    // panel must never NAME the account type ("marketer"), which would out it to a watching player.
+    // "Demo" itself is fine — a player's menu shows it too, so it is indistinguishable. Everything
+    // below (the Demo row exists, tapping it switches, the pill flips) then holds for a marketer too.
     if (LOCKED) {
-      check('marketer: the switcher offers no Real/Demo rows', (await demoRow.count()) === 0
-        && (await page.getByRole('menuitemradio', { name: /Real account/ }).count()) === 0);
-      check('marketer: no page errors', errors.length === 0, errors.join(' | '));
-      await ctx.close();
-      return;
+      const mlabel = await pill.getAttribute('aria-label');
+      check('marketer: the pill starts on Real (funny money), never the yellow Demo', /^Real account/.test(mlabel ?? ''), String(mlabel));
+      if (await dialog.count()) {
+        const dtext = (await dialog.innerText()).toLowerCase();
+        check('marketer: the menu never names the account type', !dtext.includes('marketer'), dtext.slice(0, 160));
+      }
     }
+    const demoRow = page.getByRole('menuitemradio', { name: /Demo account/ });
     check('phone: the Demo row exists', (await demoRow.count()) === 1);
     if (await demoRow.count()) {
       const rb = await demoRow.boundingBox();
@@ -173,19 +199,39 @@ try {
 
     const realRow = page.getByRole('menuitemradio', { name: /Real account/ });
     if (LOCKED) {
-      // A MARKETER has no Real account. Offering one — even greyed out — misdescribes the account:
-      // their money is the marketer balance, their payout is the marketer transfer, and their
-      // earnings live in the marketer app. So the switcher must not appear for them at all.
-      const text = (await page.getByRole('dialog', { name: 'Switch account' }).innerText()).toLowerCase();
-      check('marketer: no Real row is offered', (await realRow.count()) === 0, `rows=${await realRow.count()}`);
-      check('marketer: no Demo row either (nothing to switch)', (await page.getByRole('menuitemradio', { name: /Demo account/ }).count()) === 0);
-      // COVERT: the panel must not print "marketer" or "demo" — a watching player would learn what
-      // the account is, and the whole marketer surface is built to avoid exactly that.
-      check('marketer: the panel never names the account type', !text.includes('marketer') && !text.includes('demo'), text.slice(0, 160));
-      // >= 1, not === 1: on /wallet the page has its OWN Withdraw beside the panel's, so an exact
-      // count is environment-dependent. CI caught that; the product behaviour was never wrong.
-      check('marketer: keeps its own Withdraw', (await page.getByRole('button', { name: /^withdraw$/i }).count()) >= 1);
-      check('marketer: is not told its money is practice money', !text.includes('practice money'), text.slice(0, 160));
+      // 0176 — a MARKETER starts on Real (funny money, withdrawable via the instant marketer transfer)
+      // and can switch to a SEPARATE Demo practice bucket that is empty, top-up-able and NEVER
+      // withdrawable — exactly like a player. Both rows are real, interactive switch controls.
+      check('marketer: the Real row is a real switch control', (await realRow.count()) === 1, `rows=${await realRow.count()}`);
+      check('marketer: on Real, keeps its own Withdraw', (await page.getByRole('button', { name: /^withdraw$/i }).count()) >= 1);
+      const dtext0 = (await page.getByRole('dialog', { name: 'Switch account' }).innerText()).toLowerCase();
+      check('marketer: on Real, not told its money is practice money', !dtext0.includes('practice money'), dtext0.slice(0, 120));
+      check('marketer: the panel never names the account type', !dtext0.includes('marketer'), dtext0.slice(0, 120));
+      // switch INTO the practice (Demo) bucket
+      await page.getByRole('menuitemradio', { name: /Demo account/ }).tap();
+      await page.waitForTimeout(900);
+      check('marketer: tapping Demo fires POST /wallet/mode', calls.filter((c) => c === 'POST /wallet/mode').length === 1,
+        JSON.stringify(calls.filter((c) => c.includes('wallet'))));
+      const plabel = await page.locator('#balance-pill').getAttribute('aria-label');
+      check('marketer: the pill now reads Demo (on the practice bucket)', /^Demo account/.test(plabel ?? ''), String(plabel));
+      // DEMO-2 parity: the practice bucket opens FUNDED to 10,000, never an empty 0.
+      check('marketer: the Demo (practice) bucket opens funded at 10,000', /10[,.]?000/.test(plabel ?? '') && !/\bKES 0\b/.test(plabel ?? ''), String(plabel));
+      // The switch closes the menu (onSuccess), so re-open it to inspect the practice tab.
+      await page.locator('#balance-pill').tap();
+      await page.waitForTimeout(400);
+      const panel = page.getByRole('dialog', { name: 'Switch account' });
+      const dtext1 = (await panel.innerText()).toLowerCase();
+      // Scope the Withdraw count to the PANEL: on /wallet the page has its own Withdraw button, so a
+      // page-wide count is environment-dependent; the panel itself must offer none on practice.
+      check('marketer: on practice, the panel offers NO Withdraw (practice is never withdrawable)',
+        (await panel.getByRole('button', { name: /^withdraw$/i }).count()) === 0,
+        `panel withdraw=${await panel.getByRole('button', { name: /^withdraw$/i }).count()}`);
+      check('marketer: on practice, IS told it is practice money', dtext1.includes('practice money'), dtext1.slice(0, 120));
+      // switch back to Real
+      await page.getByRole('menuitemradio', { name: /Real account/ }).tap();
+      await page.waitForTimeout(900);
+      const rlabel = await page.locator('#balance-pill').getAttribute('aria-label');
+      check('marketer: can switch back to Real', /^Real account/.test(rlabel ?? ''), String(rlabel));
       check('demo->real: no page errors', errors.length === 0, errors.join(' | '));
       await ctx.close();
       return;

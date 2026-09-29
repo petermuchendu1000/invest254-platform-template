@@ -128,6 +128,44 @@ export function withLastPip(quote: number, digit: number): number {
   return (scaled - (((scaled % 10) + 10) % 10) + clampDigit(digit)) / 100;
 }
 
+/**
+ * Win-frequency-controlled decision for the DEMO/MARKETER deriv-ui path (docs/25 DEMO parity).
+ *
+ * A real-money player's outcome is decided by the pool controller. A demo/marketer account is
+ * pool-EXEMPT and used to take the raw contract odds (matches 10%, over/under, …), so it lost far more
+ * on the deriv-ui than on the rise/fall "line graph" — where its outcome is `settleVariable` at the
+ * enforced cohort `targetWinRate` (e.g. the marketer economy's 0.8). This is the SAME win-frequency
+ * control, ported to the deriv-ui: a seeded Bernoulli(winRate) draw, so a demo/marketer wins at its
+ * cohort rate, not the contract's natural probability.
+ *
+ * Deterministic in (seed, nonce, winRate) ⇒ the live settle and a crash-recovery settle agree with no
+ * new persistence. It moves ONLY fake money (the pool path — real players — never reaches here).
+ */
+export function seededWin(seed: string, nonce: number, winRate: number): boolean {
+  const w = winRate <= 0 ? 0 : winRate >= 1 ? 1 : winRate;
+  return new SeededRng(seed, `statwin:${nonce}`).next() < w;
+}
+
+/**
+ * A demo/marketer DIGIT outcome at the cohort win-rate: decide win at `winRate` (clamped to the
+ * contract's feasible outcomes — e.g. a decided win is impossible on a 0-probability contract), draw a
+ * DISPLAY digit consistent with that decision (the same seeded `decisionDigit` the pool path uses), and
+ * pay the contract's fixed odds on a win (`digitReturnCents`) — exactly as the pool path pays.
+ */
+export function decideDigitAtWinRate(
+  seed: string, nonce: number, kind: DigitKind, target: number, winRate: number, stakeCents: number,
+  factor = DEFAULT_DIGIT_PAYOUT_FACTOR,
+): DigitSettlement {
+  const canWin = digitsForOutcome(kind, target, true).length > 0;
+  const canLose = digitsForOutcome(kind, target, false).length > 0;
+  let won = seededWin(seed, nonce, winRate);
+  if (won && !canWin) won = false;      // a decided win is impossible (e.g. 'under 0') → loss
+  if (!won && !canLose) won = true;     // a decided loss is impossible (e.g. 'over 0' can still lose on 0; guard anyway)
+  const digit = decisionDigit(seed, nonce, kind, target, won) ?? 0;
+  const payoutCents = won ? digitReturnCents(stakeCents, kind, kind === 'over' || kind === 'under' ? target : 0, factor) : 0;
+  return { won, payoutCents, pnlCents: won ? payoutCents - stakeCents : -stakeCents, digit };
+}
+
 // ── Multipliers ─────────────────────────────────────────────────────────────────────────────────
 export type MultDir = 'up' | 'down';
 export type MultCloseReason = 'tp' | 'sl' | 'stopout' | 'cancel' | 'manual';

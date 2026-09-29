@@ -41,25 +41,56 @@ export function makeWalletModeDeps(q: WalletModeQuerier, rate: (currency: string
     /** Every bucket + the active account. `real`/`bonus` are what the active account can spend. */
     async balances(userId: string, siteId?: string): Promise<WalletBalance> {
       const r = await q.query(
-        `select fn_is_marketer_account(user_id) as marketer, account_mode, real_balance, bonus_balance, demo_balance, currency
+        `select fn_is_marketer_account(user_id) as marketer, account_mode, marketer_practice,
+                real_balance, bonus_balance, demo_balance, practice_balance, currency
            from wallets where user_id = $1 and ($2::uuid is null or site_id = $2)`,
         [userId, siteId ?? null]);
       if (!r.rows.length) return { real: 0, bonus: 0, currency: "KES", mode: "real", modeLocked: false, realBalance: 0, bonusBalance: 0, demoBalance: 0 };
       const x = r.rows[0]!;
       const marketer = x.marketer === true;
       const demo = marketer || x.account_mode === "demo";
-      const realB = toCents(x.real_balance), bonusB = toCents(x.bonus_balance), demoB = toCents(x.demo_balance);
+      const realB = toCents(x.real_balance), bonusB = toCents(x.bonus_balance), demoB = toCents(x.demo_balance), practiceB = toCents(x.practice_balance);
+      // 0176: a MARKETER is presented as a normal player. Their funny money (demo_balance) is their
+      // Real account; practice_balance is their separate Demo. `marketer_practice` is the Real/Demo
+      // switch — account_mode stays 'demo' (so pool exemption / auto-refund are untouched), and the
+      // active spendable follows the switch. `demoBalance` keeps its literal meaning (the funny/demo
+      // bucket); the practice bucket is its own field.
+      if (marketer) {
+        const practice = x.marketer_practice === true;
+        return {
+          real: practice ? practiceB : demoB, bonus: 0, currency: String(x.currency ?? "KES"),
+          mode: "demo", modeLocked: true, realBalance: realB, bonusBalance: bonusB,
+          demoBalance: demoB, practiceBalance: practiceB, marketerPractice: practice,
+        };
+      }
       return {
         real: demo ? demoB : realB, bonus: demo ? 0 : bonusB, currency: String(x.currency ?? "KES"),
-        mode: demo ? "demo" : "real", modeLocked: marketer, realBalance: realB, bonusBalance: bonusB, demoBalance: demoB,
+        mode: demo ? "demo" : "real", modeLocked: false, realBalance: realB, bonusBalance: bonusB,
+        demoBalance: demoB, practiceBalance: practiceB, marketerPractice: false,
       };
     },
     async setMode(userId: string, siteId: string | undefined, mode: "real" | "demo"): Promise<"real" | "demo"> {
       const open = await q.query("select 1 from positions where user_id = $1 and status = 'open' limit 1", [userId]);
       if (open.rows.length) throw new Error("OPEN_POSITIONS");
       const m = await q.query("select fn_is_marketer_account($1) as m", [userId]);
-      if (m.rows[0]?.m === true && mode === "real") throw new Error("MODE_LOCKED");
       const site = await siteOf(userId, siteId);
+      // 0176: for a MARKETER the Real/Demo switch is the practice flag, NOT account_mode (which stays
+      // 'demo'). Real => funny money (their withdrawable account); Demo => the separate practice bucket.
+      if (m.rows[0]?.m === true) {
+        await q.query("select fn_set_marketer_practice($1, $2, $3)", [userId, site, mode === "demo"]);
+        // DEMO-2 parity: a marketer's practice (Demo) bucket opens FUNDED to 10,000 too, so it is never
+        // an empty 0 the way a player's demo never is. fn_topup_demo_account targets practice now that
+        // the flag is set, and only tops up when it cannot place the minimum stake (spent, or new).
+        if (mode === "demo") {
+          const b = await q.query(
+            `select w.practice_balance, coalesce(c.min_stake, 1) as min_stake from wallets w
+               left join site_game_config c on c.site_id = w.site_id
+              where w.user_id = $1 and ($2::uuid is null or w.site_id = $2)`, [userId, site]);
+          const x = b.rows[0];
+          if (x && toCents(x.practice_balance) < Math.max(1, toCents(x.min_stake))) await topupDemo(userId, site ?? undefined).catch(() => 0);
+        }
+        return mode;
+      }
       const r = await q.query("select fn_set_account_mode($1, $2, $3) as mode", [userId, site, mode]);
       const now = String(r.rows[0]!.mode) as "real" | "demo";
       // DEMO-2: a demo account that cannot place the minimum stake (new, or spent) opens funded, so the

@@ -10,6 +10,8 @@ import {
   stopoutPrice,
   dealCancellationFeeCents,
   evaluateMultiplier,
+  seededWin,
+  decideDigitAtWinRate,
   type DigitKind,
   type MultiplierState,
 } from './contracts.js';
@@ -155,3 +157,48 @@ test('fuzz: a multiplier can never realise worse than the stake', () => {
 function pick(e: { close: boolean; reason: unknown; realizedCents: number }) {
   return { close: e.close, reason: e.reason, realizedCents: e.realizedCents };
 }
+
+// ── DEMO/marketer deriv-ui win-rate strategy (docs/25 DEMO parity) ──────────────────────────────
+test('seededWin: empirical rate matches the target win rate (deterministic, over many nonces)', () => {
+  for (const wr of [0.1, 0.5, 0.8, 0.95]) {
+    let wins = 0;
+    const N = 20_000;
+    for (let n = 0; n < N; n++) if (seededWin('day-seed', n, wr)) wins++;
+    const rate = wins / N;
+    assert.ok(Math.abs(rate - wr) < 0.02, `winRate ${wr}: empirical ${rate.toFixed(3)} should be within 0.02`);
+  }
+});
+
+test('seededWin is deterministic in (seed, nonce, winRate)', () => {
+  assert.equal(seededWin('s', 42, 0.8), seededWin('s', 42, 0.8));
+});
+
+test('seededWin clamps out-of-range rates', () => {
+  let anyLoss = false, anyWin = false;
+  for (let n = 0; n < 100; n++) { if (!seededWin('s', n, 0)) anyLoss = true; if (seededWin('s', n, 1)) anyWin = true; }
+  assert.ok(anyLoss && !seededWin('s', 7, 0), 'winRate 0 never wins');
+  assert.ok(anyWin && seededWin('s', 7, 1), 'winRate 1 always wins');
+});
+
+test('decideDigitAtWinRate: a marketer wins ~0.8 even on a 10%-natural "matches" contract, paid at fixed odds', () => {
+  const N = 20_000; let wins = 0; let paid = 0;
+  for (let n = 0; n < N; n++) {
+    const r = decideDigitAtWinRate('seed', n, 'matches', 3, 0.8, 100_000, 0.95);
+    if (r.won) { wins++; paid += r.payoutCents; }
+    // the displayed digit must be CONSISTENT with the decided outcome
+    assert.equal(evaluateDigit('matches', 3, r.digit), r.won, `digit ${r.digit} must match won=${r.won}`);
+  }
+  const rate = wins / N;
+  assert.ok(Math.abs(rate - 0.8) < 0.02, `matches win rate ${rate.toFixed(3)} ≈ 0.8`);
+  // fixed odds: a winning 'matches' pays stake × 0.95 / 0.1 = 9.5×
+  assert.equal(decideDigitAtWinRate('seed', 0, 'matches', 3, 0.8, 100_000, 0.95).won
+    ? decideDigitAtWinRate('seed', 0, 'matches', 3, 0.8, 100_000, 0.95).payoutCents : 0,
+    (() => { const r = decideDigitAtWinRate('seed', 0, 'matches', 3, 0.8, 100_000, 0.95); return r.won ? 950_000 : 0; })());
+});
+
+test('decideDigitAtWinRate: an impossible-win contract (under 0) can never be forced to win', () => {
+  for (let n = 0; n < 200; n++) {
+    const r = decideDigitAtWinRate('seed', n, 'under', 0, 0.99, 100_000, 0.95);
+    assert.equal(r.won, false, 'under 0 has win probability 0 → always a loss, whatever the win rate');
+  }
+});

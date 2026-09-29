@@ -9,6 +9,7 @@
 export interface WalletLike {
   real: number; bonus: number; mode?: 'real' | 'demo'; modeLocked?: boolean;
   realBalance?: number; bonusBalance?: number; demoBalance?: number;
+  practiceBalance?: number; marketerPractice?: boolean;
 }
 
 export interface WalletFigures {
@@ -37,9 +38,23 @@ export interface WalletFigures {
 export function walletFigures(w: WalletLike | null | undefined): WalletFigures {
   if (!w) return { demo: false, canWithdraw: false, realTotal: 0, withdrawable: 0, realCash: 0, demoBalance: 0 };
   const inDemo = w.mode === 'demo';
-  if (inDemo && w.modeLocked) {
-    // marketer: always demo; their withdraw is the demo transfer, so it stays offered
-    return { demo: false, canWithdraw: true, realTotal: w.real + w.bonus, withdrawable: w.real, realCash: w.real, demoBalance: w.demoBalance ?? w.real };
+  if (w.modeLocked) {
+    // 0176 — a MARKETER is a normal player with two accounts:
+    //  • Real = their funny money (demo_balance), withdrawn via the instant marketer transfer;
+    //  • Demo = a separate practice bucket (practice_balance), never withdrawable.
+    // `marketerPractice` is which tab is active. Withdraw is offered ONLY on Real (funny), exactly as
+    // a player may withdraw Real but never Demo. The funny figure is the Real tab regardless of tab.
+    const practice = w.marketerPractice === true;
+    const funny = w.demoBalance ?? w.real;
+    const practiceBal = w.practiceBalance ?? 0;
+    return {
+      demo: practice,
+      canWithdraw: !practice,
+      realTotal: funny,
+      withdrawable: practice ? 0 : funny,
+      realCash: funny,
+      demoBalance: practiceBal,
+    };
   }
   const realCash = w.realBalance ?? (inDemo ? 0 : w.real);
   const bonus = w.bonusBalance ?? (inDemo ? 0 : w.bonus);

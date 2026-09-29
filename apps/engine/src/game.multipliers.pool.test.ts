@@ -130,17 +130,21 @@ test("CENTRAL BUDGET: digits + multipliers share ONE pool; cap and RTP ceiling h
   assert.ok(st.paidCents > 0, "some wins were paid within the shared budget");
 });
 
-test("MARKETER exemption: statistical multiplier on the feed; pool untouched; manual close allowed", async () => {
+test("MARKETER exemption: deriv-ui win-rate decided; pool untouched; manual close DISABLED", async () => {
+  // A marketer multiplier is now decided at the cohort win-rate (like the rise/fall line-graph), so it
+  // runs to its decided endpoint (no manual close) — but stays pool-EXEMPT: it never draws the pool.
   const h = makeGame(true, 5_000_000);
   h.repo.seed("m", 100_000_000);
   const before = await h.poolRepo.poolState(SITE, h.day);
   const open = await h.game.openMultiplierContract({ userId: "m", stakeCents: STAKE, dir: "up", multiplier: 50, role: "marketer" });
-  assert.equal(open.poolControlled, false);
-  h.advance(3_000);
-  const res = await h.game.closeMultiplierContract(open.positionId, "m");
-  assert.equal(res.reason, "manual");
+  assert.equal(open.poolControlled, true, "a marketer multiplier is decided (win-rate), pool-exempt");
+  assert.equal(open.slCents, null, "decided ⇒ no SL");
+  await assert.rejects(() => h.game.closeMultiplierContract(open.positionId, "m"), /CLOSE_DISABLED/, "decided ⇒ manual close disabled");
+  const closed = await runToClose(h);
+  assert.equal(closed.length, 1, "runs to its decided endpoint");
+  assert.ok(closed[0]!.reason === "tp" || closed[0]!.reason === "stopout", "closes as a decided win (tp) or loss (stopout)");
   const after = await h.poolRepo.poolState(SITE, h.day);
-  assert.equal(after.paidCents, before.paidCents);
+  assert.equal(after.paidCents, before.paidCents, "marketer multiplier never draws the pool");
   assert.equal(after.reservedCents, 0);
 });
 

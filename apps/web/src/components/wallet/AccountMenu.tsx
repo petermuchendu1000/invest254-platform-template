@@ -48,12 +48,15 @@ export function AccountMenu({
   wallet, fmt, onSwitch, onDeposit, onWithdraw, onTopupDemo, switching, toppingUp,
 }: AccountMenuProps) {
   const f = walletFigures(wallet);
-  const active = wallet.mode === 'demo' ? 'demo' : 'real';
-  const bonus = wallet.bonusBalance ?? 0;
+  // A MARKETER's Real/Demo switch is `marketerPractice` (account_mode stays 'demo' server-side); a
+  // player's is `mode`. Either way this is which tab is active.
+  const active = wallet.modeLocked
+    ? (wallet.marketerPractice ? 'demo' : 'real')
+    : (wallet.mode === 'demo' ? 'demo' : 'real');
+  const bonus = wallet.modeLocked ? 0 : (wallet.bonusBalance ?? 0);
 
   const Row = ({ mode, label, cents, sub }: { mode: 'real' | 'demo'; label: string; cents: number; sub?: string }) => {
     const on = active === mode;
-    const locked = mode === 'real' && wallet.modeLocked;
     return (
       <button
         type="button"
@@ -61,14 +64,11 @@ export function AccountMenu({
         aria-checked={on}
         // The visible label is one word; assistive tech gets the whole sentence.
         aria-label={`${label} account, ${fmt(cents)}${on ? ', active' : ''}`}
-        disabled={locked || switching}
+        disabled={switching}
         onClick={() => onSwitch(mode)}
         className={cn(
           'flex min-h-[3.5rem] w-full items-center gap-3 px-3 text-left transition',
           on ? 'bg-surface-2' : 'active:bg-surface-2/70 sm:hover:bg-surface-2/60',
-          // A locked row keeps FULL contrast and says why on the right. Dimming it to 40% with no
-          // explanation is what made this read as a broken button rather than an unavailable account.
-          locked && 'cursor-not-allowed',
         )}
       >
         <span
@@ -80,17 +80,11 @@ export function AccountMenu({
         </span>
         <span className="min-w-0 flex-1">
           <span className="block truncate text-[14px] font-semibold leading-tight text-fg">{label}</span>
-          {/* No figure on an unavailable account: it competes with the badge for width (truncating
-              both), and for a locked marketer the "real" figure is their demo balance anyway. */}
-          {locked ? null : (
-            <span className="mt-0.5 block truncate font-mono text-[12px] leading-tight tabular-nums text-muted">
-              {fmt(cents)}{sub ? <span className="font-sans"> · {sub}</span> : null}
-            </span>
-          )}
+          <span className="mt-0.5 block truncate font-mono text-[12px] leading-tight tabular-nums text-muted">
+            {fmt(cents)}{sub ? <span className="font-sans"> · {sub}</span> : null}
+          </span>
         </span>
-        {locked
-          ? <span className="shrink-0 whitespace-nowrap rounded-full bg-surface-2 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted">Unavailable</span>
-          : on ? <Check className="h-4 w-4 shrink-0 text-accent" /> : null}
+        {on ? <Check className="h-4 w-4 shrink-0 text-accent" /> : null}
       </button>
     );
   };
@@ -109,29 +103,17 @@ export function AccountMenu({
           'overflow-hidden rounded-2xl border border-border bg-surface shadow-2xl shadow-black/50',
         )}
       >
-        {/* A MARKETER has no Real account to switch to — offering one (even greyed out) misdescribes
-            the account. Their balance is their own, their payout is the marketer transfer, and their
-            earnings live in their own app.
-            NAMED NEUTRALLY ON PURPOSE. The marketer system is covert by design — the dashboard entry
-            is an invisible hotspot precisely so "NO visible button a watching player could notice".
-            Printing "Marketer" (or "Demo") here would tell anyone looking over their shoulder exactly
-            what the account is, which is the one thing this surface must not do. So: balance only. */}
-        {wallet.modeLocked ? (
-          <div className="flex min-h-[3.5rem] items-center px-3">
-            <span className="min-w-0 flex-1">
-              <span className="block text-[11px] font-medium uppercase tracking-wider text-muted">Balance</span>
-              <span className="mt-0.5 block truncate font-mono text-[18px] font-bold leading-tight tabular-nums text-fg">{fmt(f.realTotal)}</span>
-            </span>
-          </div>
-        ) : (
-          <div role="menu" aria-label="Accounts" className="flex flex-col">
-            <Row mode="real" label="Real" cents={f.realTotal} {...(bonus > 0 ? { sub: `${fmt(bonus)} bonus` } : {})} />
-            <div className="mx-3 h-px bg-border" />
-            <Row mode="demo" label="Demo" cents={f.demoBalance} />
-          </div>
-        )}
+        {/* A MARKETER is a normal player with two accounts (0176): Real is their funny money
+            (withdrawn via the instant marketer transfer), Demo is their separate practice bucket. The
+            switch and rows are identical to a player's — indistinguishable — so nothing here names the
+            account type. Their switch toggles the practice flag server-side; account_mode stays 'demo'. */}
+        <div role="menu" aria-label="Accounts" className="flex flex-col">
+          <Row mode="real" label="Real" cents={f.realTotal} {...(bonus > 0 ? { sub: `${fmt(bonus)} bonus` } : {})} />
+          <div className="mx-3 h-px bg-border" />
+          <Row mode="demo" label="Demo" cents={f.demoBalance} />
+        </div>
 
-        {active === 'demo' && !wallet.modeLocked ? (
+        {active === 'demo' ? (
           <>
             <div className="h-px bg-border" />
             <button
@@ -167,7 +149,7 @@ export function AccountMenu({
               </button>
             ) : null}
           </div>
-          {active === 'demo' && !wallet.modeLocked ? (
+          {active === 'demo' ? (
             <p className="px-1 pt-2 text-[11px] leading-snug text-muted">
               Practice money — never withdrawable.
             </p>

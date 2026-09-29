@@ -102,3 +102,35 @@ interface** so this class of error is impossible.
 forecasts) read `v_real_*`; marketer/demo dashboards read `v_demo_*`. The engine's dynamic-pool demand
 already reads `position_decision` (pool decisions are non-marketer by construction), which is a subset of
 the real cohort. Covered by `packages/db/_testkit/e2e_demo_isolation.py` and a live rolled-back check.
+
+---
+
+## DEMO-7 — the deriv-ui plays at the cohort win-rate, like the rise/fall line-graph
+
+A real-money player's outcome is decided by the withdrawal-pool controller (docs/25). A **demo/marketer**
+account is pool-EXEMPT (`fn_is_marketer_account OR account_mode='demo'`, the same predicate that routes
+its money to the demo bucket). On the **rise/fall** surface a pool-exempt account already settles through
+`SettlementEngine.settleVariable` at the enforced cohort win-rate — the platform-global
+`marketer_economy.targetWinRate` (0.8 in prod). On the **deriv-ui** (digits + multipliers) it used to
+take the contract's **raw odds** instead (matches 10 %, over/under, …), so a marketer/demo lost far more
+there — undercutting the whole social-proof point.
+
+`decideDigitAtWinRate` / `seededWin` (`packages/shared/src/contracts.ts`) port that SAME win-frequency
+control to the deriv-ui statistical path:
+
+- **who** — `GameServer.openDigitContract` / `openMultiplierContract`: only when `isMarketer` (a
+  non-marketer with the pool OFF keeps the provably-fair digit / the fair price-path). Real-money players
+  (pool ON) are byte-for-byte unchanged — they never reach this branch.
+- **decision** — a seeded `Bernoulli(winRate)` from `(day seed, nonce)`, `winRate = override.winRate ??
+  targetWinRate` (the SAME composed override the rise/fall path uses). Deterministic ⇒ live settle and
+  crash recovery (`RecoveryService`, gated on the same `loadIsMarketer`) agree with **no new
+  persistence**.
+- **payout** — the contract's FIXED odds on a win (`digitReturnCents` for digits, `stake + TP` for
+  multipliers) — exactly what the pool path already pays a real player.
+- **isolation** — a marketer decision is `poolReserved: false`, so the settle NEVER calls
+  `pool.controller.settleSession/commit`; the daily pool is untouched (`paidCents`/`reservedCents`
+  unchanged), and the position stays out of the real cohort by identity (docs/27 above). All fake money.
+
+Covered by `apps/engine/src/game.derivui.winrate.test.ts` (marketer digit + multiplier win ≈ winRate at
+fixed odds, pool untouched, real players still pool-decided, recovery settles to the identical decision)
+and the shared `contracts.test.ts` win-rate cases.

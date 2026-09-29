@@ -84,6 +84,9 @@ export interface WalletDto {
   realBalance?: Cents;
   bonusBalance?: Cents;
   demoBalance?: Cents;
+  /** 0176: a marketer's separate practice (Demo) bucket, and whether they are currently on it. */
+  practiceBalance?: Cents;
+  marketerPractice?: boolean;
 }
 
 

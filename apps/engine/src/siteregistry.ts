@@ -125,7 +125,7 @@ export class SiteRegistry {
     const out = new Map<string, RecoveryReport>();
     for (const siteId of siteIds) {
       const rt = await this.ensure(siteId);
-      const rec = new RecoveryService(this.opts.repo, rt.seeds, rt.game, this.opts.now, this.opts.loadOverride, siteId, this.opts.poolController);
+      const rec = new RecoveryService(this.opts.repo, rt.seeds, rt.game, this.opts.now, this.opts.loadOverride, siteId, this.opts.poolController, this.opts.loadIsMarketer);
       out.set(siteId, await rec.recover());
     }
     return out;

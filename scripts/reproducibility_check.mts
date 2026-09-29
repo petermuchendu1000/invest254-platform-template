@@ -2,7 +2,7 @@
  * Nightly provable-fairness reproducibility guard (docs/28 §4; audit rec #6).
  *
  * For a sample of recent SETTLED, statistically-priced positions (NOT pool-decided, NOT marketer, NOT
- * overridden, on a REVEALED-seed day with a resolvable config_version), recompute the outcome from
+ * demo-bucket, NOT overridden, on a REVEALED-seed day with a resolvable config_version), recompute from
  * (revealed seed, config_version, entryT, nonce) using the SAME production code path
  * (CurveGenerator + SettlementEngine.settleVariable) and assert it equals the RECORDED result +
  * multiplier. A drift here means the stored outcome is not reproducible from its published inputs —
@@ -69,7 +69,8 @@ async function main() {
           and p.opened_at > now() - ($1 || ' days')::interval
           and ($2::uuid is null or p.site_id = $2)
           and not exists (select 1 from position_decision d where d.position_id = p.id)   -- exclude pool-decided
-          and p.user_id not in (select user_id from marketer_account_ids)                 -- exclude demo cohort
+          and p.demo = false                                                              -- exclude the demo BUCKET (0123): demo-mode players AND marketers are priced at the cohort win-rate, not the base statistical rate, so they never reproduce via settleVariable(base cfg)
+          and p.user_id not in (select user_id from marketer_account_ids)                 -- exclude marketer identity (belt-and-braces with p.demo)
           and p.user_id not in (select user_id from user_overrides)                       -- exclude per-user pricing
         order by p.opened_at desc
         limit $3`,

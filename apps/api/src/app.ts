@@ -54,11 +54,14 @@ export interface WalletBalance {
   bonuses?: BonusStatus[];
   /** DEMO-1: the active account and every bucket, for the Real/Demo switch. */
   mode?: "real" | "demo";
-  /** Marketers are always demo (the switch is locked). */
+  /** Marketers are their own account type (server-authoritative identity; the client's marketer hint). */
   modeLocked?: boolean;
   realBalance?: Cents;
   bonusBalance?: Cents;
   demoBalance?: Cents;
+  /** 0176: a marketer's separate practice (Demo) bucket, and whether they are currently on it. */
+  practiceBalance?: Cents;
+  marketerPractice?: boolean;
 }
 
 /**

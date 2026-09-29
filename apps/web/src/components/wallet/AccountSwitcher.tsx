@@ -79,10 +79,17 @@ export function AccountSwitcher() {
 
   if (!hydrated || !token || !data) return null;
 
-  const demo = data.mode === 'demo';
+  // A MARKETER is a normal player with a Real account (funny money) and a separate Demo practice bucket
+  // (0176); which tab is active is `marketerPractice`, not account_mode (which stays 'demo'). So the
+  // pill reads Real on their funny money and Demo on practice — exactly like a player.
+  const marketer = data.modeLocked === true;
+  const demo = marketer ? data.marketerPractice === true : data.mode === 'demo';
 
+  // A marketer's active tab is their practice flag (account_mode stays 'demo'), so guard against the
+  // PRESENTED tab, not data.mode — otherwise tapping "Demo" (always === data.mode) would no-op.
+  const current: 'real' | 'demo' = marketer ? (data.marketerPractice ? 'demo' : 'real') : (data.mode === 'demo' ? 'demo' : 'real');
   const switchTo = (mode: 'real' | 'demo') => {
-    if (mode === data.mode || setMode.isPending) return;
+    if (mode === current || setMode.isPending) return;
     setMode.mutate(mode, {
       onSuccess: (r) => {
         setOpen(false);

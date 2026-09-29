@@ -2,6 +2,7 @@ import {
   dateKeyUTC, settleDigit, type DigitKind, type MultDir,
   InstrumentFeed, instrumentById, DEFAULT_INSTRUMENT_ID, digitPayoutFactor,
   decisionDigit, withLastPip, poolMultiplierDurationMs,
+  seededWin, decideDigitAtWinRate,
 } from "@invest254/shared";
 import type { GameRepository } from "./wallet.js";
 import type { SeedManager } from "./daycontext.js";
@@ -46,6 +47,9 @@ export class RecoveryService {
     /** docs/25: pool controller — a position with a stored decision is recovered from THAT decision
      *  (not recomputed from the curve), and its reservation is committed on a recovered win. */
     private readonly pool?: PoolController,
+    /** Same marketer/demo predicate the GameServer opens with, so a demo/marketer deriv-ui contract —
+     *  decided at the cohort win-rate, not persisted to the pool — is reconstructed identically. */
+    private readonly loadIsMarketer?: (userId: string) => Promise<boolean>,
   ) {}
 
   async recover(): Promise<RecoveryReport> {
@@ -84,6 +88,18 @@ export class RecoveryService {
               report.settled++;
               if (won && this.pool) { try { await this.pool.commit(row.id); } catch { /* reservation keeps the budget protected */ } }
             } else report.noop++;
+            continue;
+          }
+          // A DEMO/MARKETER digit was decided at the cohort win-rate; reconstruct the SAME decision
+          // seed-deterministically (seed, nonce, winRate) so recovery is identical to no-crash. A
+          // non-marketer with the pool OFF keeps the provably-fair uniform digit.
+          const marketerDigit = this.loadIsMarketer ? await this.loadIsMarketer(row.userId) : false;
+          if (marketerDigit) {
+            const ov = this.loadOverride ? await this.loadOverride(row.userId) : null;
+            const winRate = ov?.winRate ?? ctx.cfg.targetWinRate;
+            const dst = decideDigitAtWinRate(ctx.seed, row.nonce, c.kind ?? "even", c.target ?? 0, winRate, row.stakeCents, digitPayoutFactor(ctx.cfg));
+            const res = await this.repo.settlePosition({ positionId: row.id, exitRate: withLastPip(tick.quote, dst.digit), result: dst.won ? "win" : "loss", multiplier: 0, payoutCents: dst.payoutCents });
+            if (res.settled) report.settled++; else report.noop++;
             continue;
           }
           const st = settleDigit(row.stakeCents, c.kind ?? "even", c.target ?? 0, tick.digit, digitPayoutFactor(ctx.cfg));
@@ -126,6 +142,35 @@ export class RecoveryService {
                 userId: row.userId, siteId: row.siteId ?? null, stakeCents: row.stakeCents, instrumentId,
                 openedAtMs: row.openedAtMs, nonce: decision.nonce, state,
                 decided: { result: decision.result, payoutCents: decision.result === "win" ? decision.payoutCents : 0, durationMs },
+                poolReserved: true,
+              });
+              if (ok) report.rearmed++; else report.noop++;
+            }
+            continue;
+          }
+          // No pool decision. A DEMO/MARKETER multiplier was decided at the cohort win-rate (not
+          // persisted to the pool); reconstruct that SAME decision seed-deterministically so recovery is
+          // identical. A pool-off statistical player's multiplier re-arms on the fair price path as before.
+          const marketer = this.loadIsMarketer ? await this.loadIsMarketer(row.userId) : false;
+          if (marketer && this.pool) {
+            const ov = this.loadOverride ? await this.loadOverride(row.userId) : null;
+            const winRate = ov?.winRate ?? ctx.cfg.targetWinRate;
+            const durationMs = poolMultiplierDurationMs(ctx.seed, row.nonce);
+            const won = seededWin(ctx.seed, row.nonce, winRate);
+            const payoutCents = won ? row.stakeCents + (state.tpCents ?? 0) : 0;
+            if (nowMs >= row.openedAtMs + durationMs) {
+              const feed = new InstrumentFeed(ctx.seed, instrumentById(instrumentId));
+              const exit = feed.tickAt(feed.indexAt(nowMs, ctx.dayStartMs)).quote;
+              const res = await this.repo.settlePosition({
+                positionId: row.id, exitRate: exit, result: won ? "win" : "loss",
+                multiplier: won ? payoutCents / row.stakeCents : 0, payoutCents,
+              });
+              if (res.settled) report.settled++; else report.noop++;
+            } else {
+              const ok = this.game.rearmMultiplier(row.id, {
+                userId: row.userId, siteId: row.siteId ?? null, stakeCents: row.stakeCents, instrumentId,
+                openedAtMs: row.openedAtMs, nonce: row.nonce, state,
+                decided: { result: won ? "win" : "loss", payoutCents, durationMs }, poolReserved: false,
               });
               if (ok) report.rearmed++; else report.noop++;
             }
@@ -133,7 +178,7 @@ export class RecoveryService {
           }
           const ok = this.game.rearmMultiplier(row.id, {
             userId: row.userId, siteId: row.siteId ?? null, stakeCents: row.stakeCents, instrumentId,
-            openedAtMs: row.openedAtMs, nonce: row.nonce, state, decided: null,
+            openedAtMs: row.openedAtMs, nonce: row.nonce, state, decided: null, poolReserved: false,
           });
           if (ok) report.rearmed++; else report.noop++;
           continue;

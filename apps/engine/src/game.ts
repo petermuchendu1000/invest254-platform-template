@@ -4,6 +4,7 @@ import {
   settleDigit, type DigitKind,
   InstrumentFeed, instrumentById, isKnownInstrument, DEFAULT_INSTRUMENT_ID, digitPayoutFactor,
   digitReturnCents, decisionDigit, withLastPip, poolMultiplierDurationMs,
+  seededWin, decideDigitAtWinRate,
   multiplierPnlCents, evaluateMultiplier, dealCancellationFeeCents,
   type MultiplierState, type MultDir, type MultCloseReason,
 } from "@invest254/shared";
@@ -67,11 +68,11 @@ function clampTargetDigit(d: number): number {
 export class GameServer {
   private positions = new Map<string, Position>();
   /** Phase 2: in-flight digit contracts awaiting their 1-tick settlement (server-side only). */
-  private digitContracts = new Map<string, { userId: string; stakeCents: number; kind: DigitKind; target: number; instrumentId: string; openIndex: number; settleIndex: number; openedAtMs: number; siteId: string | null; decided: { result: "win" | "loss"; payoutCents: number; digit: number } | null }>();
+  private digitContracts = new Map<string, { userId: string; stakeCents: number; kind: DigitKind; target: number; instrumentId: string; openIndex: number; settleIndex: number; openedAtMs: number; siteId: string | null; decided: { result: "win" | "loss"; payoutCents: number; digit: number } | null; poolReserved: boolean }>();
   /** Per-(daySeed, instrument) authoritative feed cache; feeds are pure/deterministic and cheap. */
   private feeds = new Map<string, InstrumentFeed>();
   /** Phase 2: open (running) multiplier contracts — statistical (feed-evaluated) or pool-decided. */
-  private multiplierContracts = new Map<string, { userId: string; siteId: string | null; stakeCents: number; instrumentId: string; openedAtMs: number; nonce: number; state: MultiplierState; decided: { result: "win" | "loss"; payoutCents: number; durationMs: number } | null }>();
+  private multiplierContracts = new Map<string, { userId: string; siteId: string | null; stakeCents: number; instrumentId: string; openedAtMs: number; nonce: number; state: MultiplierState; decided: { result: "win" | "loss"; payoutCents: number; durationMs: number } | null; poolReserved: boolean }>();
   private listeners = new Set<Listener>();
   private lastRate?: number;
   private tickTimer: NodeJS.Timeout | undefined;
@@ -339,6 +340,7 @@ export class GameServer {
     });
 
     let decided: { result: "win" | "loss"; payoutCents: number; digit: number } | null = null;
+    let poolReserved = false;
     if (poolPath && this.pool) {
       // Fixed-odds candidate payout: exactly what a win would cost (stake × factor / winProb).
       const candidate = digitReturnCents(input.stakeCents, input.kind, input.kind === "over" || input.kind === "under" ? target : 0, this.digitFactor());
@@ -353,9 +355,20 @@ export class GameServer {
       // digitsForOutcome is non-empty for every grantable decision (a p=0 contract can never win);
       // the fair feed digit is a defensive fallback only.
       decided = { result: po.result, payoutCents: po.result === "win" ? po.payoutCents : 0, digit: digit ?? feed.tickAt(settleIndex).digit };
+      poolReserved = true;
+    } else if (isMarketer) {
+      // DEMO/MARKETER (pool-exempt, FAKE money): the win FREQUENCY follows the enforced cohort win-rate
+      // — the SAME strategy the rise/fall line-graph uses via settleVariable — never the contract's raw
+      // odds. Decided seed-deterministically so a crash recovers identically; pays the contract's fixed
+      // odds on a win. The pool path (real players) never reaches here; nothing below reserves/commits
+      // the real-cash pool. A non-marketer with the pool OFF keeps the provably-fair digit (below).
+      const ov = this.loadOverride ? await this.loadOverride(input.userId) : null;
+      const winRate = ov?.winRate ?? this.cfg.targetWinRate;
+      const st = decideDigitAtWinRate(ctx.seed, nonce, input.kind, target, winRate, input.stakeCents, this.digitFactor());
+      decided = { result: st.won ? "win" : "loss", payoutCents: st.payoutCents, digit: st.digit };
     }
 
-    this.digitContracts.set(positionId, { userId: input.userId, stakeCents: input.stakeCents, kind: input.kind, target, instrumentId, openIndex, settleIndex, openedAtMs, siteId: ctx.siteId ?? null, decided });
+    this.digitContracts.set(positionId, { userId: input.userId, stakeCents: input.stakeCents, kind: input.kind, target, instrumentId, openIndex, settleIndex, openedAtMs, siteId: ctx.siteId ?? null, decided, poolReserved });
     return { positionId, balance: newBalance, entryRate, instrumentId, openIndex, settleIndex, poolControlled: decided !== null };
   }
 
@@ -382,7 +395,9 @@ export class GameServer {
         positionId, exitRate, result: won ? "win" : "loss", multiplier: 0, payoutCents: c.decided.payoutCents,
       });
       this.digitContracts.delete(positionId);
-      if (this.pool) {
+      // Pool session/commit ONLY for a pool-reserved (real-money) decision. A statistical marketer/demo
+      // decision is pool-exempt — it must never touch the real-cash pool.
+      if (c.poolReserved && this.pool) {
         this.pool.controller.settleSession(c.userId, poolEatDay(c.openedAtMs), won ? "win" : "loss", c.decided.payoutCents);
         if (won) {
           try { await this.pool.controller.commit(positionId); }
@@ -469,14 +484,21 @@ export class GameServer {
 
     const isMarketer = this.loadIsMarketer ? await this.loadIsMarketer(input.userId) : (input.role === "marketer");
     const poolPath = (this.pool?.enabled() ?? false) && !isMarketer;
+    // A demo/marketer multiplier is decided at the cohort win-rate (the SAME strategy the rise/fall
+    // line-graph uses), rendered along the same seeded path the pool uses — so it needs the pool object
+    // (for `controller.live`) and the day seed. isMarketer ⇒ !poolPath, so this is the marketer branch.
+    // FAKE money only; it never reserves or commits the real-cash pool.
+    const marketerDecideMult = isMarketer && !!this.pool && !!ctx.seed;
+    // A DECIDED contract (pool OR marketer) runs to its endpoint: fixed TP upside, no SL/DC/manual close.
+    const decidedMult = poolPath || marketerDecideMult;
 
-    // Pool mode: TP is the contract's fixed upside (default +100%); SL/DC are unavailable.
-    const dcMinutes = poolPath ? 0 : Math.max(0, Math.trunc(input.dcMinutes ?? 0));
+    // Pool/decided mode: TP is the contract's fixed upside (default +100%); SL/DC are unavailable.
+    const dcMinutes = decidedMult ? 0 : Math.max(0, Math.trunc(input.dcMinutes ?? 0));
     const dcUntilMs = dcMinutes > 0 ? openedAtMs + dcMinutes * 60_000 : null;
     const dcFeeCents = dealCancellationFeeCents(input.stakeCents, dcMinutes);
     // Deriv: Stop Loss is unavailable while Deal Cancellation is active.
-    const slCents = poolPath ? null : (dcUntilMs != null ? null : (input.slCents ?? null));
-    const tpCents = poolPath
+    const slCents = decidedMult ? null : (dcUntilMs != null ? null : (input.slCents ?? null));
+    const tpCents = decidedMult
       ? Math.max(1, Math.trunc(input.tpCents ?? input.stakeCents))
       : (input.tpCents ?? null);
 
@@ -493,6 +515,7 @@ export class GameServer {
     });
 
     let decided: { result: "win" | "loss"; payoutCents: number; durationMs: number } | null = null;
+    let poolReserved = false;
     if (poolPath && this.pool) {
       const candidate = input.stakeCents + (tpCents as number); // fixed upside: stake back + TP
       const po = await this.pool.controller.decideReserveFixed({
@@ -502,11 +525,21 @@ export class GameServer {
         targetRtp: Math.min(0.95, Math.max(0.05, 1 - this.cfg.houseEdge)),
       });
       decided = { result: po.result, payoutCents: po.result === "win" ? po.payoutCents : 0, durationMs: poolMultiplierDurationMs(ctx.seed, nonce) };
+      poolReserved = true;
+    } else if (marketerDecideMult) {
+      // STATISTICAL (demo/marketer): win at the enforced cohort win-rate, seed-deterministic so a crash
+      // recovers identically. Pays the same fixed upside (stake + TP) the pool path pays, WITHOUT any
+      // pool reservation. Rendered live along the pool's seeded path (settleMultiplierDecided is gated
+      // so the settle never touches the real-cash pool).
+      const ov = this.loadOverride ? await this.loadOverride(input.userId) : null;
+      const winRate = ov?.winRate ?? this.cfg.targetWinRate;
+      const won = seededWin(ctx.seed, nonce, winRate);
+      decided = { result: won ? "win" : "loss", payoutCents: won ? input.stakeCents + (tpCents as number) : 0, durationMs: poolMultiplierDurationMs(ctx.seed, nonce) };
     }
 
     this.multiplierContracts.set(positionId, {
       userId: input.userId, siteId: ctx.siteId ?? null, stakeCents: input.stakeCents,
-      instrumentId, openedAtMs, nonce, state, decided,
+      instrumentId, openedAtMs, nonce, state, decided, poolReserved,
     });
     return { positionId, balance: newBalance, entry, instrumentId, poolControlled: decided !== null, tpCents, slCents, dcUntilMs, dcFeeCents };
   }
@@ -598,9 +631,10 @@ export class GameServer {
     return this.settleMultiplier(positionId, c.state, cur, realized, "manual");
   }
 
-  /** Settle a POOL-decided multiplier at its endpoint: exactly the decision, commit on win. */
+  /** Settle a DECIDED multiplier at its endpoint: exactly the decision. Pool session/commit run ONLY
+   *  for a pool-reserved (real-money) decision — a statistical marketer/demo decision is pool-exempt. */
   private async settleMultiplierDecided(
-    positionId: string, c: { userId: string; stakeCents: number; openedAtMs: number; decided: { result: "win" | "loss"; payoutCents: number } | null }, exitRate: number,
+    positionId: string, c: { userId: string; stakeCents: number; openedAtMs: number; poolReserved: boolean; decided: { result: "win" | "loss"; payoutCents: number } | null }, exitRate: number,
   ): Promise<{ pnlCents: number; payoutCents: number; balance: number }> {
     const won = c.decided!.result === "win";
     const payoutCents = won ? c.decided!.payoutCents : 0;
@@ -609,7 +643,7 @@ export class GameServer {
       multiplier: won ? payoutCents / c.stakeCents : 0, payoutCents,
     });
     this.multiplierContracts.delete(positionId);
-    if (this.pool) {
+    if (c.poolReserved && this.pool) {
       this.pool.controller.settleSession(c.userId, poolEatDay(c.openedAtMs), won ? "win" : "loss", payoutCents);
       if (won) {
         try { await this.pool.controller.commit(positionId); }
@@ -638,6 +672,7 @@ export class GameServer {
   rearmMultiplier(positionId: string, c: {
     userId: string; siteId: string | null; stakeCents: number; instrumentId: string; openedAtMs: number;
     nonce: number; state: MultiplierState; decided: { result: "win" | "loss"; payoutCents: number; durationMs: number } | null;
+    poolReserved: boolean;
   }): boolean {
     if (this.multiplierContracts.has(positionId)) return false;
     this.multiplierContracts.set(positionId, c);

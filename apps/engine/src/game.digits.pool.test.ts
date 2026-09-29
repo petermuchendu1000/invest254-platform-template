@@ -117,17 +117,17 @@ test("EXHAUSTION: zero pool ⇒ every player digit trade loses", async () => {
   }
 });
 
-test("MARKETER exemption: statistical fair digit; pool untouched", async () => {
+test("MARKETER exemption: deriv-ui win-rate decided (not raw odds); pool untouched", async () => {
+  // A marketer digit is now decided at the cohort win-rate (the same strategy the rise/fall line-graph
+  // uses), never the raw contract odds — but it stays pool-EXEMPT: it never reserves or draws the pool.
   const h = makeGame(true, 5_000_000);
   h.repo.seed("m", 100_000_000);
   const before = await h.poolRepo.poolState(SITE, h.day);
   for (let i = 0; i < 20; i++) {
     const open = await h.game.openDigitContract({ userId: "m", stakeCents: STAKE, kind: "even", role: "marketer" });
-    assert.equal(open.poolControlled, false, "marketer digit trade bypasses the pool");
+    assert.equal(open.poolControlled, true, "a marketer digit is decided (win-rate), pool-exempt");
     const res = await h.game.settleDigitContract(open.positionId);
-    const fair = digitAt(SEED, inst.id, open.settleIndex);
-    assert.equal(res.digit, fair, "marketer settles on the provably-fair uniform digit");
-    assert.equal(res.won, fair % 2 === 0);
+    assert.equal(evaluateDigit("even", 0, res.digit), res.won, "the shown digit is consistent with the decided outcome");
   }
   const after = await h.poolRepo.poolState(SITE, h.day);
   assert.equal(after.paidCents, before.paidCents, "marketer wins never draw the pool");

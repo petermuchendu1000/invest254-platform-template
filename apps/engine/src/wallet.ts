@@ -385,22 +385,30 @@ export class PgGameRepository implements GameRepository {
     // (migration 0084). fn_is_marketer_account is the one canonical predicate, shared with the money RPCs.
     const r = await this.q.query(
       // DEMO-1: demo bucket for marketers AND players in demo mode (fn_account_is_demo, migration 0123).
-      "select case when fn_is_marketer_account(user_id) or account_mode = 'demo' then demo_balance else real_balance end as bal from wallets where user_id = $1",
+      // 0176: a marketer in PRACTICE mode spends their separate practice bucket, never the funny money.
+      "select case when fn_is_marketer_account(user_id) and marketer_practice then practice_balance " +
+      "when fn_is_marketer_account(user_id) or account_mode = 'demo' then demo_balance else real_balance end as bal " +
+      "from wallets where user_id = $1",
       [userId]);
     return r.rows.length ? toCents(r.rows[0].bal) : 0;
   }
   async getWalletSnapshot(userId: string): Promise<WalletSnapshot> {
     const r = await this.q.query(
-      "select real_balance, bonus_balance, demo_balance, currency, (fn_is_marketer_account(user_id) or account_mode = 'demo') as is_marketer from wallets where user_id = $1",
+      "select real_balance, bonus_balance, demo_balance, practice_balance, currency, " +
+      "(fn_is_marketer_account(user_id) or account_mode = 'demo') as is_demo_bucket, " +
+      "(fn_is_marketer_account(user_id) and marketer_practice) as is_practice from wallets where user_id = $1",
       [userId],
     );
     if (!r.rows.length) return { real: 0, bonus: 0, currency: "KES" };
     const row = r.rows[0];
     // Marketer/demo accounts spend the demo bucket; surface it as `real` so the client shows the
     // one spendable game balance (migration 0084). Their real_balance is 0 and non-withdrawable anyway.
-    const spendable = row.is_marketer === true ? toCents(row.demo_balance) : toCents(row.real_balance);
+    // 0176: a marketer in practice spends the practice bucket, kept separate from their funny money.
+    const spendable = row.is_practice === true
+      ? toCents(row.practice_balance)
+      : row.is_demo_bucket === true ? toCents(row.demo_balance) : toCents(row.real_balance);
     // DEMO-1: in demo mode the bonus bucket is not spendable (demo stakes never touch it).
-    return { real: spendable, bonus: row.is_marketer === true ? 0 : toCents(row.bonus_balance), currency: (row.currency as string) ?? "KES" };
+    return { real: spendable, bonus: row.is_demo_bucket === true ? 0 : toCents(row.bonus_balance), currency: (row.currency as string) ?? "KES" };
   }
   async openPosition(a: OpenArgs): Promise<OpenResult> {
     // matches migration 0047: fn_open_position(user,stake,direction,entry_rate,duration_s,game_day,nonce,opened_at,config_version,site_id)

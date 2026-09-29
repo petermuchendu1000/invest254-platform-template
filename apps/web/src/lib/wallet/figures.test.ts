@@ -29,6 +29,26 @@ test('marketer (demo-locked) keeps the demo transfer', () => {
   assert.equal(f.withdrawable, 200_000);
 });
 
+test('marketer on their Real tab: Real=funny money (withdrawable), Demo=the separate practice bucket', () => {
+  // 0176: funny money lives in demo_balance and is surfaced as the Real tab; practice_balance is the
+  // Demo tab. On Real (marketerPractice=false) the funny money is withdrawable via the marketer transfer.
+  const f = walletFigures({ real: 200_000, bonus: 0, mode: 'demo', modeLocked: true, marketerPractice: false, realBalance: 0, demoBalance: 200_000, practiceBalance: 40_000 });
+  assert.equal(f.demo, false);
+  assert.equal(f.canWithdraw, true);
+  assert.equal(f.realTotal, 200_000, 'Real tab shows the funny money');
+  assert.equal(f.withdrawable, 200_000);
+  assert.equal(f.demoBalance, 40_000, 'Demo tab shows the practice bucket, not the funny money');
+});
+
+test('marketer on their Demo (practice) tab: never withdrawable, like a player in demo', () => {
+  const f = walletFigures({ real: 40_000, bonus: 0, mode: 'demo', modeLocked: true, marketerPractice: true, realBalance: 0, demoBalance: 200_000, practiceBalance: 40_000 });
+  assert.equal(f.demo, true, 'on practice the account presents as demo');
+  assert.equal(f.canWithdraw, false, 'practice money is never withdrawable');
+  assert.equal(f.withdrawable, 0);
+  assert.equal(f.realTotal, 200_000, 'the Real tab still shows the funny money');
+  assert.equal(f.demoBalance, 40_000, 'the Demo tab shows the practice bucket');
+});
+
 test('no wallet yet', () => {
   assert.deepEqual(walletFigures(undefined), { demo: false, canWithdraw: false, realTotal: 0, withdrawable: 0, realCash: 0, demoBalance: 0 });
 });
