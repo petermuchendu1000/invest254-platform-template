@@ -1,6 +1,7 @@
 import type { LedgerEntry, PositionRecord, PositionDetail, DigitHistoryRow, TransactionRecord, FairnessRecord } from "@invest254/engine";
 import { Router, ApiError, requireAuth, requireSite, type Ctx } from "./http.js";
 import type { ApiDeps } from "./app.js";
+import { publicProviderCode } from "./publicProvider.js";
 
 /**
  * Player history reads (Issue F2): wallet ledger, position history + single position
@@ -36,6 +37,13 @@ const positionDto = (p: PositionRecord) => ({
   entryRate: p.entryRate, exitRate: p.exitRate, multiplier: p.multiplier,
   payoutCents: p.payoutCents, pnlCents: p.pnlCents, result: p.result,
   durationS: p.durationS, status: p.status, openedAt: p.openedAtMs, settledAt: p.settledAtMs,
+  // The chart prices the contract executed at (migration 0180), or null when unstamped — the
+  // terminal's receipt screens print "at market" rather than a price they cannot know.
+  entryPrice: p.entryPrice, exitPrice: p.exitPrice, symbol: p.symbol,
+  // MetaTrader's ticket (migration 0184): the number the History screens print and a trader quotes.
+  // Null on a row older than the column, which those screens show as a dash rather than a uuid
+  // fragment.
+  ticket: p.ticket,
 });
 
 const fairnessDto = (f: FairnessRecord) => ({
@@ -56,7 +64,7 @@ const digitHistoryDto = (d: DigitHistoryRow) => ({
 
 const transactionDto = (t: TransactionRecord) => ({
   id: t.id, kind: t.kind, amountCents: t.amountCents, status: t.status,
-  provider: t.provider, phone: t.phone, mpesaReceipt: t.mpesaReceipt, ts: t.createdAtMs,
+  provider: publicProviderCode(t.provider), phone: t.phone, mpesaReceipt: t.mpesaReceipt, ts: t.createdAtMs,
 });
 
 // ─────────────────────────── routes ───────────────────────────

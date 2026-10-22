@@ -21,8 +21,9 @@ import {
   useAffiliateReferrals,
   useAffiliateSummary,
 } from '@/lib/affiliate/hooks';
+import { useRegister } from '@/lib/ui/useRegister';
 
-/** Mask a player handle so the affiliate never sees full PII (operator-only data). */
+/** Mask a referred account's handle so the affiliate never sees full PII (operator-only data). */
 function maskHandle(username: string): string {
   const u = username.replace(/^@/, '');
   if (u.length <= 2) return `@${u[0] ?? ''}•••`;
@@ -30,6 +31,7 @@ function maskHandle(username: string): string {
 }
 
 export default function AffiliatePage() {
+  const { words, brandName: brand } = useRegister();
   const hydrated = useHydrated();
   const token = useSession((s) => s.token);
   const openAuth = useAuthUi((s) => s.openAuth);
@@ -39,8 +41,8 @@ export default function AffiliatePage() {
   if (!token) {
     return (
       <EmptyState
-        title="Earn with Invest254"
-        description="Log in to apply for the marketer programme and earn commission on every deposit from players you refer."
+        title={`Earn with ${brand}`}
+        description={`Log in to apply for the marketer programme and earn commission on every deposit from ${words.many} you refer.`}
         action={<Button onClick={() => openAuth('login')}>Log in</Button>}
       />
     );
@@ -53,6 +55,7 @@ export default function AffiliatePage() {
  * (what the API authorises — an opened brand is an `admin` session), from the shared capability list.
  */
 function SignedInAffiliate() {
+  const { words } = useRegister();
   const user = useSession((s) => s.user);
   const mayEarn = useCan('earn.referrals');
   const isMarketer = useCan('earn.marketer_dashboard');
@@ -64,24 +67,28 @@ function SignedInAffiliate() {
     <section className="flex flex-col gap-4">
       <header className="flex flex-col gap-1">
         <h1 className="text-xl font-semibold tracking-tight">Affiliate programme</h1>
-        <p className="text-sm text-muted">Refer players, earn 20% of the net revenue they generate.</p>
+        <p className="text-sm text-muted">Refer {words.many}, earn 20% of the net revenue they generate.</p>
       </header>
       {isMarketer ? <MarketerView /> : <ApplyCard />}
     </section>
   );
 }
 
-/** Staff sessions: say plainly why the programme is closed to them, and point back to their workspace. */
+/**
+ * Staff sessions: say plainly why the programme is closed to them.
+ *
+ * This had a "Back to your workspace" link to `/console`. It no longer belongs: the console is
+ * served on the operator domain only, and this page is on a brand domain, so the link pointed at a
+ * path that answers 404 on the very host that renders it. A relative link cannot cross to the
+ * operator domain, and hard-coding that domain here would put the operator's address in every
+ * player's JavaScript bundle to save an admin one bookmark. The notice explains itself without it.
+ */
 function OperatorNotice() {
+  const { words } = useRegister();
   return (
     <EmptyState
       title="Not available for staff accounts"
-      description="Operator accounts (brand, platform and system admins) can't join the affiliate or referral programme — commission must never depend on the people who manage players' accounts. Use a separate player account if you want to refer friends."
-      action={
-        <a href="/console" className="text-sm font-medium text-accent hover:underline">
-          Back to your workspace
-        </a>
-      }
+      description={`Operator accounts (brand, platform and system admins) can't join the affiliate or referral programme. Commission must never depend on the people who manage ${words.manyPossessive} accounts. Use a separate ${words.one} account if you want to refer friends.`}
     />
   );
 }
@@ -89,6 +96,7 @@ function OperatorNotice() {
 /* ─────────────────────────── Apply / pending / status ─────────────────────────── */
 
 function ApplyCard() {
+  const { words, register, brandName: brand } = useRegister();
   const token = useSession((s) => s.token);
   const { refresh } = useAuthActions();
   const toast = useToast();
@@ -123,19 +131,20 @@ function ApplyCard() {
         <h2 className="text-base font-semibold">Join the affiliate programme</h2>
         <p className="text-sm leading-relaxed text-muted">
           Get a personal referral link and earn <strong className="text-fg">20%</strong> of the net
-          revenue from every player you bring to Invest254 — accrued daily, paid to your M-Pesa. You
-          keep your full player account and can carry on trading as normal.
+          revenue from every {words.one} you bring to {brand}. Accrued daily, paid to your
+          M-Pesa. You keep your full {words.one} account and can carry on trading as normal.
         </p>
       </div>
       <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-        <Perk title="Up to 25% commission" body="On every deposit from players you refer." />
+        <Perk title="Up to 25% commission" body={`On every deposit from ${words.many} you refer.`} />
         <Perk title="Live dashboard" body="Referrals, earnings, payouts." />
         <Perk title="M-Pesa payouts" body="Request once you reach KES 500." />
       </div>
       <div className="rounded-xl border border-border bg-surface-2 p-3 text-xs leading-relaxed text-muted">
-        Applications are reviewed before approval. By applying you agree to promote Invest254
-        responsibly and lawfully — 18+ audiences only, no misleading or non-compliant gambling ads,
-        and no self-referrals. See{' '}
+        Applications are reviewed before approval. By applying you agree to promote {brand}
+        responsibly and lawfully: 18+ audiences only, no misleading or non-compliant{' '}
+        {register === 'gaming' ? 'gambling' : 'financial-promotion'} ads, and no self-referrals.
+        See{' '}
         <a href="/legal#terms" className="text-accent hover:underline">
           Terms
         </a>
@@ -258,6 +267,7 @@ function ReferralLinkCard({ summary }: { summary: AffiliateSummary }) {
 }
 
 function Funnel({ summary }: { summary: AffiliateSummary }) {
+  const { words } = useRegister();
   const clicks = summary.clicks;
   const reg = summary.totalReferrals;
   const ftd = summary.ftdCount;
@@ -275,10 +285,10 @@ function Funnel({ summary }: { summary: AffiliateSummary }) {
         <FunnelStage label="Clicks" value={String(clicks)} sub={`${summary.clicksToday} today`} />
         <FunnelStage label="Registrations" value={String(reg)} {...(regConv ? { sub: regConv } : {})} />
         <FunnelStage label="First deposits" value={String(ftd)} {...(ftdConv ? { sub: ftdConv } : {})} />
-        <FunnelStage label="Active players" value={String(active)} {...(activeConv ? { sub: activeConv } : {})} />
+        <FunnelStage label={`Active ${words.many}`} value={String(active)} {...(activeConv ? { sub: activeConv } : {})} />
       </div>
       <p className="text-[11px] leading-relaxed text-muted">
-        Clicks count visits to your link; first deposits are referred players who funded once.
+        Clicks count visits to your link; first deposits are referred {words.many} who funded once.
         Commissions on those deposits are shown above in Referral commissions.
       </p>
     </Card>
@@ -308,16 +318,17 @@ function FunnelStage({
 }
 
 function ReferralsList() {
+  const { words } = useRegister();
   const q = useAffiliateReferrals(true);
   const rows = useMemo(() => q.data?.pages.flatMap((p) => p.items) ?? [], [q.data]);
 
   return (
     <div className="flex flex-col gap-2">
-      <h2 className="text-sm font-semibold">Referred players</h2>
+      <h2 className="text-sm font-semibold">Referred {words.many}</h2>
       {q.isLoading ? (
         <Skeleton className="h-24 w-full" />
       ) : rows.length === 0 ? (
-        <EmptyState title="No referrals yet" description="Share your link to bring players on board." />
+        <EmptyState title="No referrals yet" description={`Share your link to bring ${words.many} on board.`} />
       ) : (
         <Card className="flex flex-col divide-y divide-border p-0">
           {rows.map((r) => (

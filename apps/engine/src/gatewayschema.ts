@@ -9,6 +9,8 @@
  *                  (developers.binance.com — Merchant APIs, /binancepay/openapi/v2/order[/query])
  *   • PayHero    — https://backend.payhero.co.ke/api/v2 ; `Authorization: Basic <token>`; STK needs a
  *                  channel_id. (docs.payhero.co.ke/docs/authorization, .../get-payment-channels)
+ *   • Paynicorn  — https://api.paynicorn.com ; body {content: base64(JSON), sign: md5(content+merchantSecret),
+ *                  appKey}; hosted cashier. (paynicorn.com/docs/overview/authorization)
  *
  * The API serialises this registry to the browser so the config form renders exactly the fields the
  * backend validates — no drift, no guesswork. `secret:true` fields are AES-encrypted at rest and are
@@ -53,7 +55,7 @@ export interface GatewaySchema {
  * may be enabled for players or returned by GET /deposits/providers. `mpesa` (Daraja) + `megapay` ship
  * today; paystack/binance/payhero are config-only until their rails land.
  */
-export const PLAYER_DEPOSIT_RAILS = new Set<string>(["mpesa", "megapay", "payhero"]);
+export const PLAYER_DEPOSIT_RAILS = new Set<string>(["mpesa", "megapay", "payhero", "paynicorn"]);
 
 const ENV_SANDBOX_PROD: GatewayField["options"] = [
   { value: "sandbox", label: "Sandbox (test)" },
@@ -119,6 +121,19 @@ export const GATEWAY_SCHEMAS: Record<string, GatewaySchema> = {
       { key: "withdraw_callback_url", label: "Withdrawal callback URL", kind: "url", secret: false, required: false, placeholder: "https://your-api/…/withdrawals/payhero/result", help: "Where PayHero posts the payout result. Falls back to the deposit Callback URL when unset." },
       { key: "lipwa_url", label: "Lipwa checkout link", kind: "url", secret: false, required: false, placeholder: "https://app.payhero.africa/lipwa/12038", help: "Your PayHero Lipwa hosted-checkout link. Enables the in-app card / bank / multi-country deposit option. Leave blank to offer only M-Pesa STK + manual paybill." },
       { key: "base_url", label: "API base URL", kind: "url", secret: false, required: false, default: "https://backend.payhero.co.ke/api/v2", help: "PayHero API base. Keep the default — backend.payhero.africa/api/v2 shares the same account but REJECTS the STK push (POST /payments → HTTP 400), so it is not a working base for deposits. Override only if instructed." },
+    ],
+  },
+  paynicorn: {
+    code: "paynicorn",
+    displayName: "PayX",
+    docsUrl: "https://www.paynicorn.com/docs/overview/authorization",
+    playerAvailable: true,
+    blurb: "Hosted checkout via PayX (Paynicorn): the player pays on the PayX cashier page and returns to the wallet. Every request is signed md5(content + merchant secret); the app's Test/Production status is set in the PayX console (console.paynicorn.com), not here.",
+    fields: [
+      { key: "app_key", label: "App key (APIKEY)", kind: "text", secret: false, required: true, placeholder: "e.g. 7971321", help: "PayX console (console.paynicorn.com) → App → Apps → APIKEY column." },
+      { key: "merchant_secret", label: "Merchant secret", kind: "secret", secret: true, required: true, placeholder: "32-character secret", help: "PayX console (console.paynicorn.com) → Developer. Signs every request and verifies every callback. Stored encrypted; only the last 4 are ever shown." },
+      { key: "front_page", label: "Return page", kind: "url", secret: false, required: false, placeholder: "https://yourbrand.com/wallet", help: "Where the cashier sends the player after paying. Leave blank to return each player to their own brand's /wallet." },
+      { key: "base_url", label: "API base URL", kind: "url", secret: false, required: false, default: "https://api.paynicorn.com", help: "Keep the default. Test and Production apps use the same host." },
     ],
   },
 };

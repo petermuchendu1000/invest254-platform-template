@@ -10,6 +10,8 @@ import { formatDateTime } from '@/lib/format';
 import { usePositions, type PositionStatusFilter } from '@/lib/positions/hooks';
 import type { PositionDto } from '@/lib/api/types';
 import { PositionDetailModal } from '@/components/positions/PositionDetailModal';
+import { useTerminalSkin } from '@/lib/ui/useTerminalSkin';
+import { dealResultLabel, dealListCopy } from '@/lib/game/dealWording';
 
 const FILTERS: { key: PositionStatusFilter; label: string }[] = [
   { key: 'all', label: 'All' },
@@ -23,14 +25,19 @@ function resultClass(p: PositionDto): string {
   return 'text-muted';
 }
 
-function resultLabel(p: PositionDto): string {
-  if (p.status === 'open') return 'Open';
-  if (p.result === 'win') return `Won ×${(p.multiplier ?? 1).toFixed(2)}`;
-  if (p.result === 'loss') return 'Lost';
-  return 'Void';
-}
+/**
+ * The result column's word, in whichever vocabulary this brand's shell speaks.
+ *
+ * A terminal brand says `Closed` and lets the signed, coloured P/L beside it say whether the trade
+ * made money, which is how MetaTrader's own Deals list reads. The classic shell keeps `Won x1.95`.
+ * See lib/game/dealWording.
+ */
+const resultLabel = (p: PositionDto, terminal: boolean): string =>
+  dealResultLabel({ status: p.status, result: p.result, multiplier: p.multiplier }, terminal);
 
 export function PositionHistory() {
+  const terminal = useTerminalSkin();
+  const copy = dealListCopy(terminal);
   const [filter, setFilter] = useState<PositionStatusFilter>('all');
   const [selected, setSelected] = useState<string | null>(null);
   const q = usePositions(filter);
@@ -58,9 +65,9 @@ export function PositionHistory() {
       {q.isLoading ? (
         <Skeleton className="h-40 w-full rounded-2xl" />
       ) : q.isError ? (
-        <p className="text-sm text-down">Couldn&apos;t load bet history.</p>
+        <p className="text-sm text-down">{copy.loadError}</p>
       ) : items.length === 0 ? (
-        <EmptyState title="No bets yet" description="Your placed positions will show up here." />
+        <EmptyState title={copy.emptyTitle} description={copy.emptyBody} />
       ) : (
         <>
           {/* Mobile cards */}
@@ -79,7 +86,7 @@ export function PositionHistory() {
                     <span className="text-xs text-muted">{formatDateTime(p.openedAt)}</span>
                   </div>
                   <div className="flex flex-col items-end">
-                    <span className={cn('text-sm font-medium', resultClass(p))}>{resultLabel(p)}</span>
+                    <span className={cn('text-sm font-medium', resultClass(p))}>{resultLabel(p, terminal)}</span>
                     {p.pnlCents !== null ? (
                       <Money cents={p.pnlCents} className={cn('text-xs', resultClass(p))} />
                     ) : (
@@ -117,12 +124,12 @@ export function PositionHistory() {
                       <td className="px-4 py-2">
                         <Money cents={p.stakeCents} />
                       </td>
-                      <td className={cn('px-4 py-2', resultClass(p))}>{resultLabel(p)}</td>
+                      <td className={cn('px-4 py-2', resultClass(p))}>{resultLabel(p, terminal)}</td>
                       <td className="px-4 py-2">
                         {p.pnlCents !== null ? (
                           <Money cents={p.pnlCents} className={resultClass(p)} />
                         ) : (
-                          <span className="text-muted">—</span>
+                          <span className="text-muted">-</span>
                         )}
                       </td>
                       <td className="px-4 py-2 text-muted">{formatDateTime(p.openedAt)}</td>

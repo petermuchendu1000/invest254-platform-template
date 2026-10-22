@@ -89,18 +89,41 @@ function safeEqual(a: string, b: string): boolean {
  * side (default ±1 step = ±30s). Comparison is constant time; non-numeric input fails closed.
  */
 export function verifyTotp(secretB32: string, code: string, opts: TotpOptions & { window?: number } = {}): boolean {
+  return matchTotpStep(secretB32, code, opts) !== null;
+}
+
+/**
+ * Like `verifyTotp`, but returns WHICH time-step matched (the HOTP counter), or null for no match.
+ *
+ * The step is what makes a code single-use. `verifyTotp` answering only yes/no means a caller
+ * cannot record what it just accepted, so the same code stays valid for the whole ±1-step window —
+ * about 90 seconds. At login that is a minor matter. In front of "approve this M-Pesa payout" it is
+ * not: a code glimpsed over a shoulder, screenshotted, or captured by a phishing page can be
+ * replayed inside its window to authorise a second action the operator never approved. Pair this
+ * with a persisted high-water mark (`IdentityRepository.consumeTotpStep`, migration 0196) and each
+ * code works exactly once.
+ *
+ * Keeps the no-early-exit property of the original: every step in the window is computed and
+ * compared whether or not an earlier one matched, so the time taken does not reveal which step
+ * (and therefore how far the client's clock is from the server's). Returning the LAST match rather
+ * than the first is deliberate — breaking out early is precisely the optimisation that would
+ * reintroduce the timing signal.
+ */
+export function matchTotpStep(
+  secretB32: string, code: string, opts: TotpOptions & { window?: number } = {},
+): number | null {
   const digits = opts.digits ?? 6;
   const candidate = String(code ?? "").replace(/\s+/g, "");
-  if (!new RegExp(`^\\d{${digits}}$`).test(candidate)) return false;
+  if (!new RegExp(`^\\d{${digits}}$`).test(candidate)) return null;
   const step = opts.stepSeconds ?? 30;
   const window = opts.window ?? 1;
   const counter = Math.floor((opts.nowMs ?? Date.now()) / 1000 / step);
-  let ok = false;
+  let matched: number | null = null;
   for (let drift = -window; drift <= window; drift += 1) {
     // No early exit: keep the work (and timing) uniform across the whole window.
-    if (safeEqual(hotpCode(secretB32, counter + drift, digits), candidate)) ok = true;
+    if (safeEqual(hotpCode(secretB32, counter + drift, digits), candidate)) matched = counter + drift;
   }
-  return ok;
+  return matched;
 }
 
 /** The `otpauth://` provisioning URI an authenticator app scans (rendered as a QR code). */

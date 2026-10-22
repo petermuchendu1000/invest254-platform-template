@@ -9,9 +9,23 @@ on:
     - cron: "20 1 * * *"   # 01:20 UTC daily (~04:20 EAT) — after the UTC day rolls + seeds reveal
   workflow_dispatch: {}
 
+# It writes an audit row to reproducibility_check_runs, so a second run must queue behind the first
+# rather than cancel it mid-write.
+concurrency:
+  group: reproducibility-nightly
+  cancel-in-progress: false
+
 jobs:
   reproducibility:
+    # Unlike every other DB cron, this step has no `[ -z "$DATABASE_URL" ] && exit 0` guard, so in
+    # the mirror template it did not skip — it FAILED, on `DATABASE_URL is required` (exit 2), for
+    # 26 nightly runs out of 26 (BUGLOG #156). Failing loudly is RIGHT for a fairness audit in a
+    # repository that is supposed to hold the secret: silence must never be mistaken for a pass.
+    # It is pure noise in a mirror that can never hold one, and a permanently red gate is how a real
+    # one stops being believed (#144). Inert here, still loud in production and in any brand fork.
+    if: github.repository != 'petermuchendu1000/invest254-platform-template'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

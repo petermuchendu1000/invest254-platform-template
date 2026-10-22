@@ -79,7 +79,7 @@ export function C2bPanel({ canEdit }: { canEdit: boolean }) {
   const status = !c.shortcode
     ? { tone: 'muted', label: 'Not set up', text: 'Add the Pay Bill number players pay into, then register it with Safaricom.' }
     : c.registrationCurrent
-      ? { tone: 'up', label: 'Registered', text: `Safaricom sends payments to ${c.registeredShortcode} here since ${c.registeredAtMs ? formatDateTime(c.registeredAtMs) : '—'}.` }
+      ? { tone: 'up', label: 'Registered', text: `Safaricom sends payments to ${c.registeredShortcode} here since ${c.registeredAtMs ? formatDateTime(c.registeredAtMs) : '-'}.` }
       : c.registeredAtMs
         ? { tone: 'warn', label: 'Re-register', text: 'The Pay Bill number or confirmation URL changed since the last registration. Register again so Safaricom uses the new one.' }
         : { tone: 'warn', label: 'Not registered', text: 'Safaricom has not been told where to send payments. Until you register, players’ Pay Bill payments cannot be verified.' };
@@ -147,7 +147,7 @@ export function C2bPanel({ canEdit }: { canEdit: boolean }) {
       {canEdit ? (
         <div className="sticky bottom-0 z-10 -mx-4 flex flex-wrap items-center justify-between gap-3 border-t border-border bg-bg/95 px-4 py-3 backdrop-blur md:mx-0 md:rounded-2xl md:border">
           <span className="text-sm text-muted">
-            {dirty ? `${dirty} unsaved change${dirty > 1 ? 's' : ''}` : suggested.length ? 'Suggested URLs are filled in — save to use them' : c.registrationCurrent ? 'Saved and registered' : 'Saved'}
+            {dirty ? `${dirty} unsaved change${dirty > 1 ? 's' : ''}` : suggested.length ? 'Suggested URLs are filled in. Save to use them' : c.registrationCurrent ? 'Saved and registered' : 'Saved'}
           </span>
           <div className="flex items-center gap-2">
             {dirty ? <Button variant="ghost" size="sm" onClick={() => setForm(toForm(c, defaults))}>Discard</Button> : null}

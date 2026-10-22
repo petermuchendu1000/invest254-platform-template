@@ -34,7 +34,7 @@ test("admin edits a user's phone + username (item 6)", async () => {
   } finally { await api.close(); }
 });
 
-test("admin edit: duplicate phone/username rejected; bad phone rejected", async () => {
+test("admin edit: duplicate phone rejected, duplicate username allowed; bad phone rejected", async () => {
   const api = await startTestApi();
   try {
     const a = await register(api, "0712000202", "user_aa");
@@ -42,9 +42,10 @@ test("admin edit: duplicate phone/username rejected; bad phone rejected", async 
     // phone already used by user_bb
     let r = await req(api, "POST", `/api/v1/admin/users/${a}/details`, ADMIN, { phone: "0712000203" });
     assert.equal(r.status, 409); assert.equal((await json(r)).error.code, "PHONE_TAKEN");
-    // username already used by user_bb
+    // A namesake is allowed (migration 0190): the phone above is the identity, so an admin
+    // renaming someone is not blocked by another player already using that display name.
     r = await req(api, "POST", `/api/v1/admin/users/${a}/details`, ADMIN, { username: "user_bb" });
-    assert.equal(r.status, 409); assert.equal((await json(r)).error.code, "USERNAME_TAKEN");
+    assert.equal(r.status, 200);
     // malformed phone
     r = await req(api, "POST", `/api/v1/admin/users/${a}/details`, ADMIN, { phone: "123" });
     assert.equal(r.status, 400); assert.equal((await json(r)).error.code, "INVALID_PHONE");

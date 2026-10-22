@@ -54,11 +54,11 @@ export default function OnboardPage() {
           domainConfigured ? 'border-accent/30 bg-accent/5 text-fg' : 'border-amber-500/30 bg-amber-500/5 text-fg',
         ].join(' ')}>
           {!domainConfigured ? (
-            <>Automatic domain provisioning is <b>off</b> (Cloudflare isn’t configured on this deployment). The brand is still created — point the domain’s DNS to the Pages project manually.</>
+            <>Automatic domain provisioning is <b>off</b> (Cloudflare isn’t configured on this deployment). The brand is still created. Point the domain’s DNS to the Pages project manually.</>
           ) : registrarConfigured ? (
             <>Domain provisioning is <b>fully automatic</b>: Cloudflare zone + DNS + Pages + SSL, and the registrar’s nameservers are pointed at Cloudflare for you.</>
           ) : (
-            <>Cloudflare provisioning is <b>on</b> (zone + DNS + Pages + SSL). Your registrar API isn’t configured, so after creating you’ll set the domain’s <b>nameservers</b> at its registrar — the exact values are shown below once it’s created.</>
+            <>Cloudflare provisioning is <b>on</b> (zone + DNS + Pages + SSL). Your registrar API isn’t configured, so after creating you’ll set the domain’s <b>nameservers</b> at its registrar. The exact values are shown below once it’s created.</>
           )}
         </div>
       ) : null}
@@ -103,7 +103,7 @@ export default function OnboardPage() {
             <input type="checkbox" checked={provision} disabled={!domainConfigured} onChange={(e) => setProvision(e.target.checked)} />
             {registrarConfigured
               ? 'Provision the domain automatically (Cloudflare zone + DNS + SSL + registrar nameservers)'
-              : 'Provision on Cloudflare (zone + DNS + SSL). You’ll set the nameservers at your registrar — shown after creating.'}
+              : 'Provision on Cloudflare (zone + DNS + SSL). You’ll set the nameservers at your registrar, shown after creating.'}
           </label>
           <div className="sm:col-span-2 md:col-span-3">
             <Button type="submit" disabled={onboard.isPending || !slug.trim() || !name.trim()}>
@@ -130,10 +130,10 @@ export default function OnboardPage() {
 
               {!result.domain.nameserversUpdated ? (
                 <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-3">
-                  <div className="text-sm font-semibold text-amber-500">Action needed — set nameservers at the registrar</div>
+                  <div className="text-sm font-semibold text-amber-500">Action needed: set nameservers at the registrar</div>
                   <p className="mt-1 text-xs text-muted">At {result.domain.domain}’s registrar, replace its nameservers with:</p>
                   <ul className="mt-1 font-mono text-xs text-fg">
-                    {result.domain.nameServers.length ? result.domain.nameServers.map((ns) => <li key={ns}>{ns}</li>) : <li>— (check Cloudflare)</li>}
+                    {result.domain.nameServers.length ? result.domain.nameServers.map((ns) => <li key={ns}>{ns}</li>) : <li>no nameservers reported (check Cloudflare)</li>}
                   </ul>
                   <p className="mt-1 text-xs text-muted">The zone activates once they propagate (minutes–few hours), then SSL issues automatically.</p>
                 </div>
@@ -142,7 +142,7 @@ export default function OnboardPage() {
               )}
 
               <p className="text-xs text-muted">
-                Pages: {(domainStatus.data?.pages ?? result.domain.pages).map((p) => `${p.name} (${p.status})`).join(', ') || '—'}
+                Pages: {(domainStatus.data?.pages ?? result.domain.pages).map((p) => `${p.name} (${p.status})`).join(', ') || '-'}
               </p>
               <p className="text-xs text-muted">{result.domain.note}</p>
             </div>

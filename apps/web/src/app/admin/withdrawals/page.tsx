@@ -11,6 +11,7 @@ import { StatusBadge } from '@/components/ui/Badge';
 import { ApiError } from '@/lib/api/client';
 import { useToast } from '@/lib/toast/ToastProvider';
 import { formatExact, formatAgo } from '@/lib/format';
+import { maskPhoneForDisplay } from '@invest254/shared/payments';
 import { PageHeader, TableWrap, Th, Td, Empty, Toolbar, FilterSelect, ConfirmButton, PasswordConfirmButton } from '@/components/admin/ui';
 import { useRowSelection, SelectAllCheckbox, RowCheckbox, BulkBar, downloadCsv, copyText } from '@/components/admin/BulkSelect';
 import { useWithdrawals, useWithdrawalAction, useWithdrawalsEnabled, useSetWithdrawalsEnabled, useBulkWithdrawals } from '@/lib/admin/hooks';
@@ -43,7 +44,7 @@ function UserCell({ userId, username }: { userId: string; username: string }) {
 
 /** Exact timestamp (to the second) with a relative label underneath. */
 function TimeCell({ ms }: { ms: number | null }) {
-  if (ms == null) return <span className="text-muted">—</span>;
+  if (ms == null) return <span className="text-muted">-</span>;
   return (
     <span className="flex flex-col leading-tight">
       <span className="whitespace-nowrap text-xs font-medium text-fg" title={formatExact(ms)}>{formatExact(ms)}</span>
@@ -122,6 +123,8 @@ export default function WithdrawalsPage() {
     );
   }
 
+  // NOT masked, deliberately: the clipboard and the CSV are paste-into-M-Pesa paths. A masked
+  // number here poisons a payout silently — the row looks right and the money never arrives.
   async function copyPhones() {
     const ok = await copyText(sel.selectedRows.map((r) => r.phone).join('\n'));
     toast.push({ tone: ok ? 'success' : 'error', title: ok ? 'Phone numbers copied' : 'Copy failed', description: `${sel.count} number(s)` });
@@ -177,7 +180,7 @@ export default function WithdrawalsPage() {
                 </p>
                 <p className="text-muted">
                   {deepRow
-                    ? <>@{deepRow.username} · <Money cents={deepRow.amountCents} /> · {deepRow.phone}{ACTIONABLE.has(deepRow.status.toLowerCase()) ? '' : ` · already ${deepRow.status}`}</>
+                    ? <>@{deepRow.username} · <Money cents={deepRow.amountCents} /> · {maskPhoneForDisplay(deepRow.phone)}{ACTIONABLE.has(deepRow.status.toLowerCase()) ? '' : ` · already ${deepRow.status}`}</>
                     : 'You opened this from an alert. The request is highlighted below when it is on this page.'}
                   {deepIntent === 'approve' ? ' Approving pays out real money and needs the system owner password.' : ' Rejecting returns the held funds to the player.'}
                 </p>
@@ -306,7 +309,7 @@ function useRowActions(r: AdminWithdrawalRow) {
             tone: 'success',
             title: act === 'approve' ? 'Withdrawal approved' : act === 'mark-paid' ? 'Marked as paid' : 'Withdrawal rejected',
             description: act === 'approve' ? 'M-Pesa payout dispatched.'
-              : act === 'mark-paid' ? 'Recorded as paid — the player now sees this withdrawal as complete.'
+              : act === 'mark-paid' ? 'Recorded as paid. The player now sees this withdrawal as complete.'
                 : 'Funds returned to the player.',
           }),
         onError: (e) =>
@@ -322,7 +325,7 @@ function useRowActions(r: AdminWithdrawalRow) {
         <PasswordConfirmButton label="Mark paid" confirmLabel="Confirm paid" variant={canAct ? 'ghost' : 'primary'} busy={action.isPending} onConfirm={(pw) => run('mark-paid', pw)} />
       ) : null}
     </span>
-  ) : <span className="text-xs text-muted">—</span>;
+  ) : <span className="text-xs text-muted">-</span>;
   return node;
 }
 
@@ -331,7 +334,7 @@ function Lifetime({ r }: { r: AdminWithdrawalRow }) {
   const net = r.totalDepositsCents - r.totalWithdrawalsCents;
   return (
     <span className="flex flex-col items-end text-xs leading-5">
-      <span title={r.depositCount ? `${r.depositCount} deposit(s) since ${r.firstDepositAtMs ? formatExact(r.firstDepositAtMs).slice(0, 11) : '—'}` : 'never deposited'}>
+      <span title={r.depositCount ? `${r.depositCount} deposit(s) since ${r.firstDepositAtMs ? formatExact(r.firstDepositAtMs).slice(0, 11) : '-'}` : 'never deposited'}>
         <span className="text-muted">In </span><Money cents={r.totalDepositsCents} />
       </span>
       <span title={`${r.withdrawalCount} withdrawal(s) paid`}><span className="text-muted">Out </span><Money cents={r.totalWithdrawalsCents} /></span>
@@ -346,7 +349,9 @@ function PlayerCell({ r }: { r: AdminWithdrawalRow }) {
   return (
     <span className="flex flex-col leading-tight">
       <UserCell userId={r.userId} username={r.username} />
-      <span className="mt-0.5 text-xs tabular-nums text-muted">{r.phone}</span>
+      {/* Masked on screen. "Copy phones" and "Export CSV" above deliberately copy the FULL
+          numbers — that is how the operator actually pays these people. */}
+      <span className="mt-0.5 text-xs tabular-nums text-muted">{maskPhoneForDisplay(r.phone)}</span>
       {r.mpesaReceipt ? <span className="font-mono text-[10px] text-muted">{r.mpesaReceipt}</span> : null}
     </span>
   );
@@ -367,7 +372,7 @@ function CardRow({ r, checked, onToggle, highlighted = false }: { r: AdminWithdr
         </div>
       </div>
       <div className="mt-3 flex items-end justify-between gap-3 border-t border-border pt-3">
-        <span className="text-xs text-muted">Balance <Money cents={r.balanceCents} className="text-fg" /><br />Requested {r.createdAtMs ? formatAgo(r.createdAtMs) : '—'}</span>
+        <span className="text-xs text-muted">Balance <Money cents={r.balanceCents} className="text-fg" /><br />Requested {r.createdAtMs ? formatAgo(r.createdAtMs) : '-'}</span>
         <Lifetime r={r} />
       </div>
       <div className="mt-3 flex justify-end">{actions}</div>

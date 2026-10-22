@@ -7,6 +7,7 @@ import { Money } from '@/components/ui/Money';
 import { StatusBadge } from '@/components/ui/Badge';
 import { ApiError } from '@/lib/api/client';
 import { formatKes } from '@invest254/shared/money';
+import { maskPhoneForDisplay } from '@invest254/shared/payments';
 import { useToast } from '@/lib/toast/ToastProvider';
 import { formatAgo } from '@/lib/format';
 import { StatCard, TableWrap, Th, Td, Empty, Toolbar, FilterSelect, ConfirmButton, PasswordConfirmButton } from '@/components/admin/ui';
@@ -90,6 +91,8 @@ export function AffiliatePayoutsPanel() {
     );
   }
 
+  // NOT masked, deliberately: this clipboard list and the CSV below are paid out by hand. A masked
+  // number poisons both silently — the export looks complete and no payment lands.
   async function copyPhones() {
     const ok = await copyText(sel.selectedRows.map((r) => r.phone).join('\n'));
     toast.push({ tone: ok ? 'success' : 'error', title: ok ? 'Phone numbers copied' : 'Copy failed', description: `${sel.count} number(s)` });
@@ -212,9 +215,10 @@ function Row({ r, checked, onToggle, onReject }: { r: AdminPayoutRow; checked: b
         <span className="ml-2 font-mono text-xs text-muted">{r.affiliateId.slice(0, 8)}…</span>
       </Td>
       <Td className="font-medium tabular-nums"><Money cents={r.amountCents} /></Td>
-      <Td className="tabular-nums">{r.phone}</Td>
+      {/* Masked on screen; "Copy phones" / "Export CSV" keep the full numbers for the payout. */}
+      <Td className="tabular-nums">{maskPhoneForDisplay(r.phone)}</Td>
       <Td><StatusBadge status={r.status} /></Td>
-      <Td className="font-mono text-xs text-muted">{r.approvedBy ? `${r.approvedBy.slice(0, 8)}…` : '—'}</Td>
+      <Td className="font-mono text-xs text-muted">{r.approvedBy ? `${r.approvedBy.slice(0, 8)}…` : '-'}</Td>
       <Td className="whitespace-nowrap text-xs text-muted">{formatAgo(r.createdAtMs)}</Td>
       <Td className="text-right">
         {canAct ? (
@@ -223,7 +227,7 @@ function Row({ r, checked, onToggle, onReject }: { r: AdminPayoutRow; checked: b
             <Button size="sm" variant="outline" disabled={action.isPending} onClick={onReject}>Reject</Button>
           </span>
         ) : (
-          <span className="text-xs text-muted">—</span>
+          <span className="text-xs text-muted">-</span>
         )}
       </Td>
     </tr>

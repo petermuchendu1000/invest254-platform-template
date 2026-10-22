@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/Button';
 import { useStakeLimits } from '@/lib/game/useStakeLimits';
 import { pillLabel } from '@/lib/game/stakeLadder';
 import { useDisplayMoney } from '@/lib/money';
+import { useMarketerSkin } from '@/lib/marketer/isMarketer';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { Segmented } from '@/components/ui/Segmented';
 import { api } from '@/lib/api/endpoints';
@@ -28,22 +29,19 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
 const ceil2 = (n: number) => Math.ceil(n * 100) / 100;
 
 /**
- * Early close ("Cash Out", then "Close Trade") is HIDDEN.
+ * Early close ("Cash Out", then "Close Trade") is shown only when the ENGINE says it can work.
  *
  * `GameService.sell` refuses outright while a brand is in pool mode:
  *   `if (this.pool?.enabled()) throw new Error("SELL_DISABLED: manual sell is disabled in pool mode")`
- * — a player must not cash the green peak of a trade the pool controller already decided will lose
- * (docs/25 decision B). ALL 15 production brands run `pool_mode = true`, so the control could never
- * do what it said: every tap ended in SELL_DISABLED.
+ * because a player must not cash the green peak of a trade the pool controller already decided will
+ * lose (docs/25 decision B). Every production brand runs `pool_mode = true`, so the control could
+ * never do what it said: every tap ended in SELL_DISABLED.
  *
- * It is hidden rather than deleted — `sell` stays wired end to end, so turning pool mode off on a
- * brand brings the feature back by flipping this one flag. The player is told what happens instead,
- * which is the truth in pool mode: the trade settles itself at expiry.
- *
- * (The player's /game/config does not expose poolMode — only the admin one does — so this cannot
- * currently be derived per brand at runtime.)
+ * It used to be a hardcoded `false` here, with a comment noting that the player's /game/config does
+ * not carry pool mode. It does now: the engine reports `earlyCloseEnabled` in its hello, so this is
+ * a runtime fact rather than a constant someone has to remember to flip. Turn pool mode off on a
+ * brand and the control appears there, on that brand only, with no deploy.
  */
-const EARLY_CLOSE_ENABLED = false;
 
 export function BetPanel() {
   const hydrated = useHydrated();
@@ -53,6 +51,7 @@ export function BetPanel() {
   const clearPending = useDepositUi((s) => s.clearPending);
 
   const brand = useBrand();
+  const { isMarketer } = useMarketerSkin();
   const { fmt, both, symbol, isForeign, toDisplay, toKesCents, currency } = useDisplayMoney();
   // Quick stakes (STAKE-1): the first pills of the brand's ladder — the admin's minimum, ×2, ×4 —
   // every one a multiple of 5 in the brand currency.
@@ -64,7 +63,7 @@ export function BetPanel() {
     staleTime: 5 * 60_000,
   });
   const { data: wallet } = useWallet();
-  const { status, activePosition, openPosition, sell } = useGameSocket();
+  const { status, activePosition, openPosition, sell, earlyCloseEnabled } = useGameSocket();
 
   const minStakeCents = limits.minCents;
   const maxStakeCents = limits.maxCents;
@@ -191,10 +190,9 @@ export function BetPanel() {
     return (
       <Card className="flex flex-col gap-2.5 rounded-xl p-3">
         <LivePnl pos={activePosition} />
-        {/* HIDDEN — see EARLY_CLOSE_ENABLED. Kept, not deleted: the moment pool mode is off on any
-            brand this is a working feature again, and `sell` is still wired end to end. */}
-        {EARLY_CLOSE_ENABLED ? (
-          <Button variant="secondary" size="md" fullWidth className="!h-11" disabled={!canClose} onClick={sell}>
+        {/* Shown only where the engine will honour it: see the note at the top of this file. */}
+        {earlyCloseEnabled ? (
+          <Button variant="secondary" size="md" fullWidth className="!h-11" disabled={!canClose} onClick={() => sell()}>
             {activePosition.phase === 'settling'
               ? 'Closing…'
               : canClose
@@ -291,36 +289,40 @@ export function BetPanel() {
           variant="up"
           size="md"
           fullWidth
-          className="!h-11 flex-col !gap-0 !text-sm"
+          // MARKETER: drop the finance green/red pair — the "up" action keeps the brand accent, the
+          // "down" action goes neutral; direction is conveyed by the arrow icon alone.
+          className={cn('!h-11 flex-col !gap-0 !text-sm', isMarketer && '!bg-accent !text-accent-fg')}
           disabled={connecting}
           onClick={() => handleDirection('buy')}
         >
           <span className="flex items-center gap-1.5 font-bold">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="h-4 w-4" aria-hidden>
+            {/* MARKETER: wordless directional icon only — no "BUY" text for OCR to read. */}
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className={isMarketer ? 'h-6 w-6' : 'h-4 w-4'} aria-label={isMarketer ? 'Up' : undefined} aria-hidden={isMarketer ? undefined : true} role={isMarketer ? 'img' : undefined}>
               <path d="M12 19V5M5 12l7-7 7 7" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
-            BUY
+            {isMarketer ? null : 'BUY'}
           </span>
         </Button>
         <Button
           variant="down"
           size="md"
           fullWidth
-          className="!h-11 flex-col !gap-0 !text-sm"
+          className={cn('!h-11 flex-col !gap-0 !text-sm', isMarketer && '!bg-surface-2 !text-fg !border !border-border')}
           disabled={connecting}
           onClick={() => handleDirection('sell')}
         >
           <span className="flex items-center gap-1.5 font-bold">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="h-4 w-4" aria-hidden>
+            {/* MARKETER: wordless directional icon only — no "SELL" text for OCR to read. */}
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className={isMarketer ? 'h-6 w-6' : 'h-4 w-4'} aria-label={isMarketer ? 'Down' : undefined} aria-hidden={isMarketer ? undefined : true} role={isMarketer ? 'img' : undefined}>
               <path d="M12 5v14M5 12l7 7 7-7" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
-            SELL
+            {isMarketer ? null : 'SELL'}
           </span>
         </Button>
       </div>
 
       {resumeDir ? (
-        <p className="text-center text-[11px] font-semibold tabular-nums text-up">{resumeDir === 'buy' ? 'BUY' : 'SELL'} · {fmt(stakeCents)}</p>
+        <p className="text-center text-[11px] font-semibold tabular-nums text-up">{isMarketer ? '' : `${resumeDir === 'buy' ? 'BUY' : 'SELL'} · `}{fmt(stakeCents)}</p>
       ) : null}
     </Card>
   );

@@ -58,7 +58,7 @@ export function TransactionsList() {
                     <Money cents={t.amountCents} className={t.kind === 'deposit' ? 'text-up' : 'text-down'} />
                   </td>
                   <td className="px-4 py-2"><StatusBadge status={t.status} /></td>
-                  <td className="px-4 py-2 text-muted">{t.mpesaReceipt ?? '—'}</td>
+                  <td className="px-4 py-2 text-muted">{t.mpesaReceipt ?? '-'}</td>
                   <td className="px-4 py-2 text-muted">{formatDateTime(t.ts)}</td>
                 </tr>
               ))}

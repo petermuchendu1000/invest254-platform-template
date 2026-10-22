@@ -1,5 +1,10 @@
 import { apiFetch } from '@/lib/api/client';
 import type {
+  BrandActivityDto,
+  CommunityPostDto,
+  MarketerLiveDto,
+  LiveSessionDto,
+  LeaderboardRowDto,
   MarketerProfileDto,
   AffiliateEnrollment,
   AffiliateSummary,
@@ -21,12 +26,16 @@ import type {
   CommissionLineDto,
   CommissionPayoutDto,
   MarketerExpensesResponse,
+  MarketerMoneyDto,
+  MarketerMoneyRange,
   PositionDetailDto,
   PositionDto,
   ReferralRecord,
   SecurityQuestionDto,
   MfaStatusDto,
   MfaEnrollDto,
+  StepUpStatusDto,
+  StepUpVerifyDto,
   TransactionDto,
   TransactionKind,
   WalletDto,
@@ -70,6 +79,15 @@ export const api = {
   // ITS live economy (site_game_config) — the same limits/cap the engine enforces. Omitting it
   // falls back to the default brand server-side.
   gameConfig: (site?: string) => apiFetch<GameConfigDto>('/game/config', site ? { query: { site } } : {}),
+  /**
+   * The brand's real recent activity (docs/54): settled deposits, paid withdrawals, winning trades.
+   * Public — the candlestick screen shows it before login, which is when it matters most.
+   */
+  siteActivity: (host: string, limit?: number) =>
+    apiFetch<{ items: BrandActivityDto[] }>('/site/activity', { query: limit ? { host, limit: String(limit) } : { host } }),
+  /** The Top tab's board: real traders ranked by net profit over the chosen window (docs/54). */
+  siteLeaderboard: (host: string, period: string) =>
+    apiFetch<{ period: string; items: LeaderboardRowDto[] }>('/site/leaderboard', { query: { host, period } }),
 
 
   // Auth & profile
@@ -124,6 +142,23 @@ export const api = {
   mfaDisable: (token: string, code: string) =>
     apiFetch<{ enabled: boolean }>('/auth/mfa/disable', { method: 'POST', token, body: { code } }),
 
+  // ── Step-up second factor + real logout (0196) ──
+  /** Which factor this session must prove, and whether it currently has. Authoritative: never guess. */
+  stepUpStatus: (token: string) => apiFetch<StepUpStatusDto>('/auth/step-up', { token }),
+  /**
+   * Prove the second factor for THIS session: an authenticator code, a single-use recovery code, or
+   * the security answers — whichever `stepUpStatus().factor` asked for.
+   */
+  stepUpVerify: (
+    token: string,
+    proof: { code?: string; recovery_code?: string; answers?: Array<{ key: string; answer: string }> },
+  ) => apiFetch<StepUpVerifyDto>('/auth/step-up', { method: 'POST', token, body: proof }),
+  /**
+   * End this operator's session SERVER-SIDE. Logout used to be localStorage-only, so a captured
+   * operator token kept working for the rest of its 7 days; this is what actually kills it.
+   */
+  logout: (token: string) => apiFetch<{ loggedOut: boolean }>('/auth/logout', { method: 'POST', token }),
+
   // Wallet & history
   wallet: (token: string) => apiFetch<WalletDto>('/wallet', { token }),
   /** DEMO-1: switch the active account (Real / Demo). */
@@ -172,6 +207,9 @@ export const api = {
   // PayHero Lipwa hosted checkout (card / bank / mobile money / cross-border) — opened in an in-app modal.
   createPayheroLipwaDeposit: (token: string, body: { amount: number }) =>
     apiFetch<{ transactionId: string; reference: string; lipwaUrl: string }>('/deposits/payhero/lipwa', { method: 'POST', token, body }),
+  // PayX M-Pesa push — same contract as the other STK rails; the sheet polls the transaction until it settles.
+  createPayxDeposit: (token: string, body: { amount: number; method?: string; phone?: string; email?: string }) =>
+    apiFetch<{ transactionId: string; checkoutRequestId: string; checkoutUrl?: string }>('/deposits/payx', { method: 'POST', token, body }),
   // PayHero manual Pay Bill: claim a payment made to the PayHero paybill by its M-PESA code.
   claimPayheroPaybill: (token: string, body: { code: string }) =>
     apiFetch<PaybillClaimDto>('/deposits/payhero/paybill/claim', { method: 'POST', token, body }),
@@ -189,6 +227,26 @@ export const api = {
   // Marketer self-service (funny-money demo wallet). marketerMe returns the simulated wallet balance;
   // marketerDemoTopup tops it up to the policy cap (no real cash — migration 0102).
   marketerMe: (token: string) => apiFetch<MarketerProfileDto>('/marketers/me', { token }),
+  // ── Live sessions (docs/55). Reporting only: starting one changes no attribution. ──
+  marketerLive: (token: string) => apiFetch<MarketerLiveDto>('/affiliate/live', { token }),
+  marketerLiveStart: (token: string, streamUrl?: string) =>
+    apiFetch<LiveSessionDto>('/affiliate/live/start', { method: 'POST', token, body: streamUrl ? { streamUrl } : {} }),
+  marketerLiveEnd: (token: string) => apiFetch<LiveSessionDto>('/affiliate/live/end', { method: 'POST', token }),
+  marketerLiveExtend: (token: string) => apiFetch<LiveSessionDto>('/affiliate/live/extend', { method: 'POST', token }),
+
+  // ── Community channel (docs/56). Read for players, write for admins. ──
+  community: (token: string, limit?: number) =>
+    apiFetch<{ items: CommunityPostDto[] }>('/community', { token, ...(limit ? { query: { limit: String(limit) } } : {}) }),
+  communityVote: (token: string, postId: string, optionId: string) =>
+    apiFetch<CommunityPostDto>(`/community/${postId}/vote`, { method: 'POST', token, body: { optionId } }),
+  communityPost: (token: string, input: { kind?: 'post' | 'poll'; title?: string | null; body: string; options?: string[]; pinned?: boolean }) =>
+    apiFetch<CommunityPostDto>('/community', { method: 'POST', token, body: input }),
+  communityPin: (token: string, postId: string, pinned: boolean) =>
+    apiFetch<{ ok: true }>(`/community/${postId}/pin`, { method: 'POST', token, body: { pinned } }),
+  communityClose: (token: string, postId: string, closed: boolean) =>
+    apiFetch<{ ok: true }>(`/community/${postId}/close`, { method: 'POST', token, body: { closed } }),
+  communityDelete: (token: string, postId: string) =>
+    apiFetch<{ ok: true }>(`/community/${postId}/delete`, { method: 'POST', token }),
   marketerDemoTopup: (token: string) =>
     apiFetch<{ balanceCents: number; capCents: number }>('/marketers/me/demo-topup', { method: 'POST', token }),
   // Public: record a referral-link click from the /r/<code> landing page (fire-and-forget, no auth).
@@ -217,6 +275,16 @@ export const api = {
     apiFetch<{ items: CommissionPayoutDto[] }>('/me/referral/payouts', { token }),
   affiliateExpenses: (token: string) =>
     apiFetch<MarketerExpensesResponse>('/affiliate/expenses', { token }),
+  /**
+   * The marketer's money statement for one time range (the /dashboard money table).
+   *
+   * `range` is a closed server-side enum — an unrecognised value is refused with 400 INVALID_RANGE
+   * rather than quietly answered with a different window's figures. The reply echoes the resolved
+   * inclusive EAT bounds (`from`/`to`) and carries the LIFETIME ladder alongside the windowed
+   * figures, so the UI can say which is which.
+   */
+  affiliateMoney: (token: string, range: MarketerMoneyRange) =>
+    apiFetch<MarketerMoneyDto>('/affiliate/money', { token, query: { range } }),
 
   // Marketer advance requests (0122): request a cash advance, list own requests, cancel a pending one.
   affiliateAdvances: (token: string) =>

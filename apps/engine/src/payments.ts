@@ -61,12 +61,21 @@ export interface DepositProvider { code: string; displayName: string; }
 export interface DepositMethod {
   /** Stable id the client keys its body off, e.g. `payhero-stk`, `payhero-lipwa`, `mpesa-paybill`. */
   id: string;
-  /** The gateway serving this channel (`mpesa` | `megapay` | `payhero`) — internal, never displayed. */
+  /** The gateway serving this channel (`mpesa` | `megapay` | `payhero` | `paynicorn`) — internal, never displayed. */
   provider: string;
   /** Which rail of that gateway this is. */
-  channel: "stk" | "lipwa" | "paybill";
+  channel: "stk" | "lipwa" | "paybill" | "checkout";
   /** What the player sees, e.g. "M-Pesa", "Card & Bank", "Pay Bill". */
   label: string;
+  /**
+   * Gateway-side method code to send back on initiate (PayX only). Generic by nature — "MPESA",
+   * "CARD" — so it names a payment method, never the supplier behind it.
+   */
+  methodCode?: string;
+  /** Fields this method needs from the player. Empty/absent => nothing to collect in our own form. */
+  fields?: Array<{ name: string; type: string; pattern?: string }>;
+  /** Method logo the gateway publishes, for the tab. */
+  iconUrl?: string;
 }
 
 export interface PaymentRepository {
@@ -97,6 +106,19 @@ export interface PaymentRepository {
   /** 0175 — record a gateway rejection so this player's next attempt is held off. */
   depositGateReject(userKey: string, holdMs: number): Promise<void>;
   completeDeposit(checkoutRequestId: string, resultCode: number, resultDesc: string, receipt: string | null, raw: unknown): Promise<CompleteResult>;
+  /**
+   * Which of these provider references belong to a DEPOSIT transaction of ours — the set, answered in
+   * ONE indexed lookup (idx_tx_checkout, migration 0005).
+   *
+   * It exists so a caller holding a batch of foreign references does not have to discover that fact
+   * by calling `completeDeposit` and catching TX_NOT_FOUND. That works, and the PayHero ledger sweep
+   * did exactly it, but the discovery costs a raised plpgsql exception per miss and every one of them
+   * lands in the Postgres log as an ERROR. See `reconcilePayHeroLedger`.
+   *
+   * The predicate MUST stay identical to fn_complete_deposit's own lookup (checkout_request_id +
+   * kind='deposit'); if the two ever disagree, the skip here silently stops crediting a real deposit.
+   */
+  ownedDepositRefs(refs: readonly string[]): Promise<Set<string>>;
   createWithdrawal(userId: string, amountCents: Cents, phone: string, minCents: Cents, siteId?: string): Promise<CreateWithdrawalResult>;
   /**
    * Marketer instant withdrawal: if this player's phone is a marketer, move the amount from the
@@ -217,6 +239,16 @@ export class InMemoryPaymentRepository implements PaymentRepository {
     }
     tx.status = "failed";
     return { applied: true, status: "failed", newBalance: await this.getBalance(tx.userId) };
+  }
+
+  async ownedDepositRefs(refs: readonly string[]): Promise<Set<string>> {
+    const out = new Set<string>();
+    for (const ref of refs) {
+      const txId = this.byCheckout.get(ref);
+      const tx = txId ? this.txns.get(txId) : undefined;
+      if (tx && tx.kind === "deposit") out.add(ref);   // same predicate fn_complete_deposit uses
+    }
+    return out;
   }
 
   async listUnsettledDeposits(olderThanMs: number, limit: number, provider?: string): Promise<UnsettledDeposit[]> {
@@ -378,7 +410,7 @@ export class InMemoryPaymentRepository implements PaymentRepository {
     const page = pageFrom(rows, limit, (t) => String(t.seq));
     return {
       items: page.items.map((t) => ({
-        id: t.id, kind: t.kind, amountCents: t.amount, status: t.status, provider: "mpesa",
+        id: t.id, kind: t.kind, amountCents: t.amount, status: t.status, provider: t.provider ?? "mpesa",
         phone: t.phone, mpesaReceipt: t.receipt, createdAtMs: t.createdAtMs,
       })),
       nextCursor: page.nextCursor,
@@ -469,6 +501,16 @@ export class PgPaymentRepository implements PaymentRepository {
   async completeDeposit(checkoutRequestId: string, resultCode: number, resultDesc: string, receipt: string | null, raw: unknown): Promise<CompleteResult> {
     const r = await this.q.query("select applied, status, new_balance from fn_complete_deposit($1,$2,$3,$4,$5)", [checkoutRequestId, resultCode, resultDesc, receipt, JSON.stringify(raw ?? {})]);
     return { applied: Boolean(r.rows[0].applied), status: String(r.rows[0].status), newBalance: toCents(r.rows[0].new_balance) };
+  }
+  async ownedDepositRefs(refs: readonly string[]): Promise<Set<string>> {
+    const wanted = [...new Set(refs)];
+    if (wanted.length === 0) return new Set();
+    const r = await this.q.query(
+      `select checkout_request_id from transactions
+        where kind = 'deposit' and checkout_request_id = any($1::text[])`,
+      [wanted],
+    );
+    return new Set(r.rows.map((x: any) => String(x.checkout_request_id)));
   }
   async listUnsettledDeposits(olderThanMs: number, limit: number, provider?: string): Promise<UnsettledDeposit[]> {
     const r = await this.q.query(

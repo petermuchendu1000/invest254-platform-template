@@ -192,7 +192,7 @@ export default function BonusesPage() {
       )}
 
       {/* ── Platform-level switch ── */}
-      <Section title={`Platform — ${d.platformName ?? 'this platform'}`}>
+      <Section title={`Platform: ${d.platformName ?? 'this platform'}`}>
         <Card className="flex flex-wrap items-center justify-between gap-3">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
@@ -250,7 +250,7 @@ export default function BonusesPage() {
           </p>
           <p>
             <b className="text-fg">Future sign-ups only.</b> Changing the amount or switching bonuses off affects new grants.
-            Players who already hold a bonus keep it — their wagering progress continues and it still converts when they clear
+            Players who already hold a bonus keep it. Their wagering progress continues and it still converts when they clear
             it. Nothing is taken back.
           </p>
           <p>

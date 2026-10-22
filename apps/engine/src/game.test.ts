@@ -5,7 +5,13 @@ import { InMemoryGameRepository } from "./wallet.js";
 import { GameServer } from "./game.js";
 
 function makeRig() {
-  const cfg = DEFAULT_CONFIG;
+  /**
+   * These tests are about the COMMITTED contract: stake debited, outcome revealed at its term,
+   * settlement idempotent. They pin the ten-second term they were written for rather than reading
+   * the shipped default, which is now an hour because a position ends at its stop or its target
+   * instead of on a timer (see docs/mt5/20-real-sl-tp.md). What is under test here did not change.
+   */
+  const cfg = { ...DEFAULT_CONFIG, defaultDurationS: 10 };
   const curve = new CurveGenerator("engine-day", cfg);
   const eng = new SettlementEngine(curve, cfg);
   const repo = new InMemoryGameRepository();

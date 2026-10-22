@@ -12,6 +12,7 @@ import type { Paginated, TransactionDto, LedgerEntryDto } from '@/lib/api/types'
 import { useSession } from '@/lib/auth/session';
 import { siteFromToken } from '@/lib/auth/token';
 import { walletFigures, type WalletFigures } from '@/lib/wallet/figures';
+import { useFailToast } from '@/lib/toast/useFailToast';
 
 export function useWallet() {
   const token = useSession((s) => s.token);
@@ -30,10 +31,19 @@ export function useWalletFigures(): WalletFigures {
   return walletFigures(useWallet().data);
 }
 
-/** DEMO-1: switch between the Real and Demo account; the server returns the new wallet. */
+/**
+ * DEMO-1: switch between the Real and Demo account; the server returns the new wallet.
+ *
+ * `onError` is not boilerplate here. These two were the only account controls that could fail in
+ * silence: nothing read `isError`, so a refused switch looked exactly like a successful one -- the
+ * button simply came back -- and the trader was left believing they were on the Real account while
+ * every order went to the Demo one. That is the most expensive lie this screen can tell.
+ * `useFailToast` is the app's existing answer to precisely this failure mode (BUGLOG #108).
+ */
 export function useSetAccountMode() {
   const token = useSession((s) => s.token);
   const qc = useQueryClient();
+  const fail = useFailToast();
   return useMutation({
     mutationFn: (mode: 'real' | 'demo') => api.setAccountMode(token as string, mode),
     onSuccess: (r) => {
@@ -41,16 +51,19 @@ export function useSetAccountMode() {
       void qc.invalidateQueries({ queryKey: ['ledger'] });
       void qc.invalidateQueries({ queryKey: ['wallet-ledger'] });
     },
+    onError: (e) => fail(e, 'Account not switched'),
   });
 }
 
-/** DEMO-1: refill the demo balance. */
+/** DEMO-1: refill the demo balance. Says so when it does not, for the reason above. */
 export function useTopupDemo() {
   const token = useSession((s) => s.token);
   const qc = useQueryClient();
+  const fail = useFailToast();
   return useMutation({
     mutationFn: () => api.topupDemo(token as string),
     onSuccess: (r) => { qc.setQueryData(['wallet'], r.wallet); },
+    onError: (e) => fail(e, 'Demo balance not topped up'),
   });
 }
 
@@ -141,6 +154,20 @@ export function useDepositLipwa() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['wallet'] });
       void qc.invalidateQueries({ queryKey: ['transactions'] });
+    },
+  });
+}
+
+/** PayX M-Pesa push deposit — same settle-by-poll UX as the other STK rails. */
+export function useDepositPayx() {
+  const token = useSession((s) => s.token);
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { amount: number; method?: string; phone?: string; email?: string }) => api.createPayxDeposit(token as string, vars),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['wallet'] });
+      void qc.invalidateQueries({ queryKey: ['transactions'] });
+      pollSettlement(qc);
     },
   });
 }

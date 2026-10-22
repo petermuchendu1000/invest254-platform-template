@@ -15,7 +15,15 @@ import { type Page, type PageQuery, clampLimit, decodeKeyset, pageFrom } from ".
 export interface RegisteredUser { userId: string; role: string; }
 
 /** Stored credential + account state for a login attempt. */
-export interface CredentialRecord { userId: string; role: string; status: string; passwordHash: string; siteId: string | null; platformId: string | null; }
+export interface CredentialRecord {
+  userId: string; role: string; status: string; passwordHash: string; siteId: string | null; platformId: string | null;
+  /** Consecutive failed password verifications, and the lock expiry if one is in force (0197).
+   *  Carried on the credential record rather than fetched separately because the login path
+   *  already reads this row — a second round trip per login attempt would be the throttle paying
+   *  for itself in latency. `lockedUntilMs` null = not locked. */
+  failedAttempts: number;
+  lockedUntilMs: number | null;
+}
 
 /** Profile state for the `/me` view. */
 export interface ProfileRow {
@@ -132,6 +140,48 @@ export interface IdentityRepository {
    * compares a privileged token's `iat` against this to invalidate pre-logout sessions.
    */
   getSessionsValidAfterMs(userId: string): Promise<number | null>;
+
+  // ── Progressive login lockout (0197) ──────────────────────────────────────────────────────────
+  /**
+   * Record one failed password verification and return the resulting state. `lockMs` is the lock
+   * the caller's schedule says this failure earns (0 = no lock yet); the store applies it.
+   * Must be safe to call for an account that is already locked.
+   */
+  recordLoginFailure(userId: string, lockMs: number): Promise<void>;
+  /** Clear the failure streak and any lock after a successful password verification. */
+  clearLoginFailures(userId: string): Promise<void>;
+
+  // ── Per-session operator state: step-up 2FA + idle timeout (0196) ─────────────────────────────
+  /**
+   * The session record for (user, token `iat` in seconds), or null when none exists.
+   *
+   * Null is meaningful and must not be conflated with "fresh": the idle rule reads a missing
+   * record as idle unless the token itself was issued inside the window (see stepup.ts).
+   */
+  getPrivilegedSession(userId: string, tokenIatSeconds: number): Promise<{ lastSeenAtMs: number; stepUpAtMs: number | null } | null>;
+  /** Create-or-refresh the session's last-seen stamp. Called on every privileged request. */
+  touchPrivilegedSession(userId: string, tokenIatSeconds: number): Promise<void>;
+  /** Stamp that a second factor was proven on this session, by this method. */
+  recordStepUp(userId: string, tokenIatSeconds: number, method: string): Promise<void>;
+  /** Forget every session for this user (server-side logout). */
+  endPrivilegedSessions(userId: string): Promise<void>;
+  /**
+   * Stamp the 0097 force-logout epoch to now, invalidating every token already issued for this
+   * account. Forgetting the session rows alone is not a logout — the JWT is stateless and would
+   * still verify — so this is the half that actually ends the session.
+   */
+  stampForceLogout(userId: string): Promise<void>;
+
+  // ── TOTP replay guard (0196) ──────────────────────────────────────────────────────────────────
+  /**
+   * Consume a TOTP time-step for this user: true when `step` is strictly newer than the highest
+   * already used (and it is recorded), false when it is a replay.
+   *
+   * Must be ATOMIC — a compare-and-set, not a read followed by a write. Two requests presenting
+   * the same code concurrently is the exact situation this prevents, so a check-then-set would let
+   * both through and the guard would only work when it was not needed.
+   */
+  consumeTotpStep(userId: string, step: number): Promise<boolean>;
 }
 
 /**
@@ -357,18 +407,20 @@ export class PgIdentityRepository implements IdentityRepository, AffiliateReposi
   }
   async findByPhone(phone: string, siteId?: string): Promise<CredentialRecord | null> {
     const r = await this.q.query(
-      `select p.id, p.role, p.status, p.site_id, p.platform_id, c.password_hash
+      `select p.id, p.role, p.status, p.site_id, p.platform_id, c.password_hash,
+              c.failed_attempts, c.locked_until
          from profiles p join user_credentials c on c.user_id = p.id
         where p.phone = $1 and ($2::uuid is null or p.site_id = $2)`, [phone, siteId ?? null]);
     if (!r.rows.length) return null;
     const x = r.rows[0];
-    return { userId: String(x.id), role: String(x.role), status: String(x.status), siteId: x.site_id == null ? null : String(x.site_id), platformId: x.platform_id == null ? null : String(x.platform_id), passwordHash: String(x.password_hash) };
+    return { userId: String(x.id), role: String(x.role), status: String(x.status), siteId: x.site_id == null ? null : String(x.site_id), platformId: x.platform_id == null ? null : String(x.platform_id), passwordHash: String(x.password_hash), failedAttempts: Number(x.failed_attempts ?? 0), lockedUntilMs: x.locked_until == null ? null : toMs(x.locked_until) };
   }
   async findAllByPhone(phone: string): Promise<CredentialRecord[]> {
     // Every brand's account on this phone. Ordered by created_at so the tie-break (should two
     // brands ever share BOTH phone AND password) is deterministic — oldest first.
     const r = await this.q.query(
-      `select p.id, p.role, p.status, p.site_id, p.platform_id, c.password_hash
+      `select p.id, p.role, p.status, p.site_id, p.platform_id, c.password_hash,
+              c.failed_attempts, c.locked_until
          from profiles p join user_credentials c on c.user_id = p.id
         where p.phone = $1
         order by p.created_at asc, p.id asc`, [phone]);
@@ -376,6 +428,8 @@ export class PgIdentityRepository implements IdentityRepository, AffiliateReposi
       userId: String(x.id), role: String(x.role), status: String(x.status),
       siteId: x.site_id == null ? null : String(x.site_id),
       platformId: x.platform_id == null ? null : String(x.platform_id), passwordHash: String(x.password_hash),
+      failedAttempts: Number(x.failed_attempts ?? 0),
+      lockedUntilMs: x.locked_until == null ? null : toMs(x.locked_until),
     }));
   }
   async getMfa(userId: string): Promise<MfaRecord | null> {
@@ -460,6 +514,77 @@ export class PgIdentityRepository implements IdentityRepository, AffiliateReposi
     const v = r.rows[0].sessions_valid_after;
     return v == null ? null : toMs(v);
   }
+
+  // ── Progressive login lockout (0197) ──────────────────────────────────────────────────────────
+  async recordLoginFailure(userId: string, lockMs: number): Promise<void> {
+    // The lock is computed from now() IN THE DATABASE, not from the app's clock, so several API
+    // machines disagreeing about the time cannot shorten a lock.
+    await this.q.query(
+      `update user_credentials
+          set failed_attempts = failed_attempts + 1,
+              last_failed_at  = now(),
+              locked_until    = case when $2::bigint > 0
+                                     then now() + ($2::bigint || ' milliseconds')::interval
+                                     else locked_until end
+        where user_id = $1`,
+      [userId, Math.max(0, Math.floor(lockMs))]);
+  }
+  async clearLoginFailures(userId: string): Promise<void> {
+    // Only write when there is something to clear: a successful login is the hot path and the
+    // overwhelming majority of rows already read (0, null).
+    await this.q.query(
+      `update user_credentials set failed_attempts = 0, locked_until = null
+        where user_id = $1 and (failed_attempts <> 0 or locked_until is not null)`, [userId]);
+  }
+
+  // ── Per-session operator state (0196) ─────────────────────────────────────────────────────────
+  async getPrivilegedSession(userId: string, tokenIatSeconds: number): Promise<{ lastSeenAtMs: number; stepUpAtMs: number | null } | null> {
+    const r = await this.q.query(
+      `select last_seen_at, step_up_at from privileged_sessions
+        where user_id = $1 and token_iat = to_timestamp($2)`, [userId, tokenIatSeconds]);
+    if (!r.rows.length) return null;
+    const x = r.rows[0];
+    return { lastSeenAtMs: toMs(x.last_seen_at), stepUpAtMs: x.step_up_at == null ? null : toMs(x.step_up_at) };
+  }
+  async touchPrivilegedSession(userId: string, tokenIatSeconds: number): Promise<void> {
+    // Upsert: the first request on a session creates the row, every later one refreshes it.
+    // `step_up_at` is deliberately NOT touched — activity must never renew a second factor.
+    await this.q.query(
+      `insert into privileged_sessions (user_id, token_iat, last_seen_at)
+         values ($1, to_timestamp($2), now())
+       on conflict (user_id, token_iat) do update set last_seen_at = now()`,
+      [userId, tokenIatSeconds]);
+  }
+  async recordStepUp(userId: string, tokenIatSeconds: number, method: string): Promise<void> {
+    await this.q.query(
+      `insert into privileged_sessions (user_id, token_iat, last_seen_at, step_up_at, step_up_method)
+         values ($1, to_timestamp($2), now(), now(), $3)
+       on conflict (user_id, token_iat) do update
+         set step_up_at = now(), step_up_method = excluded.step_up_method, last_seen_at = now()`,
+      [userId, tokenIatSeconds, method]);
+  }
+  async endPrivilegedSessions(userId: string): Promise<void> {
+    await this.q.query("delete from privileged_sessions where user_id = $1", [userId]);
+  }
+  async stampForceLogout(userId: string): Promise<void> {
+    // now() from the DATABASE, so several API machines with skewed clocks cannot stamp an epoch in
+    // the past and leave a just-issued token alive.
+    await this.q.query("update profiles set sessions_valid_after = now() where id = $1", [userId]);
+  }
+
+  // ── TOTP replay guard (0196) ──────────────────────────────────────────────────────────────────
+  async consumeTotpStep(userId: string, step: number): Promise<boolean> {
+    // ONE statement, so the compare and the set cannot be separated. The WHERE clause is the
+    // compare: it matches only when the step is strictly newer (or nothing has been used yet), and
+    // `returning` tells us whether it won. Two concurrent requests presenting the same code is
+    // exactly the race this exists to stop, so a SELECT-then-UPDATE would fail at the only moment
+    // it mattered.
+    const r = await this.q.query(
+      `update user_mfa set last_totp_step = $2
+        where user_id = $1 and (last_totp_step is null or last_totp_step < $2)
+        returning user_id`, [userId, Math.floor(step)]);
+    return r.rows.length > 0;
+  }
 }
 
 interface MemUser {
@@ -493,6 +618,14 @@ export class InMemoryIdentityRepository implements IdentityRepository, Affiliate
   // 0097: per-user security answers (question key -> scrypt hash) + force-logout epoch (ms).
   private readonly securityAnswers = new Map<string, Map<string, string>>();
   private readonly sessionsValidAfter = new Map<string, number>();
+  /** 0197 login lockout, by user id. Absent = clean (no failures, no lock). */
+  private readonly lockouts = new Map<string, { failedAttempts: number; lockedUntilMs: number | null }>();
+  /** 0196 per-session operator state, keyed `${userId}:${tokenIatSeconds}` — the same composite
+   *  key the SQL primary key uses, so the two implementations cannot disagree about what a
+   *  "session" is. */
+  private readonly privilegedSessions = new Map<string, { lastSeenAtMs: number; stepUpAtMs: number | null }>();
+  /** 0196 TOTP replay guard: highest time-step already consumed, by user id. */
+  private readonly lastTotpStep = new Map<string, number>();
   private seq = 0;
   /** Test knob: cents the in-memory welcome-bonus grant credits (default 0 = inert in tests). */
   welcomeBonusCents = 0;
@@ -517,7 +650,8 @@ export class InMemoryIdentityRepository implements IdentityRepository, Affiliate
     const pkey = idKey(phone, siteId);
     const ukey = idKey(username, siteId);
     if (this.byPhone.has(pkey)) throw new Error("PHONE_TAKEN");        // uniqueness is PER SITE
-    if (this.usernames.has(ukey)) throw new Error("USERNAME_TAKEN");
+    // The username is NOT unique (migration 0190): it is a display name, and the phone above is the
+    // identity. `usernames` is still maintained because callers read it, but it no longer refuses.
     const u: MemUser = {
       userId: randomUUID(), phone, username, role: "player", status: "active",
       passwordHash, referredBy: null, createdAtMs: Date.now(), siteId: siteId ?? null,
@@ -534,15 +668,20 @@ export class InMemoryIdentityRepository implements IdentityRepository, Affiliate
     }
     return { userId: u.userId, role: u.role };
   }
+  /** Lockout state for a user, in the shape CredentialRecord carries it (0197). */
+  private lockoutOf(userId: string): { failedAttempts: number; lockedUntilMs: number | null } {
+    const l = this.lockouts.get(userId);
+    return { failedAttempts: l?.failedAttempts ?? 0, lockedUntilMs: l?.lockedUntilMs ?? null };
+  }
   async findByPhone(phone: string, siteId?: string): Promise<CredentialRecord | null> {
     const u = this.byPhone.get(idKey(phone, siteId));
-    return u ? { userId: u.userId, role: u.role, status: u.status, siteId: u.siteId ?? null, platformId: null, passwordHash: u.passwordHash } : null;
+    return u ? { userId: u.userId, role: u.role, status: u.status, siteId: u.siteId ?? null, platformId: null, passwordHash: u.passwordHash, ...this.lockoutOf(u.userId) } : null;
   }
   async findAllByPhone(phone: string): Promise<CredentialRecord[]> {
     return [...this.byId.values()]
       .filter((u) => u.phone === phone)
       .sort((a, b) => a.createdAtMs - b.createdAtMs)
-      .map((u) => ({ userId: u.userId, role: u.role, status: u.status, siteId: u.siteId ?? null, platformId: null, passwordHash: u.passwordHash }));
+      .map((u) => ({ userId: u.userId, role: u.role, status: u.status, siteId: u.siteId ?? null, platformId: null, passwordHash: u.passwordHash, ...this.lockoutOf(u.userId) }));
   }
   async getMfa(userId: string): Promise<MfaRecord | null> {
     const m = this.mfa.get(userId);
@@ -593,6 +732,54 @@ export class InMemoryIdentityRepository implements IdentityRepository, Affiliate
   async getSessionsValidAfterMs(userId: string): Promise<number | null> {
     return this.sessionsValidAfter.get(userId) ?? null;
   }
+
+  // ── Progressive login lockout (0197) ──────────────────────────────────────────────────────────
+  // Mirrors the SQL semantics exactly, including the detail that a zero `lockMs` increments the
+  // streak WITHOUT clearing an existing lock.
+  async recordLoginFailure(userId: string, lockMs: number): Promise<void> {
+    const cur = this.lockouts.get(userId) ?? { failedAttempts: 0, lockedUntilMs: null as number | null };
+    const next = {
+      failedAttempts: cur.failedAttempts + 1,
+      lockedUntilMs: lockMs > 0 ? Date.now() + Math.floor(lockMs) : cur.lockedUntilMs,
+    };
+    this.lockouts.set(userId, next);
+  }
+  async clearLoginFailures(userId: string): Promise<void> {
+    this.lockouts.delete(userId);
+  }
+
+  // ── Per-session operator state (0196) ─────────────────────────────────────────────────────────
+  private sessionKey(userId: string, tokenIatSeconds: number): string { return `${userId}:${tokenIatSeconds}`; }
+  async getPrivilegedSession(userId: string, tokenIatSeconds: number): Promise<{ lastSeenAtMs: number; stepUpAtMs: number | null } | null> {
+    return this.privilegedSessions.get(this.sessionKey(userId, tokenIatSeconds)) ?? null;
+  }
+  async touchPrivilegedSession(userId: string, tokenIatSeconds: number): Promise<void> {
+    const k = this.sessionKey(userId, tokenIatSeconds);
+    const cur = this.privilegedSessions.get(k);
+    // step_up_at is carried over untouched: activity must never renew a second factor.
+    this.privilegedSessions.set(k, { lastSeenAtMs: Date.now(), stepUpAtMs: cur?.stepUpAtMs ?? null });
+  }
+  async recordStepUp(userId: string, tokenIatSeconds: number, _method: string): Promise<void> {
+    const now = Date.now();
+    this.privilegedSessions.set(this.sessionKey(userId, tokenIatSeconds), { lastSeenAtMs: now, stepUpAtMs: now });
+  }
+  async endPrivilegedSessions(userId: string): Promise<void> {
+    for (const k of [...this.privilegedSessions.keys()]) {
+      if (k.startsWith(`${userId}:`)) this.privilegedSessions.delete(k);
+    }
+  }
+  async stampForceLogout(userId: string): Promise<void> {
+    this.sessionsValidAfter.set(userId, Date.now());
+  }
+
+  // ── TOTP replay guard (0196) ──────────────────────────────────────────────────────────────────
+  async consumeTotpStep(userId: string, step: number): Promise<boolean> {
+    const used = this.lastTotpStep.get(userId);
+    if (used !== undefined && used >= step) return false;
+    this.lastTotpStep.set(userId, Math.floor(step));
+    return true;
+  }
+
   /** TEST-ONLY: elevate a user's role (registration always creates role='player'). */
   _setRole(userId: string, role: string): void {
     const u = this.byId.get(userId);
@@ -791,6 +978,17 @@ export class InMemoryIdentityRepository implements IdentityRepository, Affiliate
   adminSetStatus(userId: string, status: string): void {
     const u = this.byId.get(userId);
     if (u) u.status = status;
+  }
+  /**
+   * Test/admin seam: discard every stored security answer for a user, returning how many went.
+   *
+   * Mirrors the DELETE in fn_admin_reset_security_answers (0210). The admin repo enforces the RPC's
+   * guards before calling this — nothing here checks who the actor is.
+   */
+  adminClearSecurityAnswers(userId: string): number {
+    const n = this.securityAnswers.get(userId)?.size ?? 0;
+    this.securityAnswers.delete(userId);
+    return n;
   }
   /** Test/admin seam: set a user's role (role management is a DB concern in production). */
   adminSetRole(userId: string, role: string): void {

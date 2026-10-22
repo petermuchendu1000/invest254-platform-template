@@ -32,7 +32,8 @@ test("PUT /platform/sites/:id/stake-limits validates, writes enforced cents, and
     method: "PUT", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify(body) });
   try {
     assert.equal((await put({ min: 5, max: 1000 }, ADMIN)).status, 403, "brand admins cannot");
-    for (const bad of [{ min: 4, max: 100 }, { min: 7, max: 100 }, { min: 10, max: 5 }, { min: 5, max: 12 }]) {
+    // Relaxed rule (whole units ≥ 1): only below-1, non-integer, and max < min are refused now.
+    for (const bad of [{ min: 0, max: 100 }, { min: 1.5, max: 100 }, { min: 10, max: 5 }, { min: -5, max: 100 }]) {
       const r = await put(bad);
       assert.equal(r.status, 400, JSON.stringify(bad));
     }

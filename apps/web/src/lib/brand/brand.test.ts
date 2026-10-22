@@ -7,6 +7,8 @@ import {
   brandWordmark,
   wsUrlForSite,
   resolveBrand,
+  clearBrandCache,
+  expireBrandCache,
   type Brand,
 } from './brand.js';
 
@@ -94,6 +96,7 @@ test('resolveBrand flags resolved and warns loudly on a fallback (GAP 5 visibili
   console.warn = ((...a: unknown[]) => { warnings.push(a.map(String).join(' ')); }) as typeof console.warn;
   try {
     // success → resolved:true, no warning
+    clearBrandCache();
     globalThis.fetch = (async () => ({ ok: true, json: async () => ({ siteId: 'S', slug: 'brandb', name: 'Brand B' }) } as Response)) as typeof fetch;
     const ok = await resolveBrand('https://api', 'brandb.example');
     assert.equal(ok.resolved, true);
@@ -106,12 +109,74 @@ test('resolveBrand flags resolved and warns loudly on a fallback (GAP 5 visibili
     assert.equal(miss.slug, DEFAULT_BRAND.slug, 'still renders the fallback brand (resilience)');
     assert.ok(warnings.some((w) => w.includes('tamutraders.com') && w.includes('404')), 'warns with host + status');
 
-    // network error → resolved:false, warns with host + reason
+    // network error on a host we have NEVER resolved → resolved:false, warns with host + reason
     warnings.length = 0;
+    clearBrandCache();
     globalThis.fetch = (async () => { throw new Error('offline'); }) as typeof fetch;
     const errd = await resolveBrand('https://api', 'brandb.example');
     assert.equal(errd.resolved, false);
     assert.ok(warnings.some((w) => w.includes('brandb.example') && w.toLowerCase().includes('offline')), 'warns on network error');
+  } finally { globalThis.fetch = origFetch; console.warn = origWarn; }
+});
+
+/**
+ * The brand fetch sits on the critical path of every server render and the API forbids caching it,
+ * so a short reuse window is what keeps a page from paying a cross-continent round trip per view.
+ */
+test('resolveBrand: a resolved brand is reused rather than refetched per render', async () => {
+  const origFetch = globalThis.fetch;
+  try {
+    clearBrandCache();
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls += 1;
+      return { ok: true, json: async () => ({ siteId: 'S', slug: 'cached', name: 'Cached' }) } as Response;
+    }) as typeof fetch;
+
+    const a = await resolveBrand('https://api', 'cached.example');
+    const b = await resolveBrand('https://api', 'cached.example');
+    assert.equal(calls, 1, 'second render reuses the first answer');
+    assert.equal(b.slug, a.slug);
+
+    // The display currency genuinely changes the answer (currency + FX rate), so it is part of the
+    // identity of what was cached and must not be served from another currency's entry.
+    await resolveBrand('https://api', 'cached.example', { currency: 'USD' });
+    assert.equal(calls, 2, 'a different display currency is a different question');
+
+    // Concurrent renders on a cold cache collapse into ONE request, not one per render.
+    clearBrandCache();
+    calls = 0;
+    await Promise.all([
+      resolveBrand('https://api', 'burst.example'),
+      resolveBrand('https://api', 'burst.example'),
+      resolveBrand('https://api', 'burst.example'),
+    ]);
+    assert.equal(calls, 1, 'a burst of renders is single-flighted');
+  } finally { globalThis.fetch = origFetch; }
+});
+
+/**
+ * Serving the DEFAULT brand on a client's own domain is the worst outcome here — it is someone
+ * else's logo on their site. A brand we already resolved is therefore preferred over the fallback
+ * when a later refresh fails, while the failure is still warned about.
+ */
+test('resolveBrand: a blip serves the last known brand, never the default over a real one', async () => {
+  const origFetch = globalThis.fetch;
+  const origWarn = console.warn;
+  const warnings: string[] = [];
+  console.warn = ((...a: unknown[]) => { warnings.push(a.map(String).join(' ')); }) as typeof console.warn;
+  try {
+    clearBrandCache();
+    globalThis.fetch = (async () => ({ ok: true, json: async () => ({ siteId: 'S', slug: 'realbrand', name: 'Real' }) } as Response)) as typeof fetch;
+    const good = await resolveBrand('https://api', 'real.example');
+    assert.equal(good.slug, 'realbrand');
+
+    // Age the entry past its TTL so the next call really does go back to the API.
+    expireBrandCache();
+    globalThis.fetch = (async () => { throw new Error('offline'); }) as typeof fetch;
+    const during = await resolveBrand('https://api', 'real.example');
+    assert.equal(during.slug, 'realbrand', 'keeps the brand it had rather than falling back');
+    assert.ok(warnings.some((w) => w.includes('real.example')), 'the failure is still reported');
   } finally { globalThis.fetch = origFetch; console.warn = origWarn; }
 });
 

@@ -164,7 +164,7 @@ export function AccountMenu({
           </div>
           {active === 'demo' ? (
             <p className="px-1 pt-2 text-[11px] leading-snug text-muted">
-              Practice money — never withdrawable.
+              Practice money: never withdrawable.
             </p>
           ) : null}
         </div>

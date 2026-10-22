@@ -2,16 +2,21 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { validatePassword, validateUsername } from "./credentials.js";
 
-test("validatePassword: accepts a strong-enough password", () => {
+test("validatePassword: a four-digit PIN is a password, and so is everything that was one before", () => {
+  // The floor moved to four with no character classes, so the keypad PIN this product asks for is
+  // valid — and every credential that passed the old rule still passes, so nobody is reset.
+  assert.deepEqual(validatePassword("1234"), { ok: true });
+  assert.deepEqual(validatePassword("0000"), { ok: true });
   assert.deepEqual(validatePassword("hunter2pass"), { ok: true });
+  assert.deepEqual(validatePassword("abcdefgh"), { ok: true });   // was NEEDS_DIGIT
+  assert.deepEqual(validatePassword("12345678"), { ok: true });   // was NEEDS_LETTER
 });
 
-test("validatePassword: rejects short / missing letter / missing digit / oversized", () => {
-  assert.equal(validatePassword("ab1").reason, "TOO_SHORT");
-  assert.equal(validatePassword("12345678").reason, "NEEDS_LETTER");
-  assert.equal(validatePassword("abcdefgh").reason, "NEEDS_DIGIT");
-  assert.equal(validatePassword("a1" + "x".repeat(200)).reason, "TOO_LONG");
-  assert.equal(validatePassword(12345678 as unknown).reason, "INVALID");
+test("validatePassword: only length is refused, and the ceiling stays", () => {
+  assert.equal(validatePassword("123").reason, "TOO_SHORT");
+  // The maximum is a hashing-cost bound (scrypt input), not a strength rule, so it survives.
+  assert.equal(validatePassword("x".repeat(200)).reason, "TOO_LONG");
+  assert.equal(validatePassword(1234 as unknown).reason, "INVALID");
 });
 
 test("validateUsername: accepts valid handles", () => {

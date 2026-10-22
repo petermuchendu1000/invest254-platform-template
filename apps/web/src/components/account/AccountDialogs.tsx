@@ -3,6 +3,8 @@
 import { useEffect, useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import { cn } from '@/lib/cn';
+import { useTerminalSkin } from '@/lib/ui/useTerminalSkin';
+import { MT5_TOKENS } from '@/lib/ui/mt5Tokens';
 import { api } from '@/lib/api/endpoints';
 import { ApiError } from '@/lib/api/client';
 import { useSession } from '@/lib/auth/session';
@@ -19,11 +21,28 @@ function Shell({ title, sub, icon, onClose, children }: { title: string; sub?: s
     document.addEventListener('keydown', k);
     return () => document.removeEventListener('keydown', k);
   }, [onClose]);
+  const mt5 = useTerminalSkin();
   return (
     <div className="fixed inset-0 z-[70] grid place-items-center p-3 sm:p-6" role="dialog" aria-modal="true" aria-label={title}>
       <button aria-label="Close" className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative flex max-h-[92vh] w-full max-w-[460px] flex-col overflow-hidden rounded-2xl border border-border bg-surface shadow-2xl">
-        <header className="flex items-center gap-3 border-b border-border bg-gradient-to-r from-accent/10 to-transparent px-5 py-4">
+      {/**
+        * MetaTrader's palette on a terminal brand, through the token repaint.
+        *
+        * This dialog builds its own `fixed inset-0` overlay rather than going through `ui/Modal`, so
+        * nothing above it could repaint it: it reached the terminal's account screen in the app's
+        * own brand, with a soft 2xl radius, a brand-accent header gradient and accent buttons. The
+        * tokens are the established answer here (see lib/ui/mt5Tokens) because every class in the
+        * subtree already resolves through `--pp-*`, so the whole form changes palette with no diff
+        * through its logic.
+        */}
+      <div
+        className={cn(
+          'relative flex max-h-[92vh] w-full max-w-[460px] flex-col overflow-hidden border border-border bg-surface shadow-2xl',
+          mt5 ? 'mt5-square rounded-sm' : 'rounded-2xl',
+        )}
+        {...(mt5 ? { style: MT5_TOKENS } : {})}
+      >
+        <header className={cn('flex items-center gap-3 border-b border-border px-5 py-4', mt5 ? 'bg-surface-2' : 'bg-gradient-to-r from-accent/10 to-transparent')}>
           <span className="grid h-9 w-9 place-items-center rounded-xl border border-accent/40 bg-accent/10 text-accent"><DIcon name={icon} className="h-5 w-5" /></span>
           <div className="flex-1"><h2 className="text-[14px] font-semibold text-fg">{title}</h2>{sub ? <p className="text-[11px] text-muted">{sub}</p> : null}</div>
           <button type="button" onClick={onClose} aria-label="Close" className="grid h-8 w-8 place-items-center rounded-lg text-muted hover:text-fg"><DIcon name="close" className="h-4 w-4" /></button>
@@ -132,7 +151,20 @@ export function VerifyIdentityDialog() {
   const [selfie, setSelfie] = useState<File | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [retry, setRetry] = useState(false);
-  const st = me.data?.status ?? 'none';
+  /**
+   * What this account's verification state ACTUALLY is, or that it is not known.
+   *
+   * `me.data?.status ?? 'none'` was the bug: it collapsed "we could not find out" into "you have
+   * never submitted", and `showForm` is keyed on `'none'`. So a failed or not-yet-made `GET /kyc`
+   * drew the whole blank form to someone whose documents were already under review — which is what
+   * "I can resend the details all over again as if I never submitted" is. The query is not even
+   * made until the session token has rehydrated from storage, and `isLoading` is false while it is
+   * disabled, so the ordinary first render hit this.
+   *
+   * Four states, and `'unknown'` is one of them. Nothing may offer the form on `'unknown'`.
+   */
+  const st: 'unknown' | 'none' | 'pending' | 'approved' | 'rejected' =
+    me.isSuccess && me.data ? me.data.status : 'unknown';
   const needsBack = docType !== 'passport';
   const ready = fullName.trim().length >= 3 && idNumber.trim().length >= 4 && !!dob && !!front && !!selfie && (!needsBack || !!back);
 
@@ -143,6 +175,11 @@ export function VerifyIdentityDialog() {
       await submit.mutateAsync({ docType, fullName: fullName.trim(), idNumber: idNumber.trim(), dateOfBirth: dob, front: await shrink(front!), back: needsBack && back ? await shrink(back) : null, selfie: await shrink(selfie!) });
       toast.push({ tone: 'success', title: 'Documents sent' });
       setRetry(false);
+      // Clear what was typed and attached. The form used to sit there fully filled with a live
+      // "Send for review" button under it, so the obvious thing to do was press it again — and the
+      // second attempt burns three uploads before the server's ALREADY_PENDING comes back.
+      setFullName(''); setIdNumber(''); setDob('');
+      setFront(null); setBack(null); setSelfie(null);
     } catch (e) { setErr(e instanceof ApiError ? e.message : 'Could not send your documents. Try again.'); }
   };
 
@@ -152,10 +189,24 @@ export function VerifyIdentityDialog() {
     : st === 'rejected' ? <div className="rounded-lg bg-down/10 px-3 py-2.5 text-sm text-down"><b>Not approved.</b> {me.data?.latest?.reviewNote}</div>
     : null
   );
+  // Never on `'unknown'`: offering the form to someone who may already have submitted is the whole
+  // defect. An account that genuinely has not submitted sees it the moment the status arrives.
   const showForm = st === 'none' || (st === 'rejected' && retry);
   return (
     <Shell title="Verify Identity" icon="idcard" onClose={close}>
-      {me.isLoading ? <p className="text-sm text-muted">Loading…</p> : (
+      {st === 'unknown' && !me.isError ? <p className="text-sm text-muted">Loading…</p> : st === 'unknown' ? (
+        /* Say that the status could not be read, and offer the retry. Silently drawing the form
+           here is what let documents be sent twice. */
+        <div className="flex flex-col gap-3">
+          <p className="rounded-lg bg-down/10 px-3 py-2.5 text-sm text-down" role="alert">
+            Your verification status could not be loaded, so this form is not being shown: you may
+            already have sent your documents.
+          </p>
+          <button type="button" className={btn} onClick={() => void me.refetch()} disabled={me.isFetching}>
+            {me.isFetching ? 'Checking…' : 'Try again'}
+          </button>
+        </div>
+      ) : (
         <div className="flex flex-col gap-3">
           {status}
           {st === 'rejected' && !retry ? <button type="button" className={btn} onClick={() => setRetry(true)}>Send new documents</button> : null}

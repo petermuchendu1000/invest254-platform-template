@@ -99,6 +99,41 @@ test("ledger reconcile never STRANDS a referenced payment whose tx does not exis
   assert.equal(await repo.getBalance("u2"), 15_000);
 });
 
+test("a reference we do NOT own never reaches fn_complete_deposit (the sweep stopped raising per row)", async () => {
+  /*
+   * The regression this pins is a log, not a balance. PayHero's ledger is one shared account, so most
+   * rows carry references written by something else; the sweep used to find that out by calling
+   * fn_complete_deposit and catching TX_NOT_FOUND. Every miss raised a plpgsql exception that Postgres
+   * records as an ERROR, once a minute, forever — 954 of them in 96 minutes of production logs, which
+   * is every error line the database had. The outcome below (claimable, not stranded) is unchanged and
+   * already covered above; what is asserted here is that we no longer ASK about a reference we know is
+   * not ours.
+   */
+  const { repo, svc, ledger } = rig({ rows: [
+    inbound({ mpesaCode: "FOREIGN1", amountCents: 15_000, externalReference: "someone-elses-ref" }),
+    inbound({ mpesaCode: "FOREIGN2", amountCents: 25_000, externalReference: "another-foreign-ref" }),
+  ] });
+  const asked: string[] = [];
+  const realComplete = repo.completeDeposit.bind(repo);
+  repo.completeDeposit = async (ref, code, desc, receipt, raw) => { asked.push(ref); return realComplete(ref, code, desc, receipt, raw); };
+
+  const r = await svc.reconcilePayHeroLedger();
+  assert.deepEqual(asked, [], "a foreign reference must not be sent to the deposit RPC at all");
+  assert.equal(r.settled, 0);
+  assert.equal(r.ingested, 2);                     // still claimable-by-code, still not stranded
+  assert.equal(r.errors, 0);
+  assert.equal((await svc.claimPaybillDeposit("u2", "FOREIGN1")).status, "credited");
+
+  // And the one that IS ours still goes through the RPC untouched.
+  const { txId } = await svc.initiateLipwaDeposit("u1", 20_000);
+  asked.length = 0;
+  ledger.rows.push(inbound({ mpesaCode: "OURS1", amountCents: 20_000, externalReference: txId }));
+  const r2 = await svc.reconcilePayHeroLedger();
+  assert.deepEqual(asked, [txId], "our own reference must still be settled through fn_complete_deposit");
+  assert.equal(r2.settled, 1);
+  assert.equal(await repo.getBalance("u1"), 20_000);
+});
+
 test("ledger reconcile tolerates a transient ledger read failure without crediting anything", async () => {
   const repo = new InMemoryPaymentRepository(); repo.seed("u1", 0);
   const throwing: PayHeroClient = {

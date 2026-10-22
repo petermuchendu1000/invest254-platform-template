@@ -5,7 +5,7 @@ import { Money } from '@/components/ui/Money';
 import { Section, TableWrap, Th, Td, Empty } from '@/components/admin/ui';
 import { useRealCashRtp, useConfigReview } from '@/lib/admin/hooks';
 
-const pct = (v: number | null | undefined) => (v == null ? '—' : `${(v * 100).toFixed(1)}%`);
+const pct = (v: number | null | undefined) => (v == null ? '-' : `${(v * 100).toFixed(1)}%`);
 const fmtDate = (ms: number) => new Date(ms).toLocaleString('en-KE', { timeZone: 'Africa/Nairobi', dateStyle: 'medium', timeStyle: 'short' });
 
 /**
@@ -16,7 +16,7 @@ const fmtDate = (ms: number) => new Date(ms).toLocaleString('en-KE', { timeZone:
 export function RealCashRtpPanel() {
   const q = useRealCashRtp();
   return (
-    <Section title="Return to player — real money">
+    <Section title="Return to player: real money">
       <p className="mb-2 text-xs text-muted">
         How much of the money players really staked came back to them, from the ledger. <strong>Real players</strong> are
         withdrawable money; <strong>Marketer (demo)</strong> balances can&apos;t be withdrawn and are shown separately.{q.data?.rtpTarget != null && <> Target: <strong>{pct(q.data.rtpTarget)}</strong>.</>}
@@ -87,7 +87,7 @@ export function ConfigChangeReviewPanel() {
                   <Td className="whitespace-nowrap">{fmtDate(r.createdAtMs)}</Td>
                   <Td numeric>{pct(r.houseEdge)}{r.prevHouseEdge != null && r.prevHouseEdge !== r.houseEdge && <span className="text-muted"> (was {pct(r.prevHouseEdge)})</span>}</Td>
                   <Td numeric>{pct(r.targetWinRate)}{r.prevTargetWinRate != null && r.prevTargetWinRate !== r.targetWinRate && <span className="text-muted"> (was {pct(r.prevTargetWinRate)})</span>}</Td>
-                  <Td className="text-muted">{r.changedFields.join(', ') || '—'}</Td>
+                  <Td className="text-muted">{r.changedFields.join(', ') || '-'}</Td>
                   <Td>
                     {r.risk
                       ? <span className="rounded bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800 dark:bg-amber-900 dark:text-amber-200" title={r.riskReason}>⚠ review</span>

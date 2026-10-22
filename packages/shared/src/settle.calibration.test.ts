@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 import {
   CurveGenerator, SettlementEngine, SeededRng,
   winMultiplier, solveTruncExpBeta,
-  checkFeasible, rtp, requiredMeanWinMultiplier, DEFAULT_CONFIG,
+  checkFeasible, rtp, requiredMeanWinMultiplier, DEFAULT_CONFIG, CALIBRATION_WINDOW_S,
+  curveDomain,
+  SYMBOL_GROUPS, symbolsInGroup, DEFAULT_SYMBOL,
   type GameConfig,
 } from "@invest254/shared";
 
@@ -42,7 +44,7 @@ for (const lc of LIVE) {
     const cfg = cfgFor(lc.houseEdge, lc.targetWinRate);
     assert.equal(checkFeasible(cfg).ok, true, "config must be feasible to calibrate");
     for (const seed of SEEDS) {
-      const eng = new SettlementEngine(new CurveGenerator(seed, cfg), cfg, "calibration", cfg.defaultDurationS, 3600, CAL);
+      const eng = new SettlementEngine(new CurveGenerator(seed, cfg), cfg, "calibration", cfg.defaultDurationS, CALIBRATION_WINDOW_S, CAL);
       const rnd = new SeededRng(seed, "eval");
       let win = 0, winB = 0, winS = 0, nB = 0, nS = 0, payout = 0, stakeTot = 0;
       for (let i = 0; i < EVAL; i++) {
@@ -64,16 +66,39 @@ for (const lc of LIVE) {
 }
 
 // ── calibration window generalises to the WHOLE day (stationarity check) ──
-test("calibration on [0,3600] generalises to entryT across the full 24h day", () => {
+/**
+ * Calibration generalises across the day, measured ACROSS DAYS rather than within one.
+ *
+ * A contract is held for `defaultDurationS` (900s), so entries less than that apart look through
+ * overlapping windows and count as very nearly one observation. A 4h bucket therefore holds about
+ * 14_400 / 900 = 16 independent samples however many entries are drawn from it, and a single day's
+ * bucket win-rate scatters far too widely for a ±0.05 gate: the old single-seed form failed on
+ * roughly one honest run in ten per bucket. It passed historically only because a ten-second
+ * contract gave each bucket 1,440 independent windows instead of 16.
+ *
+ * Averaging each bucket across seeds is also the question worth asking. One day's hot afternoon is
+ * that day's path, which a player cannot know in advance because the seed is secret and rotates; a
+ * bucket that sits off target on day after day is a mispricing. See the longer argument and the
+ * positive control in curve.exploit.test.ts, which gates the same property for the house edge.
+ */
+test("calibration generalises to entryT across the full 24h day", () => {
   const cfg = cfgFor(0.05, 0.65);
-  const eng = new SettlementEngine(new CurveGenerator(SEEDS[0]!, cfg), cfg, "calibration", cfg.defaultDurationS, 3600, CAL);
-  const rnd = new SeededRng(SEEDS[0]!, "gen");
-  const bucket = new Array(6).fill(0), cnt = new Array(6).fill(0);
-  for (let i = 0; i < 60_000; i++) {
-    const t = rnd.range(0, 86_400); const b = Math.min(5, Math.floor(t / 14_400));
-    cnt[b]++; if (eng.settle(25000, i % 2 ? "buy" : "sell", t).result === "win") bucket[b]++;
+  const seeds = Array.from({ length: 24 }, (_, i) => `gen-day-${i}`);
+  const perSeed = seeds.map((seed) => {
+    const eng = new SettlementEngine(new CurveGenerator(seed, cfg), cfg, "calibration", cfg.defaultDurationS, CALIBRATION_WINDOW_S, CAL);
+    const rnd = new SeededRng(seed, "gen");
+    const bucket = new Array(6).fill(0), cnt = new Array(6).fill(0);
+    for (let i = 0; i < 6_000; i++) {
+      const t = rnd.range(0, 86_400); const b = Math.min(5, Math.floor(t / 14_400));
+      cnt[b]++; if (eng.settle(25000, i % 2 ? "buy" : "sell", t).result === "win") bucket[b]++;
+    }
+    return bucket.map((w, b) => w / cnt[b]);
+  });
+  for (let b = 0; b < 6; b++) {
+    const col = perSeed.map((r) => r[b]!);
+    const m = col.reduce((s, x) => s + x, 0) / col.length;
+    assert.ok(Math.abs(m - 0.65) <= 0.03, `4h bucket ${b} across-seed wr ${m.toFixed(3)} drifts from target`);
   }
-  for (let b = 0; b < 6; b++) assert.ok(Math.abs(bucket[b] / cnt[b] - 0.65) <= 0.05, `4h bucket ${b} wr ${(bucket[b]/cnt[b]).toFixed(3)} drifts from target`);
 });
 
 // ── winMultiplier — RTP-preserving: E[multiplier|win] == meanMult, bounded in (lo, cap] ──
@@ -108,7 +133,7 @@ test("solveTruncExpBeta: recovering beta reproduces the requested mean on (a,b)"
 // ── liveWinMultiplier — monotone rise to the committed final, never above it ──
 test("liveWinMultiplier: monotone increasing, starts at 1, ends at final, <= final for g in [0,1]", () => {
   const cfg = cfgFor(0.05, 0.65);
-  const eng = new SettlementEngine(new CurveGenerator(SEEDS[0]!, cfg), cfg, "calibration", cfg.defaultDurationS, 3600, CAL);
+  const eng = new SettlementEngine(new CurveGenerator(SEEDS[0]!, cfg), cfg, "calibration", cfg.defaultDurationS, CALIBRATION_WINDOW_S, CAL);
   for (const final of [1.2, 2.5, 5]) {
     let prev = -Infinity;
     for (let g = 0; g <= 1.0001; g += 0.05) {
@@ -137,4 +162,120 @@ test("checkFeasible: rejects infeasible economies (RTP unreachable within the ca
   assert.equal(checkFeasible(cfgFor(0.01, 0.05)).ok, false, "edge 0.01 / wr 0.05 needs mean 19.8 > cap");
   // win-rate above RTP -> required mean <= 1 -> winners wouldn't profit -> infeasible
   assert.equal(checkFeasible(cfgFor(0.5, 0.9)).ok, false, "RTP 0.5 at wr 0.9 -> mean 0.56 <= 1");
+});
+
+// ─────────────────────── THE MULTI-SYMBOL GATE ───────────────────────
+//
+// Each tradable symbol gets its own curve from the same day seed, via a domain separator on the
+// seed (see curveDomain). The question this section answers, before any multi-symbol work is built
+// on top of it, is whether the calibrated win rate and RTP still hold on a curve the calibrator has
+// never seen.
+//
+// They should: a per-symbol curve is the SAME stochastic process with a different seed, and the
+// calibration (tau, gain) is a property of that process's distribution rather than of any one seed.
+// But "should" is not evidence, so it is measured here per symbol. If this fails, multi-symbol does
+// not ship in the statistical path.
+
+/**
+ * The gate's sample: the default symbol plus the first instrument of every group in the real
+ * catalogue.
+ *
+ * Drawn from the catalogue rather than hand-listed deliberately. The catalogue carries ninety-odd
+ * symbols and calibrating all of them would cost minutes of CI for no new information — every curve
+ * is the same stochastic process under a different seed. But a NEW GROUP is new information, and
+ * deriving the sample this way means adding one puts it through the gate automatically instead of
+ * relying on whoever adds it to remember this file.
+ */
+const SYMBOLS = [
+  DEFAULT_SYMBOL,
+  ...SYMBOL_GROUPS.map((g) => symbolsInGroup(g)[0]!.symbol),
+].filter((s, i, all) => all.indexOf(s) === i);
+
+for (const lc of [
+  // Production: the shipped default.
+  { label: "production default", houseEdge: 0.75, targetWinRate: 0.125 },
+  // A marketer-shaped config, at the other end of the range.
+  { label: "marketer-shaped", houseEdge: 0.05, targetWinRate: 0.8 },
+]) {
+  test(`multi-symbol gate (${lc.label}): every symbol's own curve honours the calibration`, () => {
+    const cfg = cfgFor(lc.houseEdge, lc.targetWinRate);
+    assert.equal(checkFeasible(cfg).ok, true, "config must be feasible to calibrate");
+    const seed = SEEDS[0]!;
+    for (const symbol of SYMBOLS) {
+      const curve = new CurveGenerator(seed, cfg, "market", symbol);
+      const eng = new SettlementEngine(curve, cfg, "calibration", cfg.defaultDurationS, CALIBRATION_WINDOW_S, CAL);
+      const rnd = new SeededRng(seed, `eval:${symbol}`);
+      let win = 0, payout = 0, stakeTot = 0;
+      for (let i = 0; i < EVAL; i++) {
+        const o = eng.settleVariable(25000, i % 2 ? "buy" : "sell", rnd.range(0, 86_400), i, seed);
+        if (o.result === "win") { win++; payout += o.payoutCents; }
+        stakeTot += 25000;
+      }
+      const wr = win / EVAL, realRtp = payout / stakeTot;
+      assert.ok(
+        Math.abs(wr - lc.targetWinRate) <= WR_TOL,
+        `${symbol}: win-rate ${wr.toFixed(3)} vs target ${lc.targetWinRate}`,
+      );
+      assert.ok(
+        Math.abs(realRtp - rtp(cfg)) <= RTP_TOL,
+        `${symbol}: RTP ${realRtp.toFixed(3)} vs 1-edge ${rtp(cfg).toFixed(3)}`,
+      );
+    }
+  });
+}
+
+test("multi-symbol gate: a symbol's curve is genuinely its own, not a transform of another's", () => {
+  // The failure this guards against is the one that would make multi-symbol fake: if every symbol
+  // were drawn from one series, the charts would be affine transforms of each other and every
+  // "pair" would trace the same shape at a different scale. Independent seeds mean the per-second
+  // increments should be uncorrelated.
+  const cfg = DEFAULT_CONFIG;
+  const seed = SEEDS[0]!;
+  const sample = (symbol: string): number[] => {
+    const c = new CurveGenerator(seed, cfg, "market", symbol);
+    const out: number[] = [];
+    for (let t = 0; t < 4000; t++) out.push(c.rate(t + 1) - c.rate(t));
+    return out;
+  };
+  const a = sample("EURUSD"), b = sample("BTCUSD");
+  const mean = (x: number[]) => x.reduce((s, v) => s + v, 0) / x.length;
+  const ma = mean(a), mb = mean(b);
+  let cov = 0, va = 0, vb = 0;
+  for (let i = 0; i < a.length; i++) {
+    const da = a[i]! - ma, db = b[i]! - mb;
+    cov += da * db; va += da * da; vb += db * db;
+  }
+  const r = cov / Math.sqrt(va * vb);
+  assert.ok(Math.abs(r) < 0.1, `two symbols' increments correlate at r=${r.toFixed(4)}`);
+  // And they are not simply the same numbers.
+  assert.notDeepEqual(a.slice(0, 50), b.slice(0, 50));
+});
+
+test("multi-symbol gate: the default symbol reconstructs bit-for-bit, so history is untouched", () => {
+  // Every day already generated and every position already settled used the bare "curve" domain.
+  // XAUUSD and the no-symbol caller must keep landing on exactly those numbers, or the chart would
+  // redraw history that does not match what was settled.
+  const cfg = DEFAULT_CONFIG;
+  const seed = SEEDS[1]!;
+  const before = new CurveGenerator(seed, cfg);
+  const named = new CurveGenerator(seed, cfg, "market", "XAUUSD");
+  for (let t = 0; t < 2000; t += 7) {
+    assert.equal(named.rate(t), before.rate(t), `t=${t}`);
+  }
+  assert.equal(curveDomain(undefined), "curve");
+  assert.equal(curveDomain("XAUUSD"), "curve");
+  assert.equal(curveDomain("EURUSD"), "curve:EURUSD");
+  // A different symbol must NOT land on the old domain.
+  const other = new CurveGenerator(seed, cfg, "market", "EURUSD");
+  assert.notEqual(other.rate(500), before.rate(500));
+});
+
+test("multi-symbol gate: the wave profile separates too, for the line brands", () => {
+  const cfg = DEFAULT_CONFIG;
+  const seed = SEEDS[0]!;
+  const base = new CurveGenerator(seed, cfg, "wave");
+  const same = new CurveGenerator(seed, cfg, "wave", "XAUUSD");
+  const other = new CurveGenerator(seed, cfg, "wave", "EURUSD");
+  assert.deepEqual(same.components, base.components, "the default must stay byte-identical");
+  assert.notDeepEqual(other.components, base.components, "a named symbol must differ");
 });

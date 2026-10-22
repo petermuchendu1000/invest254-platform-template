@@ -11,6 +11,8 @@ import { walletFigures } from '@/lib/wallet/figures';
 import { useSession } from '@/lib/auth/session';
 import { DepositPanel } from '@/components/wallet/DepositPanel';
 import { WithdrawForm } from '@/components/wallet/WithdrawForm';
+import { useTerminalSkin } from '@/lib/ui/useTerminalSkin';
+import { MT5_CONFIRM_TOKENS } from '@/lib/ui/mt5Tokens';
 
 const TABS: { mode: WalletMode; label: string }[] = [
   { mode: 'deposit', label: 'Deposit' },
@@ -30,6 +32,13 @@ export function WalletModal() {
   const token = useSession((s) => s.token);
   const { data: wallet } = useWallet();
   const f = walletFigures(wallet);
+  /**
+   * On a candlestick brand the sheet is part of the terminal, so it wears MetaTrader's palette. The
+   * payment forms inside are NOT rewritten: re-pointing the theme tokens on the panel repaints the
+   * whole tree, and a thousand lines of money-moving code stay exactly as they are. Only the sheet's
+   * own chrome — the title bar and the tab strip — is MetaTrader's here.
+   */
+  const mt5 = useTerminalSkin();
 
   // DEMO-3: the Demo account has no way out. Any caller that still asks for the Withdraw tab (a stale
   // store value, a deep link, a mode switched while the sheet was open) lands on Deposit instead —
@@ -40,11 +49,40 @@ export function WalletModal() {
   if (!open) return null;
 
   return (
-    <Modal open={open} onClose={close} title={active === 'deposit' ? 'Deposit' : 'Withdraw'} chrome={false}>
-      {/* Header */}
-      <div className="flex items-center justify-between border-b border-border p-4">
-        <h2 className="text-lg font-semibold">M-Pesa wallet</h2>
-        <Button variant="ghost" size="sm" aria-label="Close" onClick={close}>✕</Button>
+    <Modal
+      open={open}
+      onClose={close}
+      title={active === 'deposit' ? 'Deposit' : 'Withdraw'}
+      chrome={false}
+      panelStyle={mt5 ? MT5_CONFIRM_TOKENS : undefined}
+      // The tokens repaint the colours of all 1,100 lines of payment code below; `mt5-square` is the
+      // other half — the radii, which are literal classes and so survive a token repaint.
+      panelClassName={mt5 ? 'mt5-square sm:!rounded-sm' : undefined}
+    >
+      {/* Header. MetaTrader's is a solid blue band with the screen name and a close control. */}
+      <div
+        className={cn(
+          'flex items-center justify-between border-b',
+          mt5 ? 'border-[var(--mt5-border)] bg-[var(--mt5-blue)] px-3 py-2.5' : 'border-border p-4',
+        )}
+      >
+        <h2 className={cn('font-semibold', mt5 ? 'text-[15px] text-white' : 'text-lg')}>
+          {mt5 ? (active === 'deposit' ? 'Deposit' : 'Withdraw') : 'M-Pesa wallet'}
+        </h2>
+        {mt5 ? (
+          <button
+            type="button"
+            aria-label="Close"
+            onClick={close}
+            className="-mr-1 rounded p-1 text-white transition hover:bg-white/20"
+          >
+            <svg viewBox="0 0 24 24" className="h-[18px] w-[18px]" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
+              <path d="M6 6l12 12M18 6L6 18" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
+        ) : (
+          <Button variant="ghost" size="sm" aria-label="Close" onClick={close}>✕</Button>
+        )}
       </div>
 
       {/* Balance — the anchor for both actions */}
@@ -68,8 +106,16 @@ export function WalletModal() {
 
       {/* Deposit / Withdraw toggle — hidden entirely on the Demo account (Deposit is the only action) */}
       {f.canWithdraw ? (
-        <div className="px-4 pt-3">
-          <div className="flex rounded-xl border border-border bg-surface-2 p-1" role="tablist" aria-label="Wallet action">
+        <div className={mt5 ? '' : 'px-4 pt-3'}>
+          {/* MetaTrader underlines the active tab in blue rather than filling it. */}
+          <div
+            className={cn(
+              'flex',
+              mt5 ? 'border-b border-[var(--mt5-border)]' : 'rounded-xl border border-border bg-surface-2 p-1',
+            )}
+            role="tablist"
+            aria-label="Wallet action"
+          >
             {TABS.map(({ mode: m, label }) => {
               const on = active === m;
               return (
@@ -80,8 +126,13 @@ export function WalletModal() {
                   aria-selected={on}
                   onClick={() => setMode(m)}
                   className={cn(
-                    'flex-1 rounded-lg py-2 text-sm font-semibold transition',
-                    on ? 'bg-accent text-accent-fg shadow-sm' : 'text-muted hover:text-fg',
+                    'flex-1 text-sm font-semibold transition',
+                    mt5
+                      ? cn(
+                        'border-b-2 py-2.5 uppercase tracking-wider',
+                        on ? 'border-[var(--mt5-blue)] text-white' : 'border-transparent text-[var(--mt5-muted)]',
+                      )
+                      : cn('rounded-lg py-2', on ? 'bg-accent text-accent-fg shadow-sm' : 'text-muted hover:text-fg'),
                   )}
                 >
                   {label}

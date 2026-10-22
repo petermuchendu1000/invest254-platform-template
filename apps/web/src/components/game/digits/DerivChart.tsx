@@ -1,7 +1,10 @@
 'use client';
 
-import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import type { InstrumentTick } from '@/lib/game/useInstrument';
+import type { ConnStatus } from '@/lib/game/types';
+import { ChartPlaceholder } from '@/components/ui/ChartPlaceholder';
+import { dataPhaseOf, phaseIsBlocking } from '@/lib/ui/dataPhase';
 
 function readVar(cs: CSSStyleDeclaration, name: string, fallback: string): string {
   const v = cs.getPropertyValue(name).trim();
@@ -33,7 +36,7 @@ type Marker = { time: number; kind: 'entry' | 'win' | 'loss'; text?: string };
 
 /** Map our semantic entry/settle markers to lightweight-charts series markers, resolving brand
  *  colours from CSS vars. Sorted ascending by time (the library requires it). */
-function buildLcMarkers(markers: Marker[]): any[] {
+function buildLcMarkers(markers: Marker[], marketer = false): any[] {
   const cs = getComputedStyle(document.documentElement);
   const accent = readVar(cs, '--pp-accent', '#3B82F6');
   const up = readVar(cs, '--pp-up', '#22C55E');
@@ -41,7 +44,8 @@ function buildLcMarkers(markers: Marker[]): any[] {
   return [...markers]
     .sort((a, b) => a.time - b.time)
     .map((m) => {
-      const color = m.kind === 'entry' ? accent : m.kind === 'win' ? up : down;
+      // MARKETER: neutral single accent for every marker (no green-win / red-loss finance tell).
+      const color = marketer ? accent : m.kind === 'entry' ? accent : m.kind === 'win' ? up : down;
       return {
         time: m.time as unknown as import('lightweight-charts').UTCTimestamp,
         position: m.kind === 'entry' ? 'belowBar' : 'aboveBar',
@@ -82,6 +86,18 @@ interface DerivChartProps {
   /** When true, a click on the chart drops a horizontal price line at that price. */
   drawMode?: boolean;
   onLineDrawn?: () => void;
+  /** MARKETER: hide the price axis, time axis, grid and numeric live-price tag, and force a neutral
+   *  accent area — so the chart reads as a game visual, not a trading chart (TikTok Phase 2). */
+  marketer?: boolean;
+  /**
+   * The game socket's state, used ONLY to say what the empty chart is waiting for.
+   *
+   * Optional because the chart does not need it to draw — it reads the tick buffer. Without it the
+   * pane was a bare `--pp-bg` rectangle for the full height of the screen whenever the socket was
+   * still connecting or the instrument had not quoted yet: no axes (the library is imported
+   * lazily), no grid, no text, nothing. On a phone that is the entire viewport.
+   */
+  status?: ConnStatus;
 }
 
 /**
@@ -92,10 +108,22 @@ interface DerivChartProps {
  * the imperative handle. Purely presentational.
  */
 export const DerivChart = forwardRef<DerivChartHandle, DerivChartProps>(function DerivChart(
-  { getTicks, getLastTick, resetKey, precision = 2, paused = false, barSpacing, markers = [], variant = 'line', drawMode = false, onLineDrawn },
+  { getTicks, getLastTick, resetKey, precision = 2, paused = false, barSpacing, markers = [], variant = 'line', drawMode = false, onLineDrawn, marketer = false, status = 'open' },
   ref,
 ) {
   const hostRef = useRef<HTMLDivElement | null>(null);
+  /**
+   * Has this chart ever plotted a point? Once true it STAYS true, so a reconnect keeps the last
+   * picture rather than blanking the chart a trader is reading. Latched through a ref as well as
+   * state because the plotting loop runs every 200ms and must not call `setState` on every pass.
+   */
+  const [hasPoints, setHasPoints] = useState(false);
+  const plottedRef = useRef(false);
+  const markPlotted = () => {
+    if (plottedRef.current) return;
+    plottedRef.current = true;
+    setHasPoints(true);
+  };
   const tagRef = useRef<HTMLDivElement | null>(null);
   const dotRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<import('lightweight-charts').IChartApi | null>(null);
@@ -116,7 +144,8 @@ export const DerivChart = forwardRef<DerivChartHandle, DerivChartProps>(function
     const cs = getComputedStyle(document.documentElement);
     const accent = readVar(cs, '--pp-accent', '#3B82F6');
     const fg = readVar(cs, '--pp-fg', '#E6EDF3');
-    return v === 'area'
+    // MARKETER: always the soft accent area fill — the thin price-line variant reads as a trading tick line.
+    return v === 'area' || marketer
       ? { lineColor: accent, topColor: `${accent}40`, bottomColor: `${accent}04`, lineWidth: 2 as const }
       : { lineColor: fg, topColor: 'rgba(0,0,0,0)', bottomColor: 'rgba(0,0,0,0)', lineWidth: 1 as const };
   };
@@ -126,6 +155,8 @@ export const DerivChart = forwardRef<DerivChartHandle, DerivChartProps>(function
     const s = seriesRef.current; const c = chartRef.current;
     const tag = tagRef.current; const dot = dotRef.current;
     const rate = lastRateRef.current;
+    // MARKETER: never show the numeric live-price tag/dot (it reads as a price).
+    if (marketer) { if (tag) tag.style.opacity = '0'; if (dot) dot.style.opacity = '0'; return; }
     if (!s || !c || !tag || !dot || rate == null) return;
     const y = s.priceToCoordinate(rate);
     if (y == null) { tag.style.opacity = '0'; dot.style.opacity = '0'; return; }
@@ -176,9 +207,12 @@ export const DerivChart = forwardRef<DerivChartHandle, DerivChartProps>(function
         autoSize: true,
         localization: { locale: safeChartLocale() },
         layout: { background: { type: ColorType.Solid, color: bg }, textColor: text, fontSize: 9, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', attributionLogo: false },
-        grid: { vertLines: { color: `${border}88`, style: LineStyle.Solid }, horzLines: { color: `${border}88`, style: LineStyle.Solid } },
-        rightPriceScale: { borderVisible: false, scaleMargins: { top: 0.12, bottom: 0.12 } },
-        timeScale: { borderVisible: false, timeVisible: true, secondsVisible: true, rightOffset: 6, barSpacing: barSpacing ?? 7 },
+        // MARKETER: no grid, no price axis, no time axis — the numeric scales are the trading tell.
+        grid: marketer
+          ? { vertLines: { visible: false }, horzLines: { visible: false } }
+          : { vertLines: { color: `${border}88`, style: LineStyle.Solid }, horzLines: { color: `${border}88`, style: LineStyle.Solid } },
+        rightPriceScale: { visible: !marketer, borderVisible: false, scaleMargins: { top: 0.12, bottom: 0.12 } },
+        timeScale: { visible: !marketer, borderVisible: false, timeVisible: true, secondsVisible: true, rightOffset: 6, barSpacing: barSpacing ?? 7 },
         crosshair: { mode: CrosshairMode.Normal },
         handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false },
         handleScale: { mouseWheel: true, pinch: true, axisPressedMouseMove: { time: true, price: false } },
@@ -187,7 +221,7 @@ export const DerivChart = forwardRef<DerivChartHandle, DerivChartProps>(function
 
       const series = chart.addSeries(AreaSeries, {
         ...seriesStyle(variantRef.current),
-        priceLineVisible: true,
+        priceLineVisible: !marketer,   // MARKETER: no dashed live-price guide line
         priceLineStyle: LineStyle.Dashed,
         priceLineWidth: 1,
         priceLineColor: text,
@@ -198,7 +232,7 @@ export const DerivChart = forwardRef<DerivChartHandle, DerivChartProps>(function
 
       const markersApi = createSeriesMarkers(series, []);
       markersApiRef.current = markersApi as unknown as { setMarkers: (m: unknown[]) => void };
-      markersApi.setMarkers(buildLcMarkers(markersPropRef.current) as never);
+      markersApi.setMarkers(buildLcMarkers(markersPropRef.current, marketer) as never);
 
       // Click-to-draw a horizontal price line (pencil tool).
       chart.subscribeClick((p) => {
@@ -215,7 +249,7 @@ export const DerivChart = forwardRef<DerivChartHandle, DerivChartProps>(function
         .map((t) => ({ time: secOf(t.t), value: t.rate }))
         .filter((d) => (seen.has(d.time) ? false : (seen.add(d.time), true)))
         .map((d) => ({ time: d.time as unknown as import('lightweight-charts').UTCTimestamp, value: d.value }));
-      if (data.length) { series.setData(data); lastRateRef.current = data[data.length - 1]!.value; }
+      if (data.length) { series.setData(data); lastRateRef.current = data[data.length - 1]!.value; markPlotted(); }
       lastTRef.current = getLastTick()?.t ?? 0;
       chart.timeScale().scrollToRealTime();
 
@@ -231,6 +265,7 @@ export const DerivChart = forwardRef<DerivChartHandle, DerivChartProps>(function
             plottedAny = true;
           }
         }
+        if (plottedAny) markPlotted();
         if (plottedAny && followRef.current) {
           // Until the buffer is wide enough to fill the chart, stretch it edge to edge (no empty
           // band on the left on big screens); after that, follow the live edge at the chosen zoom.
@@ -268,7 +303,8 @@ export const DerivChart = forwardRef<DerivChartHandle, DerivChartProps>(function
   useEffect(() => { seriesRef.current?.applyOptions(seriesStyle(variant)); }, [variant]);
 
   useEffect(() => {
-    if (markersApiRef.current) markersApiRef.current.setMarkers(buildLcMarkers(markers) as never);
+    if (markersApiRef.current) markersApiRef.current.setMarkers(buildLcMarkers(markers, marketer) as never);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [markers]);
 
   useEffect(() => {
@@ -321,6 +357,12 @@ export const DerivChart = forwardRef<DerivChartHandle, DerivChartProps>(function
         aria-hidden
         className="pointer-events-none absolute right-1 top-0 z-10 rounded-md border border-accent bg-bg px-2 py-[3px] font-mono text-[11px] font-bold tabular-nums text-fg opacity-0 shadow-[0_0_12px_-4px_var(--pp-accent)]"
       />
+      {/* Carries its own `z-10` (see ChartPlaceholder) so the chart canvas cannot paint over it.
+          The price tag and dot above are also `z-10` and come later in the DOM, so they still win
+          the tie and sit on top once there is a price to show. */}
+      {phaseIsBlocking(dataPhaseOf(status, hasPoints)) ? (
+        <ChartPlaceholder phase={dataPhaseOf(status, hasPoints)} />
+      ) : null}
     </div>
   );
 });

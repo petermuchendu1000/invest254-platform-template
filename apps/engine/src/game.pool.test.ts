@@ -115,6 +115,30 @@ test("SELL is disabled brand-wide in pool mode", async () => {
   await assert.rejects(() => h.game.sell(position.id, "p"), /SELL_DISABLED/);
 });
 
+// The client used to draw a Close button on every brand and learn the truth only from the rejection.
+// The hello snapshot now carries the same rule `sell` enforces, so the interface can match it.
+test("the config snapshot reports early close as OFF in pool mode and ON without it", async () => {
+  assert.equal(makeGame(true, 5_000_000).game.onlineConfigSnapshot().earlyCloseEnabled, false);
+  assert.equal(makeGame(false, 5_000_000).game.onlineConfigSnapshot().earlyCloseEnabled, true);
+});
+
+test("the reported flag agrees with what sell actually does, on both settings", async () => {
+  for (const poolOn of [true, false]) {
+    const h = makeGame(poolOn, 5_000_000);
+    h.repo.seed("p", 10_000_000);
+    // A winning contract, so `sellable` is not the thing being tested here.
+    let position = (await h.game.openPosition({ userId: "p", stakeCents: 25000, direction: "buy", role: "player" })).position;
+    for (let i = 0; !position.sellable && i < 40; i++) {
+      await h.game.sell(position.id, "p").catch(() => undefined);
+      position = (await h.game.openPosition({ userId: "p", stakeCents: 25000, direction: "buy", role: "player" })).position;
+    }
+    const reported = h.game.onlineConfigSnapshot().earlyCloseEnabled;
+    const accepted = await h.game.sell(position.id, "p").then(() => true, () => false);
+    if (!position.sellable) continue; // never found a winner in 40 tries: nothing to assert about
+    assert.equal(accepted, reported, `pool=${poolOn}: sell accepted=${accepted} but the snapshot said ${reported}`);
+  }
+});
+
 test("reversing live path: a decided LOSS shows green before collapsing to 0", async () => {
   const h = makeGame(true, 5_000_000);
   h.repo.seed("p", 10_000_000);

@@ -23,6 +23,15 @@ scoped to the template with **contents:write + workflows:write**. Upstream is pu
 secret); `mirror-drift` only reads + writes issues via `GITHUB_TOKEN`. Rotate `MIRROR_PAT` in the
 template's Actions secrets when the platform PAT is rotated.
 
+**A rejected PAT is checked for, not assumed away (BUGLOG #159).** `mirror-sync` asks
+`GET /repos/{template}` with the token before any step uses it. A 200 uses the PAT; anything else
+annotates with the HTTP code and falls back to `GITHUB_TOKEN`, which mirrors every file EXCEPT
+`.github/workflows/` (those paths are held at the template's current content, because one path
+GITHUB_TOKEN may not push refuses the entire push). The expression `secrets.MIRROR_PAT ||
+github.token` alone does not do this — `||` falls back on an EMPTY secret, never on a rejected one,
+which is how an expired token stopped the mirror at its first step for 23 days while an absent token
+would have kept most of it working.
+
 **To intentionally change the template, change it HERE.** Template-only commits are reverted by the
 next sync — that is the point.
 

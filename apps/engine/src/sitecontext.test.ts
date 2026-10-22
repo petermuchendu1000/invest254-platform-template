@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { DEFAULT_VERSIONED_CONFIG, type VersionedGameConfig, type Direction } from "@invest254/shared";
+import { DEFAULT_VERSIONED_CONFIG, type VersionedGameConfig, type Direction, CALIBRATION_WINDOW_S } from "@invest254/shared";
 import { buildSiteContext } from "./sitecontext.js";
 
 const MASTER = "platform-master-xyz";
@@ -15,12 +15,23 @@ const cfgA: VersionedGameConfig = { ...DEFAULT_VERSIONED_CONFIG, version: 1 };
 const cfgB: VersionedGameConfig = { ...DEFAULT_VERSIONED_CONFIG, version: 1, houseEdge: 0.90, targetWinRate: 0.05 };
 
 /** Held-out realized RTP over many random entry times, both directions (hold-to-expiry). */
+/**
+ * Realised RTP, sampled over the window the engine was CALIBRATED on.
+ *
+ * It used to draw its entries from the first hour of the day. That was only accidentally valid
+ * while a contract lasted ten seconds: entries that close ten seconds apart barely overlap, so an
+ * hour held tens of thousands of near-independent samples. The horizon is now fifteen minutes (a
+ * stop needs room to be reached), and entries drawn from one hour then all look through very nearly
+ * the SAME window, so the estimate is dominated by whatever that one window did: measured RTP 0.425
+ * against a 0.25 target. Sampling the whole calibration window keeps the draws independent at any
+ * horizon the config can express.
+ */
 function realizedRtp(ctx: ReturnType<typeof buildSiteContext>, n = 40_000): number {
   const stake = 100_000;
   let paid = 0;
   const dirs: Direction[] = ["buy", "sell"];
   for (let i = 0; i < n; i++) {
-    const entryT = Math.random() * 3600;
+    const entryT = Math.random() * CALIBRATION_WINDOW_S;
     const dir = dirs[i % 2]!;
     paid += ctx.settlement.settle(stake, dir, entryT).payoutCents;
   }
@@ -32,10 +43,26 @@ test("two brands get decorrelated curves from the same master + day", () => {
   const b = buildSiteContext({ masterSeed: MASTER, siteId: SITE_B, dateKey: DAY, cfg: cfgA, calibrationSamples: SAMPLES });
   assert.notEqual(a.seed, b.seed);
   assert.notEqual(a.seedHash, b.seedHash);
-  // Sample the curve at many points; the two brands must not track each other.
-  let diff = 0;
-  for (let t = 0; t < 600; t += 3) diff += Math.abs(a.curve.value(t) - b.curve.value(t));
-  assert.ok(diff / 200 > 0.05, `curves too similar (mean |Δ| ${(diff / 200).toFixed(4)})`);
+
+  // Sample across the whole day; the two brands must not track each other.
+  let diff = 0, n = 0;
+  for (let t = 0; t < 86_400; t += 60) { diff += Math.abs(a.curve.value(t) - b.curve.value(t)); n++; }
+  assert.ok(diff / n > 0.05, `curves too similar (mean |Δ| ${(diff / n).toFixed(4)})`);
+
+  // The separation above is the consequence; INDEPENDENCE is the property. The `market` curve is a
+  // random walk, so two independent brands start from independent levels and drift apart as sqrt(t)
+  // — in the first minutes of a day they can happen to sit close together, which says nothing about
+  // whether they share structure. Correlating the INCREMENTS tests the real thing, and it is the
+  // assertion that would actually catch a shared or derived seed: identical paths correlate at 1.
+  let sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0, m = 0;
+  for (let t = 0; t + 10 < 86_400; t += 10) {
+    const x = a.curve.value(t + 10) - a.curve.value(t);
+    const y = b.curve.value(t + 10) - b.curve.value(t);
+    sx += x; sy += y; sxx += x * x; syy += y * y; sxy += x * y; m++;
+  }
+  const corr = (sxy / m - (sx / m) * (sy / m))
+    / Math.sqrt((sxx / m - (sx / m) ** 2) * (syy / m - (sy / m) ** 2));
+  assert.ok(Math.abs(corr) < 0.05, `brands' increments are correlated (r = ${corr.toFixed(4)})`);
 });
 
 test("each brand calibrates RTP to its OWN economy, independently", () => {

@@ -21,7 +21,12 @@ concurrency:
 
 jobs:
   distribute:
+    # Inert in the mirror template, which can never hold DATABASE_URL: a job-level `if` allocates no
+    # runner, while the step's own `exit 0` still bills a whole minute. "Not the mirror" rather than
+    # "is production" is deliberate — see docs/15 §4.2 rule 3 and BUGLOG #156.
+    if: github.repository != 'petermuchendu1000/invest254-platform-template'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

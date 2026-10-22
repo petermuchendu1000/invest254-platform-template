@@ -31,11 +31,13 @@ export interface Brand {
   /** Per-brand price chart system (0111/0147, ADDON-1): line (default), area, candlestick, bars, baseline. */
   chartStyle?: "line" | "area" | "candlestick" | "bars" | "baseline";
   /**
-   * Per-brand trade UI layout: 'classic' (default rise/fall curve terminal) or 'digits' (the
-   * Deriv-style binary/digits broker interface). Presentation/product-shell only; the money of
+   * Per-brand trade UI layout (0112/0189): 'classic' (default rise/fall curve terminal), 'digits'
+   * (the Deriv-style binary/digits broker interface), 'broker' (the MetaTrader-style terminal,
+   * which a candlestick chart_style also selects) or 'candlestick' (the single-screen chart +
+   * trading panel + chat/top/tournaments rail). Presentation/product-shell only; the money of
    * record stays KES cents. Mirrors the chartStyle toggle pattern.
    */
-  tradeUi?: "classic" | "digits";
+  tradeUi?: "classic" | "digits" | "broker" | "candlestick";
   /**
    * Display-currency units per 1 KES (KES→currency), resolved live by the API. 1 for KES brands.
    * The money of record is ALWAYS KES cents; this only drives how amounts are RENDERED. When it is
@@ -91,8 +93,92 @@ export const DEFAULT_BRAND: Brand = {
   resolved: false,
 };
 
-/** Resolve the brand for a host by asking the API. Falls back to DEFAULT_BRAND on any error. */
+/**
+ * How long a resolved brand is reused without asking the API again.
+ *
+ * This fetch is on the critical path of EVERY server render: nothing of the page can be sent until
+ * it answers, and measured from production it costs 0.6–1.1s (Cloudflare's edge → the API in
+ * iad → Postgres). The API sends `cache-control: no-store`, which is right for a money API's
+ * blanket rule and means nothing between the two caches it either, so every single page view paid
+ * that round trip in full. A brand row is edited by an admin perhaps a few times a year, so sixty
+ * seconds of reuse removes almost all of that cost while keeping a brand edit visible within a
+ * minute of being saved.
+ */
+const BRAND_TTL_MS = 60_000;
+/**
+ * A FALLBACK is remembered only briefly, and deliberately far less than a real answer: it means we
+ * are about to serve the default brand on somebody else's domain, and pinning that for a minute
+ * because of one blip would turn a hiccup into an outage with the wrong logo on it.
+ */
+const BRAND_FALLBACK_TTL_MS = 5_000;
+/** A backstop only. The cache is what makes this fast; this stops a hung API hanging the HTML. */
+const BRAND_TIMEOUT_MS = 8_000;
+
+interface BrandEntry { brand: Brand; atMs: number }
+/**
+ * Module scope, so it lives as long as the server instance (a Workers isolate on Cloudflare Pages)
+ * and is shared by every request that lands on it. Deliberately not `next: { revalidate }` alone:
+ * the route is `force-dynamic`, which makes Next default this fetch to `no-store`, and the data
+ * cache's availability depends on the adapter. A plain map needs nothing from the platform.
+ */
+const brandCache = new Map<string, BrandEntry>();
+/** In-flight requests by key, so a burst of concurrent renders makes ONE call, not twenty. */
+const brandInflight = new Map<string, Promise<Brand>>();
+
+/** Drop everything cached. Exported for tests, which must not inherit another test's brand. */
+export function clearBrandCache(): void {
+  brandCache.clear();
+  brandInflight.clear();
+}
+
+/**
+ * Age every entry past its TTL without forgetting it — the state in which the next call really
+ * asks the API again but a cached brand is still there to fall back on. Exported so a test can
+ * reach that state without sleeping for a minute.
+ */
+export function expireBrandCache(): void {
+  for (const [k, v] of brandCache) brandCache.set(k, { ...v, atMs: 0 });
+}
+
+/**
+ * Resolve the brand for a host by asking the API, with a short cache in front.
+ *
+ * Falls back to DEFAULT_BRAND on any error — but prefers a STALE cached brand over that fallback,
+ * because the right brand a minute out of date beats the wrong brand entirely.
+ */
 export async function resolveBrand(
+  apiBaseUrl: string,
+  host: string,
+  opts: { country?: string | null; currency?: string | null } = {},
+): Promise<Brand> {
+  // The currency params genuinely change the ANSWER (a different display currency and FX rate), so
+  // they are part of the identity of what is cached, exactly as they are part of the URL.
+  const key = `${apiBaseUrl}|${host}|${opts.country ?? ''}|${opts.currency ?? ''}`;
+  const now = Date.now();
+  const hit = brandCache.get(key);
+  if (hit && now - hit.atMs < (hit.brand.resolved ? BRAND_TTL_MS : BRAND_FALLBACK_TTL_MS)) return hit.brand;
+
+  const flying = brandInflight.get(key);
+  if (flying) return flying;
+
+  const promise = fetchBrand(apiBaseUrl, host, opts)
+    .then((brand) => {
+      // A fallback never evicts a brand we once resolved: serving the right brand stale beats
+      // serving the default one on a client's own domain while the API is briefly unhappy.
+      if (!brand.resolved && hit?.brand.resolved) {
+        brandCache.set(key, { brand: hit.brand, atMs: now });
+        return hit.brand;
+      }
+      brandCache.set(key, { brand, atMs: Date.now() });
+      return brand;
+    })
+    .finally(() => { brandInflight.delete(key); });
+
+  brandInflight.set(key, promise);
+  return promise;
+}
+
+async function fetchBrand(
   apiBaseUrl: string,
   host: string,
   opts: { country?: string | null; currency?: string | null } = {},
@@ -104,8 +190,10 @@ export async function resolveBrand(
   if (opts.currency) params.set('currency', opts.currency);
   try {
     const res = await fetch(`${apiBaseUrl}/site/brand?${params.toString()}`, {
-      // Brand rarely changes; let the platform CDN cache it briefly.
       headers: { accept: "application/json" },
+      // The API answers `no-store`, so nothing between here and it caches: reuse is the map above.
+      // The signal is a backstop against a hung connection holding the whole HTML response open.
+      signal: AbortSignal.timeout(BRAND_TIMEOUT_MS),
     });
     if (!res.ok) {
       // A 404 means this host has no ACTIVE brand — a real misconfiguration for a live client

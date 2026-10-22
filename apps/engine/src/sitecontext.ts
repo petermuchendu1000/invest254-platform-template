@@ -1,5 +1,5 @@
 import {
-  CurveGenerator, SettlementEngine, deriveSiteDaySeed, siteCommitment,
+  CurveGenerator, SettlementEngine, CALIBRATION_WINDOW_S, deriveSiteDaySeed, siteCommitment,
   type VersionedGameConfig,
 } from "@invest254/shared";
 
@@ -44,7 +44,7 @@ export function buildSiteContext(a: BuildSiteContextArgs): SiteContext {
   const seedHash = siteCommitment(seed);
   const curve = new CurveGenerator(seed, a.cfg);
   const settlement = a.calibrationSamples
-    ? new SettlementEngine(curve, a.cfg, "calibration", a.cfg.defaultDurationS, 3600, a.calibrationSamples)
+    ? new SettlementEngine(curve, a.cfg, "calibration", a.cfg.defaultDurationS, CALIBRATION_WINDOW_S, a.calibrationSamples)
     : new SettlementEngine(curve, a.cfg);
   return { siteId: a.siteId, dateKey: a.dateKey, seedVersion, seed, seedHash, cfg: a.cfg, curve, settlement };
 }

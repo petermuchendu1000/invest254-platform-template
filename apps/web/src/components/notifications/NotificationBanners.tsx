@@ -4,6 +4,8 @@ import { cn } from '@/lib/cn';
 import { useMyNotifications, useDismissNotification } from '@/lib/notifications/hooks';
 import type { NotificationDto } from '@/lib/api/types';
 import { useSession } from '@/lib/auth/session';
+import { useTerminalSkin } from '@/lib/ui/useTerminalSkin';
+import { MT5_TOKENS } from '@/lib/ui/mt5Tokens';
 
 // Per-level palette with dark-mode counterparts. Blocking (non-dismissible) notices use the
 // same colour but keep the X hidden, so they persist until an admin resolves them.
@@ -24,15 +26,35 @@ export function NotificationBanners() {
   const q = useMyNotifications();
   const dismiss = useDismissNotification();
   const items = token ? q.data?.items ?? [] : [];   // never the previous user's notices
+  /**
+   * These sit directly under the app bar, so on a terminal brand they are the first thing below
+   * MetaTrader's blue band and the last place a brand-green notice should appear. The palette comes
+   * from re-pointing the theme tokens (lib/ui/mt5Tokens), which keeps the per-level colouring below
+   * exactly as written; only the frame changes — full width and square, like the chrome around them.
+   */
+  const mt5 = useTerminalSkin();
   if (items.length === 0) return null;
 
   return (
-    <div className="mx-auto flex w-full max-w-app flex-col gap-2 px-4 pt-3">
+    <div
+      // The per-level colours are translucent tints, so the container has to carry MetaTrader's own
+      // surface under them — without it they sit on the brand's page background and read as a
+      // different product's notice stuck to the top of the terminal.
+      // Each branch carries its OWN spacing rather than overriding the other's: Tailwind resolves
+      // `pt-0` against `pt-3` by stylesheet order, not by the order they appear here, so emitting
+      // both leaves a gap the override looks like it removed.
+      className={cn('flex w-full flex-col', mt5 ? 'gap-px bg-[var(--mt5-surface)]' : 'mx-auto max-w-app gap-2 px-4 pt-3')}
+      {...(mt5 ? { style: MT5_TOKENS } : {})}
+    >
       {items.map((n) => (
         <div
           key={n.id}
           role="alert"
-          className={cn('flex items-start justify-between gap-3 rounded-xl border px-3 py-2 shadow-sm', LEVEL_STYLES[n.level])}
+          className={cn(
+            'flex items-start justify-between gap-3 border px-3 py-2',
+            mt5 ? 'border-x-0 border-t-0' : 'rounded-xl shadow-sm',
+            LEVEL_STYLES[n.level],
+          )}
         >
           <div className="min-w-0">
             <p className="text-sm font-semibold">{n.title}</p>

@@ -70,7 +70,7 @@ test("ADDON-1 API: catalog edits are owner-only and shaped; brands switch owned 
 
     assert.equal((await reqf(api, "POST", "/api/v1/addons/activate", SITE_ADMIN, { category: "chart", key: "line" })).status, 200, "own brand, owned system");
     const nope = await reqf(api, "POST", "/api/v1/addons/activate", SITE_ADMIN, { category: "chart", key: "candlestick" });
-    assert.equal(nope.status, 409); assert.match((await json(nope)).error.message, /request it first/);
+    assert.equal(nope.status, 409); assert.match((await json(nope)).error.message, /Request it first/);
     assert.equal((await reqf(api, "POST", "/api/v1/addons/activate", SITE_ADMIN, { site: "00000000-0000-0000-0000-0000000000bb", category: "chart", key: "line" })).status, 403, "another brand");
     assert.equal((await reqf(api, "POST", "/api/v1/addons/activate", PLAYER, { category: "chart", key: "line" })).status, 403);
 

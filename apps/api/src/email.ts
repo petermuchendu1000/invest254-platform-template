@@ -11,7 +11,9 @@ import type { PayoutAlert } from "./telegram.js";
  * carry one-tap Approve / Reject links (the Approve confirm page is password-gated); commission alerts
  * are informational (moderated in the dashboard or Telegram).
  */
-export interface EmailMessage { to: string[]; subject: string; html: string; text: string }
+/** One attached file. `content` is base64 — the shape Resend's API takes. */
+export interface EmailAttachment { filename: string; content: string }
+export interface EmailMessage { to: string[]; subject: string; html: string; text: string; attachments?: EmailAttachment[] }
 export interface EmailSendResult { ok: boolean; id?: string | undefined; error?: string | undefined }
 export interface EmailSender { send(msg: EmailMessage): Promise<EmailSendResult> }
 
@@ -26,7 +28,11 @@ export function makeResendSender(): (EmailSender & { from: string }) | null {
         const res = await fetch("https://api.resend.com/emails", {
           method: "POST",
           headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-          body: JSON.stringify({ from, to: msg.to, subject: msg.subject, html: msg.html, text: msg.text }),
+          body: JSON.stringify({
+            from, to: msg.to, subject: msg.subject, html: msg.html, text: msg.text,
+            // Omitted entirely when there are none: Resend rejects an empty array.
+            ...(msg.attachments?.length ? { attachments: msg.attachments } : {}),
+          }),
         });
         if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
         const data = (await res.json().catch(() => ({}))) as { id?: string };

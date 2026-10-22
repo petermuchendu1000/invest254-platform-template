@@ -32,7 +32,7 @@ function describe(e: LedgerEntryDto, contract: DigitHistoryDto | undefined, mark
     case 'stake':
       return { title: 'Trade Stake', sub: contract ? `${kindText(contract)} · ${instrumentById(contract.instrumentId ?? '').short}` : `trade${bonus}` };
     case 'payout':
-      return { title: 'Trade Win', sub: contract ? `${kindText(contract)} · result ${contract.settleDigit ?? '—'}` : `trade${bonus}` };
+      return { title: 'Trade Win', sub: contract ? `${kindText(contract)} · result ${contract.settleDigit ?? '-'}` : `trade${bonus}` };
     case 'deposit': return { title: 'Deposit', sub: 'M-Pesa' };
     case 'withdrawal': return { title: 'Withdrawal', sub: 'M-Pesa' };
     case 'withdrawal_reversal': return { title: 'Withdrawal refunded', sub: 'returned to your balance' };

@@ -2,9 +2,14 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useDisplayMoney } from '@/lib/money';
+import { useMarketerSkin } from '@/lib/marketer/isMarketer';
+import { MK } from '@/lib/marketer/labels';
 import { cn } from '@/lib/cn';
 import { useCountUp } from '@/lib/useCountUp';
 import { useOutcomeFx, BALANCE_BUMP_EVENT, type OutcomeHeadline } from '@/lib/game/outcomeFx';
+import { useTerminalSkin } from '@/lib/ui/useTerminalSkin';
+import { MT5_TOKENS } from '@/lib/ui/mt5Tokens';
+import { MT5CloseNotice } from '@/components/game/MT5CloseNotice';
 
 interface Theme {
   ring: string;
@@ -79,6 +84,15 @@ function prefersReducedMotion(): boolean {
  */
 export function OutcomeOverlay() {
   const { fmt } = useDisplayMoney();
+  const { isMarketer } = useMarketerSkin();
+  /**
+   * MetaTrader does not celebrate, and it does not open a dialog either. Checked against the real
+   * terminal: a closed position leaves the Trade tab, the deal lands in History, a line goes to the
+   * Journal, and the only thing that pops is an optional push notification. So on a terminal brand
+   * this is not a modal at all: no backdrop, no focus trap, no "Collect" button standing between a
+   * trader and the next order. See MT5CloseNotice.
+   */
+  const mt5 = useTerminalSkin();
   const current = useOutcomeFx((s) => s.current);
   const clear = useOutcomeFx((s) => s.clear);
   const [visible, setVisible] = useState(false);
@@ -89,6 +103,8 @@ export function OutcomeOverlay() {
 
   const theme = current ? THEMES[current.headline] : THEMES.loss;
   const won = current?.result === 'win';
+  // MARKETER: neutralise the outcome wording — no "WIN"/"YOU WON"/"NO WIN" headline, no "Payout/stake".
+  const title = isMarketer ? (theme.celebratory ? MK.winHeadline : MK.loseHeadline) : theme.title;
 
   // Count-up the headline amount: the NET result (BUGLOG #106: "+" on the gross payout overstated a
   // win by the stake). The payout is on the line below.
@@ -115,20 +131,25 @@ export function OutcomeOverlay() {
     if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
       try {
         navigator.vibrate(
-          current.headline === 'big_win'
-            ? [0, 40, 60, 40, 60, 90]
-            : won
-              ? [0, 30, 50, 30]
-              : [0, 20],
+          // A terminal gets the single soft tap of a push notification, never a fanfare.
+          mt5
+            ? [0, 20]
+            : current.headline === 'big_win'
+              ? [0, 40, 60, 40, 60, 90]
+              : won
+                ? [0, 30, 50, 30]
+                : [0, 20],
         );
       } catch {
         /* vibrate unsupported */
       }
     }
-    const ttl = won ? (current.headline === 'big_win' ? 4200 : 3400) : 2400;
+    // A notification is read and gone; a celebration holds the screen. Different jobs, different
+    // lifetimes.
+    const ttl = mt5 ? (won ? 5000 : 4000) : won ? (current.headline === 'big_win' ? 4200 : 3400) : 2400;
     const t = setTimeout(() => setVisible(false), ttl);
     return () => { clearTimeout(t0); clearTimeout(t); };
-  }, [current, won, fmt]);
+  }, [current, won, fmt, mt5]);
 
   // Remove from the store shortly after the exit transition.
   useEffect(() => {
@@ -139,7 +160,7 @@ export function OutcomeOverlay() {
 
   // Confetti (wins only, motion allowed).
   useEffect(() => {
-    if (!visible || !current || !theme.celebratory) return;
+    if (!visible || !current || !theme.celebratory || mt5) return;
     if (prefersReducedMotion()) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -199,12 +220,12 @@ export function OutcomeOverlay() {
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
       ctx.clearRect(0, 0, W, H);
     };
-  }, [visible, current, theme.celebratory]);
+  }, [visible, current, theme.celebratory, mt5]);
 
   // Money-to-balance flight (wins only): a payout chip flies from the card to
   // the balance pill, then triggers the pill's count-up + pulse on arrival.
   useEffect(() => {
-    if (!visible || !current || !won) return;
+    if (!visible || !current || !won || mt5) return;
     if (prefersReducedMotion()) {
       window.dispatchEvent(new CustomEvent(BALANCE_BUMP_EVENT));
       return;
@@ -245,21 +266,30 @@ export function OutcomeOverlay() {
       clearTimeout(t1);
       fly.removeEventListener('transitionend', onEnd);
     };
-  }, [visible, current, won]);
+  }, [visible, current, won, mt5]);
 
   const netLine = useMemo(() => {
     if (!current) return null;
-    if (won) return `Payout ${fmt(current.payoutCents)} · stake ${fmt(current.stakeCents)}`;
-    return `−${fmt(Math.abs(current.pnlCents))} · stake ${fmt(current.stakeCents)}`;
+    if (won) return `${isMarketer ? MK.reward : 'Payout'} ${fmt(current.payoutCents)} · ${isMarketer ? MK.cost.toLowerCase() : 'stake'} ${fmt(current.stakeCents)}`;
+    return `−${fmt(Math.abs(current.pnlCents))} · ${isMarketer ? MK.cost.toLowerCase() : 'stake'} ${fmt(current.stakeCents)}`;
   }, [current, won, fmt]);
 
   if (!current) return null;
+
+  // A terminal reports the close; it does not stage it.
+  if (mt5) {
+    return (
+      <div style={MT5_TOKENS}>
+        <MT5CloseNotice fx={current} visible={visible} onDismiss={() => setVisible(false)} />
+      </div>
+    );
+  }
 
   return (
     <div
       role="dialog"
       aria-live="assertive"
-      aria-label={`${theme.title} ${fmt(targetAmount)}`}
+      aria-label={`${title} ${fmt(targetAmount)}`}
       onClick={() => setVisible(false)}
       className={cn(
         'fixed inset-0 z-[70] flex items-center justify-center px-6 transition-opacity duration-200',
@@ -269,7 +299,7 @@ export function OutcomeOverlay() {
       {/* Backdrop */}
       <div className="absolute inset-0 bg-bg/70 backdrop-blur-sm" />
 
-      {/* Confetti canvas (wins) */}
+      {/* Confetti canvas (wins). A terminal never reaches this tree. */}
       {theme.celebratory ? (
         <canvas ref={canvasRef} className="pointer-events-none absolute inset-0 h-full w-full" />
       ) : null}
@@ -279,15 +309,14 @@ export function OutcomeOverlay() {
         ref={cardRef}
         className={cn(
           'relative z-10 w-full max-w-xs rounded-2xl border bg-surface p-6 text-center',
-          theme.ring,
-          theme.glow,
+          theme.ring, theme.glow,
           visible ? 'animate-[pp-pop_320ms_cubic-bezier(0.2,0.9,0.2,1)]' : '',
           !won && current.result === 'loss' ? 'animate-[pp-shake_320ms_ease-in-out]' : '',
         )}
       >
         <div className="flex items-center justify-center gap-2">
           <span className={cn('text-xs font-bold uppercase tracking-[0.2em]', theme.chipText)}>
-            {theme.title}
+            {title}
           </span>
         </div>
 
@@ -322,7 +351,7 @@ export function OutcomeOverlay() {
         </button>
       </div>
 
-      {/* Flying payout chip (wins) */}
+      {/* Flying payout chip (wins). */}
       {won ? (
         <div
           ref={flyRef}

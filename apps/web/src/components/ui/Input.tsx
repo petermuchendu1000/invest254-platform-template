@@ -49,7 +49,15 @@ export const Input = React.forwardRef<HTMLInputElement, InputProps>(function Inp
           id={inputId}
           ref={ref}
           className={cn(
-            'h-12 w-full rounded-brand bg-transparent px-3.5 text-fg outline-none placeholder:text-muted',
+            /**
+             * 16px on a phone, 14px from `sm` up.
+             *
+             * iOS Safari ZOOMS THE PAGE IN when a field under 16px takes focus, and does not zoom
+             * back out — so every tap on a login or deposit field left the player on a lurched,
+             * horizontally-scrolled page they had to pinch out of. The desktop size is unchanged;
+             * this only raises it where the zoom rule applies.
+             */
+            'h-12 w-full rounded-brand bg-transparent px-3.5 text-base text-fg outline-none placeholder:text-muted sm:text-sm',
             leading ? 'pl-2.5' : undefined,
             trailing ? 'pr-1.5' : undefined,
             className,

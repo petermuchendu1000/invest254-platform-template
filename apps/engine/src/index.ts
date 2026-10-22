@@ -44,6 +44,7 @@ export * from "./daraja.js";
 export * from "./darajastore.js";
 export * from "./megapay.js";
 export * from "./payhero.js";
+export * from "./paynicorn.js";
 export * from "./providercrypto.js";
 export * from "./paymentscopes.js";
 export * from "./c2bconfig.js";

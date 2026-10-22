@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/Button';
 import { Money } from '@/components/ui/Money';
 import { StatusBadge } from '@/components/ui/Badge';
 import { formatExact, formatAgo, formatNumber } from '@/lib/format';
+import { maskPhoneForDisplay } from '@invest254/shared/payments';
 import { ApiError } from '@/lib/api/client';
 import { useToast } from '@/lib/toast/ToastProvider';
 import { PageHeader, TableWrap, Th, Td, Empty, Toolbar, FilterSelect, ConfirmButton, SearchInput } from '@/components/admin/ui';
@@ -139,6 +140,8 @@ export default function UsersPage() {
       </div>
 
       <Toolbar>
+        {/* NOT masked, deliberately: the operator types a real number here and the query runs
+            server-side against the real column — masking the input would match nothing. */}
         <SearchInput value={search} onChange={setSearch} placeholder="Search username or phone…" className="sm:w-72" />
         <FilterSelect value={role} onChange={setRole} options={ROLE_OPTS} />
         <Button variant="outline" size="sm" onClick={() => setShowAdv((v) => !v)}>
@@ -157,7 +160,7 @@ export default function UsersPage() {
           <NumberFilter label="Min deposits (KES)" value={minDep} onChange={setMinDep} placeholder="e.g. 5000" />
           <NumberFilter label="Min withdrawals (KES)" value={minWd} onChange={setMinWd} placeholder="e.g. 5000" />
           <NumberFilter label="Min turnover (KES)" value={minTurn} onChange={setMinTurn} placeholder="e.g. 10000" />
-          <NumberFilter label="Min bets" value={minBets} onChange={setMinBets} placeholder="e.g. 10" />
+          <NumberFilter label="Min trades" value={minBets} onChange={setMinBets} placeholder="e.g. 10" />
         </div>
       ) : null}
 
@@ -181,7 +184,7 @@ export default function UsersPage() {
                 <Th>Status</Th>
                 <Th className="text-right">Balance</Th>
                 <Th className="text-right">Deposited / withdrawn</Th>
-                <Th className="text-right"><span title="What the house kept from this account's bets (stakes minus winnings), and how many bets.">House revenue</span></Th>
+                <Th className="text-right"><span title="What the house kept from this account's trades (stakes minus winnings), and how many trades.">House revenue</span></Th>
                 <Th>Last transaction</Th>
                 <Th className="text-right">Last active</Th>
               </tr>
@@ -372,7 +375,9 @@ function UserRow({ r, selected, onToggle }: { r: AdminUserRow; selected: boolean
             {r.role !== 'player' ? <span className="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] font-medium text-muted">{ROLE_LABEL[r.role] ?? r.role}</span> : null}
           </span>
           {r.phone ? (
-            <span className="text-[11px] tabular-nums text-muted">{r.phone}</span>
+            // Masked: the list renders every player's number at once, which is the single richest
+            // harvest on the back office. The search box above still queries the real column.
+            <span className="text-[11px] tabular-nums text-muted">{maskPhoneForDisplay(r.phone)}</span>
           ) : (
             <span className="font-mono text-[10px] text-muted">{r.userId.slice(0, 8)}…</span>
           )}
@@ -389,7 +394,7 @@ function UserRow({ r, selected, onToggle }: { r: AdminUserRow; selected: boolean
       <Td className="text-right tabular-nums">
         <span className="flex flex-col leading-tight">
           <span className={'font-medium ' + (r.ggrCents >= 0 ? 'text-up' : 'text-down')}><Money cents={r.ggrCents} /></span>
-          <span className="text-[11px] text-muted">{formatNumber(r.betCount)} bets</span>
+          <span className="text-[11px] text-muted">{formatNumber(r.betCount)} trades</span>
         </span>
       </Td>
       <Td>
@@ -406,7 +411,7 @@ function UserRow({ r, selected, onToggle }: { r: AdminUserRow; selected: boolean
         )}
       </Td>
       <Td className="whitespace-nowrap text-right text-xs text-muted">
-        {r.lastActiveAtMs ? <span title={formatExact(r.lastActiveAtMs)}>{formatAgo(r.lastActiveAtMs)}</span> : '—'}
+        {r.lastActiveAtMs ? <span title={formatExact(r.lastActiveAtMs)}>{formatAgo(r.lastActiveAtMs)}</span> : '-'}
       </Td>
     </tr>
   );

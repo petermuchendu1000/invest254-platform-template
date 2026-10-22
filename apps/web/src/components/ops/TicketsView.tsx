@@ -56,9 +56,9 @@ const Badge = ({ cls, children }: { cls: string; children: React.ReactNode }) =>
   <span className={`inline-flex rounded-full border px-2 py-0.5 text-xs font-medium ${cls}`}>{children}</span>;
 
 function sla(t: Ticket): { label: string; tone: string } {
-  if (t.status === 'resolved' || t.status === 'closed') return { label: '—', tone: 'text-muted' };
+  if (t.status === 'resolved' || t.status === 'closed') return { label: '-', tone: 'text-muted' };
   if (t.escalationLevel >= 1) return { label: 'with System owner', tone: 'text-muted' };
-  if (!t.slaDueAtMs) return { label: '—', tone: 'text-muted' };
+  if (!t.slaDueAtMs) return { label: '-', tone: 'text-muted' };
   const mins = Math.round((t.slaDueAtMs - Date.now()) / 60000);
   if (mins <= 0) return { label: 'escalating…', tone: 'text-down' };
   const lbl = mins >= 120 ? `${Math.round(mins / 60)}h` : `${mins}m`;
@@ -127,7 +127,7 @@ export function TicketsView({ title }: { title: string }) {
                 {tickets.map((t) => { const s = sla(t); return (
                   <tr key={t.id} className="cursor-pointer border-t border-border hover:bg-surface-2" onClick={() => setOpenId(t.id)}>
                     <Td><span className="font-medium">{t.subject}</span></Td>
-                    {isSystem ? <Td className="text-xs text-muted">{platformName.get(t.platformId) ?? '—'}</Td> : null}
+                    {isSystem ? <Td className="text-xs text-muted">{platformName.get(t.platformId) ?? '-'}</Td> : null}
                     <Td><Badge cls={URGENCY[t.urgency]!}>{t.urgency}</Badge></Td>
                     <Td><Badge cls={STATUS[t.status]!}>{t.status.replace('_', ' ')}</Badge></Td>
                     <Td className="text-xs text-muted">{t.escalationLevel >= 1 ? 'System owner' : 'Platform admin'}</Td>
@@ -160,10 +160,10 @@ export function TicketsView({ title }: { title: string }) {
           ) : null}
           <Input label="Subject" placeholder="Short summary of the issue" value={subject} onChange={(e) => setSubject(e.target.value)} />
           <Select label="Urgency" value={urg} onChange={(e) => setUrg(e.target.value)}>
-            <option value="critical">Critical — 1h SLA</option>
-            <option value="high">High — 4h SLA</option>
-            <option value="medium">Medium — 24h SLA</option>
-            <option value="low">Low — 72h SLA</option>
+            <option value="critical">Critical: 1h SLA</option>
+            <option value="high">High: 4h SLA</option>
+            <option value="medium">Medium: 24h SLA</option>
+            <option value="low">Low: 72h SLA</option>
           </Select>
           <label className="flex flex-col gap-1.5 text-sm">
             <span className="font-medium text-fg">Reason / details</span>
@@ -206,7 +206,7 @@ function TicketDetail({ id, canEscalate, onClose }: { id: string; canEscalate: b
             <div className="flex flex-col gap-1">
               <h4 className="text-xs font-semibold uppercase tracking-wide text-muted">Escalation history</h4>
               {d!.escalations.map((e) => (
-                <div key={e.id} className="text-xs text-muted">• {new Date(e.createdAtMs).toLocaleString()} — {e.reason === 'auto' ? 'Auto (SLA breached)' : 'Manual'}: {e.fromRole} → {e.toRole}{e.note ? ` · ${e.note}` : ''}</div>
+                <div key={e.id} className="text-xs text-muted">• {new Date(e.createdAtMs).toLocaleString()}, {e.reason === 'auto' ? 'Auto (SLA breached)' : 'Manual'}: {e.fromRole} → {e.toRole}{e.note ? ` · ${e.note}` : ''}</div>
               ))}
             </div>) : null}
 

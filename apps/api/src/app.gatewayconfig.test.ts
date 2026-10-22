@@ -27,12 +27,12 @@ test("gateway config: GET /config is platform_superadmin-only", async () => {
   } finally { await api.close(); }
 });
 
-test("gateway config: GET returns schema + empty masked config for all four configurable gateways", async () => {
+test("gateway config: GET returns schema + empty masked config for all five configurable gateways", async () => {
   const api = await startTestApi();
   try {
     const body = await json(await req(api, "GET", "/api/v1/platform/payment-providers/config", { token: PLATFORM }));
     const codes = body.providers.map((p: any) => p.code).sort();
-    assert.deepEqual(codes, ["binance", "megapay", "payhero", "paystack"]);
+    assert.deepEqual(codes, ["binance", "megapay", "payhero", "paynicorn", "paystack"]);
     const mp = body.providers.find((p: any) => p.code === "megapay");
     assert.ok(mp.schema.fields.some((f: any) => f.key === "api_key" && f.secret === true));
     assert.equal(mp.config.exists, false);

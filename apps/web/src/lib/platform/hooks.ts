@@ -81,6 +81,13 @@ export function useRevokePlatformAdmin() {
     onSuccess: () => invalidatePlatformTier(qc),
   });
 }
+export function useResetSecurityAnswers() {
+  const t = useTok(); const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { userId: string }) => platformApi.resetSecurityAnswers(t, v.userId),
+    onSuccess: () => invalidatePlatformTier(qc),
+  });
+}
 
 // ── Global config console (migration 0092) ──
 export function useGlobalConfig() {

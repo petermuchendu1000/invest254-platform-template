@@ -10,17 +10,30 @@ import { cn } from '@/lib/cn';
  * Fluid on phones (grid-cols-10, circles fill their column); fixed 40px circles spread evenly on
  * desktop. Read-only; colours come from brand tokens so it re-skins per brand.
  */
-export function DigitHeatmap({ freqs, current }: { freqs: number[]; current: number | null; selected?: number | null; selectable?: boolean; onSelect?: (d: number) => void }) {
-  const max = Math.max(...freqs);
-  const min = Math.min(...freqs);
+export function DigitHeatmap({ freqs, current, ready = true }: { freqs: number[]; current: number | null; selected?: number | null; selectable?: boolean; onSelect?: (d: number) => void;
+  /**
+   * False until the first tick window has been counted.
+   *
+   * The screen seeds `freqs` with ten zeros, so this row used to render ten circles each labelled
+   * "0.0%" on first paint — a statistics row stating that every digit has never once occurred,
+   * which is a far more confident lie than a blank. While not ready the shares render as a dash
+   * over a pulsing bar, and no max/min arc or current-digit highlight is claimed.
+   */
+  ready?: boolean }) {
+  const max = ready ? Math.max(...freqs) : 0;
+  const min = ready ? Math.min(...freqs) : 0;
   return (
     <div className="grid grid-cols-10 gap-[3px] lg:flex lg:items-start lg:justify-between lg:gap-0 lg:px-1" aria-label="Last digit statistics">
       {freqs.map((f, d) => {
-        const isMax = max > 0 && f === max && max !== min;
-        const isMin = max !== min && f === min;
-        const isCurrent = current === d;
+        const isMax = ready && max > 0 && f === max && max !== min;
+        const isMin = ready && max !== min && f === min;
+        const isCurrent = ready && current === d;
         return (
-          <div key={d} className="flex min-w-0 flex-col items-center gap-1" aria-label={`Digit ${d}: ${f.toFixed(1)}%${isCurrent ? ', latest' : ''}`}>
+          <div
+            key={d}
+            className="flex min-w-0 flex-col items-center gap-1"
+            aria-label={ready ? `Digit ${d}: ${f.toFixed(1)}%${isCurrent ? ', latest' : ''}` : `Digit ${d}: counting ticks`}
+          >
             <span
               className={cn(
                 'relative flex aspect-square w-full max-w-[42px] items-center justify-center rounded-full border-[1.5px] text-[clamp(12px,3.6vw,15px)] font-bold leading-none tabular-nums transition-colors lg:h-10 lg:w-10',
@@ -43,7 +56,7 @@ export function DigitHeatmap({ freqs, current }: { freqs: number[]; current: num
               ) : null}
             </span>
             <span className={cn('whitespace-nowrap text-[clamp(8.5px,2.5vw,10.5px)] font-medium leading-none tabular-nums', isMax ? 'text-up' : isMin ? 'text-down' : 'text-muted')}>
-              {f.toFixed(1)}%
+              {ready ? `${f.toFixed(1)}%` : <span className="inline-block h-2 w-5 animate-pulse rounded bg-surface-2 align-middle" />}
             </span>
             <span
               aria-hidden

@@ -18,6 +18,8 @@ import {
   useRequestAdvance,
   useCancelAdvance,
 } from '@/lib/affiliate/hooks';
+import { LiveSessionPanel } from '@/components/marketer/LiveSessionPanel';
+import { MarketerMoneyTable } from '@/components/marketer/MarketerMoneyTable';
 
 /**
  * Full-page marketer dashboard (rendered at /dashboard). Extracted from the old covert modal so
@@ -25,11 +27,19 @@ import {
  *
  * Information architecture (bank-standard, progressive disclosure):
  *   1. The dominant, role-first metric — "Available to withdraw" — leads the page with its action.
- *   2. Performance KPIs and the reconciling commission statement summarise standing at a glance.
- *   3. Row-level history (earnings, expenses, referrals, advance requests) lives in ONE tabbed
+ *   2. The MONEY TABLES (MarketerMoneyTable) carry every figure of the marketer's money: a
+ *      range-filtered "Money · Period" table and the lifetime "Balance" ladder. They replaced the
+ *      money KPI tiles, which were `grid-cols-2` cells with no `min-w-0` and no FitText, so a
+ *      seven-figure amount widened the grid and pushed the whole page into horizontal scroll.
+ *   3. Audience counts (referrals, active, clicks) stay as small KPI tiles — they are 1-5 digits.
+ *   4. Row-level history (earnings, expenses, referrals, advance requests) lives in ONE tabbed
  *      "Activity" ledger, paged a bounded number of rows at a time — never a 50-row data dump.
- * The statement is the trust anchor: every line flows into the next and lands on the exact figure
- * the hero shows as "Available to withdraw" (earned − expenses − paid − held, floored at 0).
+ *
+ * The trust anchor is the lifetime ladder inside MarketerMoneyTable: every line flows into the next
+ * and lands on the exact figure the hero shows as "Available to withdraw" (earned − expenses − paid
+ * − held, floored at 0). It is drawn from the SAME variables as the hero, below, and NOT from the
+ * ranged money endpoint's own lifetime block, so no filter and no poll skew can make the hero and
+ * the ladder disagree. See that file's header for how windowed and lifetime figures are kept apart.
  *
  * Self-heal: a user can hold role='marketer' yet have no `affiliates` row (e.g. an admin promoted
  * them via fn_admin_set_user_role rather than the enroll flow). That makes /affiliate/summary 404
@@ -97,12 +107,17 @@ export function MarketerDashboardView() {
   const paidOutCents = ref.data?.paidCents ?? 0;
   const heldCents = ref.data?.heldCents ?? 0;
   const minPayoutCents = ref.data?.minPayoutCents ?? 50000;
-  // "Net after expenses" is a WATERFALL SUBTOTAL (lifetime earnings minus expenses), not the money a
-  // marketer can still take. The withdrawable is netPosition floored at 0 (== availableCents), which
-  // additionally subtracts commission already paid out and pending. Showing earned − expenses alone
-  // overstated the position of any marketer who'd been paid, so we present the full reconciling ladder.
-  const netAfterExpenses = earnedAllTime - expTotal;
-  const netPosition = earnedAllTime - expTotal - paidOutCents - heldCents;
+  // The reconciling ladder (earned − expenses = net after expenses − paid − pending = available,
+  // floored at 0) now lives in MarketerMoneyTable, which is handed exactly these five lifetime
+  // values. Keeping ONE source for them is what guarantees the hero and the ladder agree: the
+  // ranged money endpoint returns its own copy of the lifetime block, and we deliberately ignore it.
+  const lifetime = {
+    earnedCents: earnedAllTime,
+    expensesCents: expTotal,
+    paidCents: paidOutCents,
+    heldCents,
+    availableCents,
+  };
 
   const requestPayout = () => {
     setPayoutMsg(null);
@@ -188,6 +203,10 @@ export function MarketerDashboardView() {
         </Link>
       </header>
 
+      {/* Going live, and what the session has earned (docs/55). Renders nothing on a brand that
+          has not enabled live sessions, so a marketer never sees a control that would refuse. */}
+      <LiveSessionPanel />
+
       {q.isLoading && !s ? (
         <div className="h-64 animate-pulse rounded-2xl bg-surface-2" />
       ) : healing ? (
@@ -232,39 +251,22 @@ export function MarketerDashboardView() {
             )}
           </section>
 
-          {/* KPI grid */}
+          {/* The money: a range-filtered period table + the lifetime balance ladder (trust anchor).
+              Every money figure the KPI tiles used to show — Available, Earned all-time, Paid out —
+              is a labelled row in here, so nothing was dropped, only given a column to line up in. */}
+          <MarketerMoneyTable enabled lifetime={lifetime} />
+
+          {/* Audience counts. The money moved to the tables above; what is left is 1-5 digits, so
+              these tiles can no longer blow the grid out. `min-w-0` + truncate on each cell anyway. */}
           <section>
-            <SectionTitle>Performance</SectionTitle>
-            <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
-              <Kpi label="Available" value={formatKes(availableCents)} tone="up" />
-              <Kpi label="Earned all-time" value={formatKes(earnedAllTime)} />
-              <Kpi label="Paid out" value={formatKes(paidOutCents)} />
+            <SectionTitle>Audience</SectionTitle>
+            <div className="grid grid-cols-2 gap-2.5 xs:grid-cols-3 sm:grid-cols-5">
               <Kpi label="Total referrals" value={String(referralsTotal)} />
               <Kpi label="Active (7d)" value={String(s.activePlayers7d)} />
               <Kpi label="New today" value={String(s.referralsToday)} />
               <Kpi label="Active today" value={String(s.activePlayersToday)} />
               <Kpi label="Clicks" value={String(s.clicks)} />
             </div>
-          </section>
-
-          {/* Commission statement — the reconciling trust anchor (earned → −expenses → −paid → available) */}
-          <section>
-            <SectionTitle>Statement</SectionTitle>
-            <div className="flex flex-col gap-1.5 rounded-2xl border border-border bg-surface-2 px-4 py-3">
-              <StatementRow label="Earned" value={formatKes(earnedAllTime)} />
-              <StatementRow label="Expenses" value={`\u2212${formatKes(expTotal)}`} tone="down" />
-              <div className="my-0.5 border-t border-border" />
-              <StatementRow label="Net" value={formatKes(netAfterExpenses)} strong tone={netAfterExpenses >= 0 ? undefined : 'down'} />
-              {paidOutCents > 0 ? <StatementRow label="Paid out" value={`\u2212${formatKes(paidOutCents)}`} tone="down" /> : null}
-              {heldCents > 0 ? <StatementRow label="Pending" value={`\u2212${formatKes(heldCents)}`} tone="down" /> : null}
-              <div className="my-0.5 border-t border-border" />
-              <StatementRow label="Available" value={formatKes(availableCents)} strong tone="up" />
-            </div>
-            {netPosition < 0 ? (
-              <p className="mt-1.5 text-[11px] leading-snug text-muted">
-                Received {formatKes(paidOutCents + heldCents)} of {formatKes(netAfterExpenses)} net. Upcoming commission clears the balance.
-              </p>
-            ) : null}
           </section>
 
           {/* Request an advance — the action lives with the money; its history is in Activity ▸ Advances */}
@@ -281,7 +283,7 @@ export function MarketerDashboardView() {
                   onChange={(e) => setAdvAmount(e.target.value.replace(/[^0-9.]/g, ''))}
                   placeholder="Amount (KES)"
                   aria-label="Advance amount in KES"
-                  className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm tabular-nums text-fg outline-none focus:border-accent sm:max-w-[10rem]"
+                  className="w-full min-w-0 rounded-lg border border-border bg-surface px-3 py-2 text-base tabular-nums text-fg outline-none focus:border-accent sm:max-w-[10rem] sm:text-sm"
                 />
                 <input
                   value={advReason}
@@ -289,7 +291,7 @@ export function MarketerDashboardView() {
                   maxLength={200}
                   placeholder="Reason"
                   aria-label="Advance reason"
-                  className="w-full flex-1 rounded-lg border border-border bg-surface px-3 py-2 text-sm text-fg outline-none focus:border-accent"
+                  className="w-full min-w-0 flex-1 rounded-lg border border-border bg-surface px-3 py-2 text-base text-fg outline-none focus:border-accent sm:text-sm"
                 />
                 <button
                   onClick={submitAdvance}
@@ -354,7 +356,7 @@ export function MarketerDashboardView() {
                             <span className="text-lg leading-none">{m.glyph}</span>
                             <span className="flex min-w-0 flex-1 flex-col leading-tight">
                               <span className="truncate text-sm font-medium text-fg">{m.label}</span>
-                              <span className="truncate text-[11px] text-muted">{e.note ?? '—'} · {new Date(e.createdAtMs).toLocaleDateString('en-KE')}</span>
+                              <span className="truncate text-[11px] text-muted">{e.note ?? '-'} · {new Date(e.createdAtMs).toLocaleDateString('en-KE')}</span>
                             </span>
                             <span className="shrink-0 text-sm font-semibold tabular-nums text-down">−{formatKes(e.amountCents)}</span>
                           </li>
@@ -418,9 +420,12 @@ export function MarketerDashboardView() {
                       {pageSlice(advRows, page, LEDGER_PAGE_SIZE).map((a) => (
                         <li key={a.id} className="flex items-center gap-3 rounded-xl border border-border bg-surface-2 px-3 py-2">
                           <span className="flex min-w-0 flex-1 flex-col leading-tight">
-                            <span className="shrink-0 whitespace-nowrap text-sm font-medium tabular-nums text-fg">{formatKes(a.amountCents)}</span>
+                            {/* `truncate`, not `shrink-0 whitespace-nowrap`: a nowrap child raises its `min-w-0` parent's
+                                min-content width, and this row already carries a status badge and a Cancel button
+                                that both refuse to shrink — the tightest horizontal budget on the page. */}
+                            <span className="truncate text-sm font-medium tabular-nums text-fg" title={formatKes(a.amountCents)}>{formatKes(a.amountCents)}</span>
                             <span className="truncate text-[11px] text-muted">
-                              {a.reason ?? '—'} · {new Date(a.createdAtMs).toLocaleDateString('en-KE')}
+                              {a.reason ?? '-'} · {new Date(a.createdAtMs).toLocaleDateString('en-KE')}
                               {a.decisionNote ? ` · ${a.decisionNote}` : ''}
                             </span>
                           </span>
@@ -468,11 +473,20 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
   return <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted">{children}</h3>;
 }
 
+/**
+ * A small COUNT tile. Money no longer goes through here — it goes through MarketerMoneyTable, whose
+ * cells take their width from the table layout and use FitText.
+ *
+ * `min-w-0` on the cell and `truncate` on both children: a CSS grid track is `minmax(auto, 1fr)`,
+ * so without them a child's min-content width sets the track's floor and a long value widens the
+ * whole grid — which is how a formatted figure used to push this page into horizontal scroll at
+ * 320px rather than just clipping its own card.
+ */
 function Kpi({ label, value, tone }: { label: string; value: string; tone?: 'up' }) {
   return (
-    <div className="flex flex-col gap-0.5 rounded-2xl border border-border bg-surface-2 p-3">
-      <span className="text-[10px] uppercase tracking-wide text-muted">{label}</span>
-      <span className={`text-base font-bold tabular-nums ${tone === 'up' ? 'text-up' : 'text-fg'}`}>{value}</span>
+    <div className="flex min-w-0 flex-col gap-0.5 rounded-2xl border border-border bg-surface-2 p-3">
+      <span className="truncate text-[10px] uppercase tracking-wide text-muted">{label}</span>
+      <span className={`truncate text-base font-bold tabular-nums ${tone === 'up' ? 'text-up' : 'text-fg'}`} title={value}>{value}</span>
     </div>
   );
 }
@@ -533,15 +547,4 @@ function AdvanceBadge({ status }: { status: 'requested' | 'approved' | 'rejected
   } as const;
   const m = map[status] ?? map.cancelled;
   return <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold ${m.cls}`}>{m.label}</span>;
-}
-
-/** One line of the marketer's reconciling commission statement (earned → −expenses → −paid → available). */
-function StatementRow({ label, value, tone, strong }: { label: string; value: string; tone?: 'up' | 'down' | undefined; strong?: boolean }) {
-  const valueTone = tone === 'up' ? 'text-up' : tone === 'down' ? 'text-down' : 'text-fg';
-  return (
-    <div className="flex items-center justify-between gap-3">
-      <span className={`text-xs ${strong ? 'font-semibold text-fg' : 'text-muted'}`}>{label}</span>
-      <span className={`tabular-nums ${strong ? 'text-sm font-bold' : 'text-sm font-medium'} ${valueTone}`}>{value}</span>
-    </div>
-  );
 }

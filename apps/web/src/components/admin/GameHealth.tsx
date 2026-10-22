@@ -39,7 +39,7 @@ export function GameHealth() {
                       <Td numeric>{w.settledPositions}</Td>
                       <Td numeric><Money cents={w.turnoverCents} /></Td>
                       <Td numeric><Money cents={w.payoutCents} /></Td>
-                      <Td numeric className={'font-medium ' + (off ? 'text-down' : 'text-fg')}>{w.realisedRtp === null ? '—' : pct(w.realisedRtp)}</Td>
+                      <Td numeric className={'font-medium ' + (off ? 'text-down' : 'text-fg')}>{w.realisedRtp === null ? '-' : pct(w.realisedRtp)}</Td>
                     </tr>
                   );
                 })}

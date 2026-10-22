@@ -26,7 +26,7 @@ export default function ClientDetailView({ params }: { params: { id: string } })
       {sites.isLoading && !site ? (
         <Skeleton className="h-64 w-full" />
       ) : !site ? (
-        <Empty title="Brand not found" description="It may have been archived — head back to the overview." />
+        <Empty title="Brand not found" description="It may have been archived. Head back to the overview." />
       ) : (
         <>
           {/* UI-C: status sits with the name; actions share one size. */}

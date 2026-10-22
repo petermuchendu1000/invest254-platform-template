@@ -204,7 +204,7 @@ export default function PlatformsPage() {
         }
       >
         <div className="flex flex-col gap-4">
-          <p className="text-xs text-muted">Move a brand into a platform. Its data moves with it — the platform's admin will then see it, and other platforms will not.</p>
+          <p className="text-xs text-muted">Move a brand into a platform. Its data moves with it. The platform's admin will then see it, and other platforms will not.</p>
           <Select label="Brand" value={assignSiteId} onChange={(e) => setAssignSiteId(e.target.value)}>
             <option value="">Select a brand…</option>
             {sites.map((s) => <option key={s.siteId} value={s.siteId}>{s.name} ({s.slug})</option>)}

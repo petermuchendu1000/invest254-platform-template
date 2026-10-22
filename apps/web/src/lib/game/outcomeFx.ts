@@ -21,6 +21,22 @@ export interface OutcomeFx {
   pnlCents: number;
   stakeCents: number;
   mode: 'auto' | 'manual';
+  /**
+   * Identity of the closed position, carried so a terminal can report the close the way MetaTrader
+   * does: by ticket and side. Optional because the classic shell's celebration never names them and
+   * a settle that arrives with no position in hand (a reconnect, say) still has a result to show.
+   */
+  ticket?: string | undefined;
+  direction?: 'buy' | 'sell' | undefined;
+  /**
+   * The instrument the closed position settled on.
+   *
+   * Carried here rather than read from the game socket, because this outcome is rendered by
+   * `OutcomeOverlay`, which is mounted ABOVE `GameSocketProvider` in the tree: a hook into that
+   * provider throws there, and the close notice took the whole app down with it on every settle.
+   * The provider knows the symbol when it fires the outcome, so it states it.
+   */
+  symbol?: string | undefined;
 }
 
 interface OutcomeFxState {

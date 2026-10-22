@@ -9,7 +9,7 @@ name: Deploy (Fly)
 # A restart does NOT pick up new code (HOSTING.md §2.5) — only a `fly deploy` does; that is what this
 # runs. The engine is restart-safe: on boot it deterministically recovers open positions (recovery.ts).
 #
-# Order: verify → fly-auth → migrate → deploy (api + engine, in parallel).
+# Order: gate → fly-auth → migrate → deploy (api + engine, in parallel).
 #   fly-auth runs BEFORE migrate so a rejected/expired FLY_API_TOKEN stops the run with a clear error
 #   instead of migrating the DB and then silently failing to ship the code (BUGLOG #48 — six merges on
 #   2026-09-23 migrated production but never deployed).
@@ -17,21 +17,21 @@ name: Deploy (Fly)
 # commit is live; each deploy then verifies that label and (API) the health endpoint.
 
 on:
-  push:
+  # CHAINED TO CI, not to the push. Both used to start on the same commit, and the `verify` job here
+  # re-ran the typecheck and the full suite that CI's `build` job was running at that same moment —
+  # identical work, twice, on every merge to main. Waiting for CI's verdict is the same gate ("never
+  # deploy a broken main") for none of the work.
+  #
+  # `branches: [main]` filters on the CI run's HEAD branch, and the gate below additionally requires
+  # that the CI run was a push (never a pull_request run) and that it passed.
+  #
+  # NOTE for whoever edits this next: a workflow_run trigger is read from the DEFAULT BRANCH's copy
+  # of this file. Changes here do nothing until they are merged to main — testing on a branch will
+  # not fire it.
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
     branches: [main]
-    # Only deploy when something the backend image actually ships is touched (skip docs-only merges).
-    paths:
-      - 'apps/api/**'
-      - 'apps/engine/**'
-      - 'packages/**'
-      - 'Dockerfile'
-      - '.dockerignore'
-      - 'fly.api.toml'
-      - 'fly.engine.toml'
-      - 'package.json'
-      - 'package-lock.json'
-      - 'tsconfig*.json'
-      - '.github/workflows/deploy.yml'
   workflow_dispatch: {}   # manual deploy of current main from the Actions tab (e.g. after rotating the token)
 
 # Never run two deploys at once, and never cancel a deploy mid-flight.
@@ -44,35 +44,90 @@ env:
   FLYCTL_VERSION: 0.4.106
 
 jobs:
-  # Gate: don't deploy a broken main. Mirrors the backend half of the CI 'build' job (typecheck + tests).
-  # npm test is DB-independent (in-memory harness), so no DATABASE_URL is needed here.
-  verify:
-    name: verify (typecheck + tests)
+  # What replaced `verify`. It answers three questions, none of which needs a test suite:
+  #   1. did CI pass — on a PUSH to main, never a pull_request run (the job-level `if`);
+  #   2. which commit is this (the CI run's head_sha — NOT github.sha, which in a workflow_run means
+  #      the default branch's tip at event time and can have moved on);
+  #   3. does production actually need it?
+  #
+  # (3) replaces the `paths:` filter the push trigger used to carry, and is strictly better than one:
+  # it diffs the commit against WHAT IS ACTUALLY RUNNING (/api/v1/health reports the GIT_SHA baked
+  # into the live image), so it is self-correcting. A deploy that is ever skipped or lost leaves the
+  # live commit behind, and the next green CI sees the whole gap rather than one merge's worth of it.
+  # A paths filter cannot do that: it judges one push in isolation, which is how the API sat five days
+  # behind main (BUGLOG #155) with nothing in the deploy history saying so.
+  #
+  # Fail-OPEN by design: if the live commit cannot be read or is not a commit we can diff, deploy.
+  # The cost of a redundant deploy is a few minutes; the cost of a skipped one is a split release.
+  gate:
+    name: gate (CI green + backend changed)
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      sha: ${{ steps.decide.outputs.sha }}
+      deploy: ${{ steps.decide.outputs.deploy }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
         with:
-          node-version: 20
-          cache: npm
-      - name: Install
-        run: npm ci
-      - name: Typecheck (shared + engine + api)
-        run: npx tsc -b packages/shared apps/engine apps/api
-      - name: Tests
-        run: npm test
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+          fetch-depth: 0        # the diff below reaches back to whatever is live, not just one commit
+      - name: Decide what to deploy
+        id: decide
+        env:
+          SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "Manual run — deploying $SHA without asking what changed." >> "$GITHUB_STEP_SUMMARY"
+            echo "deploy=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          live=$(curl -sf --max-time 20 https://invest254-api.fly.dev/api/v1/health | jq -r '.commit // ""' || true)
+          if [ -z "$live" ] || ! git cat-file -e "${live}^{commit}" 2>/dev/null; then
+            echo "Live commit reads '${live:-unknown}', which is not a commit I can diff — deploying rather than guessing." >> "$GITHUB_STEP_SUMMARY"
+            echo "deploy=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          changed=$(git diff --name-only "$live" "$SHA")
+          if printf '%s\n' "$changed" | grep -qE '^(apps/api/|apps/engine/|packages/|Dockerfile$|\.dockerignore$|fly\.(api|engine)\.toml$|package(-lock)?\.json$|tsconfig.*\.json$|\.github/workflows/deploy\.yml$)'; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+            echo "Live is ${live:0:7}; ${SHA:0:7} changes the backend image — deploying." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+            echo "Live is ${live:0:7}; nothing between it and ${SHA:0:7} touches the backend image — skipping." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          printf '%s\n' "$changed" | head -40
+
 
   # Prove the Fly token can reach BOTH apps before anything touches production.
   fly-auth:
     name: fly token preflight
-    needs: verify
-    # Production repo only: the mirror template has no secrets, so everything after verify is skipped there.
-    if: github.repository == 'petermuchendu1000/invest254'
+    needs: gate
+    # Production repo only: the mirror template has no secrets, so everything after the gate is
+    # skipped there. `deploy == 'true'` is the gate's verdict; a false skips this and, through
+    # `needs`, everything below it.
+    if: needs.gate.outputs.deploy == 'true' && github.repository == 'petermuchendu1000/invest254'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: superfly/flyctl-actions/setup-flyctl@master
         with:
           version: ${{ env.FLYCTL_VERSION }}
+      # The installer is checked SEPARATELY from the token, because conflating them sent a real
+      # deploy to the wrong conclusion. On 2026-10-11 setup-flyctl ran for three minutes, reported
+      # SUCCESS, and left no binary; the token check below then ran `flyctl status`, got
+      # "flyctl: command not found" on stderr, and reported `FLY_API_TOKEN rejected` — telling an
+      # operator to rotate a token that was perfectly good, while the actual fault was a transient
+      # failure inside the install action. A re-run fixed it. The misdiagnosis was the expensive
+      # part, so the two failures now have two messages.
+      - name: Check flyctl is actually installed
+        run: |
+          if ! command -v flyctl >/dev/null 2>&1; then
+            echo "::error title=flyctl missing::setup-flyctl completed but left no flyctl binary — a transient failure inside that action, NOT a problem with FLY_API_TOKEN. Do not rotate the token. Re-run this workflow; if it recurs, pin or bump FLYCTL_VERSION (currently ${FLYCTL_VERSION})."
+            exit 1
+          fi
+          flyctl version
       - name: Check FLY_API_TOKEN reaches invest254-api and invest254-engine-pm
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
@@ -83,7 +138,7 @@ jobs:
           fi
           for app in invest254-api invest254-engine-pm; do
             if ! flyctl status -a "$app" >/dev/null 2>err.txt; then
-              echo "::error title=FLY_API_TOKEN rejected for $app::Fly refused the token ($(head -c 200 err.txt | tr '\n' ' ')). It is expired, revoked or not scoped to $app. Create a new one (fly tokens create org -n github-deploy) and update the FLY_API_TOKEN secret, then re-run this workflow. See HOSTING.md §2.6.1."
+              echo "::error title=FLY_API_TOKEN rejected for $app::Fly refused the token ($(head -c 200 err.txt | tr '\n' ' ')). flyctl IS installed (checked in the previous step), so this is the token: expired, revoked or not scoped to $app. Create a new one (fly tokens create org -n github-deploy) and update the FLY_API_TOKEN secret, then re-run this workflow. See HOSTING.md §2.6.1."
               exit 1
             fi
           done
@@ -94,10 +149,13 @@ jobs:
   # Runs after the token preflight, gates both deploys. Skips gracefully when there's no DB secret (mirror).
   migrate:
     name: migrate (apply + record)
-    needs: fly-auth
+    needs: [gate, fly-auth]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -107,19 +165,92 @@ jobs:
       - name: Apply pending migrations and record them
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          GITHUB_SHA: ${{ github.sha }}
+          GITHUB_SHA: ${{ needs.gate.outputs.sha }}   # the commit CI approved, not the branch tip
         run: |
           if [ -z "$DATABASE_URL" ]; then
             echo "No DATABASE_URL secret (non-prod mirror) — skipping migrate."; exit 0
           fi
           node --import tsx scripts/migrate.mts
 
+  # Gate: production's ledger matches the migration files — asked AFTER migrate, which is the only
+  # moment the question is answerable (BUGLOG #144).
+  #
+  # It used to live in ci.yml. One push starts BOTH workflows, and CI has nothing to wait for while
+  # Deploy runs typecheck + the full suite first, so the gate reached production ~9 minutes before
+  # `migrate` recorded the new row and reported it UNRECORDED. Measured on the 0203 merge: gate at
+  # 11:07:40, row recorded at 11:16:19. Every migration-bearing merge therefore turned `main` red
+  # until somebody re-ran the job — which trains people to ignore the one check whose entire value is
+  # being believed, and would hide a GENUINELY unrecorded migration behind an alarm everyone expects.
+  #
+  # Here it runs immediately after the step that records, so it asserts what `migrate` just claimed
+  # to have done: files present but unrecorded, ledger rows with no file, and — the one this is
+  # really for — a migration file EDITED after it was applied (CHANGED, checksum mismatch), which no
+  # amount of re-running would ever clear.
+  #
+  # Coverage is not lost by moving it: `deploy.yml` triggers on `packages/**`, which contains
+  # packages/db/migrations, so every push that adds or edits a migration runs this. It needs the
+  # same DATABASE_URL and skips the same way without it.
+  #
+  # It does NOT gate the deploys (`deploy` needs `migrate`, not this). A drift report must not stop
+  # the code that matches the schema from shipping — it is a report about state, and blocking the
+  # rollout on it would turn a stale checksum into an outage.
+  migrations-ledger:
+    name: migrations-ledger (post-migrate)
+    needs: [gate, migrate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install
+        run: npm ci
+      - name: Reconcile migrations against the ledger
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "No DATABASE_URL secret (non-prod mirror) — skipping migration-ledger gate."; exit 0
+          fi
+          node --import tsx scripts/migrations_status.mts
+
   deploy:
     name: deploy ${{ matrix.app }}
-    needs: migrate
+    needs: [gate, migrate]
     runs-on: ubuntu-latest
+    # Raised from 25 (BUGLOG #156), and kept at 45 now that `max-parallel: 1` below removes the
+    # cause rather than tolerating it (#157). Measured over 60 Deploy runs: every leg finishes in
+    # 1-2 minutes except run 38137608432, where `deploy invest254-api` spent 22 minutes in the image
+    # EXPORT phase and still SUCCEEDED, and four hangs at 25, 275, 361 and 361. Nothing lands
+    # between 22 and 275, so a cap near 25 sits on top of a known-good run. The ceiling stays well
+    # clear of that tail because it is the backstop, not the fix: it exists only for a build that is
+    # never going to finish, and `concurrency: cancel-in-progress: false` means a cap that fires on
+    # a healthy deploy needs a human to notice and re-run.
+    timeout-minutes: 45
     strategy:
       fail-fast: false          # one app failing must not abort the other mid-rollout
+      # SERIAL, and this is the fix for the hangs rather than the ceiling above it (BUGLOG #157).
+      # Both legs build the SAME root Dockerfile, so Fly hands them to one remote builder and
+      # buildkit deduplicates their identical layers — the logs say
+      # `Deduplicating step ID [ 8/12] RUN npm ci --include=dev, another build is calculating it`.
+      # When that interleaving goes wrong one leg sits in `exporting to image` indefinitely while
+      # the other finishes in ~1 minute: four times in sixty runs, and never both legs, which is
+      # what a shared-builder race looks like rather than a bad image. Building them one after the
+      # other means the second leg hits a warm cache instead of a half-built sibling.
+      #
+      # The cost is a 1-2 minute window where one app is newer than the other, against a failure
+      # mode that left the API five days behind main (#155) and, on 2026-10-22, left the engine on
+      # a commit that was never on main at all while the API moved to main's tip — silently, both
+      # times, because the matrix is `fail-fast: false` so the sibling shipped and the run reported
+      # a success. A bounded skew beats an unbounded split release.
+      #
+      # `fail-fast: false` still applies: if the first leg fails the second is still attempted, so
+      # serialising does not make one app's failure block the other's deploy.
+      max-parallel: 1
       matrix:
         include:
           - app: invest254-api
@@ -130,28 +261,39 @@ jobs:
             health: ""          # pure WebSocket server; Fly's TCP check gates the rollout
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
       - uses: superfly/flyctl-actions/setup-flyctl@master
         with:
           version: ${{ env.FLYCTL_VERSION }}
       - name: fly deploy (${{ matrix.app }})
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-        run: flyctl deploy --config ${{ matrix.config }} --remote-only --image-label "git-${GITHUB_SHA}" --wait-timeout 5m
-      - name: Explain a failed deploy
-        if: failure()
+          SHA: ${{ needs.gate.outputs.sha }}
+        run: flyctl deploy --config ${{ matrix.config }} --remote-only --image-label "git-${SHA}" --build-arg GIT_SHA="${SHA}" --wait-timeout 5m
+      # `failure()` alone does not cover a CANCELLED job, and that is how this job ended three times
+      # (BUGLOG #155, #156): `fly deploy` hung, GitHub killed it, the conclusion was `cancelled`, so
+      # this step was SKIPPED and `Verify the live release is this commit` never ran. The matrix is
+      # `fail-fast: false`, so the sibling app shipped and the hung one did not — a split release
+      # with no annotation anywhere, which is the silent half-deploy #48 was meant to have ended.
+      # An explicit `timeout-minutes` should now report as a failure rather than a cancellation, but
+      # the step that tells an operator production is half-deployed must not depend on which.
+      - name: Explain a failed, timed-out or cancelled deploy
+        if: failure() || cancelled()
         run: |
-          echo "::error title=${{ matrix.app }} deploy failed::The token passed preflight, so check (1) Fly billing — an overdue invoice blocks builds/releases (BUGLOG #48, 2026-09-23), (2) the remote builder, (3) the release health checks. Then re-run: Actions → Deploy (Fly) → Run workflow."
+          echo "::error title=${{ matrix.app }} deploy did not complete::THIS app may not have shipped while the other one did — confirm both apps carry git-${{ needs.gate.outputs.sha }} before assuming the release is whole. The token passed preflight, so check (1) whether this job hit its timeout-minutes ceiling (a hung remote build), (2) Fly billing — an overdue invoice blocks builds/releases (BUGLOG #48, 2026-09-23), (3) the remote builder, (4) the release health checks. Then re-run: Actions → Deploy (Fly) → Run workflow."
       - name: Verify the live release is this commit
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
           APP: ${{ matrix.app }}
           HEALTH: ${{ matrix.health }}
+          SHA: ${{ needs.gate.outputs.sha }}
         run: |
           img=$(flyctl releases -a "$APP" --image --json | jq -r '.[0].ImageRef // ""')
           echo "latest release image: $img"
           case "$img" in
-            *"git-${GITHUB_SHA}"*) ;;
-            *) echo "::error title=$APP not on this commit::latest release image is '$img', expected label git-${GITHUB_SHA}"; exit 1 ;;
+            *"git-${SHA}"*) ;;
+            *) echo "::error title=$APP not on this commit::latest release image is '$img', expected label git-${SHA}"; exit 1 ;;
           esac
           if [ -n "$HEALTH" ]; then
             for i in $(seq 1 12); do
@@ -161,4 +303,4 @@ jobs:
             done
             [ "$code" = "200" ] || { echo "::error title=$APP unhealthy::$HEALTH returned $code after deploy"; exit 1; }
           fi
-          echo "$APP live on ${GITHUB_SHA::7} ($img)" >> "$GITHUB_STEP_SUMMARY"
+          echo "$APP live on ${SHA::7} ($img)" >> "$GITHUB_STEP_SUMMARY"

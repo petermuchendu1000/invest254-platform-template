@@ -1,5 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { commitment } from "@invest254/shared";
+
+/** One real (seed, commitment) pair shared by the fairness assertions below. */
+const DAY_SEED = "s17";
+const DAY_HASH = commitment(DAY_SEED);
 import { startTestApi, TEST_USER, SITE_A, SITE_B, type TestApi } from "./testutil.js";
 
 const json = (res: Response): Promise<any> => res.json() as Promise<any>;
@@ -13,7 +18,10 @@ function get(api: TestApi, path: string, token?: string): Promise<Response> {
 
 /** Seed a ledger trail (seed + stake + payout) and a settled+open position for the test user. */
 async function seedHistory(api: TestApi) {
-  const dayId = await api.gameRepo.ensureGameDay("2026-06-17", "h17");
+  // A real (seed, commitment) pair. The in-memory repo now enforces sha256(seed) == the published
+  // commitment on reveal, mirroring fn_reveal_game_day, so an arbitrary "h17"/"s17" is refused here
+  // just as it would be in production.
+  const dayId = await api.gameRepo.ensureGameDay("2026-06-17", DAY_HASH);
   const a = await api.gameRepo.openPosition({ userId: PLAYER, stakeCents: 20_000, direction: "buy", entryRate: 0.2, durationS: 10, gameDayId: dayId, nonce: 1, openedAtMs: 10 , configVersion: 1});
   await api.gameRepo.settlePosition({ positionId: a.positionId, exitRate: 0.25, result: "win", multiplier: 2.5, payoutCents: 50_000 });
   const b = await api.gameRepo.openPosition({ userId: PLAYER, stakeCents: 30_000, direction: "sell", entryRate: 0.2, durationS: 10, gameDayId: dayId, nonce: 2, openedAtMs: 20 , configVersion: 1});
@@ -80,12 +88,12 @@ test("GET /positions/:id → detail incl. fairness (seed hidden pre-reveal)", as
     const { settledId } = await seedHistory(api);
     const body = await json(await get(api, `/api/v1/positions/${settledId}`, PLAYER));
     assert.equal(body.id, settledId);
-    assert.equal(body.fairness.serverSeedHash, "h17");
+    assert.equal(body.fairness.serverSeedHash, DAY_HASH);
     assert.equal(body.fairness.serverSeed, null); // not revealed
 
-    await api.gameRepo.revealSeed("2026-06-17", "s17");
+    assert.equal(await api.gameRepo.revealSeed("2026-06-17", DAY_SEED), true);
     const revealed = await json(await get(api, `/api/v1/positions/${settledId}`, PLAYER));
-    assert.equal(revealed.fairness.serverSeed, "s17");
+    assert.equal(revealed.fairness.serverSeed, DAY_SEED);
   } finally { await api.close(); }
 });
 

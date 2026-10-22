@@ -38,7 +38,7 @@ export function priceText(t: BillingType, price: number, setup = 0): { main: str
 }
 /** What approving / assigning puts on the platform's invoices, in one sentence. */
 export function billingSentence(t: BillingType, price: number, setup: number): string {
-  if (t === 'free' || (price === 0 && setup === 0)) return 'It is free — nothing is billed.';
+  if (t === 'free' || (price === 0 && setup === 0)) return 'It is free. Nothing is billed.';
   if (t === 'monthly') return `${formatKes(price)} a month is added to the platform's invoices from the next renewal${setup > 0 ? `, plus a one-off ${formatKes(setup)} setup fee on the next invoice` : ''}.`;
   return `${formatKes(price + setup)} is added once to the platform's next invoice${setup > 0 ? ` (${formatKes(price)} + ${formatKes(setup)} setup)` : ''}.`;
 }
@@ -154,7 +154,7 @@ export function AddonMarketplace({ siteId, owner = false, canSetUpGateways = fal
                       <span className={cn('shrink-0 rounded-full px-2 py-0.5 text-xs font-medium', tone)}>{label}</span>
                     </div>
                     {r.description ? <p className="text-sm text-muted">{r.description}</p> : null}
-                    {st === 'requested' ? <p className="text-xs text-warn">Requested {r.requested_at ? formatDate(r.requested_at) : ''}{r.request_note ? ` — “${r.request_note}”` : ''}</p> : null}
+                    {st === 'requested' ? <p className="text-xs text-warn">Requested {r.requested_at ? formatDate(r.requested_at) : ''}{r.request_note ? `, “${r.request_note}”` : ''}</p> : null}
                     <div className="mt-auto flex flex-wrap gap-2">
                       {st === 'in_use' ? (
                         owner && !r.is_default ? <Button size="sm" variant="outline" onClick={() => setDialog({ kind: 'remove', row: r })}>Remove…</Button>
@@ -244,7 +244,7 @@ export function RequestSummary({ req }: { req: AddonRequestRow }) {
       <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 rounded-xl bg-surface-2 p-3">
         <dt className="text-muted">Brand</dt><dd className="text-right font-medium">{req.name}{req.platform_name ? <span className="text-muted"> · {req.platform_name}</span> : null}</dd>
         <dt className="text-muted">Price quoted</dt><dd className="text-right">{p.main}{p.extra ? ` ${p.extra}` : ''}</dd>
-        <dt className="text-muted">Asked by</dt><dd className="text-right">{req.requested_by_name ? `@${req.requested_by_name}` : '—'} · {formatDate(req.created_at)}</dd>
+        <dt className="text-muted">Asked by</dt><dd className="text-right">{req.requested_by_name ? `@${req.requested_by_name}` : '-'} · {formatDate(req.created_at)}</dd>
       </dl>
       {req.note ? <p className="rounded-xl border border-border p-3">“{req.note}”</p> : null}
       <p className="text-muted">If you approve: {billingSentence(req.billing_type, req.price_cents, req.setup_fee_cents)} The brand is charged the price it was quoted.</p>

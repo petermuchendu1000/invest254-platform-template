@@ -9,6 +9,7 @@ import {
   makeMegaPayClient,
   ConfiguredMegaPayClient,
   ConfiguredPayHeroClient,
+  ConfiguredPaynicornClient,
   PaymentScopeService, PgPaymentScopeRepository, loadDarajaConfigFromDb, type GlobalCallbacks,
   C2bConfigService, PgC2bConfigRepository, systemDarajaCredentials, PoolOpsService, PgPoolOpsRepository, BillingService, PgBillingRepository,
   verifyPassword,
@@ -18,10 +19,16 @@ import {
 import { makeWalletModeDeps } from "./demo.pg.js";
 import { makePgStakeNativeStore } from "./stakelimits.js";
 import { makePgLiveChatStore } from "./livechat.pg.js";
+import { makePgBrandActivity } from "./activity.pg.js";
+import { makePgLiveSessions } from "./livesessions.pg.js";
+import { makePgCommunity } from "./community.pg.js";
 import { makePgKycStore } from "./kyc.pg.js";
 import { createApp, type ApiDeps, type WalletBalance, type BonusStatus, type Brand } from "./app.js";
-import { normalizeHost, PlatformGate, enforcedValue, createLogger, effectiveMinWithdrawalCents, chartStyleOf, type VersionedGameConfig, type Cents } from "@invest254/shared";
-import { BrandOriginAllowlist } from "./cors.js";
+import { normalizeHost, PlatformGate, enforcedValue, createLogger, effectiveMinWithdrawalCents, chartStyleOf, tradeUiOf, MIN_DEPOSIT_CENTS, type VersionedGameConfig, type Cents } from "@invest254/shared";
+import { autoThemeFor, themeIdOfTokens } from "@invest254/shared/siteThemes";
+import { faviconDataUri } from "@invest254/shared/brandMark";
+import { BrandOriginAllowlist, ExtraOriginAllowlist } from "./cors.js";
+import { makeIdleGate, requireStepUp } from "./stepup.js";
 import { makePgMarketerRepo } from "./marketers.pg.js";
 import { makePgReferralRepo } from "./referral.pg.js";
 import { makePgSupportDeps } from "./support.pg.js";
@@ -213,6 +220,20 @@ async function buildDeps(): Promise<ApiDeps> {
   });
   log.info("payhero client ready", { dbConfigLayered: true });
 
+  // Paynicorn hosted-cashier client. Same layering: encrypted DB config (Gateway configuration) over env
+  // (PAYNICORN_APP_KEY / PAYNICORN_MERCHANT_SECRET); neither => fail-loud in production, so it stays dormant.
+  const paynicorn = new ConfiguredPaynicornClient(async () => {
+    const c = await platform.resolveDecryptedConfig("paynicorn", null);
+    if (!c) return null;
+    const over: { baseUrl?: string; appKey?: string; merchantSecret?: string; frontPage?: string } = {};
+    if (c.settings.app_key) over.appKey = c.settings.app_key;
+    if (c.secrets.merchant_secret) over.merchantSecret = c.secrets.merchant_secret;
+    if (c.settings.base_url) over.baseUrl = c.settings.base_url;
+    if (c.settings.front_page) over.frontPage = c.settings.front_page;
+    return over;
+  });
+  log.info("paynicorn client ready", { dbConfigLayered: true });
+
   // PAY-1 (docs/43): per-platform / per-brand payment accounts. Scoped clients are built ONLY from their
   // own scope's encrypted config (never env, never the System's accounts); they reuse the System's own
   // callback endpoints so every result still lands here. Owner/client caches are invalidated by NOTIFY
@@ -288,6 +309,78 @@ async function buildDeps(): Promise<ApiDeps> {
       console.error(`[api] site min_withdrawal lookup failed for ${siteId}:`, (err as Error).message);
     }
     return fallback;
+  };
+
+  // EXPLICIT per-brand native minimum DEPOSIT (multi-tenant). GET /game/config serves each brand its own
+  // `min_deposit_native` (via gameConfigForSite), so the browser validates against the brand's floor.
+  // This resolver reads that SAME per-brand row — keyed by the depositing request's `siteId` — and
+  // converts the native value to KES cents at the live FX rate. It returns a 0 SENTINEL when the brand
+  // has set no native value (or FX is unavailable), so the PaymentService chain falls through to the
+  // platform GLOBAL enforce / static default for those brands. When a brand HAS set a native floor it is
+  // the operator's stated intent and overrides the global enforce (may sit below the platform default,
+  // e.g. $1) — the server then enforces exactly the floor the client validated against.
+  const siteMinDepositCents = async (siteId: string | undefined): Promise<Cents> => {
+    if (!siteId) return 0 as Cents;
+    try {
+      const r = await q.query(
+        `select c.min_deposit_native, coalesce(s.currency, 'KES') as currency
+           from site_game_config c join sites s on s.id = c.site_id
+          where c.site_id = $1::uuid limit 1`,
+        [siteId],
+      );
+      if (r.rows.length) {
+        const row = r.rows[0] as Record<string, unknown>;
+        const currency = String(row.currency ?? "KES");
+        // An EXPLICITLY-set per-brand native min deposit is the operator's intent and overrides the
+        // platform GLOBAL floor — for EVERY currency, KES included. (A KES brand can now set e.g. a
+        // KES 2 floor and have it apply; `effectiveMinWithdrawalCents` returns nativeMajor*100 for KES.)
+        // Brands that set NONE keep `min_deposit_native` null, so the `!= null` guard still defers them
+        // to the global floor — nothing changes for the brands that never set a native value.
+        if (row.min_deposit_native != null) {
+          const nativeMajor = Number(row.min_deposit_native);
+          // effectiveMinWithdrawalCents is a pure native-major → KES-cents resolver (despite the name):
+          // it converts at the live rate, or returns the fallback when FX is unavailable. Passing 0 as
+          // the fallback means "no usable floor" so the caller drops to the global/static chain.
+          const fxRateFromKes = await kesToCurrencyRate(currency);
+          const eff = effectiveMinWithdrawalCents({ nativeMajor, legacyKesCents: 0 as Cents, currency, fxRateFromKes });
+          if (Number.isInteger(eff) && eff > 0) return eff as Cents;
+        }
+      }
+    } catch (err) {
+      console.error(`[api] site min_deposit lookup failed for ${siteId}:`, (err as Error).message);
+    }
+    return 0 as Cents;   // no explicit native floor → defer to the global enforce / static default
+  };
+
+  // EXPLICIT per-brand native minimum WITHDRAWAL (multi-tenant). Mirror of siteMinDepositCents: converts
+  // `min_withdrawal_native` to KES cents at the live rate, or returns a 0 SENTINEL when the brand has set
+  // none. When set it is the operator's intent and overrides the platform GLOBAL withdrawal enforce; the
+  // legacy per-brand KES-cents floor (siteMinWithdrawalCents) keeps its lower-priority slot for the rest.
+  const siteMinWithdrawalNativeCents = async (siteId: string | undefined): Promise<Cents> => {
+    if (!siteId) return 0 as Cents;
+    try {
+      const r = await q.query(
+        `select c.min_withdrawal_native, coalesce(s.currency, 'KES') as currency
+           from site_game_config c join sites s on s.id = c.site_id
+          where c.site_id = $1::uuid limit 1`,
+        [siteId],
+      );
+      if (r.rows.length) {
+        const row = r.rows[0] as Record<string, unknown>;
+        const currency = String(row.currency ?? "KES");
+        // FOREIGN brands only (see siteMinDepositCents): a KES brand keeps the global KES withdrawal
+        // floor; only a display-currency brand's native value (e.g. a USD brand's $5) overrides it.
+        if (currency !== "KES" && row.min_withdrawal_native != null) {
+          const nativeMajor = Number(row.min_withdrawal_native);
+          const fxRateFromKes = await kesToCurrencyRate(currency);
+          const eff = effectiveMinWithdrawalCents({ nativeMajor, legacyKesCents: 0 as Cents, currency, fxRateFromKes });
+          if (Number.isInteger(eff) && eff > 0) return eff as Cents;
+        }
+      }
+    } catch (err) {
+      console.error(`[api] site min_withdrawal_native lookup failed for ${siteId}:`, (err as Error).message);
+    }
+    return 0 as Cents;   // no explicit native floor → defer to the global enforce / legacy / static
   };
 
   // Per-brand withdrawal kill switch (0067). Read live from `sites.withdrawals_enabled` so an
@@ -549,12 +642,23 @@ async function buildDeps(): Promise<ApiDeps> {
 
   const payments = new PaymentService(payRepo, daraja, {
     // Verify STK callbacks against Safaricom (STKPushQuery) before crediting — defeats forged
-    // callbacks. Set MPESA_VERIFY_CALLBACKS=false only if the callback source is otherwise trusted.
-    verifyStkCallbacks: process.env.MPESA_VERIFY_CALLBACKS !== "false",
+    // callbacks. C-3: MPESA_VERIFY_CALLBACKS=false is honoured ONLY when a callback source-IP lock
+    // (MPESA_CALLBACK_ALLOWED_CIDRS) is configured to compensate; with no IP lock the re-query stays
+    // ON regardless, so the escape hatch can never leave forged STK callbacks completely unguarded.
+    verifyStkCallbacks: !(process.env.MPESA_VERIFY_CALLBACKS === "false"
+      && Boolean((process.env.MPESA_CALLBACK_ALLOWED_CIDRS ?? "").trim())),
     // Mega Pay rail (0116): its callback handler ALWAYS re-queries Mega Pay before crediting, so
     // forged Mega Pay callbacks can't mint balance either.
     megapay,
     payhero,
+    paynicorn,
+    // PayX is per-country: the brand's collection country decides its methods, currency and decimals
+    // (migration 0188). Unset/unknown => Kenya, which is how every brand collected before this.
+    countryForSite: async (siteId) => {
+      if (!siteId) return null;
+      const r = await q.query("select country from sites where id = $1", [siteId]);
+      return (r.rows[0]?.country as string | null) ?? null;
+    },
     // PAY-1: every money flow of a brand uses its payment OWNER's accounts (docs/43).
     gateways: paymentScopes,
     // Site-aware STK AccountReference (multi-tenant): "Account no. <Brand>" per depositing brand.
@@ -568,6 +672,13 @@ async function buildDeps(): Promise<ApiDeps> {
     },
     // Per-brand withdrawal floor: enforce the withdrawing site's own min so client and server agree.
     minWithdrawalForSite: (siteId) => siteMinWithdrawalCents(siteId),
+    // EXPLICIT per-brand native withdrawal floor on a FOREIGN brand (e.g. a USD brand's $5): overrides
+    // the platform GLOBAL enforce so the operator's per-brand intent wins. KES brands and brands with no
+    // native value return 0 here and keep the global floor (see siteMinWithdrawalNativeCents).
+    minWithdrawalNativeForSite: (siteId) => siteMinWithdrawalNativeCents(siteId),
+    // EXPLICIT per-brand native deposit floor on a FOREIGN brand (e.g. a USD brand's $1): overrides the
+    // platform GLOBAL enforce and may sit below the platform default. KES brands / no native → 0 → global.
+    minDepositForSite: (siteId) => siteMinDepositCents(siteId),
     // Per-brand withdrawal kill switch: refuse ALL withdrawal initiations for a site when disabled.
     withdrawalsEnabledForSite: (siteId) => siteWithdrawalsEnabled(siteId),
     // Process-wide fallback (single-tenant / default brand, and if the per-site lookup yields nothing):
@@ -604,6 +715,15 @@ async function buildDeps(): Promise<ApiDeps> {
     throw new Error("AUTH: SUPABASE_JWT_SECRET is required for self-managed register/login (HS256 issuance)");
   }
   const identity = new PgIdentityRepository(q);
+  // The two halves of 0196 share one view of a session, so they are built from one port: the idle
+  // gate (wired into the verifier below, so it sees every request) and the step-up gate (spliced by
+  // the Router into every authenticated mutating route).
+  const sessionPort = {
+    getSession: (userId: string, iat: number) => identity.getPrivilegedSession(userId, iat),
+    touchSession: (userId: string, iat: number) => identity.touchPrivilegedSession(userId, iat),
+  };
+  const idleGate = makeIdleGate(sessionPort);
+  const stepUpGate = requireStepUp(sessionPort);
   const auth = new AuthService(identity, {
     jwtSecret,
     // MFA is mandatory for EVERY privileged tier — including the platform tier (platform_admin and the
@@ -615,11 +735,12 @@ async function buildDeps(): Promise<ApiDeps> {
     ...(process.env.SUPABASE_JWT_ISSUER ? { issuer: process.env.SUPABASE_JWT_ISSUER } : {}),
     ...(process.env.SUPABASE_JWT_AUD ? { audience: process.env.SUPABASE_JWT_AUD } : {}),
   });
-  // Force-logout enforcement (0097): wrap the JWT verifier so a PRIVILEGED token issued before the
-  // account's sessions_valid_after epoch is rejected (→ 401 in requireAuth → re-login). This gives
-  // every authenticated route the force-logout for free with no call-site changes. Non-privileged
-  // (player) tokens skip the DB read entirely, so high-volume traffic is unaffected. A DB error in
-  // the check fails CLOSED for privileged tokens (safer than admitting a possibly-revoked session).
+  // Force-logout enforcement (0097, widened in 0200): wrap the JWT verifier so a SESSION-GATED token
+  // (operators AND marketers — see SESSION_GATED_ROLES) issued before the account's
+  // sessions_valid_after epoch is rejected (→ 401 in requireAuth → re-login). This gives every
+  // authenticated route the force-logout for free with no call-site changes. PLAYER tokens skip the DB
+  // read entirely, so high-volume traffic is unaffected. A DB error in the check fails CLOSED for those
+  // roles (safer than admitting a possibly-revoked session).
   const verifier = baseVerifier
     ? (async (token: string) => {
         const claims = await baseVerifier(token);
@@ -633,6 +754,12 @@ async function buildDeps(): Promise<ApiDeps> {
         await Promise.all([
           auth.assertSessionValid(claims.userId, claims.role, (claims.raw as { iat?: unknown })?.iat),
           auth.assertAccountActive(claims.userId, claims.role),
+          // 0196 idle timeout: five minutes of inactivity ends an operator session, and this is
+          // the only place that sees EVERY authenticated request — reads included. Tracking
+          // activity on mutating routes alone would log out an admin who had spent ten minutes
+          // reading the withdrawals queue, which is working, not idling. Runs alongside the two
+          // gates above and fails CLOSED exactly as they do.
+          idleGate(claims.userId, claims.role, (claims.raw as { iat?: unknown })?.iat),
         ]);
         return claims;
       })
@@ -673,10 +800,10 @@ async function buildDeps(): Promise<ApiDeps> {
         primary_domain: input.primaryDomain ? input.primaryDomain.trim().toLowerCase() : null,
         currency: input.currency ?? "KES",
         locale: input.locale ?? "en-KE",
-        theme: input.theme ?? "dark",
-        color_primary: input.colors?.primary ?? "#22c55e",
-        color_bg: input.colors?.bg ?? "#0a0a0a",
-        color_accent: input.colors?.accent ?? "#06b6d4",
+        theme: (input.theme ?? "dark") as string,
+        color_primary: (input.colors?.primary ?? "#22c55e") as string,
+        color_bg: (input.colors?.bg ?? "#0a0a0a") as string,
+        color_accent: (input.colors?.accent ?? "#06b6d4") as string,
         wordmark_text: input.wordmarkText ?? input.primaryDomain ?? input.name,
         licence_line: input.licenceLine ?? null,
         support_email: input.supportEmail ?? null,
@@ -687,16 +814,61 @@ async function buildDeps(): Promise<ApiDeps> {
       // used to overwrite any tenant's brand identity, domain AND economy (house edge, stakes).
       const existingId = await refuseForeignReonboard(q, input.slug, callerScope);
       // F-47: a domain belongs to ONE brand (case-insensitive, like host resolution).
-      if (f.primary_domain) await refuseDomainClash(q, f.primary_domain, existingId);
+      if (f.primary_domain) await refuseDomainClash(q, f.primary_domain as string, existingId);
+
+      /**
+       * EVERY BRAND IS BORN WITH A THEME.
+       *
+       * A brand's appearance lives in `sites.theme_tokens` — around twenty tokens covering the
+       * background, surfaces, borders, text, semantic up/down and the type. The three `color_*`
+       * columns this function used to set produce exactly THREE CSS variables, so a brand created
+       * here rendered on the stock design system and looked like every other untouched brand, no
+       * matter which colour was chosen for it. Seven live brands were in that state before anyone
+       * noticed, and the symptom reported was "brand themes are not taking effect" — they had never
+       * been set (BUGLOG #137).
+       *
+       * So onboarding now assigns a complete theme itself, from the same library the console
+       * offers. The colour the operator picked is honoured — the nearest theme to it wins, so
+       * choosing blue gives the whole blue theme rather than a blue button on a grey site — and a
+       * theme no other brand wears is preferred, so brands do not come out looking alike.
+       *
+       * It only ever FILLS A GAP: a re-onboard of a brand that already has tokens leaves them
+       * alone, because that palette may have been chosen or hand-tuned deliberately.
+       */
+      const themeFields: Record<string, unknown> = {};
+      const alreadyThemed = existingId
+        ? (await q.query("select 1 from sites where id = $1 and theme_tokens is not null", [existingId])).rows.length > 0
+        : false;
+      if (!alreadyThemed) {
+        const worn = (await q.query("select theme_tokens from sites where theme_tokens is not null", [])).rows
+          .map((r: { theme_tokens?: unknown }) => themeIdOfTokens(r.theme_tokens as { brand?: unknown; bg?: unknown }))
+          .filter((id): id is string => !!id);
+        const picked = autoThemeFor({
+          slug: input.slug,
+          mode: f.theme === "light" ? "light" : "dark",
+          preferredColour: input.colors?.primary ?? null,
+          taken: worn,
+        });
+        const tk = picked.tokens as unknown as Record<string, string>;
+        f.theme = picked.mode;
+        f.color_primary = tk.brand!;
+        f.color_bg = tk.bg!;
+        f.color_accent = tk.accent!;
+        themeFields.theme_tokens = JSON.stringify(tk);
+        // The tab icon is generated from the theme + the slug, exactly as the console's apply does,
+        // so a new brand is not left wearing the default mark of whatever it was cloned from.
+        themeFields.favicon_url = faviconDataUri(tk, input.slug);
+      }
       let siteId: string;
       if (existingId) {
         siteId = existingId;
-        const sets = Object.keys(f).map((k, i) => `${k} = $${i + 2}`).join(", ");
-        await q.query(`update sites set ${sets}, updated_at = now() where id = $1`, [siteId, ...Object.values(f)]);
+        const fu: Record<string, unknown> = { ...f, ...themeFields };
+        const sets = Object.keys(fu).map((k, i) => `${k} = $${i + 2}`).join(", ");
+        await q.query(`update sites set ${sets}, updated_at = now() where id = $1`, [siteId, ...Object.values(fu)]);
       } else {
         // A platform admin's NEW brand is stamped into ITS platform; the system owner (null) uses the
         // column default. platform_id is never changed on re-onboard (the update path above).
-        const fi: Record<string, unknown> = { ...f, ...(platformId ? { platform_id: platformId } : {}) };
+        const fi: Record<string, unknown> = { ...f, ...themeFields, ...(platformId ? { platform_id: platformId } : {}) };
         const cols = ["slug", ...Object.keys(fi)];
         const ph = cols.map((_, i) => `$${i + 1}`).join(", ");
         const r = await q.query(`insert into sites (${cols.join(", ")}) values (${ph}) returning id`, [input.slug, ...Object.values(fi)]);
@@ -784,9 +956,25 @@ async function buildDeps(): Promise<ApiDeps> {
   await brandCors.init();
   console.log(`[api] CORS: ${brandCors.size} active brand origin(s) allowed dynamically`);
 
+  // Extra NON-BRAND origins (e.g. the Cloudflare Pages PR previews), opt-in from the same
+  // CORS_ALLOWED_ORIGINS var and empty unless configured — see cors.ts for why the suffix match is
+  // anchored the way it is. Purely additive: brand origins are decided exactly as before.
+  const extraCors = ExtraOriginAllowlist.fromEnv();
+  if (extraCors.size > 0) console.log(`[api] CORS: extra origin(s) allowed: ${extraCors.describe().join(", ")}`);
+
   return {
     verifier,
     auth,
+    stepUp: stepUpGate,
+    // Per-session operator state for the step-up gate and the idle timeout (0196). A thin adapter
+    // over the identity repo so the auth routes and the gate depend on four calls rather than on
+    // the whole repository.
+    privilegedSessions: {
+      getSession: (userId, iat) => identity.getPrivilegedSession(userId, iat),
+      recordStepUp: (userId, iat, method) => identity.recordStepUp(userId, iat, method),
+      endSessions: (userId) => identity.endPrivilegedSessions(userId),
+      forceLogout: (userId) => identity.stampForceLogout(userId),
+    },
     affiliate,
     admin,
     platform,
@@ -808,7 +996,7 @@ async function buildDeps(): Promise<ApiDeps> {
     telegramForumChatId,
     telegramTopics: { approved: telegramTopics.approved, rejected: telegramTopics.rejected },
     onCommissionRequested: commissionRequestedAlert,
-    corsAllowOrigin: (origin: string) => brandCors.allows(origin),
+    corsAllowOrigin: (origin: string) => brandCors.allows(origin) || extraCors.allows(origin),
     logger: dbLog,
     marketers: makePgMarketerRepo((sql, params) => q.query(sql, params ?? [])),
     referral: referralRepo,
@@ -866,7 +1054,7 @@ async function buildDeps(): Promise<ApiDeps> {
       const h = normalizeHost(ref);
       if (!h) return null;
       const r = await q.query(
-        `select c.house_edge, c.max_multiplier, c.min_stake, c.max_stake, c.min_withdrawal, c.min_withdrawal_native,
+        `select c.house_edge, c.max_multiplier, c.min_stake, c.max_stake, c.min_withdrawal, c.min_withdrawal_native, c.min_deposit_native,
                 c.default_duration_s, c.tick_rate_ms, c.drift_bias, c.volatility, c.target_win_rate, c.version,
                 n.min_native as min_stake_native, n.max_native as max_stake_native
            from site_game_config c join sites s on s.id = c.site_id
@@ -935,7 +1123,7 @@ async function buildDeps(): Promise<ApiDeps> {
         theme: String(x.theme) as "dark" | "light" | "auto",
         currency, locale: String(x.locale),
         chartStyle: chartStyleOf(x.chart_style),   // ADDON-1: area / bars / baseline reach players (were coerced to "line")
-        tradeUi: (x.trade_ui === "digits" ? "digits" : "classic"),
+        tradeUi: tradeUiOf(x.trade_ui),
         fxRateFromKes,
         licenceLine: (x.licence_line as string | null) ?? null,
         supportEmail: (x.support_email as string | null) ?? null,
@@ -1000,6 +1188,14 @@ async function buildDeps(): Promise<ApiDeps> {
       store: makePgLiveChatStore(q),
       mediaSecret: chatMediaSecret,
     },
+    // The candlestick screen's feed (docs/54): real settled deposits, paid withdrawals and winning
+    // trades for the brand. Read-only, name-masked, and public like /site/brand beside it.
+    brandActivity: makePgBrandActivity(q),
+    // Marketer live sessions (0191): the marketer marks the window, the platform admin sets the
+    // rules, and the earnings figure is a REPORT over commissions already attributed.
+    liveSessions: makePgLiveSessions(q),
+    // The brand's community channel (0192): operators post, players read and vote.
+    community: makePgCommunity(q),
     platformOnboard,
     registrarConfig,
     paymentScopes,
@@ -1014,6 +1210,10 @@ async function buildDeps(): Promise<ApiDeps> {
       log: (m: string) => log.warn(m),
     }),
     addons,
+    // Transactional email. Already built above for the payout alerts; passing the SAME sender into
+    // the app means the marketer statement cannot be emailed by a path the alerts are not, and
+    // leaves exactly one place where "is email configured?" is answered.
+    email: emailSender,
   };
 }
 
@@ -1050,6 +1250,33 @@ if (Number.isFinite(RECONCILE_MS) && RECONCILE_MS > 0) {
   }, RECONCILE_MS);
   megaTimer.unref();
 
+  // FAST re-verify lane (Mega Pay). The 5-minute sweep above is the safety net; but a deposit whose
+  // callback raced AHEAD of Mega Pay's status endpoint (our verify saw "processing", so we refused to
+  // credit an unverified callback) would otherwise wait up to RECONCILE_MS to settle. Re-query FRESH
+  // pending deposits far more often so they credit within seconds of Mega Pay marking them Completed.
+  // This is still an authoritative server-to-server status check (the callback body is never trusted) —
+  // it only shortens DETECTION latency, never how a credit is authorised, so there is no money-safety
+  // change and `completeDeposit` stays idempotent across the fast + slow sweeps. 0 disables; it also
+  // self-disables unless it is genuinely faster than the main sweep.
+  const FAST_RECONCILE_MS = Number(process.env.DEPOSIT_FAST_RECONCILE_INTERVAL_MS ?? 15_000);
+  const FAST_RECONCILE_MIN_AGE_MS = Number(process.env.DEPOSIT_FAST_RECONCILE_MIN_AGE_MS ?? 8_000);
+  if (Number.isFinite(FAST_RECONCILE_MS) && FAST_RECONCILE_MS > 0 && FAST_RECONCILE_MS < RECONCILE_MS) {
+    const fastTimer = setInterval(() => {
+      void deps.payments
+        .reconcileMegaPayDeposits({ olderThanMs: FAST_RECONCILE_MIN_AGE_MS, limit: 25 })
+        .then((r) => { if (r.settled || r.errors) recLog.info("megapay fast re-verify", { provider: "megapay", fast: true, ...r }); })
+        .catch((err: unknown) => recLog.error("megapay fast re-verify failed", err as Error));
+      // PayX (Paynicorn) too: a player watching "check your phone" sees the credit within seconds even
+      // when the postback is late, because the sheet only ever turns green on the settled transaction.
+      void deps.payments
+        .reconcilePaynicornDeposits({ olderThanMs: FAST_RECONCILE_MIN_AGE_MS, limit: 25 })
+        .then((r) => { if (r.settled || r.errors) recLog.info("paynicorn fast re-verify", { provider: "paynicorn", fast: true, ...r }); })
+        .catch((err: unknown) => recLog.error("paynicorn fast re-verify failed", err as Error));
+    }, FAST_RECONCILE_MS);
+    fastTimer.unref();
+    log.info("fast deposit re-verify armed", { everySeconds: Math.round(FAST_RECONCILE_MS / 1000), minAgeMs: FAST_RECONCILE_MIN_AGE_MS });
+  }
+
   // PayHero rail: the SAME sweep for provider='payhero', using PayHero's authoritative transaction-status
   // query. Isolated per-provider; a no-op when PayHero isn't configured.
   const payheroTimer = setInterval(() => {
@@ -1059,6 +1286,15 @@ if (Number.isFinite(RECONCILE_MS) && RECONCILE_MS > 0) {
       .catch((err: unknown) => recLog.error("payhero reconcile sweep failed", err as Error));
   }, RECONCILE_MS);
   payheroTimer.unref();
+
+  // Paynicorn rail: settles deposits whose postback never arrived, via the signed status query.
+  const paynicornTimer = setInterval(() => {
+    void deps.payments
+      .reconcilePaynicornDeposits()
+      .then((r) => { if (r.settled || r.errors) recLog.info("paynicorn reconcile sweep", { provider: "paynicorn", ...r }); })
+      .catch((err: unknown) => recLog.error("paynicorn reconcile sweep failed", err as Error));
+  }, RECONCILE_MS);
+  paynicornTimer.unref();
 
   // PayHero LEDGER sweep — settlement for Lipwa (card/bank/multi-country) and manual paybill C2B.
   // Reads PayHero's authoritative account ledger once (one shared account) and either auto-credits a
@@ -1088,4 +1324,41 @@ if (deps.billing && Number.isFinite(BILLING_RECONCILE_MS) && BILLING_RECONCILE_M
       .catch((err: unknown) => billLog.error("billing reconcile sweep failed", err as Error));
   }, BILLING_RECONCILE_MS);
   billTimer.unref();
+}
+
+// Ticket auto-escalation (migration 0139): an open level-0 ticket past its urgency SLA is escalated
+// to the System admin, logged in ticket_escalations, and notified.
+//
+// This used to be a GitHub Actions cron (`.github/workflows/ticket-escalation.yml`, */15) — 96
+// runners a day, each cold-booting node and `npm ci`ing a monorepo to run one `select`, and each one
+// a production database connection opened from GitHub's network. The work is a single idempotent
+// statement and this process is already up and already holds the pool, so it belongs here with the
+// other sweeps. The workflow remains, schedule commented out, for a manual run.
+//
+// SAFE ON MORE THAN ONE MACHINE. fn_ticket_auto_escalate is ONE `update ... returning` over
+// `escalation_level = 0`: concurrent callers take row locks, and under READ COMMITTED the loser
+// re-evaluates the predicate after the winner commits, finds level 1, and does not return the row.
+// So a second machine cannot double-escalate or double-notify, and no advisory lock is needed.
+// `min_machines_running = 1` (fly.api.toml) is what guarantees somebody is awake to run it at all —
+// the same thing the deposit sweeps above already depend on.
+//
+// The first run is 30 seconds after boot rather than one full interval, so a deploy does not reset
+// the clock and a backlog (this was off entirely while the cron was disabled) clears on the next
+// release instead of waiting. Idempotent, so an extra run costs one `select`. 0 disables.
+const TICKET_ESCALATE_MS = Number(process.env.TICKET_ESCALATE_INTERVAL_MS ?? 900_000);   // 15 min, the cron's cadence
+const TICKET_ESCALATE_FIRST_MS = Number(process.env.TICKET_ESCALATE_FIRST_RUN_MS ?? 30_000);
+if (deps.tickets && Number.isFinite(TICKET_ESCALATE_MS) && TICKET_ESCALATE_MS > 0) {
+  const tickets = deps.tickets;
+  const tkLog = (deps.logger ?? log).child({ module: "tickets.escalate" });
+  const sweep = (): void => {
+    void tickets
+      .autoEscalate()
+      .then((n) => { if (n > 0) tkLog.info("tickets auto-escalated", { escalated: n }); })
+      .catch((err: unknown) => tkLog.error("ticket auto-escalation failed", err as Error));
+  };
+  const first = setTimeout(sweep, Math.max(0, TICKET_ESCALATE_FIRST_MS));
+  first.unref();
+  const tkTimer = setInterval(sweep, TICKET_ESCALATE_MS);
+  tkTimer.unref();
+  log.info("ticket auto-escalation armed", { everyMinutes: Math.round(TICKET_ESCALATE_MS / 60_000) });
 }

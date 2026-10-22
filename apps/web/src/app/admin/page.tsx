@@ -77,7 +77,7 @@ function TrendsSection() {
   const deltaHint = 'last 15 days vs the 15 days before';
 
   return (
-    <Section title="Trends — last 30 days">
+    <Section title="Trends: last 30 days">
       {q.isLoading ? (
         <Skeleton className="h-56 w-full" />
       ) : q.isError ? (

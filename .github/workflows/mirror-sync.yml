@@ -7,7 +7,8 @@ name: Mirror · sync to production
 # PUSH AUTH: uses the MIRROR_PAT secret (a fine-grained PAT scoped to THIS repo with contents:write
 # AND workflows:write). The default GITHUB_TOKEN cannot push changes under .github/workflows/, so a
 # PAT with the `workflows` scope is required to mirror workflow files. Falls back to GITHUB_TOKEN
-# (non-workflow changes only) if MIRROR_PAT is unset.
+# (non-workflow changes only) when MIRROR_PAT is unset OR REJECTED — see the preflight below, which
+# exists because an expired PAT used to be worse than no PAT at all.
 # Guarded to run ONLY in the template repo, so the identical file is inert when mirrored upstream.
 
 on:
@@ -30,12 +31,43 @@ jobs:
   sync:
     if: github.repository == 'petermuchendu1000/invest254-platform-template'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
+      # An EXPIRED MIRROR_PAT was WORSE than an absent one, which the expression below does not show:
+      # `secrets.MIRROR_PAT || github.token` falls back only when the secret is EMPTY. A secret that
+      # is set but rejected went straight to checkout, which cannot authenticate with it and died on
+      # the FIRST step — `fatal: could not read Username for 'https://github.com'`. This workflow did
+      # that every three hours for 23 days: ~180 failures, not one of which named the cause, and a
+      # mirror that could have carried every file except .github/workflows/ carried nothing at all.
+      #
+      # So the token is checked before it is used, and a dead one degrades to a partial mirror with a
+      # loud annotation rather than taking the whole sync down. Same shape as deploy.yml's fly-auth
+      # preflight, and for the same reason: a credential failure must say that it is one.
+      - name: Check MIRROR_PAT before handing it to checkout
+        id: auth
+        env:
+          PAT: ${{ secrets.MIRROR_PAT }}
+        run: |
+          set -uo pipefail
+          if [ -z "${PAT:-}" ]; then
+            echo "::warning title=MIRROR_PAT is not set::Mirroring with GITHUB_TOKEN. Everything except .github/workflows/ still syncs; workflow files are left untouched."
+            echo "use_pat=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          code=$(curl -s -o /dev/null -w '%{http_code}' \
+                   -H "Authorization: Bearer $PAT" -H "Accept: application/vnd.github+json" \
+                   "https://api.github.com/repos/${GITHUB_REPOSITORY}")
+          if [ "$code" = "200" ]; then
+            echo "use_pat=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error title=MIRROR_PAT rejected (HTTP $code)::The secret is SET but GitHub refuses it — expired, revoked, or no longer scoped to this repository. Create a fine-grained PAT on petermuchendu1000/invest254-platform-template with Contents: read and write AND Workflows: read and write, then replace the MIRROR_PAT secret in THIS repo's Actions secrets (docs/30 §A). Mirroring with GITHUB_TOKEN meanwhile: everything except .github/workflows/ still syncs."
+            echo "use_pat=false" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/checkout@v4
         with:
           ref: main
           fetch-depth: 0
-          token: ${{ secrets.MIRROR_PAT || github.token }}
+          # Only a token that just answered 200 is used; a dead one falls back instead of failing here.
+          token: ${{ steps.auth.outputs.use_pat == 'true' && secrets.MIRROR_PAT || github.token }}
       - uses: actions/setup-node@v4
         with: { node-version: 20, cache: npm }
       - name: Fetch upstream & detect drift
@@ -51,10 +83,21 @@ jobs:
           fi
       - name: Align tree to production HEAD
         if: steps.drift.outputs.in_sync == 'false'
+        env:
+          USE_PAT: ${{ steps.auth.outputs.use_pat }}
         run: |
           set -euo pipefail
           git checkout FETCH_HEAD -- .
           comm -23 <(git ls-files | sort) <(git ls-tree -r --name-only FETCH_HEAD | sort) | xargs -r git rm -q
+          if [ "$USE_PAT" != "true" ]; then
+            # GITHUB_TOKEN may not push ANYTHING under .github/workflows/, and one refused path loses
+            # the entire push. Leave those paths exactly as they are so the rest of the mirror still
+            # lands; mirror-drift keeps reporting the workflow drift until a working PAT lets it in.
+            git reset -q HEAD -- .github/workflows
+            git checkout -q HEAD -- .github/workflows 2>/dev/null || true
+            git clean -fdq .github/workflows || true
+            echo "::warning title=Workflow files not mirrored::Syncing without a PAT, so .github/workflows/ is left at the template's current content."
+          fi
           git add -A
       - name: CI gate (typecheck) before publishing the mirror
         if: steps.drift.outputs.in_sync == 'false'
@@ -68,6 +111,13 @@ jobs:
           set -euo pipefail
           git config user.name  "mirror-bot"
           git config user.email "mirror-bot@users.noreply.github.com"
+          # Nothing staged can only mean the drift was workflow-only and the fallback above put those
+          # paths back. Succeed quietly rather than failing on `nothing to commit`: the annotation
+          # from the preflight is the actionable message, and a red run on top of it says nothing new.
+          if git diff --cached --quiet; then
+            echo "::warning title=Only workflow files differ::GITHUB_TOKEN cannot push them, so this run has nothing it is allowed to mirror. Replace MIRROR_PAT (see the error above)."
+            exit 0
+          fi
           git commit -m "chore(mirror): sync to invest254@${{ steps.drift.outputs.sha }}"
           git push origin HEAD:main
       - name: Open/refresh a blocker issue on failure
@@ -78,6 +128,6 @@ jobs:
           gh label create mirror-drift --color FBCA04 --description "Template out of sync with upstream production" 2>/dev/null || true
           title="🔴 Mirror sync blocked"
           n=$(gh issue list --state open --search "$title in:title" --json number -q '.[0].number' || true)
-          body="Automatic mirror to production HEAD failed on run ${{ github.run_id }}. main was NOT updated. Common cause: MIRROR_PAT missing/expired (needs contents+workflows write). See the run logs."
+          body="Automatic mirror to production HEAD failed on run ${{ github.run_id }}. main was NOT updated. Check the **Check MIRROR_PAT** step first — it now says outright whether the token was missing, rejected (with the HTTP code) or fine, and a rejected token no longer stops the non-workflow half of the mirror. See docs/30 §A for what the PAT needs."
           if [ -n "${n:-}" ]; then gh issue comment "$n" --body "$body";
           else gh issue create --title "$title" --label mirror-drift --body "$body"; fi

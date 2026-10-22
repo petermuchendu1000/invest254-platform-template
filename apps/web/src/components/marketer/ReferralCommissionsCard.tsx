@@ -29,7 +29,7 @@ export function ReferralCommissionsCard() {
   const onRequest = async () => {
     try {
       const r = await requestPayout.mutateAsync();
-      toast.push({ tone: 'success', title: 'Payout requested', description: `${formatKes(r.amountCents)} — an admin will process it to your M-Pesa.` });
+      toast.push({ tone: 'success', title: 'Payout requested', description: `${formatKes(r.amountCents)}. An admin will process it to your M-Pesa.` });
     } catch (e) {
       const code = e instanceof ApiError ? e.code : '';
       if (code === 'BELOW_MIN') toast.push({ tone: 'error', title: 'Below minimum', description: `You need at least ${formatKes(summary.minPayoutCents)} to request a payout.` });
@@ -88,7 +88,7 @@ export function ReferralCommissionsCard() {
                 {items.map((c) => (
                   <tr key={c.id} className="border-t border-gray-100 dark:border-gray-800">
                     <td className="py-1.5 pr-3 text-gray-500 dark:text-gray-400">{formatDateTime(c.createdAtMs)}</td>
-                    <td className="py-1.5 pr-3">{c.referredUsername ?? '—'}</td>
+                    <td className="py-1.5 pr-3">{c.referredUsername ?? '-'}</td>
                     <td className="py-1.5 pr-3">{Math.round(c.rate * 100)}%</td>
                     <td className="py-1.5 pr-3 text-right text-gray-500 dark:text-gray-400">{formatKes(c.depositAmountCents)}</td>
                     <td className="py-1.5 text-right font-medium text-gray-900 dark:text-gray-100">{formatKes(c.commissionCents)}</td>

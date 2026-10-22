@@ -25,8 +25,13 @@ jobs:
   schema-drift:
     name: schema drift (production vs migrations)
     # After a deploy, only check when it succeeded (a failed deploy may have stopped before migrate).
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    # Also inert in the mirror template, which has no production DATABASE_URL to compare against
+    # (BUGLOG #156) — and which would otherwise pull a Postgres 17 image to diff nothing.
+    if: >-
+      github.repository != 'petermuchendu1000/invest254-platform-template'
+      && (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     services:
       reference:
         image: pgvector/pgvector:pg17

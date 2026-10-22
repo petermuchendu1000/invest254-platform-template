@@ -4,7 +4,18 @@
  * handled by `normalizeMsisdn` (see payments.ts); these helpers cover password strength and
  * the public display username (which is unique and shown in chat/feed).
  */
-export const PASSWORD_MIN_LENGTH = 8;
+/**
+ * Four, because the people this product serves type it on a phone keypad, often repeatedly, and an
+ * eight-character password with a letter and a digit was costing more signups than it was buying
+ * security. A PIN is the deliberate trade.
+ *
+ * What makes that trade survivable is NOT the password: it is the throttle in front of it
+ * (`rateLimit` on /auth/login, RATE_LIMIT_AUTH_PER_MIN) and the fact that a session is bound to one
+ * brand. Four digits is 10,000 possibilities, so the throttle is now the ONLY thing standing between
+ * an account and an exhaustive search — treat it as a security control, not a nicety, and do not
+ * raise its limit without replacing it with per-account lockout.
+ */
+export const PASSWORD_MIN_LENGTH = 4;
 export const PASSWORD_MAX_LENGTH = 128; // cap input to bound hashing cost (DoS guard)
 export const USERNAME_MIN_LENGTH = 3;
 export const USERNAME_MAX_LENGTH = 20;
@@ -14,13 +25,18 @@ const USERNAME_RE = /^[a-zA-Z0-9](?:[a-zA-Z0-9._]*[a-zA-Z0-9])?$/;
 
 export interface CredentialCheck { ok: boolean; reason?: string }
 
-/** Validate a password: length bounds + at least one letter and one digit. */
+/**
+ * Validate a password: LENGTH ONLY.
+ *
+ * No character classes. "1234" is accepted, and so is every password that was valid before — the
+ * floor moved down, so no existing credential stops working and nobody is forced to reset.
+ *
+ * The maximum stays: it bounds scrypt's input and is a denial-of-service guard, not a strength rule.
+ */
 export function validatePassword(password: unknown): CredentialCheck {
   if (typeof password !== "string") return { ok: false, reason: "INVALID" };
   if (password.length < PASSWORD_MIN_LENGTH) return { ok: false, reason: "TOO_SHORT" };
   if (password.length > PASSWORD_MAX_LENGTH) return { ok: false, reason: "TOO_LONG" };
-  if (!/[A-Za-z]/.test(password)) return { ok: false, reason: "NEEDS_LETTER" };
-  if (!/[0-9]/.test(password)) return { ok: false, reason: "NEEDS_DIGIT" };
   return { ok: true };
 }
 

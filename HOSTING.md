@@ -139,17 +139,33 @@ fly machine restart <id> -a invest254-engine-pm       # rolling restart (per mac
 
 #### 2.6.1 Automated deploy on merge to `main` (`.github/workflows/deploy.yml`)
 Merging backend changes to `main` **auto-deploys both Fly apps** (the manual `fly deploy` commands above
-are the fallback / for hotfixes). The workflow:
-1. `verify` — `npm ci` + backend typecheck (`tsc -b packages/shared apps/engine apps/api`) + `npm test`
-   (DB-independent), so a broken `main` is never deployed;
+are the fallback / for hotfixes).
+
+**It is triggered by CI, not by the push** (`workflow_run` on the `CI` workflow). CI and Deploy used to
+start together on the same commit, and Deploy's `verify` job re-ran the typecheck and the full suite
+that CI was running at that same moment — the same work, twice, per merge. Deploy now waits for CI's
+verdict instead of reproducing it. Two consequences worth knowing: a `workflow_run` trigger is read
+from the copy of the file **on `main`**, so changes to the trigger do nothing until merged; and Deploy
+appears in the Actions tab as its own run rather than as a check on the commit.
+
+The workflow:
+1. `gate` — requires that the CI run **passed** and was a **push** to `main` (never a `pull_request`
+   run), resolves the commit from `workflow_run.head_sha`, and decides whether production needs it by
+   diffing that commit against **what is actually live** — `/api/v1/health` reports the `GIT_SHA` baked
+   into the running image. This replaces the old `paths:` filter and is self-correcting: a deploy that
+   is ever skipped or lost leaves the live commit behind, and the next green CI sees the whole gap. A
+   paths filter judges one push in isolation, which is how the API once sat five days behind `main`
+   (BUGLOG #155). Fails **open** — if the live commit can't be read, it deploys;
 2. `fly-auth` — proves `FLY_API_TOKEN` can reach **both** apps. Runs BEFORE `migrate`, so an expired or
    revoked token stops the run with an explicit error annotation instead of migrating production and then
    silently not shipping the code (BUGLOG #48);
 3. `migrate` — applies + records pending migrations (BUGLOG #24);
 4. `deploy` (matrix: api, engine; `fail-fast: false`) — `flyctl deploy --remote-only --image-label git-<sha>`,
    then verifies the latest release image carries that label and (API) that `/api/v1/health` returns 200.
-flyctl is pinned (`FLYCTL_VERSION`) — bump it deliberately. It triggers only when backend paths change
-(skips docs-only merges) and can be run manually from the Actions tab (`workflow_dispatch`). Web is
+flyctl is pinned (`FLYCTL_VERSION`) — bump it deliberately. Every job carries a `timeout-minutes`
+(BUGLOG #155: a build that hung for six hours held the `fly-deploy` concurrency group and blocked the
+queue). It can be run manually from the Actions tab (`workflow_dispatch`), which skips the gate's
+"does production need this" question and deploys current `main` regardless. Web is
 unaffected (Cloudflare Pages deploys it separately).
 
 **Which commit is live?** `flyctl releases -a invest254-api --image` — images are labelled `git-<sha>`.

@@ -25,7 +25,7 @@ export function registerSiteRoutes(router: Router, deps: ApiDeps): void {
     const host = ctx.query.get("host")?.trim().toLowerCase();
     if (!host) throw new ApiError("VALIDATION", "host query parameter is required", 400);
     const brand = await deps.brandByHost(host);
-    if (!brand) throw new ApiError("SITE_NOT_FOUND", `no active brand for host '${host}'`, 404);
+    if (!brand) throw new ApiError("SITE_NOT_FOUND", "no active brand for this host", 404);
     // #10 geo-currency (presentation only; money of record stays KES cents). The web may pass:
     //   - `country`  = the visitor's ISO country (Cloudflare CF-IPCountry) → a geo-default currency;
     //   - `currency` = the user's saved/selected preference (top priority).

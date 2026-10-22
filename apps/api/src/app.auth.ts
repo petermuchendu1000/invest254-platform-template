@@ -1,5 +1,6 @@
 import { Router, ApiError, requireAuth, rateLimit, type Ctx } from "./http.js";
 import { SECURITY_QUESTIONS } from "@invest254/shared";
+import { isGatedRole, requiredFactor, hasFreshStepUp, tokenIatSeconds, STEP_UP_WINDOW_MS } from "./stepup.js";
 import type { ApiDeps } from "./app.js";
 
 /**
@@ -26,6 +27,9 @@ const AUTH_STATUS: Readonly<Record<string, number>> = {
   MFA_REQUIRED: 401,
   MFA_INVALID: 401,
   MFA_NOT_ENROLLING: 400,
+  // One uniform refusal for EVERY reason a password reset can fail (see AuthService.resetPassword).
+  // Distinguishing them turned this public endpoint into a directory of operator accounts.
+  RESET_UNAVAILABLE: 403,
   RESET_DISABLED: 403,
   // Security-question second factor (0097). Privileged reset gating + setup validation.
   SECURITY_QUESTIONS_NOT_SET: 403, // privileged account has not set answers → reset fails closed
@@ -196,6 +200,11 @@ export function registerAuthRoutes(router: Router, deps: ApiDeps): void {
       phone,
       password,
       anyBrand: true, // identity-based: resolve across all brands, session = account's own site/platform
+      // When one phone holds several accounts and more than one password matches, the OPERATOR
+      // account is the one being signed in for — this is the console's own door. Without it an
+      // older player account on the same number shadowed a real admin, who then met the wrong-tier
+      // 404 on every console surface (BUGLOG #135). Only this route sets it.
+      preferPrivileged: true,
       ...(totp !== undefined ? { totp } : {}),
       ...(recoveryCode !== undefined ? { recoveryCode } : {}),
     }));
@@ -240,6 +249,93 @@ export function registerAuthRoutes(router: Router, deps: ApiDeps): void {
     return domain(() => deps.auth.disableMfa(ctx.claims!.userId, code));
   });
 
+  // ── Step-up second factor + server-side logout (0196) ──────────────────────────────────────────
+  //
+  // The gate itself lives in apps/api/src/stepup.ts and is spliced by the Router into every
+  // authenticated mutating route. These two routes are how an operator satisfies it, and how a
+  // session is actually ended.
+  //
+  // Both are necessarily exempt from the gate (see STEP_UP_EXEMPT): requiring a proven second
+  // factor in order to prove a second factor is a deadlock, and a logout that could be refused for
+  // want of a code would strand an operator in a session they are trying to close.
+
+  /** What this session needs in order to take a critical action, and whether it has it. */
+  router.get(`${BASE}/auth/step-up`, auth, async (ctx: Ctx) => {
+    const role = ctx.claims!.role ?? "player";
+    if (!isGatedRole(role)) return { required: false, factor: null, satisfied: true };
+    const iat = tokenIatSeconds(ctx.claims);
+    const session = iat === null ? null : await deps.privilegedSessions.getSession(ctx.claims!.userId, iat);
+    const factor = requiredFactor(role);
+    return {
+      required: true,
+      // THE authoritative answer to "which prompt do I show". The client must not re-derive this
+      // from the role, or the two mappings drift and the UI asks for the wrong factor.
+      factor,
+      satisfied: hasFreshStepUp(session, Date.now()),
+      windowSeconds: Math.floor(STEP_UP_WINDOW_MS / 1000),
+      // The caller's OWN three question keys, so the prompt asks the questions they actually chose
+      // instead of offering all ten and making them guess. Safe because this caller has already
+      // proven they are this account -- unlike /auth/password/reset-questions, which answers an
+      // anonymous caller about an arbitrary phone and therefore serves decoys. Empty = setup unfinished.
+      ...(factor === "security_questions"
+        ? { questionKeys: await deps.auth.myQuestionKeys(ctx.claims!.userId) }
+        : {}),
+    };
+  });
+
+  /**
+   * Prove the second factor for this session. Accepts an authenticator code, a single-use recovery
+   * code, or the security answers — whichever the role requires.
+   *
+   * Rate-limited per USER, not per IP: the thing being guessed here belongs to one account, so the
+   * budget must belong to that account too. The IP-keyed limiter that guards login cannot express
+   * that, which is how a 6-digit code ended up with no per-account budget at all.
+   */
+  router.post(`${BASE}/auth/step-up`, auth, mfaLimit, async (ctx: Ctx) => {
+    const role = ctx.claims!.role ?? "player";
+    if (!isGatedRole(role)) {
+      throw new ApiError("STEP_UP_NOT_APPLICABLE", "this account does not use step-up verification", 400);
+    }
+    const iat = tokenIatSeconds(ctx.claims);
+    if (iat === null) throw new ApiError("SESSION_IDLE", "session expired, sign in again", 401);
+    const body = asObject(ctx.body);
+    const totp = typeof body.code === "string" ? body.code : undefined;
+    const recoveryCode = typeof body.recovery_code === "string" ? body.recovery_code : undefined;
+    // parseSecurityAnswers returns [] when the field is absent; only pass it on when it has content,
+    // so an empty array cannot be mistaken for an attempt at the knowledge factor.
+    const parsed = parseSecurityAnswers(body);
+    const proof = {
+      ...(totp ? { totp } : {}),
+      ...(recoveryCode ? { recoveryCode } : {}),
+      ...(parsed.length ? { answers: parsed } : {}),
+    };
+    const { method } = await domain(() => deps.auth.verifyStepUp(ctx.claims!.userId, proof));
+    // Record it against THIS token, so the proof cannot travel to another session.
+    await deps.privilegedSessions.recordStepUp(ctx.claims!.userId, iat, method);
+    return { verified: true, method, windowSeconds: Math.floor(STEP_UP_WINDOW_MS / 1000) };
+  });
+
+  /**
+   * End this operator's sessions SERVER-SIDE.
+   *
+   * Logout in this app has always been client-only: the browser drops the token from localStorage
+   * and the 7-day JWT stays valid for the rest of the week. For a player that is a small thing; for
+   * an account that can approve payouts it means "log out" never actually closed anything — a token
+   * captured from a shared machine, a synced browser profile, or a proxy log kept working.
+   *
+   * Two actions, because the token is stateless and neither alone is enough: forget the privileged
+   * session records (so the idle gate stops recognising them), and stamp the 0097 force-logout
+   * epoch (so the verifier rejects the JWT itself). The epoch is what makes this real.
+   */
+  router.post(`${BASE}/auth/logout`, auth, async (ctx: Ctx) => {
+    const userId = ctx.claims!.userId;
+    if (isGatedRole(ctx.claims!.role)) {
+      await deps.privilegedSessions.endSessions(userId);
+      await deps.privilegedSessions.forceLogout(userId);
+    }
+    return { loggedOut: true };
+  });
+
   // ── Password management ──
   // `change` proves possession via the current password, so it is always available. `reset` is the
   // no-OTP stop-gap: AuthService refuses it unless explicitly enabled, and it is tightly throttled
@@ -250,7 +346,10 @@ export function registerAuthRoutes(router: Router, deps: ApiDeps): void {
     const body = asObject(ctx.body);
     const currentPassword = requireString(body, "current_password");
     const newPassword = requireString(body, "new_password");
-    return domain(() => deps.auth.changePassword(ctx.claims!.userId, currentPassword, newPassword));
+    // Security answers are REQUIRED for a privileged account and ignored for a player — the engine
+    // decides which, by the account's live role, so the client cannot opt out by omitting them.
+    const answers = parseSecurityAnswers(body);
+    return domain(() => deps.auth.changePassword(ctx.claims!.userId, currentPassword, newPassword, answers));
   });
 
   router.post(`${BASE}/auth/password/reset`, resetLimit, async (ctx: Ctx) => {

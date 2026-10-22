@@ -7,6 +7,17 @@ export type Verifier = (token: string) => Promise<AuthClaims>;
 type KeyInput = Uint8Array | ReturnType<typeof createRemoteJWKSet>;
 interface VerifyOpts { issuer?: string; audience?: string; }
 
+/**
+ * The roles this platform mints for itself (http.ts ROLE_RANK). A token can only be trusted as a
+ * principal here if it carries one of these — a defence for the case where `iss`/`aud` are not pinned
+ * (the default), under which ANY token validly signed with the shared SUPABASE_JWT_SECRET would
+ * otherwise be accepted. A Supabase-Auth-minted token, for instance, carries role "authenticated",
+ * which is not one of ours; such a token is now rejected rather than admitted as a rank-0 identity.
+ */
+const SELF_ISSUED_ROLES: ReadonlySet<string> = new Set([
+  "player", "marketer", "admin", "platform_admin", "platform_superadmin",
+]);
+
 /** Low-level verifier from a resolved key/JWKS (also used directly in tests with a local JWKS). */
 export function verifierFromKey(getKey: KeyInput, algorithms: string[], opts: VerifyOpts = {}): Verifier {
   return async (token: string): Promise<AuthClaims> => {
@@ -18,9 +29,15 @@ export function verifierFromKey(getKey: KeyInput, algorithms: string[], opts: Ve
     });
     const userId = String(payload.sub ?? "");
     if (!userId) throw new Error("TOKEN_MISSING_SUB");
+    const role = typeof (payload as any).role === "string" ? (payload as any).role : undefined;
+    // Reject a validly-signed token whose role is not one this platform issues (e.g. a Supabase-Auth
+    // "authenticated" token on the same project). A roleless token is left alone — every token this
+    // app mints carries a role, so the realistic foreign case (a non-empty, non-ours role) is covered
+    // without risking a legacy self-issued token.
+    if (role !== undefined && !SELF_ISSUED_ROLES.has(role)) throw new Error("TOKEN_FOREIGN_ROLE");
     return {
       userId,
-      role: typeof (payload as any).role === "string" ? (payload as any).role : undefined,
+      role,
       // Multi-tenant: the brand this token was issued for (engine enforces socket↔token match).
       site: typeof (payload as any).site === "string" ? (payload as any).site : undefined,
       // Platform tier (Issue 1): the platform a platform_admin is scoped to (minted only for that role).

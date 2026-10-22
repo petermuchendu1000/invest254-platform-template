@@ -18,7 +18,7 @@ import { usePlatformUserDetail, usePlatformUserOverrides, useSetPlatformUserOver
 import type { SiteWithConfig } from '@/lib/platform/endpoints';
 import type { UserOverridePatch } from '@/lib/admin/types';
 
-const kes = (c: number | null | undefined) => (typeof c === 'number' ? `KES ${(c / 100).toLocaleString('en-KE')}` : '—');
+const kes = (c: number | null | undefined) => (typeof c === 'number' ? `KES ${(c / 100).toLocaleString('en-KE')}` : '-');
 
 function Stat({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return (
@@ -105,7 +105,7 @@ export function BalanceAdjust({ siteId, uid, username }: { siteId: string; uid: 
         <div className="flex flex-wrap items-center gap-2 rounded-lg border border-accent/40 bg-accent/5 p-2 text-xs">
           <span>
             {dir === 'credit' ? 'Credit' : 'Debit'} <b>{kes(cents)}</b> {dir === 'credit' ? 'to' : 'from'} @{username}&apos;s <b>{walletLabel}</b> balance
-            {current != null && after != null ? <> — {kes(current)} → <b>{kes(after)}</b></> : null}. Reason: “{reason.trim()}”.
+            {current != null && after != null ? <>: {kes(current)} → <b>{kes(after)}</b></> : null}. Reason: “{reason.trim()}”.
           </span>
           <Button size="sm" variant="ghost" onClick={() => setArmed(false)} disabled={action.isPending}>Cancel</Button>
           <Button size="sm" variant={dir === 'debit' ? 'down' : 'primary'} onClick={submit} disabled={action.isPending}>{action.isPending ? '…' : 'Confirm adjustment'}</Button>

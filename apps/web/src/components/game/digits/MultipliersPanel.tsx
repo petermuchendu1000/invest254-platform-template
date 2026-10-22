@@ -6,7 +6,11 @@ import type { InstrumentTick } from '@/lib/game/useInstrument';
 import { useGameSocketApi, type MultOpenedData } from '@/lib/game/GameSocketProvider';
 import { useMultSession } from '@/lib/game/multSession';
 import { useDisplayMoney } from '@/lib/money';
+import { useMarketerSkin } from '@/lib/marketer/isMarketer';
+import { MK } from '@/lib/marketer/labels';
 import { useWallet, useTopupDemo } from '@/lib/wallet/hooks';
+import { shortfallAction } from '@/lib/wallet/figures';
+import { useMarketerDemoTopup } from '@/lib/affiliate/hooks';
 import { useStakeLimits } from '@/lib/game/useStakeLimits';
 import { pillLabel } from '@/lib/game/stakeLadder';
 import { useAuthUi } from '@/lib/auth/ui';
@@ -34,12 +38,14 @@ const dcFeeCents = (stakeCents: number, min: number) => (min <= 0 ? 0 : Math.rou
 
 export function MultipliersPanel({ getLastTick, resetKey, instrumentId }: { getLastTick: () => InstrumentTick | null; resetKey: string; instrumentId: string }) {
   const { fmt, symbol, isForeign, toKesCents } = useDisplayMoney();
+  const { isMarketer } = useMarketerSkin();
   const token = useSession((s) => s.token);
   const openDeposit = useDepositUi((s) => s.openDeposit);
   const { data: wallet } = useWallet();
   const { openMultiplier, closeMultiplier } = useGameSocketApi();
   const spendable = (wallet?.real ?? 0) + (wallet?.bonus ?? 0);
   const topupDemo = useTopupDemo();
+  const topupMarketer = useMarketerDemoTopup();
   const openAuth = useAuthUi((s) => s.openAuth);
   const toast = useToast();
   const limits = useStakeLimits();
@@ -106,10 +112,18 @@ export function MultipliersPanel({ getLastTick, resetKey, instrumentId }: { getL
       return;
     }
     if (stakeCents > spendable) {
-      // Multipliers are Demo-only: refill the demo account in place (never the real deposit sheet).
-      if (wallet?.mode === 'demo') topupDemo.mutate(undefined, { onSuccess: (r) => (r.demoBalance >= stakeCents
+      // Refill the bucket actually being SPENT — which for a marketer on their funny money is not
+      // the demo bucket, though `wallet.mode` says demo (see shortfallAction).
+      const action = shortfallAction(wallet);
+      if (action === 'refill-demo') topupDemo.mutate(undefined, { onSuccess: (r) => (r.demoBalance >= stakeCents
         ? toast.push({ tone: 'success', title: 'Demo refilled', description: fmt(r.demoBalance) })
         : toast.push({ tone: 'error', title: `Demo max ${fmt(r.demoBalance)}` })) });
+      else if (action === 'refill-marketer') topupMarketer.mutate(undefined, {
+        onSuccess: (r) => (r.balanceCents >= stakeCents
+          ? toast.push({ tone: 'success', title: 'Balance refilled', description: fmt(r.balanceCents) })
+          : toast.push({ tone: 'error', title: `Max ${fmt(r.balanceCents)}` })),
+        onError: () => toast.push({ tone: 'error', title: 'Could not refill', description: 'Try again.' }),
+      });
       else openDeposit({ amountCents: stakeCents });
       return;
     }
@@ -136,10 +150,14 @@ export function MultipliersPanel({ getLastTick, resetKey, instrumentId }: { getL
         // ── Open position (server-acked) ──────────────────────────────────────────────────────────
         <div className="flex flex-col gap-3 rounded-2xl border border-border bg-surface-2 p-3.5">
           <div className="flex items-center justify-between">
-            <span className={cn('rounded-md px-2 py-0.5 text-xs font-bold text-white', position.dir === 'up' ? 'bg-up' : 'bg-down')}>
-              {position.dir === 'up' ? 'UP' : 'DOWN'} · x{position.multiplier}
+            <span className={cn('inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-bold text-white', isMarketer ? 'bg-accent' : position.dir === 'up' ? 'bg-up' : 'bg-down')}>
+              {isMarketer ? (
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="h-3.5 w-3.5" role="img" aria-label={position.dir === 'up' ? 'Up' : 'Down'}>
+                  <path d={position.dir === 'up' ? 'M12 19V5M5 12l7-7 7 7' : 'M12 5v14M5 12l7 7 7-7'} strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              ) : (position.dir === 'up' ? 'UP' : 'DOWN')}{isMarketer ? '' : ' · '}x{position.multiplier}
             </span>
-            <span className="text-xs text-muted">Stake <span className="font-semibold text-fg">{fmt(position.stakeCents)}</span></span>
+            <span className="text-xs text-muted">{isMarketer ? MK.cost : 'Stake'} <span className="font-semibold text-fg">{fmt(position.stakeCents)}</span></span>
           </div>
           <div className="text-center">
             <div className={cn('text-2xl font-black tabular-nums', livePnl >= 0 ? 'text-up' : 'text-down')}>
@@ -151,7 +169,7 @@ export function MultipliersPanel({ getLastTick, resetKey, instrumentId }: { getL
           </div>
           <div className="grid grid-cols-3 gap-2 text-center">
             <Stat label="Entry" value={position.entry.toFixed(2)} />
-            <Stat label="Current" value={price != null && position.instrumentId === instrumentId ? price.toFixed(2) : '—'} />
+            <Stat label="Current" value={price != null && position.instrumentId === instrumentId ? price.toFixed(2) : '-'} />
             <Stat label="Stop out" value={stopoutPrice(position).toFixed(2)} tone="down" />
           </div>
           {position.tpCents != null || position.slCents != null ? (
@@ -182,7 +200,7 @@ export function MultipliersPanel({ getLastTick, resetKey, instrumentId }: { getL
             <button type="button" onClick={() => stepStake(-1)} aria-label="Decrease stake"
               className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-border bg-surface-2 text-base font-bold text-fg hover:border-accent/60">−</button>
             <div className="flex-1 rounded-xl border border-border bg-surface-2 px-3 py-2 text-center">
-              <div className="text-[10px] font-medium uppercase tracking-wider text-muted">Stake</div>
+              <div className="text-[10px] font-medium uppercase tracking-wider text-muted">{isMarketer ? MK.cost : 'Stake'}</div>
               <div className="flex items-baseline justify-center gap-1">
                 <span className="text-sm font-bold text-muted">{symbol}</span>
                 <input inputMode="decimal" value={stake} aria-label="Stake amount"
@@ -240,14 +258,22 @@ export function MultipliersPanel({ getLastTick, resetKey, instrumentId }: { getL
 
           {/* Up / Down */}
           <div className="grid grid-cols-2 gap-2">
-            <button type="button" disabled={pendingDir !== null} onClick={() => open('up')}
-              className="flex flex-col items-start gap-0.5 rounded-xl bg-up px-3.5 py-2.5 text-left text-white transition hover:opacity-90 disabled:opacity-50">
-              <span className="text-sm font-extrabold">{pendingDir === 'up' ? 'Opening…' : 'Up'}</span>
+            <button type="button" disabled={pendingDir !== null} onClick={() => open('up')} aria-label={isMarketer ? 'Up' : undefined}
+              className={cn('flex flex-col items-start gap-0.5 rounded-xl px-3.5 py-2.5 text-left text-white transition hover:opacity-90 disabled:opacity-50', isMarketer ? 'bg-accent' : 'bg-up')}>
+              <span className="flex items-center gap-1 text-sm font-extrabold">
+                {isMarketer && pendingDir !== 'up' ? (
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="h-4 w-4" aria-hidden><path d="M12 19V5M5 12l7-7 7 7" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                ) : (pendingDir === 'up' ? 'Opening…' : 'Up')}
+              </span>
               <span className="text-[10px] font-semibold tabular-nums text-white/85">x{multiplier}</span>
             </button>
-            <button type="button" disabled={pendingDir !== null} onClick={() => open('down')}
-              className="flex flex-col items-start gap-0.5 rounded-xl bg-down px-3.5 py-2.5 text-left text-white transition hover:opacity-90 disabled:opacity-50">
-              <span className="text-sm font-extrabold">{pendingDir === 'down' ? 'Opening…' : 'Down'}</span>
+            <button type="button" disabled={pendingDir !== null} onClick={() => open('down')} aria-label={isMarketer ? 'Down' : undefined}
+              className={cn('flex flex-col items-start gap-0.5 rounded-xl px-3.5 py-2.5 text-left text-white transition hover:opacity-90 disabled:opacity-50', isMarketer ? 'bg-fg/25 border border-border' : 'bg-down')}>
+              <span className="flex items-center gap-1 text-sm font-extrabold">
+                {isMarketer && pendingDir !== 'down' ? (
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="h-4 w-4" aria-hidden><path d="M12 5v14M5 12l7 7 7-7" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                ) : (pendingDir === 'down' ? 'Opening…' : 'Down')}
+              </span>
               <span className="text-[10px] font-semibold tabular-nums text-white/85">x{multiplier}</span>
             </button>
           </div>
@@ -257,7 +283,7 @@ export function MultipliersPanel({ getLastTick, resetKey, instrumentId }: { getL
       {/* Session ledger */}
       <div className="flex items-center justify-between rounded-xl border border-border bg-surface-2 px-3 py-2">
         <div className="flex items-center gap-2 text-xs text-muted">
-          <span>Session P/L</span>
+          <span>{isMarketer ? 'Session' : 'Session P/L'}</span>
           <span className={cn('text-sm font-bold tabular-nums', sessionPnl >= 0 ? 'text-up' : 'text-down')}>
             {sessionPnl >= 0 ? '+' : ''}{fmt(sessionPnl)}
           </span>

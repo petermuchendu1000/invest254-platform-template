@@ -94,3 +94,36 @@ test("ADDON-1: every sold chart system reaches the player, and unknown values fa
   assert.equal(chartStyleOf(null), "line");
   assert.deepEqual(["line", "area", "candlestick", "bars", "baseline"].map((s) => tradingViewTypeOf(chartStyleOf(s))), [null, "area", "candles", "bars", "baseline"]);
 });
+
+test("seededSocialProofAllowed: the allowed set is candlestick, or classic-on-a-line chart", async () => {
+  const { seededSocialProofAllowed, CHART_STYLES, TRADE_UIS } = await import("./chart.js");
+
+  // The candlestick trade UI is allowed on every chart style — it is a single-screen layout and
+  // never wears MetaTrader's chrome, whatever the chart engine is.
+  for (const s of CHART_STYLES) assert.equal(seededSocialProofAllowed("candlestick", s), true, s);
+
+  // The ordinary classic screen is allowed, but ONLY on `line`: every other style routes the brand
+  // to the broker terminal (see the note in chart.ts), which must never show seeded rows.
+  assert.equal(seededSocialProofAllowed("classic", "line"), true);
+  for (const s of CHART_STYLES.filter((x) => x !== "line")) {
+    assert.equal(seededSocialProofAllowed("classic", s), false, s);
+  }
+
+  // The digits screen and the named broker terminal are excluded on every style.
+  for (const s of CHART_STYLES) {
+    assert.equal(seededSocialProofAllowed("digits", s), false, `digits/${s}`);
+    assert.equal(seededSocialProofAllowed("broker", s), false, `broker/${s}`);
+  }
+
+  // Unknown/absent columns coerce to the free defaults (classic + line), which is the allowed side.
+  assert.equal(seededSocialProofAllowed(null, null), true);
+  assert.equal(seededSocialProofAllowed(undefined, undefined), true);
+  assert.equal(seededSocialProofAllowed("hologram", "hologram"), true);
+  // ...but an unknown trade_ui on a paid chart still lands on the terminal, because it coerces to
+  // classic and classic + non-line IS the terminal.
+  assert.equal(seededSocialProofAllowed("hologram", "candlestick"), false);
+
+  // Exactly 6 of the 20 legal pairs are allowed: candlestick x 5, plus classic + line.
+  const allowed = TRADE_UIS.flatMap((u) => CHART_STYLES.map((s) => seededSocialProofAllowed(u, s))).filter(Boolean);
+  assert.equal(allowed.length, 6);
+});

@@ -3,6 +3,7 @@ import { Router, ApiError, requireAuth, requireRole, requireSiteAdmin, requireSi
 import { assertSiteTarget } from "./scope.js";
 import type { ApiDeps } from "./app.js";
 import { requireApprovalPassword } from "./approvalgate.js";
+import { publicProvider, publicProviderCode } from "./publicProvider.js";
 
 /**
  * Protected + callback routes (Issue E2): player wallet/chat/payments, the public Daraja
@@ -60,7 +61,7 @@ const DOMAIN_STATUS: Readonly<Record<string, number>> = {
  *  (e.g. "merchant has insufficient balance"), account state, stack detail, etc. These are sanitized
  *  to friendly copy for the player; the FULL detail is logged for operators (system_logs → the
  *  superadmin-only /admin/logs). */
-const TECH_ERROR_RE = /_REJECTED|NOT_CONFIGURED|^PAYHERO_|^DARAJA_/;
+const TECH_ERROR_RE = /_REJECTED|NOT_CONFIGURED|^PAYHERO_|^PAYNICORN_|^DARAJA_/;
 
 /** Run a domain call, translating service errors to controlled, CLIENT-SAFE ApiErrors.
  *  Pass `ctx` on client-facing money routes so provider detail is logged for operators. */
@@ -181,9 +182,15 @@ export function parseC2bConfirmation(body: unknown): C2bConfirmation {
   }
   const amt = Number(amount);
   if (!Number.isFinite(amt) || amt <= 0) throw new ApiError("BAD_CALLBACK", "invalid TransAmount", 400);
+  const amountCents = Math.round(amt * 100);
+  // C-1: cap the C2B amount at the same ceiling as an authenticated deposit. The C2B rail has no
+  // provider re-query (Safaricom cannot be re-queried for Pay Bill), so a forged confirmation that
+  // slips the source-IP lock could otherwise store an UNBOUNDED amount for a player to claim. The
+  // cap bounds the blast radius to one legitimate-sized deposit (no live C2B row is near it).
+  if (amountCents > MAX_AMOUNT_CENTS) throw new ApiError("BAD_CALLBACK", "amount exceeds the maximum allowed", 400);
   return {
     transId: String(transId),
-    amountCents: Math.round(amt * 100),
+    amountCents,
     msisdn: b?.["MSISDN"] != null ? String(b["MSISDN"]) : null,
     billRef: b?.["BillRefNumber"] != null ? String(b["BillRefNumber"]) : null,
     shortcode: b?.["BusinessShortCode"] != null ? String(b["BusinessShortCode"]) : null,
@@ -267,7 +274,11 @@ export function registerProtectedRoutes(router: Router, deps: ApiDeps): void {
     const providers = await deps.payments.listDepositProviders(ctx.siteId);
     const depositsOn = deps.platformGate ? await deps.platformGate.allows("deposits") : true;
     const methods = depositsOn ? await deps.payments.listDepositMethods(ctx.siteId) : [];
-    return { providers, methods };
+    // Player-facing: confidential suppliers appear only under their public code (publicProvider.ts).
+    return {
+      providers: providers.map((p) => ({ ...p, code: publicProviderCode(p.code), displayName: p.code === "paynicorn" ? "M-Pesa" : p.displayName })),
+      methods: methods.map(publicProvider),
+    };
   });
 
   // Mega Pay STK deposit (migration 0116). Mirrors /deposits but routes through the Mega Pay rail.
@@ -312,6 +323,29 @@ export function registerProtectedRoutes(router: Router, deps: ApiDeps): void {
     const amount = requireIntAmount(body);
     const out = await domain(() => deps.payments.initiateLipwaDeposit(ctx.claims!.userId, amount, ctx.siteId), ctx);
     return { status: 202, body: { transactionId: out.txId, reference: out.reference, lipwaUrl: out.lipwaUrl } };
+  });
+
+  // PayX (Paynicorn) STK deposit. Public path and name are `payx` only — the supplier is confidential
+  // (publicProvider.ts). Paynicorn pushes the M-Pesa prompt itself (method + phone, no cashier page), and
+  // crediting happens only via the verified postback / reconcile sweep, like every other STK rail.
+  router.post(`${BASE}/deposits/payx`, auth, site, depositLimit, async (ctx: Ctx) => {
+    if (deps.platformGate && !(await deps.platformGate.allows("deposits")))
+      throw new ApiError("SYSTEM_DISABLED", "Deposits are temporarily disabled by the platform.", 403);
+    if (!(await deps.payments.listDepositProviders(ctx.siteId)).some((p) => p.code === "paynicorn"))
+      throw new ApiError("PROVIDER_DISABLED", "This payment method is not available.", 403);
+    const body = asObject(ctx.body);
+    const amount = requireIntAmount(body);
+    // `method` names one of the methods this brand's country offers; the service refuses any other.
+    // A method we can collect for takes the phone/email here; one that cannot hands back a checkout URL.
+    const method = typeof body.method === "string" && body.method.trim() !== "" ? body.method.trim() : undefined;
+    const phone = typeof body.phone === "string" && body.phone.trim() !== "" ? requirePhone(body) : undefined;
+    const email = typeof body.email === "string" && body.email.trim() !== "" ? body.email.trim() : undefined;
+    const origin = String(ctx.req.headers.origin ?? "").replace(/\/+$/, "");
+    const frontPage = /^https:\/\/[^/\s]+$/.test(origin) && deps.corsAllowOrigin?.(origin) ? `${origin}/wallet` : undefined;
+    const out = await domain(() => deps.payments.initiatePaynicornDeposit(ctx.claims!.userId, amount, ctx.siteId, {
+      ...(method ? { method } : {}), ...(phone ? { phone } : {}), ...(email ? { email } : {}), ...(frontPage ? { frontPage } : {}),
+    }), ctx);
+    return { status: 202, body: { transactionId: out.txId, checkoutRequestId: out.checkoutRequestId, ...(out.checkoutUrl ? { checkoutUrl: out.checkoutUrl } : {}) } };
   });
 
   // PayHero manual Pay Bill — the player paid the PayHero paybill directly, then submits the M-PESA code.
@@ -415,6 +449,35 @@ export function registerProtectedRoutes(router: Router, deps: ApiDeps): void {
   };
   router.post(`${BASE}/withdrawals/payhero/result`, payheroOnly, payheroWithdrawCallback);
   router.post(`${BASE}/s/:slug/withdrawals/payhero/result`, payheroOnly, resolveSlug, payheroWithdrawCallback);
+
+  // ── Paynicorn postback ──
+  // Paynicorn POSTs {content, sign} here (the app's "Callback address"). The signature must verify with OUR
+  // merchant secret, and the handler re-queries Paynicorn before crediting, so a forged POST can't mint
+  // balance. Paynicorn needs HTTP 200 + the plain text `success_{txnId}`, else it retries (up to 7 times).
+  // Read as raw bytes so a JSON or form-encoded body both parse. GET answers the console's address check.
+  const paynicornOnly = restrictToCidrs("PAYNICORN_CALLBACK_ALLOWED_CIDRS");
+  const paynicornCallback = async (ctx: Ctx) => {
+    try {
+      const r = await deps.payments.handlePaynicornCallback(ctx.body);
+      if (r.settled) ctx.log?.info("paynicorn postback settled", { txnId: r.txnId });
+      return { raw: Buffer.from(`success_${r.txnId}`), contentType: "text/plain; charset=utf-8" };
+    } catch (err) {
+      // Never echo provider detail; a non-200 makes Paynicorn retry, and the reconcile sweep backs it up.
+      const code = (err instanceof Error ? err.message : String(err)).split(":")[0]!.trim();
+      ctx.log?.warn("paynicorn postback not accepted", {
+        code, contentType: String(ctx.req.headers["content-type"] ?? ""), bytes: Buffer.isBuffer(ctx.body) ? ctx.body.length : 0,
+      });
+      if (code === "PAYNICORN_BAD_SIGNATURE") throw new ApiError("BAD_SIGNATURE", "signature did not verify", 401);
+      if (code === "PAYNICORN_AMOUNT_MISMATCH") throw new ApiError("AMOUNT_MISMATCH", "amount does not match the order", 409);
+      if (code === "PAYNICORN_NOT_CONFIGURED") throw new ApiError("PROVIDER_UNAVAILABLE", "not configured", 503);
+      throw new ApiError("CALLBACK_FAILED", "postback not processed, retry later", 500);
+    }
+  };
+  const paynicornAddressCheck = async () => ({ ok: true, provider: "paynicorn" });
+  router.upload(`${BASE}/deposits/paynicorn/callback`, 64 * 1024, paynicornOnly, paynicornCallback);
+  router.upload(`${BASE}/s/:slug/deposits/paynicorn/callback`, 64 * 1024, paynicornOnly, resolveSlug, paynicornCallback);
+  router.get(`${BASE}/deposits/paynicorn/callback`, paynicornOnly, paynicornAddressCheck);
+  router.get(`${BASE}/s/:slug/deposits/paynicorn/callback`, paynicornOnly, resolveSlug, paynicornAddressCheck);
 
   // ── Pay Bill (C2B) — auto-verified manual deposits (migration 0115) ──
   // Public C2B endpoints Safaricom calls for every payment to our Pay Bill. Network-allowlisted to

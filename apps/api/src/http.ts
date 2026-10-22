@@ -40,6 +40,15 @@ export interface Ctx {
   requestId?: string;
   /** Request-scoped logger pre-bound with { requestId, method, path } — use it in handlers/services. */
   log?: Logger;
+  /**
+   * The route PATTERN this request matched (`/api/v1/admin/wallets/:id/adjust`), as registered —
+   * not `path`, which carries the concrete ids. Set by the dispatcher on every matched request.
+   *
+   * It exists because a gate that classifies routes has to name them stably. `path` cannot do that:
+   * classifying on it would mean matching ids with a regex at request time, and the one thing worse
+   * than an unprotected critical route is a gate that thinks it is protecting one and is not.
+   */
+  routePath?: string;
 }
 
 export interface HandlerResult { status?: number; body: unknown; }
@@ -51,6 +60,30 @@ interface Route { method: string; path: string; regex: RegExp; keys: string[]; c
 /** CHAT-1: a handler may answer with bytes (e.g. a chat attachment) instead of JSON. */
 export interface RawResult { raw: Buffer; contentType: string; cacheSeconds?: number; }
 const isRaw = (r: unknown): r is RawResult => !!r && typeof r === "object" && Buffer.isBuffer((r as RawResult).raw);
+
+/**
+ * Is this a `{ status?, body }` ENVELOPE, or a domain object that merely happens to have a field
+ * called `body`?
+ *
+ * The test used to be `"body" in result` alone, and that silently broke every route whose DTO owns
+ * a `body` field. `CommunityPost` does (`community.pg.ts`), so `POST /community` and
+ * `POST /community/:id/vote` returned a bare JSON string — the post's own body text — instead of
+ * the post: no id, no options, no counts, so a client could not render the new tally after a vote.
+ * A DTO with a field called `status` would have hijacked the HTTP status the same way.
+ *
+ * HandlerResult has exactly two keys, so an envelope is an object carrying `body` and NOTHING but
+ * `body` and `status`. Every one of the ~30 envelope returns in this app is literally `{ status,
+ * body }` or `{ body }`, so this is strictly narrower with no change for any of them; what it
+ * changes is precisely the broken case, where the object has other fields of its own. An object
+ * whose `body` is inherited rather than its own keeps the old treatment, which is what the `in`
+ * test is still there for.
+ */
+const ENVELOPE_KEYS = new Set(["body", "status"]);
+function isEnvelope(result: unknown): boolean {
+  if (!result || typeof result !== "object") return false;
+  if (!("body" in (result as HandlerResult))) return false;
+  return Object.keys(result).every((k) => ENVELOPE_KEYS.has(k));
+}
 
 /**
  * Role hierarchy — higher rank satisfies any lower minimum (see docs/05 §7, docs/38). Five tiers:
@@ -115,7 +148,10 @@ function applyCors(req: IncomingMessage, res: ServerResponse, brandAllows?: (ori
     res.setHeader("Access-Control-Allow-Origin", "*");
   }
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,PATCH,PUT,DELETE,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Authorization,Content-Type,X-User-Id,X-User-Role");
+  // Advertise only the headers a real browser client sends. X-User-Id / X-User-Role are the
+  // DEV-ONLY header-auth path (inert in production, which boots with a verifier); advertising them
+  // just told an attacker which header-auth bypass to try, so they are no longer announced.
+  res.setHeader("Access-Control-Allow-Headers", "Authorization,Content-Type");
   res.setHeader("Access-Control-Max-Age", "86400");
 }
 
@@ -132,12 +168,16 @@ function applySecurityHeaders(res: ServerResponse): void {
   res.setHeader("X-Permitted-Cross-Domain-Policies", "none");
 }
 
-/** Best-effort client IP behind Fly's proxy: prefer Fly-Client-IP, then XFF, then the socket. */
+/**
+ * Client IP behind Fly's proxy. Fly's edge sets `Fly-Client-IP` to the real peer and is the ONLY
+ * ingress to this app, so that header is authoritative. `X-Forwarded-For` is NOT trusted: it is
+ * client-settable, and trusting its first element let an attacker spoof any source IP — which would
+ * defeat the callback CIDR allowlist (restrictToCidrs) and every per-IP rate limit. A request with
+ * no `Fly-Client-IP` is not edge traffic, so we fall through to the socket peer, never to XFF.
+ */
 export function clientIp(req: IncomingMessage): string {
   const fly = req.headers["fly-client-ip"];
   if (typeof fly === "string" && fly.trim()) return fly.trim();
-  const xff = req.headers["x-forwarded-for"];
-  if (typeof xff === "string" && xff.trim()) return xff.split(",")[0]!.trim();
   return req.socket.remoteAddress ?? "unknown";
 }
 
@@ -216,22 +256,60 @@ export interface RouterOptions {
   corsAllowOrigin?: (origin: string) => boolean;
   /** Base logger; each request logs through a child bound with { requestId, method, path }. */
   logger?: Logger;
+  /**
+   * Step-up second-factor gate, spliced automatically into every AUTHENTICATED MUTATING route
+   * (POST/PUT/PATCH/DELETE that carries a `requireAuth`), immediately after authentication.
+   *
+   * Default-deny by construction. The alternative — naming each route that needs a second factor —
+   * was measured against the real surface: ~120 privileged routes move money, change credentials or
+   * roles, rewrite payout and fairness parameters, or reconfigure the payment rails. Listing them
+   * is a list that is wrong the moment someone adds the 121st, and wrong silently, in the direction
+   * of an unprotected critical route. Spliced here, a new route is covered the day it is written
+   * and someone must deliberately exempt it to make it otherwise.
+   *
+   * The gate itself decides who it applies to (privileged roles only) and what is routine, reading
+   * `ctx.routePath`; see apps/api/src/stepup.ts. Unset (tests, mirrors) = no gate, unchanged behaviour.
+   */
+  stepUp?: Middleware;
 }
 
 export class Router {
   private readonly routes: Route[] = [];
   private readonly corsAllowOrigin?: (origin: string) => boolean;
   private readonly log: Logger;
+  private readonly stepUp?: Middleware;
 
   constructor(opts: RouterOptions = {}) {
     if (opts.corsAllowOrigin) this.corsAllowOrigin = opts.corsAllowOrigin;
     this.log = (opts.logger ?? createLogger()).child({ module: "http" });
+    if (opts.stepUp) this.stepUp = opts.stepUp;
   }
+
+  /** Methods that change state, and so may need a fresh second factor. GET/HEAD never do. */
+  private static readonly MUTATING: ReadonlySet<string> = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
   private add(method: string, path: string, chain: Array<Middleware | Handler>, rawMax?: number): this {
     const { regex, keys } = compile(path);
-    this.routes.push({ method, path, regex, keys, chain, ...(rawMax ? { rawMax } : {}) });
+    this.routes.push({ method, path, regex, keys, chain: this.withStepUp(method, chain), ...(rawMax ? { rawMax } : {}) });
     return this;
+  }
+
+  /**
+   * Splice the step-up gate in directly after the LAST authentication middleware in the chain.
+   *
+   * After the last one, not the first, because a chain may legitimately carry more than one (and
+   * because inserting before a later auth step would run the gate with no claims). Before any role
+   * or scope middleware, so the challenge is raised ahead of the tenant fences rather than after
+   * them — a caller who will be refused anyway should not learn whether the target exists.
+   *
+   * No auth step in the chain → no principal to challenge → chain returned untouched.
+   */
+  private withStepUp(method: string, chain: Array<Middleware | Handler>): Array<Middleware | Handler> {
+    if (!this.stepUp || !Router.MUTATING.has(method)) return chain;
+    let last = -1;
+    chain.forEach((step, i) => { if (isAuthStep(step)) last = i; });
+    if (last < 0) return chain;
+    return [...chain.slice(0, last + 1), this.stepUp, ...chain.slice(last + 1)];
   }
 
   /** CHAT-1: a POST whose body is raw bytes (ctx.body is a Buffer), capped at `maxBytes`. */
@@ -287,6 +365,7 @@ export class Router {
         route.keys.forEach((k, i) => { params[k] = decodeURIComponent(m[i + 1]!); });
         ctx = {
           req, res, method, path, params, query: url.searchParams, requestId,
+          routePath: route.path,
           log: this.log.child({ requestId, method, path }),
           body: method === "GET" || method === "HEAD" ? null : route.rawMax ? await readRaw(req, route.rawMax) : await readJson(req),
         };
@@ -300,9 +379,11 @@ export class Router {
         status = writeResult(res, result);
         return;
       }
-      // Path exists but method does not → 405; otherwise 404.
-      if (matchedPath) throw new ApiError("METHOD_NOT_ALLOWED", `${method} not allowed on ${path}`, 405);
-      throw new ApiError("NOT_FOUND", `no route for ${method} ${path}`, 404);
+      // Path exists but method does not → 405; otherwise 404. The messages are deliberately generic
+      // and do NOT echo the attacker-supplied method/path back: a reflected path is both a (minor)
+      // XSS-shaped surface and free reconnaissance. The concrete request is in the server-side log.
+      if (matchedPath) throw new ApiError("METHOD_NOT_ALLOWED", "method not allowed", 405);
+      throw new ApiError("NOT_FOUND", "not found", 404);
     } catch (err) {
       errObj = err;
       status = writeError(res, err);
@@ -372,7 +453,7 @@ function writeResult(res: ServerResponse, result: unknown): number {
     res.end(result.raw);
     return 200;
   }
-  if (result && typeof result === "object" && "body" in (result as HandlerResult)) {
+  if (isEnvelope(result)) {
     const r = result as HandlerResult;
     const status = r.status ?? 200;
     sendJson(res, status, r.body);
@@ -393,7 +474,10 @@ function writeError(res: ServerResponse, err: unknown): number {
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
   if (res.headersSent) return;
   const payload = JSON.stringify(body);
-  res.writeHead(status, { "content-type": "application/json; charset=utf-8" });
+  // `no-store` on every JSON response: this is an authenticated money API, and several responses
+  // carry bearer tokens (login/register/refresh). Nothing here is safe for a shared cache or an
+  // intermediary to retain, and the API is not CDN-cached, so there is no cost to forbidding it.
+  res.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
   res.end(payload);
 }
 
@@ -404,8 +488,24 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
  * configured the token is cryptographically verified (Supabase JWT). When it is null the
  * service runs in DEV mode and trusts `X-User-Id`/`X-User-Role` headers — never for prod.
  */
+/**
+ * Marks the middleware that establishes `ctx.claims`, so the Router can find it in a chain.
+ *
+ * The step-up gate has to run AFTER authentication (it needs the principal) and BEFORE the
+ * handler, on every authenticated mutating route. Identifying the auth step by a marker rather
+ * than by position lets the Router splice the gate in at registration time, which is the whole
+ * reason ~120 critical routes did not each need editing — and, more importantly, the reason the
+ * NEXT critical route will be covered without anyone remembering to cover it.
+ *
+ * A route with no marked middleware has no principal to challenge (the payment-provider callbacks,
+ * the HMAC magic links), so it is left alone; those are authorised by other means.
+ */
+const AUTH_STEP = Symbol.for("invest254.authMiddleware");
+const isAuthStep = (step: unknown): boolean =>
+  typeof step === "function" && (step as { [AUTH_STEP]?: boolean })[AUTH_STEP] === true;
+
 export function requireAuth(verifier: Verifier | null): Middleware {
-  return async (ctx) => {
+  const mw: Middleware = async (ctx) => {
     const header = ctx.req.headers["authorization"];
     const token = typeof header === "string" && header.startsWith("Bearer ") ? header.slice(7).trim() : "";
     if (verifier) {
@@ -419,6 +519,11 @@ export function requireAuth(verifier: Verifier | null): Middleware {
       ctx.claims = { userId: uid, role: typeof role === "string" ? role : "player", raw: {} };
     }
   };
+  // The dev branch above trusts X-User-Id/X-User-Role headers outright (server.ts refuses to boot
+  // that way with a DATABASE_URL set). Mark it regardless: the step-up gate must sit behind the
+  // dev path too, or a gate tested in dev would be testing nothing.
+  (mw as { [AUTH_STEP]?: boolean })[AUTH_STEP] = true;
+  return mw;
 }
 
 /** Gate a route to callers whose role meets `minRole` in the hierarchy. Run after requireAuth. */

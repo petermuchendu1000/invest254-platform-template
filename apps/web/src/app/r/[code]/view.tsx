@@ -9,6 +9,9 @@ import { useAuthUi } from '@/lib/auth/ui';
 import { useSession } from '@/lib/auth/session';
 import { storeReferral } from '@/lib/auth/referral';
 import { api } from '@/lib/api/endpoints';
+import { chartStyleOf, tradingViewTypeOf } from '@invest254/shared/chart';
+import { registerOf, riskAnchor } from '@/lib/legal/legalPage';
+import { presentsAsTradingProduct } from '@/lib/ui/terminalScreen';
 
 // Referral landing: capture the code, then route the visitor into sign-up with it
 // prefilled. Attribution is finalised server-side at registration (first-touch).
@@ -25,6 +28,7 @@ export default function ReferralLandingPage({ params }: { params: { code: string
   }, [code]);
 
   const brand = useBrand();
+  const register = registerOf(presentsAsTradingProduct(brand.tradeUi, tradingViewTypeOf(chartStyleOf(brand.chartStyle)) !== null));
   return (
     <section className="mx-auto flex min-h-[60vh] max-w-md flex-col items-center justify-center gap-5 text-center">
       <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-accent text-2xl font-bold text-accent-fg">
@@ -57,9 +61,11 @@ export default function ReferralLandingPage({ params }: { params: { code: string
         </div>
       )}
 
+      {/* A broker owes the same age gate and the same warning; what differs is the word for what
+          the visitor is about to do, and where the disclosure lives. See lib/legal/legalPage. */}
       <p className="text-xs text-muted">
-        18+ only. Play responsibly —{' '}
-        <Link href="/legal#responsible-gaming" className="text-accent hover:underline">
+        18+ only. {register === 'gaming' ? 'Play responsibly' : 'Trading carries risk'},{' '}
+        <Link href={`/legal#${riskAnchor(register)}`} className="text-accent hover:underline">
           learn more
         </Link>
         .

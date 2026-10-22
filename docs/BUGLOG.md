@@ -5,6 +5,1180 @@ entry: what, evidence, root cause, impact, and resolution.
 
 ---
 
+## #159 — An EXPIRED MIRROR_PAT is worse than no MIRROR_PAT: the mirror failed on its FIRST step for 23 days — PARTIALLY FIXED (needs the owner to replace the token)
+- **What:** `mirror-sync` in the template has failed every run since 2026-09-29 — 23 days, ~180 runs on
+  a 3-hourly cron, each one appending to the same blocker issue (template #32). The template sits at
+  `invest254@0405bb9` while production is 100+ commits past it.
+- **Where it fails, and this is the whole point:** `actions/checkout`, the FIRST step, with
+  `fatal: could not read Username for 'https://github.com': terminal prompts disabled`. Not the push.
+  The job never reaches the drift check, the typecheck, or the push it exists to perform.
+- **Root cause:** the token expression is `${{ secrets.MIRROR_PAT || github.token }}`. `||` falls back
+  when the secret is **empty**, not when it is **rejected**. So a set-but-dead PAT is handed to
+  checkout, which authenticates with it, is refused, and falls through to prompting for a username on
+  a runner that has no terminal. An ABSENT PAT would have mirrored everything except
+  `.github/workflows/`; an EXPIRED one mirrors nothing. The failure mode gets worse as the credential
+  gets worse, which is backwards.
+- **Why nobody saw it for 23 days:** the blocker issue says "Common cause: MIRROR_PAT missing/expired"
+  — a guess printed on every failure, correct this time, and indistinguishable from the same guess
+  printed when the cause is something else. ~180 identical comments on one issue is not a signal.
+- **Fixed here (the part that is code):** a preflight step, modelled on `deploy.yml`'s `fly-auth`,
+  asks `GET /repos/{this repo}` with the PAT before anything uses it. 200 → use it. Anything else →
+  annotate with the HTTP code and what to do, and fall back to `GITHUB_TOKEN`, with
+  `.github/workflows/` held at the template's current content so the refused paths cannot lose the
+  whole push. A workflow-only drift then commits nothing and says so rather than dying on
+  `nothing to commit`.
+- **NOT fixed here (the part that is a credential):** the PAT itself. A fine-grained PAT on
+  `petermuchendu1000/invest254-platform-template` with **Contents: read and write** AND **Workflows:
+  read and write**, stored as the `MIRROR_PAT` secret in the TEMPLATE repo's Actions secrets. Nobody
+  but the owner can mint it, and this change cannot reach the template until it exists — the mirror
+  is how it would get there. First sync after the fix carries this file.
+- **Consequence while it was broken, worth stating:** every one of #155's timeouts, #156's mirror
+  guards and #157's `max-parallel: 1` is absent from the template. Its jobs still inherit GitHub's
+  360-minute default, which is the exact condition #155 was written about.
+
+## #158 — A candle test compared two windows fetched up to 25 seconds apart, so CI went red whenever a run straddled the hour — FIXED (test)
+- **Caught by:** the CI `build` job of PR #178 failing on `WS candles: naming a symbol returns THAT
+  instrument's bars, not the default's rescaled`, on a branch whose diff touched only workflows,
+  docs and a workflow guard test. Nothing in the change could reach the engine, which is what made
+  it worth reading rather than re-running.
+- **What the failure said** (`multiengine.candles.test.ts:278`, `assert.deepEqual`): the two bar
+  windows were identical except that the actual one was shifted **one bar — exactly 3600s —**
+  later at both ends. Decoded, the expected window ended **2026-10-22T09:00:00Z** and the actual
+  ended **10:00:00Z**.
+- **Root cause.** The test makes **two sequential requests**:
+```
+  const gold = await c.ask("candles", { tf: "H1", count: 24 }, "candles");
+  const euro = await c.ask("candles", { tf: "H1", count: 24, symbol: "EURUSD" }, "candles");
+```
+  Each reply is the most recent 24 H1 buckets **as of the moment that request was served**, and this
+  file's own header says warming a second symbol on an already-ticking brand costs up to 24s — the
+  client's ceiling is `WARM_MS = 25_000`. So the gap between the two asks is seconds to tens of
+  seconds, and an H1 boundary falling inside it slides the second window forward by one bar. The
+  assertion then compared a 10:00-ending window against a 09:00-ending one and failed. It is a
+  **clock-boundary race with a deterministic trigger**, not a random flake: roughly 25s of every
+  3600 is a losing window, which at ~380 CI runs a month is a handful of red builds — invisible
+  individually, and each one an invitation to re-run rather than read.
+- **A second instance of the same assumption, three lines down.** `shape()` indexed the two series
+  **positionally** (`b[i]`), so a shifted window also compared bar *i* of one symbol against a
+  different hour of the other. That one did not fail loudly; it silently compared the wrong bars.
+- **Fix.** Compare the buckets the two replies **share**, and align the shape comparison **by time**
+  instead of by index. The assertion's purpose is to prove the two symbols bucket alike and are not
+  one series on two axes; it was never about them being sampled at the same instant. The new form is
+  also stricter in a way the old one was not: each series must be a **contiguous** 3600s grid, and
+  the two must overlap by at least `count - 1` bars, so one bar of boundary slack is allowed and a
+  genuine grid disagreement still fails.
+- **Proven, not assumed** (`scratchpad` harness, three synthetic cases):
+  | case | old assertion | new assertion |
+  |---|---|---|
+  | one H1 boundary crossed between the asks (the CI failure, gold→09:00 / euro→10:00) | **FAIL** | **PASS** |
+  | the grids genuinely differ (M30 against H1) | — | **FAIL**, as it must |
+  | the same series rescaled (both rising, never opposite directions) | — | **FAIL**, as it must |
+  So the fix accepts the boundary and still rejects both faults the assertion exists to catch.
+  `multiengine.candles.test.ts` 18/18; full suite 2366/2376.
+- **Worth generalising:** this file has five other cross-request comparisons (lines 172, 176, 206,
+  319, 320) and all of them are keyed by **trade DATE** rather than by hour, so their losing window
+  is a day boundary rather than an hour — the same bug with a ~24x smaller target. They are left
+  alone deliberately; the pattern to watch for is any assertion that two separately-served replies
+  describe the same slice of a moving window.
+
+---
+
+## #157 — The deploy hangs were never a slow builder: the two matrix legs race each other on one Fly builder — FIXED (`max-parallel: 1`)
+- **What #155 and #156 saw:** one `deploy` leg occupying a runner until something killed it (six
+  hours under GitHub's default, 25 minutes under #155's cap), while the other leg shipped in about a
+  minute. #155 capped it; #156 widened the cap to 45 because one healthy deploy had taken 22
+  minutes. Both were right about the symptom. Neither had the mechanism, and **#156 wrote the wrong
+  one down** — it blamed "a cold Fly remote builder", which is corrected here.
+- **The mechanism, from the logs of all four incidents.** Both matrix legs build the **same root
+  Dockerfile** (`fly.api.toml` and `fly.engine.toml` share it — HOSTING.md), so Fly hands them to
+  **one remote builder**, and buildkit deduplicates their identical layers against each other:
+```
+  #12 Deduplicating step ID [ 8/12] RUN npm ci --include=dev, another build is calculating it done
+  #23 Deduplicating step ID [ 9/12] COPY packages/shared ./packages/shared, another build is calculating it done
+```
+  In the **successful** 22-minute run (`38137608432`) all nine dedup lines resolve inside **12
+  seconds** and `exporting to image` starts at **+26s** — so dedup is fast and normal, and those 22
+  minutes were spent in the **export** phase. In the hangs the same leg never leaves it. #155's
+  six-hour stall is recorded as sitting at `#17 exporting to image`; the 2026-10-22 hang
+  (`39754693431`, 25.3 min, killed by #155's cap) ends on
+  `#17 [ 1/12] FROM docker.io/library/node:20-alpine@sha256:…` after deduplicating nine steps
+  against a sibling build that had already finished.
+- **Why "race" and not "bad image":** it has happened **four times in sixty runs, and never to both
+  legs**. The sibling succeeded in ~1 minute every single time, building the same Dockerfile from
+  the same commit. A defect in the build would not pick one leg.
+- **Impact, which is the part that matters.** The matrix is `fail-fast: false` — correctly, so one
+  app failing cannot abort the other mid-rollout — so every occurrence shipped one app, left the
+  other behind, and **reported the run as containing a success**. That is how the API sat five days
+  behind `main` (#155) and how, on 2026-10-22, `invest254-engine-pm` was found running
+  `git-936a0ed` — a commit that was never on `main` — while the API ran `git-85ac550`, `main`'s tip. #156 fixed the *reporting* half of this (the annotation step was
+  `if: failure()`, and all of these concluded `cancelled`, so it was skipped exactly when it was
+  needed). This entry fixes the cause.
+- **Fix: `max-parallel: 1` on the deploy matrix.** The legs build one after the other, so the second
+  meets a warm cache instead of a half-built sibling. `timeout-minutes: 45` stays as the backstop —
+  it is for a build that is never going to finish, not for this.
+- **The cost, stated plainly:** a **1-2 minute window** where one app is newer than the other, where
+  before there was none. Against it: a failure mode that has twice left an app behind `main`
+  indefinitely and silently. A bounded skew beats an unbounded split release. The ordering is
+  unchanged (`invest254-api`, then `invest254-engine-pm`), and `migrate` has already run before
+  either, so both apps are on the new schema throughout the window regardless.
+- **`fail-fast: false` is kept and now matters more, not less:** with serial legs it is the only
+  thing that makes the second app still get attempted when the first one fails.
+- **Regression guard:** a sixth test in `scripts/workflows.guard.test.mts` asserts the matrix keeps
+  both `max-parallel: 1` and `fail-fast: false`, and that it still has at least two apps so a
+  rewrite cannot quietly satisfy the first two. **Mutation-checked four ways** — removing
+  `max-parallel`, setting it to 2, flipping `fail-fast` to true, and cutting the matrix to one app
+  each turn it red; adding an inline comment to the value leaves it green.
+  - For the third time in this file, the first version of a guard was defeated by this repository's
+    habit of annotating values inline: `/^\s*fail-fast:\s*false\s*$/m` cannot match
+    `fail-fast: false          # one app failing must not abort the other`. Every value regex here
+    now ends `(?:#.*)?$`. (#152's z-index scanner, #156's `timeout-minutes` reader, this.)
+- **Not changed:** the shared Dockerfile. Giving each app its own would also end the contention, but
+  it duplicates the build definition for the two services that must stay in lockstep, and one
+  `max-parallel` line buys the same thing for two minutes of wall time.
+
+---
+
+## #156 — The Actions "consumption" these two repositories bill is zero; what they do waste is a mirror's worth of runners and one permanently red gate — FIXED (branch `claude/busy-pascal-x44fkv`)
+- **Reported as:** *"we need to fix the issue with the CI actions high consumption rate"*, after an
+  Actions payment had to be made.
+- **The first thing to say, because it changes what the rest of this is for: NEITHER REPOSITORY HAS
+  EVER BILLED A MINUTE.** Both are public, so GitHub-hosted standard runners are free. Checked
+  directly against `GET /actions/runs/{id}/timing` rather than inferred: `billable.UBUNTU.total_ms`
+  is **0** for every job of every run sampled in both repositories — CI runs, deploy runs, and the
+  374-minute hung deploy of #155 included (`{"UBUNTU":{"total_ms":0,"jobs":6,...}}`). #155 reached
+  the same conclusion independently; this is a second, separate confirmation of it.
+  **So whatever exhausted the account's Actions budget was spent somewhere other than here**, and
+  nothing in these two repositories can reduce it. The owner's billing breakdown is the only place
+  that answer lives (another, private repository; an organisation; or a different line item —
+  Packages, LFS, Codespaces, Copilot — all of which arrive on the same invoice as "Actions").
+  This session is scoped to these two repositories and the billing endpoints are blocked to it, so
+  that check could not be made from here.
+- **What IS being wasted, measured (GitHub REST, 30 days to 2026-10-22, `ceil` per job, which is how
+  GitHub would charge a private repository):** `invest254` **14,501 runner-min**,
+  `invest254-platform-template` **750**. CI 7,353 (19.3/run x 381) · Deploy 6,679 (56.6 x 118) ·
+  the eight crons 469. Of the Deploy figure, **three hung jobs are 997 of the 1,086 minutes the
+  deploy matrix has ever used — 92%** (#155's six-hour stall is one of them).
+- **#155 and the commits around it already fixed the two biggest items** (a `timeout-minutes` on all
+  17 jobs; `ci.yml` concurrency that spares `main`; ticket escalation moved into the API process, so
+  `*/15` stopped being 96 cold runners a day). **This entry is what was left after that**, found by
+  measuring the same thing from a different angle.
+
+### Fixed here
+1. **The mirror template was running production's ops crons — six workflows with no repository
+   guard.** The two repositories share one byte-identical tree (docs/30), so every fire allocated a
+   runner in a repository that **can never hold `DATABASE_URL`**; each then installed the whole
+   workspace and exited 0 on its script's first line. The proof that a guard is the right shape is
+   already in the tree: `mirror-drift.yml`'s job-level `if` measured **0 minutes across 223 runs**,
+   while a step that no-ops bills a full minute, because GitHub rounds **each job** up.
+   `pool-health` (`*/30`), `pool-distribute`, `subscription-lifecycle`, `reproducibility`,
+   `schema-drift`, `ticket-escalation` and `ci.yml`'s `reproducibility` job now carry
+   `if: github.repository != '<template>'`. **~390 runner-minutes in the measured window, ~1,600 a
+   month at the crons' nominal cadence.**
+   - Written as **"not the mirror"**, never "is production", and that is the whole design: the
+     template is a mirror and never a running brand, but a brand repo forked *from* it is a running
+     system and must keep every ops cron the moment it sets the secret. `== production` would have
+     silently disabled ticket escalation and pool distribution for every future brand.
+2. **`reproducibility.yml` had been red every single night in the template — 26 runs of 26.**
+   Pre-existing, and found only by counting the bill. Unlike every other DB cron its step has no
+   `[ -z "$DATABASE_URL" ] && exit 0` guard, so it did not skip; it failed on
+   `DATABASE_URL is required` (exit 2). The loud failure is **correct** for a provable-fairness audit
+   in a repository that is supposed to hold the secret — silence must never read as a pass — so it is
+   kept, and the guard above removes the one place it was guaranteed to fire. A gate that is always
+   red is how a real one stops being believed, which is #144's lesson restated.
+3. **`deploy`'s ceiling raised from 25 to 45 minutes.** #155 was right to cap it; the cap landed
+   inside the healthy distribution. Over the last 60 Deploy runs every matrix leg finished in 1-2
+   minutes **except run `38137608432`, where `deploy invest254-api` took 22 minutes and SUCCEEDED**
+   (a cold Fly remote builder), and the three hangs at 275, 361 and 361. Nothing lands between 22
+   and 275. A 25-minute cap therefore sat three minutes above a known-good run: a builder 15% colder
+   would have failed a real deploy of the money backend, and since `concurrency: cancel-in-progress:
+   false` holds the `fly-deploy` group, recovering needs a human to notice and re-run. 45 is twice
+   the slowest healthy run and still an order of magnitude below the hang it exists to catch.
+4. **The step that tells an operator production is half-deployed was skipped exactly when it was
+   needed.** `Explain a failed deploy` was `if: failure()`, and all three hangs concluded
+   **`cancelled`** — so the annotation never printed, and `Verify the live release is this commit`
+   never ran either. With `fail-fast: false` the sibling app shipped and the hung one did not: a
+   split release with nothing anywhere saying so, which is the silent half-deploy #48 was supposed
+   to have ended, arriving through a different door. Now `if: failure() || cancelled()`, and the
+   message leads with "THIS app may not have shipped while the other one did".
+5. **`mirror-drift.yml` now serialises itself.** A correctness fix, not a cost one: its rolling-issue
+   bookkeeping is a non-atomic `gh issue list` -> `gh issue create`, and the nightly check collides
+   with the push `mirror-sync` makes every 3h, so two runs would each find no open issue and each
+   open one. `mirror-sync` already serialises itself for exactly this reason.
+- **Regression guard: `scripts/workflows.guard.test.mts`** (in `npm test`, so CI's own `build` job
+  runs it). It reads the workflow text and asserts: every job declares `timeout-minutes`; none
+  exceeds 60, because a 300-minute "cap" is the same hang with extra steps; every job reading
+  `secrets.DATABASE_URL` is inert in the mirror, either by its own `if` or transitively through
+  `needs`; every scheduled job has a job-level `if`; and `ci.yml` cancels superseded runs but never
+  one on `main`. **#155's timeouts had nothing asserting them** — this is what stops the next
+  refactor quietly dropping one.
+  - **Mutation-checked six ways**, each turning it red: removing one CI cap; raising `deploy`'s to
+    300; deleting `pool-health`'s mirror guard; deleting `fly-auth`'s production guard (which is
+    what makes `migrate` and `deploy` transitively inert); making CI cancel `main`; removing the
+    concurrency block. A harmless comment edit leaves it green, so it is not merely brittle.
+  - It parses the YAML itself rather than importing a parser: the only one on disk is a transitive
+    hoist no `package.json` declares, and a guard that vanishes with a lockfile bump is not a guard.
+    It therefore also asserts **how much it found** (>=10 files, >=17 jobs, >=6 `DATABASE_URL` jobs,
+    >=7 scheduled workflows) and spot-checks the two hardest shapes, a matrix job and a folded
+    multi-line `if` — a checker that silently examines nothing looks exactly like a passing test
+    (#152). The first version proved that on itself: it matched `/^\d+$/` against
+    `"30            # measured avg 11.0"` and reported all sixteen capped jobs as uncapped.
+
+### Deliberately not changed, with the measurement that decided it
+- **`npm test` (553s on a runner, 282s locally) is ~52% of CI's job-minutes and is left alone.**
+  2,360 tests, of which **1,973 finish inside 100ms while 25 are 51% of all test CPU**: the
+  Monte-Carlo fairness proofs (`no stopping rule a trader can choose beats the house`, 56s; the
+  three `EXPLOIT:` edge tests, 50s) and the WS market-data integration tests. They are exhaustive
+  because the exploits they rule out were real (#15, #18, docs/25 §16). Cheapening them is the one
+  saving this repository must not take.
+- **Raising `--test-concurrency` above Node's default (`cores - 1` = 3 on a 4-vCPU runner).**
+  Measured on an identical 4-core/16GB box: 285s at 3, and **still unfinished at 513s at 4** — the
+  runner process plus four workers oversubscribe four cores. Not memory (15.5GB free). It would also
+  put the soak and real-timer tests under CPU contention, and a flaky suite costs far more in
+  re-runs than it saves.
+- **Node's native type stripping instead of `tsx`**, which would remove the ~34% of suite CPU spent
+  re-transpiling each file's import graph in each of 321 child processes. Blocked by the source:
+  parameter properties in at least ten classes (`constructor(private readonly q: ...)`), 13
+  extensionless relative imports, one `@/` alias — none of which native stripping supports.
+- **Caching the headless browser** in `web roles e2e`: 29s of a 318s job, most of it the
+  `--with-deps` apt step a cache cannot skip. ~60 minutes a month for another moving part inside a
+  security gate.
+
+### Raised, not fixed here
+1. **The mirror has been dead for 23 days, and that is what stops half of the above from landing.**
+   `invest254-platform-template@main` is `04ade0f` of **2026-09-29**; production is 23 days ahead.
+   Every `mirror-sync` run since has failed, all at the same place: `actions/checkout@v4` with
+   `fatal: could not read Username for 'https://github.com': terminal prompts disabled`. Because
+   `token: ${{ secrets.MIRROR_PAT || github.token }}` falls back only when the secret is *unset*,
+   that message means **`MIRROR_PAT` is set but expired** — the non-empty bad value wins the `||`.
+   So the template is still running the OLD workflows — and `04ade0f` predates **#155 entirely**:
+   checked against its live `main`, **no job in any of its ten workflows has a `timeout-minutes`**,
+   and `ticket-escalation.yml` is still on `*/15` there rather than dispatch-only. Every fix in
+   #155 and in this entry is therefore absent from it, including the one that stops a six-hour hang,
+   and will stay absent until the secret is rotated. **Owner action, and it cannot be done from code:** mint a fine-grained PAT on
+   the template with `contents:write` + `workflows:write` and update the `MIRROR_PAT` secret
+   (docs/30 §A). The workflow already opens a `🔴 Mirror sync blocked` issue saying this.
+2. **Production carries a function the migrations do not create.** `schema-drift` has been red since
+   2026-10-14 (green through 10-13) with one unchanging report:
+   `only-production function fn_pool_auto_settings_seed()` / `function-exec [prod=false/false]`.
+   Nothing in the tree creates, calls or even names it; `pool_auto_settings` itself comes from 0164.
+   An out-of-band object — exactly the class #57 built this gate to catch, and the gate worked. Not
+   reconciled here because the right fix (docs/30 §C: a migration) depends on what its body does,
+   and its name says it seeds **money configuration**; dropping something a dashboard or an ops
+   script still calls is a production break. Read the body first, then write the migration.
+3. **The crons were firing at about 2% of their schedule.** `*/15` should fire 672 times a week; it
+   fired **10**. `*/30` should fire 336; it fired **9**. Daily crons fired 2 of 7. GitHub
+   de-prioritises and drops `schedule` events, and Actions was additionally interrupted over payment
+   in this window. Ticket escalation moving in-process (#155 era) is the right answer and already
+   landed; `pool-health` (`*/30`) is the remaining one whose value depends on actually running, and
+   it is a monitor — `pg_cron` or the API process would make it reliable as well as free. Not done
+   here: this sandbox cannot reach Postgres (only port 443 egresses), so a `pg_cron` migration could
+   not be verified against the real database, and an unverified change to production scheduling is
+   not one to make blind.
+4. **`actions/checkout@v4` and `actions/setup-node@v4` are being force-run on Node 24** — every run
+   logs `Node.js 20 is deprecated`. Not a bug yet; it becomes one in all ten workflows at once when
+   GitHub drops the shim. A version bump deserves its own verification pass.
+5. **The live engine's release label names a commit that is not on `main`.** `invest254-api` runs
+   `git-f29b59c`; `invest254-engine-pm` runs `git-936a0ed`, a branch commit reached by a manual
+   `workflow_dispatch`. Harmless this time — `936a0ed..f29b59c` is one line of `.gitattributes` and
+   `git diff --name-only -- apps/engine packages Dockerfile` between them is empty, so the running
+   code is identical. But labelling images `git-<sha>` (#48) exists so `flyctl releases --image` can
+   be matched against `main`'s history, and a label off `main` cannot be. The habit to avoid is
+   dispatching Deploy from a branch.
+
+---
+
+## #155 — A hung deploy job with no timeout ran for six hours and left the API five days behind main — FIXED (CI)
+- **What it looked like from the product:** the platform console's "Reset someone's security answers"
+  answered **"Could not reset / not found"** for every target. The route was missing from the deployed
+  API (`http.ts:386`'s unmatched-route 404), because the API had been running `bb76bf3` since 15 Oct
+  while `main` carried the 0210 work. `/api/v1/health` named the stale commit.
+- **Root cause:** the `deploy invest254-api` job of the 16 Oct run stalled at `#17 exporting to image`
+  on Fly's remote builder and was still sitting there **six hours and twelve minutes** later
+  (`run_duration_ms: 22418000`), when GitHub's own 6-hour ceiling cancelled it. No job in any of the
+  ten workflows had a `timeout-minutes`, so GitHub's ceiling was the only limit in play.
+- **Why one stuck job mattered so much:** `deploy.yml` holds `concurrency: { group: fly-deploy,
+  cancel-in-progress: false }` — correct, since cancelling a deploy mid-flight is worse than waiting.
+  But a job that never ends holds that group for as long as it lives, so the hang did not just lose
+  its own deploy; it blocked the queue. The engine deployed (separate matrix leg, succeeded in 63s)
+  and the migration applied, so the DB and the engine moved while the API did not: a split release
+  nobody was told about. The deploy's own verification step, which checks the live release carries
+  this commit, was skipped along with the job that would have failed it.
+- **Fix:** a `timeout-minutes` on every job in all ten workflows, sized to observed runtimes (CI's
+  four jobs finish inside 8m16s wall; the deploy's own `--wait-timeout` is 5m). A build that stalls
+  now fails in minutes with a red job, releasing the concurrency group, instead of occupying a runner
+  for a working day and reporting nothing.
+- **Also:** `ci.yml` gained `concurrency` with `cancel-in-progress` for every ref EXCEPT `main` — a
+  superseded PR run is work nobody will read, while on main each commit's result is the record of
+  whether that commit was green.
+- **NOT the cause of the billing block that surfaced alongside this** (see the note below): this
+  repository is PUBLIC, so GitHub-hosted standard runners are free. The usage API confirms it —
+  `billable.UBUNTU.total_ms: 0` for every job of both the CI and deploy runs, the six-hour one
+  included. Whatever exhausted the account's Actions budget was spent somewhere other than here.
+
+## #154 — The PayHero ledger sweep wrote ~10 Postgres ERRORs a minute, forever — FIXED (engine)
+- **Reported as:** a wall of red `P0001 TX_NOT_FOUND` rows in the Supabase Postgres log.
+- **Measured, from a 96-minute export (1,000 rows, 2026-10-21 13:01–14:37 UTC):** 954 `TX_NOT_FOUND`
+  errors — **every single error line in the database log**. Exactly 10 per minute, in all 96 minutes
+  covered, in bursts ~0.39s apart separated by ~53s gaps. That cadence is a 60-second timer, not a
+  user: `PAYHERO_LEDGER_RECONCILE_INTERVAL_MS` defaults to 60s (`server.ts:1303`). The other 46 rows
+  were checkpoints and health probes. ~14,400 error rows a day.
+- **Root cause, and it was deliberate:** `reconcilePayHeroLedger` discovers whether a ledger row
+  belongs to us by calling `fn_complete_deposit` and catching the `TX_NOT_FOUND` it raises
+  (`paymentservice.ts:632`). PayHero's ledger is ONE SHARED ACCOUNT, so most rows carry references
+  written by something else; each one raised a plpgsql exception, which Postgres records as an ERROR.
+  The sweep re-reads page 1 every minute and the page barely changes, so the SAME ~10 misses were
+  re-raised every minute indefinitely. The money path was never wrong — the exception is caught and
+  the payment falls through to claimable-by-code, which is what it should do.
+- **Why it is worth fixing rather than filtering:** `TX_NOT_FOUND` is also raised by
+  `fn_complete_withdrawal`, `fn_reject_withdrawal` and `fn_admin_mark_withdrawal_paid`, where it means
+  an operator acted on a transaction that is not there — a real failure. One noisy caller at 10/min
+  made that signal unfindable, in the same log and under the same code. A log nobody can read is a log
+  nobody reads.
+- **Fix:** `PaymentRepository.ownedDepositRefs(refs)` — one indexed lookup per sweep (idx_tx_checkout,
+  0005) answering which references belong to a deposit of ours, using the SAME predicate
+  fn_complete_deposit uses (`checkout_request_id` + `kind='deposit'`). The loop then calls the RPC only
+  for references we own. N exceptions become one query, and the round trip per foreign row goes away.
+- **The money RPC was NOT touched.** `fn_complete_deposit` is shared by Daraja, Mega Pay, PayHero and
+  Paynicorn, and for those callers the raise is correct. No migration; engine-only change.
+- **Semantics unchanged, deliberately:** a reference we own still goes through the same idempotent RPC;
+  one we do not still becomes claimable-by-code, so a payment is still EITHER credited to its tx OR
+  claimable, never both. The `TX_NOT_FOUND` catch stays as the race fallback (a tx vanishing between
+  the batch lookup and the call), so even that path behaves exactly as before.
+- **Verification:** a new test asserts a foreign reference never reaches the deposit RPC while our own
+  still does — **proven to fail** against the old code (`a foreign reference must not be sent to the
+  deposit RPC at all`). 8/8 PayHero tests, full suite 2370 tests, 0 failures, `tsc -b` clean.
+
+## #153 — "Sign-in failed. Please try again." was the console's answer to five different failures — FIXED (web)
+- **Reported as:** a screenshot of the operator sign-in — phone and password filled, a six-digit
+  authenticator code typed in, and **"Sign-in failed. Please try again."** under it. Nothing in the
+  screenshot said what went wrong, which is the bug reported here.
+- **What:** `AdminSignIn` translated three codes — `MFA_REQUIRED`, `MFA_INVALID`,
+  `INVALID_CREDENTIALS` — and sent everything else to one sentence. "Everything else" is the half
+  that matters at an operator door: `RATE_LIMITED` (429 from the per-IP throttle),
+  `ACCOUNT_SUSPENDED` / `ACCOUNT_BANNED`, any 5xx out of the API, a `fetch` that never reached it
+  (DNS, CORS, a sleeping machine — no `ApiError` at all, so the code read as `''`), and the one that
+  is not a sign-in failure: the `GET /auth/me` that `adminLogin` runs *after* a successful login
+  (`useAuthActions.ts:40`) being refused by the token gate, which `requireAuth` flattens to
+  `AUTH_INVALID` (`http.ts:514`) whether the cause was the force-logout epoch, a non-active profile
+  or the idle gate.
+- **Why that last one matters most:** the token is already in `localStorage` by then. The operator is
+  told their sign-in failed while holding a valid session, and the thing they retry — the code — was
+  never the problem. The same sentence appears when the code was *right* and the server 500'd.
+- **Impact:** no failed console sign-in could be diagnosed from what the operator saw, and no
+  screenshot of one could be diagnosed by anyone else either. Nothing was unauthorised; the console
+  was simply undebuggable from the outside.
+- **Fix:** `lib/auth/signInError.ts` — one pure mapper, unit-tested, returning a sentence that says
+  what happened and what to do, plus `code · HTTP status` for the failures whose real answer is in
+  the API log. A player must never be shown an error code, so this is deliberately *not* shared with
+  `lib/auth/errors.ts`; an operator debugging their own console is exactly who needs one.
+- **Second gap, closed with it:** the form offered no recovery-code field, though
+  `/auth/admin/login` has always accepted `recovery_code` and `#135` closed with "if that
+  authenticator is gone, a recovery code is needed". There was nowhere to type one — and a recovery
+  code typed into the 6-digit box went up as `totp` and could only ever come back `MFA_INVALID`.
+  `adminLogin` now takes the same `{ totp | recoveryCode }` second argument `login` takes, and the
+  code field toggles between the two. TOTP input is digits-only (a pasted code carrying a space was
+  refused as a wrong code).
+- **NOT fixed by this, and worth saying plainly:** this does not make the reported sign-in succeed.
+  It makes the next attempt name its own cause. The candidates for that screenshot, in order:
+  migration `0196`'s `user_mfa.last_totp_step` missing on the deployed database (the replay guard
+  `update` is what runs on a CORRECT code — `identity.ts:576` — so a correct code is exactly what
+  would 500); the `/auth/me` refusal above, with clock skew between the API host (`iat`) and
+  Postgres (`stampForceLogout` uses the database's `now()`) as the mechanism; the 429; or the API
+  not being reached at all.
+- **Verification:** 9 new unit tests pin each branch (including "a correct code that meets a server
+  error does not read as a bad code"). 2368 tests pass, `tsc -b` and the web typecheck clean.
+
+## #152 — Admin payout decisions deadlocked behind an unreachable security prompt — FIXED
+- **Reported as:** *"I can't accept or reject."* The Reject dialog sat on **"Rejecting…"** forever,
+  with the "Confirm it's you" step-up prompt visible but greyed out BEHIND it.
+- **What:** `StepUpGate` rendered at **`z-[62]`**; `RejectDialog` renders at **`z-[70]`**. Rejecting
+  a commission payout is an action launched *from* a dialog, so the 403 `STEP_UP_REQUIRED` it
+  provoked raised a challenge that painted **underneath the dialog that triggered it**. The reject
+  dialog's own container is `fixed inset-0`, so it swallowed every click aimed at the prompt.
+- **Why it hangs rather than errors:** the gate is deliberately non-dismissible — no backdrop click,
+  no Esc — because a refused call is parked behind it and `apiFetch` replays that call only once the
+  challenge settles (`client.ts:97`). Unreachable + non-dismissible = the promise never settles, so
+  the mutation never leaves `isPending`.
+- **Why BOTH buttons died, not just reject:** `ReferralPayouts` gated every row's controls on the
+  SHARED `action.isPending`. One permanently-pending mutation therefore disabled approve *and*
+  reject on **every row in the panel** until the operator reloaded. The reported symptom is the
+  amplification, not the cause.
+- **It is worse than one panel.** `requestStepUp` keeps ONE global `pending` slot and has no
+  timeout (`stepUp.ts:75`): while a challenge is outstanding, a later gated call either joins that
+  same promise or resolves `false` immediately. So the stuck reject did not just freeze the payout
+  queue — until the tab was reloaded, every other gated admin action in the app either hung on the
+  same unreachable prompt or failed with its raw 403.
+- **Impact:** no commission payout could be approved or rejected from the moment anyone clicked
+  Reject once. Not data loss — the payout stayed `requested` and nothing was dispatched — but the
+  queue was unworkable, and the obvious operator response (reload, click Reject again) reproduced it
+  every time.
+- **Resolution, two parts:**
+  1. The three security gates move to the top of the stack — `SecurityQuestionsGate` `z-[100]`,
+     `MfaEnrolmentGate` `z-[101]`, `StepUpGate` `z-[102]`, above the app's previous ceiling of
+     `z-[91]`. They are the only overlays with a blocked request behind them, so they outrank
+     everything by definition.
+  2. `busyId = action.isPending ? action.variables?.id : undefined` — the in-flight lock now names
+     WHICH row is being decided instead of WHETHER one is. Applied to `ReferralPayouts` and
+     `Advances`. (`AffiliatePayoutsPanel` already calls `usePayoutAction()` per row, so it was
+     never affected.)
+- **Regression guard:** `gates.z.test.ts` reads the source and fails if ANY `fixed` overlay is given
+  a z-index at or above the gates. Bumping three numbers fixes today; the test is what stops the
+  next `z-[110]` modal from putting it back. **Proven to fail when `StepUpGate` is reverted to
+  `z-[62]`** — both assertions go red.
+- **Tailwind scans comments.** `content: ['./src/**/*.{ts,tsx}']` feeds every source file to an
+  extractor that is a regex over raw text, so writing an arbitrary value in Tailwind's bracket form
+  inside a COMMENT emits a real rule. The first version of this fix shipped a dead `z-index:62` from
+  the explanatory comment in `StepUpGate.tsx`, and a dead `z-index:110` onto invest254.com from a
+  sentence in `gates.z.test.ts` — dead CSS from a test file, in the production bundle. Harmless to
+  render, but it defeats reading the shipped CSS to tell which build is live, which is exactly how
+  this bug was confirmed in production. Arbitrary z-indexes are now written as prose in comments.
+- **Two bugs inside the guard itself, worth recording:** the first version matched `z-50` and
+  nothing else, because the trailing `\b` in `/\bz-(?:\[(\d+)\]|(\d+))\b/` cannot match after
+  `z-[70]` — `]` and the following space are both non-word, so there is no boundary. It reported
+  "no z-index at all" for the gates rather than a failed comparison. The second was the className
+  scanner desynchronising on apostrophes inside comments, which made it find zero overlays. Both
+  are the same hazard: **a checker that silently examines nothing looks exactly like a passing
+  test.** Hence the explicit `zs.length > 0` assertion per gate file.
+
+---
+
+## #151 — The PDF text extractor silently rewrote the document it was checking — FIXED
+- **What:** `pdfText()` in `marketers.statement.pdf.test.ts` decodes the document's text so the
+  assertions can read it. Switching the statement from the standard-14 fonts to embedded DejaVu and
+  Jost subsets changed the encoding from single-byte WinAnsi to Identity-H — 16-bit glyph IDs — so
+  the helper was rewritten to map each CID through the font's `/ToUnicode` CMap. Two bugs in that
+  rewrite, each of which produced *plausible* text rather than obvious garbage.
+- **Bug A — the contiguous-range pattern matched inside the array form.** A CMap `bfrange` entry is
+  either `<lo> <hi> <dstStart>` or `<lo> <hi> [<u0> <u1> ...]`. Scanning for both with two
+  independent regexes looks equivalent to scanning once; it is not, because `<a> <b> <c>` also
+  matches any three consecutive destinations *inside* an array, overwriting real mappings with
+  values derived from their neighbours.
+- **Bug B — ligature destinations were skipped entirely.** The CMap writes the "ff" ligature as
+  `<0066 0066>`, with a space inside the brackets. The destination pattern `<([0-9a-fA-F]*)>` does
+  not match that, so the entry was skipped — which did not lose one glyph, it shifted **every**
+  mapping after it by one.
+- **Evidence:** the extracted text read `Disclaimer: An* personal information ... proKided` and
+  `To Kerif* this statement, open inKest254.comkKerif*` — `y`→`*`, `v`→`K`, `/`→`k`, `fi`→`Q`.
+- **Impact:** test-only, and caught before it could mislead. But the failure mode is the dangerous
+  one: a helper that returns *almost* the right text makes some assertions fail for the wrong reason
+  and lets others pass for the wrong reason. The two tests that failed pointed at the document, not
+  at the helper.
+- **Resolution:** one sequential pass over each `bfrange` block handling both entry forms in order,
+  and `\s` admitted into every destination character class, with whitespace stripped before the hex
+  is paired off. Full suite green.
+- **Lesson:** when a decoder's output is readable, "readable" is not "correct". Both bugs would have
+  been invisible had the sample text not contained a `y`.
+
+---
+
+## #150 — The statement was printed in the wrong direction — FIXED (migration 0209)
+- **What:** `fn_marketer_statement_range` returned the detail **oldest-first**. The reference
+  statement supplied as the artifact to reproduce runs **newest-first**: its first page opens on
+  `2026-10-14 21:24:50` and walks backwards, and every page after continues down.
+- **Root cause:** not a coding error — a reasoning error, made in `0208` while fixing #149. Having
+  corrected the ordering *column* (`created_at`, which the statement prints, not `id`, which it does
+  not), 0208 chose ascending so a reader could follow the Balance column downward as a running
+  total. That argument is sound in the abstract and was made **in place of looking at the artifact**,
+  which was available.
+- **Impact:** on a long statement — the reference is 255 pages — the most recent transactions land
+  on the last page. A report produced for accountability buries the thing it is consulted for.
+- **Resolution:** `0209` reverses the final `order by` to `created_at desc, id desc`. The column fix
+  from 0208 stands and is the load-bearing part; only the direction changed. The cap still selects
+  the NEWEST `p_cap` rows — the migration and the in-memory mirror each do the select and the
+  reverse as two explicit steps, because collapsing them is how one silently returns the oldest.
+- **Also corrected alongside:** the summary label `LIPA NA M-PESA (PAY BILL)` → `(PAYBILL)`, one
+  word, as the reference prints it; and the disclaimer, verification panel and footer now repeat on
+  every page rather than the last, which is what the reference does.
+- See `docs/67` §4.
+
+---
+
+## #149 — The statement sorted by one column and printed another — FIXED (migration 0208)
+- **What:** `fn_marketer_statement_range` (0206) ordered the detail rows by **`id`**. The statement
+  PRINTS **`created_at`**. 0206's own header asserted the two were interchangeable — *"both columns
+  are monotonic in practice"* — which is the kind of claim that holds until it does not.
+- **Why they diverge:** `id` is drawn from the identity sequence at INSERT time; `created_at`
+  defaults to `now()`, which in PostgreSQL is **transaction START** time. A transaction that begins
+  at 10:00 and inserts at 10:05 takes a HIGHER id than one that began at 10:02 and inserted at
+  10:03, while carrying the EARLIER timestamp. This system runs exactly that shape of concurrency —
+  the transfer and airtime RPCs take row locks and are proven against eight simultaneous
+  connections — so a transaction waiting on a lock is the ordinary case, not a contrived one.
+- **Evidence:** a statement rendered for review printed Completion Times
+  `2026-09-17, 09-21, 09-28, 09-23, 09-25, 09-30, 10-06, 10-09, 09-24 …`. **Found by looking at the
+  output, not by reading the code.**
+- **Impact:** rows out of time order, and — worse — a Balance column that steps up and down for no
+  visible reason. `balance_after_cents` is correct per row and only reads as a running balance when
+  the rows are in time order, so an out-of-order statement makes correct data look like corruption.
+  Exactly the opposite of what a statement produced for accountability is for.
+- **Fix:** 0208 orders by `(created_at, id)` at both ends — inside the cap (`desc`) and outside it
+  (`asc`). `id` stays as the TIE-BREAKER rather than being dropped: the two halves of a transfer
+  (0203) are written in one transaction and share a timestamp to the microsecond, so without it
+  their order is whatever the plan produces, and a statement showing the credit before the debit it
+  came from is its own small lie. The cap still keeps the newest rows; what changes is the
+  definition of "newest", from *last inserted* to *last to happen*.
+- **Verification:** four assertions in `e2e_marketer_statement.py`, inserting rows whose id order is
+  deliberately not their timestamp order — **proven to fail** when the ordering is reverted to `id`
+  (3 of the 4 fail, including the capped read keeping the wrong rows). 27/27 on real Postgres.
+  `ix_marketer_ledger_mkt_created` from 0206 already serves the new sort.
+
+## #148 — A refused transaction still announced itself as "Successful" — FIXED (mpesa_2)
+- **What (pre-existing):** `ReceiptScreen` printed `"${TxFlow.title} Successful"` with a green tick
+  unconditionally. `TxFlow.success` had always been SET — `AppState.performTransaction` returns
+  false when the wallet cannot cover the amount — and was **never read**. So a transaction the app
+  itself had declined showed the success icon, the success wording, a receipt card and a Download
+  Receipt button.
+- **Found while** wiring the first flow on that screen that can be refused by the SERVER (airtime,
+  0207): a declined purchase would have told the marketer their money was spent.
+- **Impact before 0207:** limited to the local sample flows, where nothing is at stake. **After
+  0207 it would have been a real debit the marketer was told had happened when it had not.**
+- **Fix:** the screen branches on `TxFlow.success` — error icon, "… Not Completed", and the reason
+  in place of the amount (`TxFlow.failure`, new). The receipt card and the download button are not
+  drawn at all when there is nothing to receipt, and the button reads "Close" rather than "Done".
+- **Verification:** `assembleDebug` green; the failure path is reachable from both the local
+  insufficient-funds case and every server refusal the airtime route can return.
+
+## #147 — The test harness's withdrawal disagreed with the database about Fuliza — FIXED
+- **What (pre-existing):** `testutil.ts`'s in-memory `withdraw` refused outright at
+  `m.balance < amountCents`, never consulted `m.fuliza`, and never wrote `fuliza_used_cents` into
+  the ledger meta. The database's `fn_marketer_withdraw` (0033) does all three: spending power is
+  `balance + available_fuliza`, the overdraft covers the shortfall, and the amount drawn is
+  recorded on the row.
+- **Evidence:** a new airtime test asserted the contrast the 0207 header rests on — *Fuliza cannot
+  buy airtime, although it funds a withdrawal* — and the withdrawal half returned 409 against the
+  harness while succeeding against real Postgres (`e2e_marketer_airtime.py`, same scenario).
+- **Impact:** every route test touching a withdrawal was pinning behaviour production does not
+  have, and the `fuliza_used_cents` branch of `ledgerToTxDto` — and now `detailsFor`, which prints
+  "Customer Withdrawal (Fuliza X)" on a statement — had **never been exercised by anything**. It
+  also made BUGLOG #141 (wallet drifts from its ledger once Fuliza pays part of a withdrawal)
+  unreproducible in the fast suite, which is where it would have been noticed.
+- **Fix:** the mirror now does the same arithmetic as the RPC — `spendable = balance + fuliza`, the
+  shortfall drawn from the overdraft, `fuliza_used_cents` stamped on the row.
+- **Verification:** full API suite **2331 tests, 0 failures** after the change — no existing test
+  depended on the wrong behaviour, which is the good news and the bad news. The contrast is now
+  asserted in both suites: `app.marketers.airtime.test.ts` and `e2e_marketer_airtime.py`.
+
+## #146 — A docs/58 phone-leak guard failed 17.9% of runs for a reason unrelated to phone numbers — FIXED
+- **What (pre-existing, mine to find):** `packages/db/_testkit/e2e_marketer_transfer.py` asserts that
+  neither half of a transfer stores a phone number in `meta` (docs/58). Across six consecutive runs
+  of an otherwise unchanged script it failed once:
+  ```
+  [FAIL] ledger: no phone number is stored in meta (docs/58)
+  47/48 passed
+  ```
+- **Root cause:** the check was a SUBSTRING test over the whole blob —
+  `meta ? 'phone' or meta::text like '%07%'` — and `meta` contains `counterparty_marketer_id`, a
+  random UUID. **Measured over 200,000 `uuid4`s: 9.389% of UUID texts contain the digits "07"**, so
+  with two rows examined the assertion false-failed **17.9%** of runs.
+- **Why it matters more than a flake:** this is one of the guards whose entire value is being
+  believed. A security check that cries wolf one run in six trains the reader to re-run it until it
+  is quiet — the same failure mode as #144, and the state in which a genuine leak passes unnoticed.
+- **Fix:** asked per KEY/VALUE with `jsonb_each_text` instead: a phone-ish key
+  (`phone|msisdn|mobile|number`) or a value matching `(\+?254|\m0)[17][0-9]{8}`. Anchored on a WORD
+  boundary rather than a string start, so a number quoted mid-sentence is still caught while a
+  UUID's interior digits are not.
+- **Verification:** six probe rows run against real Postgres — `{"phone":"0798661061"}`,
+  `{"note":"paid 0798661061 today"}`, `{"note":"paid +254798661061 today"}`,
+  `{"note":"sent to 254712345678"}` and `{"recipient_number":"x"}` all flag; the UUID meta and
+  `{"pair_ledger_id":"1074"}` do not. **Nine consecutive clean runs** of the full script afterwards
+  (48/48 each). Residual false-positive rate ~1 in 5,000 (a 12-hex UUID segment would have to open
+  `0`, then `1` or `7`, then eight more digits).
+
+## #145 — The payer and the payee saw two different confirmation codes for one transfer — FIXED (migration 0205)
+- **What:** a marketer-to-marketer transfer produced one M-PESA code in the sender's transaction
+  feed and a different one in the recipient's, for the same transfer. No real M-PESA transaction
+  behaves this way, and the contradiction surfaces the first time two marketers compare phones —
+  which, in a till app whose users are in the same WhatsApp group, is immediately.
+- **Root cause:** `ledgerToTxDto` derives the code with `mpesaCode(createdAtMs, r.id)` — the row's
+  own ledger id. A transfer (0203) is **two** rows, so it produced two codes. The timestamps already
+  matched (both rows take `created_at` from the same transaction's `now()`); only the id differed.
+- **Found while** building the confirmation screen, which has to print one of the two.
+- **Impact:** cosmetic in the sense that no money is affected, and corrosive in the sense that the
+  confirmation code is the one string either party would quote to query a transfer.
+- **Fix:** 0205 stamps the credited row with `meta.pair_ledger_id` = the debited row's id, and
+  `ledgerToTxDto` prefers it. Both sides now render the sender's code, which is also the code the
+  API returns to the app for the receipt. Rows written before 0205 have no `pair_ledger_id` and keep
+  falling back to their own id, so nothing already rendered changes.
+- **Verification:** `app.marketers.transfer.test.ts` — "both sides of one transfer carry ONE
+  confirmation code" (**proven to fail** when the pairing is reverted), plus "a credit that is not a
+  transfer still takes its code from its own row" pinning the fallback. On real Postgres:
+  `e2e_marketer_transfer.py` asserts the credited row points at the debited row, the debited row
+  carries no self-referential pair, and both halves share one timestamp. See docs/64 §2.
+
+## #144 — CI's migration-ledger gate races the deploy, so every migration merge shows red — FIXED (moved into deploy.yml)
+- **What:** merging 0203 turned CI red on `main` twice in a row, for a reason that had nothing to do
+  with the change. Both runs failed the same job:
+  ```
+  UNRECORDED  0203_marketer_peer_transfer.sql  (file present, not in ledger)
+  204 migration files, 203 ledger rows, 1 problem(s).
+  ```
+- **Root cause — a timing race, not a defect in the migration.** One push starts BOTH workflows:
+  `CI` (whose `migrations-ledger` job compares the repo's migration files with the ledger rows in
+  PRODUCTION) and `Deploy (Fly)` (whose `migrate` job applies the new migration and records it). CI
+  has nothing to wait for and wins; Deploy has to run typecheck + the full test suite first.
+  Measured on this merge: the ledger gate started **11:07:40**, `migrate` recorded the row at
+  **11:16:19** — nine minutes later. The gate was asking production a question whose answer was
+  still eight minutes away.
+- **Evidence it is only the race:** re-running the failed job after `migrate` completed turned it
+  green with no code change (`migrations-ledger` ✓, and the whole run ✓).
+- **Impact:** every merge that adds a migration shows a red `main` for roughly the length of the
+  deploy's verify step, and the red clears only if somebody re-runs the job. That trains people to
+  ignore a gate whose whole job is to be believed — and it hides a REAL unrecorded migration behind
+  an alarm everybody expects.
+- **FIXED — option (b), owner's choice.** `migrations-ledger` moved out of `ci.yml` into
+  `deploy.yml` with `needs: migrate`, so it runs immediately after the step that records and asserts
+  what `migrate` just claimed to have done. The question "is production's ledger complete?" is only
+  answerable once the deploy that completes it has run.
+- **Nothing is weakened by the move.** It still reports all three conditions, and the one it is
+  really for — a migration file EDITED after it was applied (CHANGED, checksum mismatch) — is the
+  one that no amount of re-running would ever clear. Coverage is preserved because `deploy.yml`
+  triggers on `packages/**`, which contains `packages/db/migrations`, so every push that adds or
+  edits a migration runs it. Same `DATABASE_URL`, same graceful skip without it.
+- **It deliberately does NOT gate the deploys.** `deploy` needs `migrate`, not this, so the two run
+  in parallel. A drift report must not stop code that matches the schema from shipping: it is a
+  report about state, and blocking the rollout on it would turn a stale checksum into an outage.
+- `ci.yml` keeps a comment where the job was, saying where it went and why it must not come back —
+  CI has no step that records a migration, so re-adding it there would restore the race.
+
+---
+
+## #143 — Two SECURITY DEFINER functions are callable with the public anon key — FIXED (migration 0204 + CI gate)
+- **What:** found while confirming migration 0203's own grants. `packages/db/_testkit/e2e_function_grants.py`
+  — the repo's own guard for exactly this — **fails on current main**:
+  ```
+  [FAIL] no SECURITY DEFINER public function is EXECUTE-able by anon
+         2 exposed: fn_marketer_in_practice(uuid,uuid), trg_billing_platform_addon_charge()
+  [FAIL] ... by authenticated   (same two)
+  ```
+- **Root cause:** migration 0153 closed this hole wholesale, but a NEW function is created with
+  `EXECUTE` granted to `PUBLIC` by default, and neither migration that added these revoked it:
+  `fn_marketer_in_practice` (0176) and `trg_billing_platform_addon_charge` (0172), both after 0153.
+  **The guard is never run in CI** (`grep e2e_function_grants .github/workflows` → nothing), which is
+  why it went unnoticed; it needs a local Postgres, like the rest of `_testkit`.
+- **Impact, measured not assumed:**
+  - `fn_marketer_in_practice(p_user, p_site_id)` is `stable` and read-only, but SECURITY DEFINER so
+    it reads `wallets` past RLS. With the public anon key it answers "is this user id a marketer
+    account in practice mode?" for any uuid — an identity-disclosure oracle, bounded by having to
+    guess a uuid. It moves no money.
+  - `trg_billing_platform_addon_charge()` is a trigger function; called directly it has no `TG_OP`
+    and errors out. Exposure is the defect, not a usable path.
+  So: real, but neither is a money mutation. The money RPCs 0199 recreated were checked at the same
+  time and are SECURITY INVOKER, so RLS still stands behind them.
+- **Fix (not applied — separate issue, owner's call):** a migration that revokes `EXECUTE` on both
+  from `public`/`anon`/`authenticated`, exactly as 0203 does for `fn_marketer_transfer`, plus wiring
+  `e2e_function_grants.py` into a CI job with a local Postgres service so the next one is caught.
+  That second half is the part worth doing: without it this recurs on the next SECURITY DEFINER
+  function anybody adds.
+- **0203 is clean:** `fn_marketer_transfer` revokes EXECUTE from public/anon/authenticated and keeps
+  it for `service_role`; verified with `has_function_privilege` on a real database.
+- **FIXED, migration 0204** — revokes EXECUTE on both from `public`/`anon`/`authenticated`,
+  `service_role` keeps it. Idempotent (a REVOKE of an absent privilege is a no-op), re-applied 3x.
+  Revoking a TRIGGER function's PUBLIC EXECUTE cannot break the trigger: it fires as the table
+  owner, not the caller — the trigger is still bound after the revoke, and
+  `e2e_addon_entitlements.py` passes 26/26.
+- **AND the half that matters: the guard now runs in CI.** `e2e_function_grants.py` existed and was
+  never called by any workflow, which is the only reason 0172 and 0176 survived. A `function-grants`
+  job now runs it on every push and PR against a THROWAWAY Postgres built from the shim + every
+  migration (`pgvector/pgvector:pg16`, because 0057 needs that extension), so it needs no secret and
+  gates forks too. The script now reads the standard `PG*` env vars so it is runnable over TCP — a
+  check nobody can run is how this survived.
+- **Verified both ways:** the guard FAILS (11 pass / 2 fail, naming both functions) with 0204 removed
+  and PASSES (13/13) with it. `e2e_billing.py` independently corroborates: 110 pass / 2 fail before,
+  111 pass / 1 fail after — one of its two failures was this exposure.
+- **Separate pre-existing failure, untouched:** `e2e_billing.py`'s "free add-ons are typed 'free',
+  paid ones 'one_off' by default" fails identically with and without 0204. Not investigated here.
+
+---
+
+## #142 — The PIN lock screen could NEVER succeed; every marketer was stranded on it — FIXED
+- **What:** found while wiring the PIN step of #140. The marketer app shows a PIN lock screen on
+  every launch and every return from the background (`AppState.authenticated` is cleared when the
+  app is backgrounded). That screen could not authenticate anybody.
+- **Evidence (route-level probe against the real API code):**
+  ```
+  login with the REAL number      -> OK
+  phone the app then persists     -> "0798****099"
+  login with the PERSISTED number -> HTTP 401 {"code":"INVALID_CREDENTIALS"}
+  ```
+  and on a live Postgres: `fn_phone_sig9('0798****061')` is `'0798061'`, **length 7**, while every
+  marketer lookup requires `length(fn_phone_sig9($1)) = 9`.
+- **Root cause:** docs/58 (Issue 2) masked the phone on `/marketers/me` and BOTH login responses, on
+  the stated reasoning that the marketer app "never uses the number functionally". **It does.** The
+  app persists the profile it is given (`MarketerSession.persistProfile` -> `savedPhone`;
+  `AppState.applyMarketer` -> `AppState.phone`), and `PinLoginScreen` defaults its `phone` argument
+  to `AppState.phone` and posts it to `/marketers/auth/login`. After the mask shipped, that is a
+  masked string on every attempt, so the PIN login was refused every time.
+- **Impact:** severe and live. A marketer could sign in with phone + password, but the moment the
+  app was backgrounded or relaunched they hit a PIN screen that always said the PIN was wrong. The
+  only way through was logout then retyping the password. It also blocked #140, since a money
+  transfer should be authorised by a PIN that works.
+- **Fix (mpesa_2):** the app keeps the number the marketer typed at sign-in — their OWN, which
+  docs/58 was never about — in `MarketerSession.savedLoginPhone`, persisted beside the token and
+  written on both successful sign-in paths. `PinLoginScreen` and the new `SendPinScreen`
+  authenticate with that; `AppState.phone` stays masked and is used only for display.
+  **docs/58 is untouched: the server still never sends this app a full number.**
+- **Upgrade path:** an install from before this fix holds a token and only the masked phone, and the
+  real number cannot be recovered from it. `MarketerSession.canPinLogin` is false for those, and
+  `AppNav` routes them to credential sign-in rather than to a PIN screen that cannot succeed — which
+  repairs the session in one pass.
+- **Note on docs/58:** its own safety argument — that a masked value provably fails
+  `normalizeMsisdn`, so it can never be mistaken for a dialable number — is exactly why it also
+  failed every login. The property held; the conclusion drawn from it did not.
+
+## #141 — A marketer wallet stops matching its own ledger once Fuliza pays part of a withdrawal — OPEN (pre-existing)
+- **What:** observed while proving the conservation invariant for #140's transfer RPC against real
+  Postgres. For every wallet, `balance_cents` equals the sum of its own `marketer_ledger` rows —
+  except any wallet that has made a Fuliza-funded withdrawal.
+- **Evidence:** `packages/db/_testkit/e2e_marketer_transfer.py`. A marketer with balance KES 10 and
+  a KES 300 Fuliza grant withdraws KES 50: `balance_cents` goes to 0, `available_fuliza_cents` to
+  26,000 cents, and the ledger records the FULL `-5000`. Ledger sum `-4000`, wallet `0`.
+- **Root cause:** `fn_marketer_withdraw` (0033) writes one ledger row for the whole amount but
+  splits the debit across two columns, so the ledger stops being a complete record of the wallet the
+  moment the overdraft is used. `meta.fuliza_used_cents` records the split, so the information is
+  not lost — but no reader reconstructs the balance from it.
+- **Impact:** any report or reconciliation that derives a marketer balance by summing the ledger is
+  wrong for those wallets. Nothing in the product does that today, which is why it has gone
+  unnoticed.
+- **Why it matters for #140:** it is the reason a transfer must not be able to spend Fuliza. The
+  same split on a transfer would open the hole on a path where the money is still inside the system,
+  so the two wallets would no longer sum to a constant. The transfer RPC is cash-only (0203), and
+  the e2e asserts the drift is confined to Fuliza withdrawals and never appears on a wallet that
+  transferred.
+- **Not fixed:** making the ledger whole means either a second row for the Fuliza portion or a
+  `fuliza_after_cents` column, plus a backfill. That is its own change with its own migration, and
+  it touches the withdrawal path that pays marketers.
+
+---
+
+## #140 — A marketer who ran out of funny money had to wait for an admin — FIXED (both screens)
+- **What:** owner report. The marketer till app runs on simulated money (docs/27). When a marketer
+  ran out, the only ways to get more were an admin or platform admin crediting them
+  (`POST /admin/marketers/:id/credit`) or the self top-up to a fixed cap
+  (`POST /marketers/me/demo-topup`, #102). Both put a ceiling or a person in the way of something no
+  real cash passes through. The ask: let a marketer ring a colleague and be sent some.
+- **Root cause:** not a defect — a missing path. Every route that could move money into a marketer
+  wallet was admin-gated or self-only; there was no marketer-to-marketer one, and the till app had
+  no screen that could address another marketer at all.
+- **Fix (this entry):** the **Send Money screen** in `mpesa_2` and the one server read it needs.
+  - `POST /api/v1/marketers/recipients/lookup` `{ phone } -> { name, self }` — auth + marketer gate
+    + a **per-marketer** 20/min budget. Resolves ONLY within the caller's own brand (the site id
+    comes from the authenticated profile, never the request), returns the registered name and
+    nothing else, and collapses "no such number", "another brand's marketer", "suspended" and "not a
+    marketer" into ONE `RECIPIENT_NOT_FOUND` so the response cannot be used to map numbers to
+    brands. POST rather than GET because a number in a query string reaches edge access logs,
+    history and `Referer` headers that a body does not.
+  - `self` is returned because the app **cannot** work it out: `/me` masks the marketer's own number
+    (docs/58), so there is nothing on the handset to compare a typed number against. Without the
+    flag a send-to-self could not be detected at all.
+  - The app: `SendMoneyScreen.kt` (two tabs — mobile number and Pochi), `Msisdn.kt` (Kenyan number
+    normalisation + the simulated agent-withdrawal tariff), `Favourites.kt` (device-local only).
+    `Routes.forAction` intercepts the `send_money` and `pochi` tiles, so all four places that render
+    them pick the new screen up at once.
+- **docs/58 is NOT reversed.** The app still never receives anyone's full number from the server,
+  the recipient's included — it receives a NAME, for a number the user already had and typed in.
+  A directory of marketers (names and numbers, or names alone) was offered to the owner and
+  declined for exactly that reason; see docs/63 §5.
+- **Rate-limit shape:** `by: "user"`, not `by: "ip"`. Every marketer is behind Kenyan carrier-grade
+  NAT, so an IP budget is shared by thousands of unrelated handsets — it throttles honest users and
+  barely inconveniences one account walking `07xx`. A per-marketer budget binds the attacker, who
+  must BE an authenticated active marketer of the brand being swept.
+- **SCREEN 2 (the transfer itself) — DONE, migration 0203.** `fn_marketer_transfer` does the debit,
+  the credit and both ledger rows in ONE transaction under row locks, with the two wallets locked in
+  a FIXED order (by marketer id) so two marketers sending to each other cannot deadlock. Idempotent
+  on a REQUIRED `ref` (stored as `<ref>:out` / `<ref>:in`, since `marketer_ledger.ref` is UNIQUE).
+  Refuses self-send, overdraw, dust and a negative amount, and — with ONE opaque
+  `RECIPIENT_NOT_FOUND` — an absent, other-brand or suspended recipient. Enforces a rolling-24h
+  per-sender cap. `POST /marketers/me/transfer` takes the sender from the TOKEN, never the body.
+- **Fuliza cannot fund a transfer**, although it funds a withdrawal. The overdraft is operator-
+  granted and repaid by nobody, so spending it into another live wallet would mint funny money
+  nobody granted (see #141 and docs/63 §7). The Send Money screen counts cash only for the same
+  reason and says so.
+- **Proven against real PostgreSQL 16 with all 203 migrations applied** — 12 parallel sends from a
+  wallet holding 5 sends' worth succeed exactly 5 times and never overdraw; 8 simultaneous requests
+  on one ref move money exactly once; 20 opposing transfers between the same pair never deadlock and
+  conserve the pair's total.
+- **Tests (screen 2):**
+  - `packages/db/_testkit/e2e_marketer_transfer.py` — 40 assertions against real Postgres; the
+    concurrency, atomicity and deadlock properties are not checkable any other way.
+  - `app.marketers.transfer.test.ts` — 13 route tests, including a forged
+    `from`/`fromMarketerId`/`marketerId` in the body leaving the named victim's wallet untouched,
+    and both wallets' statements naming each other with no number leaked into either feed.
+- **Tests:**
+  - `app.marketers.recipientlookup.test.ts` — 9 route tests: the name resolves from the DB; every
+    typed format (07../7../254../+254../spaced/dashed) folds to the same person; the body carries
+    `{name, self}` and the recipient's digits appear nowhere in it; send-to-self is flagged; a
+    sibling brand's marketer and a number nobody holds give **byte-identical** refusals; a suspended
+    marketer is not a destination; malformed input is a 400 that does not echo what was typed;
+    anonymous 401 / player 403 / admin 403 / suspended-caller 403; and 40 lookups in a minute start
+    being refused.
+  - `MsisdnTest.kt` — 8 JVM tests. The normalisation cases are lifted from the SERVER's own
+    `normalizeMsisdn` test table, so the two implementations are pinned to the same table rather
+    than to each other's good intentions. Plus the tariff bands at their edges and a monotonicity
+    check (a tariff that dipped would let a sender pay less by sending more).
+- **Tariff provenance:** the KSh 11 band for KSh 50–100 — the band the owner's screenshot shows —
+  is confirmed on Safaricom's own M-PESA rates page. **The bands above KSh 100 are reported by
+  independent Kenyan tariff trackers and are NOT confirmed against Safaricom's own published table.**
+  Recorded as reported, not verified, in `Msisdn.kt` and docs/63.
+- **Docs:** docs/63-marketer-to-marketer-transfer.md.
+
+---
+
+## #138 — The "someone just won" card covered up to 42.7% of the chart — FIXED (both trade shells)
+- **What:** reported by marketers demonstrating the app: *the activity notification blocks the
+  waves*. `ActivityNotice` was a 288x73 card, absolutely positioned at `top-3` **inside** the wave
+  shell's chart box and centred on phones, for three seconds at a time.
+- **Evidence (Chromium 131, local dev build, feed served from a fixture — the method is now
+  `apps/web/e2e/activitynotice.e2e.mjs`):**
+
+  | Viewport | Card box | Chart box | Share of the chart covered |
+  |---|---|---|---|
+  | 320x568 | 272x73 @ (24,143) | 158px tall | **42.7%** |
+  | 360x640 | 288x73 @ (36,142) | 206px tall | **30.6%** |
+  | 390x844 | 288x73 @ (51,156) | 395px tall | 14.6% |
+  | 768x1024 | 288x73 | 623px tall | 4.6% |
+  | 1440x900 | 288x73 | 507px tall | 3.3% |
+
+- **Why a marketer saw it at all** — the component's own header says it is shown "never to a
+  MARKETER", and both shells do gate on `useMarketerSkin()`. That comment is **stale**:
+  `skinPolicy.ts` carries `NEUTRALISE_SHARED_UI = false`, so `marketerSkinOn()` collapses to
+  `playerBasic` alone. Since marketer unification (docs/29) a marketer gets the player interface
+  exactly, card included, and `useMarketerSkin().isMarketer` now means "this screen is on the Basic
+  skin". The comment is corrected in the same commit.
+- **Root cause:** the card was mounted inside the positioned chart box, so by construction it was
+  over the one surface a player reads to choose Higher or Lower — and it was sized for a desktop
+  (288px wide) while being centred on a 320px phone.
+- **Impact:** worst on the two phone classes the product sells into hardest. Not a money or data
+  bug; a usability one, on the screen that earns.
+- **Fix:** the notification is a **one-line ribbon** (~28-30px) carrying the same four facts, with
+  one placement per shell and no third:
+  - **wave/classic** — `placement="band"`: `absolute inset-0` inside a new `relative` wrapper that
+    holds `TickerStrip`, so for its three seconds the ribbon *is* the decorative ticker row and the
+    marquee returns underneath. `TickerStrip` is a client-side random walk (its own header says so),
+    the only purely decorative surface on the screen, so nothing of value is covered — and because
+    it is an overlay rather than a row, **the chart gives up no height and never resizes**.
+  - **candlestick** — `placement="ribbon"`: hangs flush off the quote band at the top-left of the
+    pane. That shell has no marquee to lend and no dead space in its chart, but `CandlestickTape`
+    sets `rightPriceScale.scaleMargins.top = 0.12`, so the top 12% of the plot holds no candle body
+    or wick at any zoom, and the bars run newest-at-the-right, so the left of that band is the
+    oldest ones. Bottom-left is unavailable: `attributionLogo: true` puts the TradingView mark there.
+- **Also fixed (#138b):** on the candlestick PHONE tree the card is mounted against `<main>`,
+  outside both trees, so it hung over the Chat, Top and Tours panes as well — and **Chat carries
+  these very rows as text**, so it was covering its own content with a duplicate of it. It is now
+  hidden there with `max-md:hidden`, **not unmounted**: unmounting drops the queue and the `seen`
+  set, and every event already shown would come round again on the next poll.
+- **Deliberately NOT fixed:** viewports under 640px tall show no ribbon, because the ticker row it
+  rides is hidden there (#129) and handing those 30px back would push the screen past `h-dvh` inside
+  an `overflow-hidden` shell — at 320x568 the chart measures 158px against #129's 160px floor. Those
+  are also the viewports where the card was doing the most damage. See docs/62 §5 for the reversal.
+- **Unchanged:** the feed, the gate, the selection and the timings — same endpoint, query key, limit
+  and 20s poll as `ChatPane` (React Query still dedupes them into one request), same `selectCards`,
+  same `SHOW_MS`/`EXIT_MS`/`GAP_MS`, same announcement cap. Still no client-side generator.
+- **Tests:**
+  - `apps/web/e2e/activitynotice.e2e.mjs` — 53 browser assertions over 8 viewport/shell/skin
+    combinations: zero chart overlap on the wave at every width, >=99% coverage of the ticker row it
+    borrows, no pointer events swallowed, chart height unchanged by the ribbon across its cycle,
+    nothing rendered under 640px tall or on the Basic skin, flush under the candlestick quote band,
+    inside the 12% candle-free band, >=40px clear of the price axis, hidden-but-mounted on the
+    phone's other tabs, and the live region's `aria-hidden` cap. Needs no DB, API or engine.
+  - `apps/web/src/components/game/activityNotice.guard.test.ts` — 5 source assertions that run in
+    `npm test`, where there is no browser: one mount per shell, the right placement each, nothing
+    inside the chart box, the ticker wrapper still `relative` and still carrying #129's rule, and no
+    other surface mounting it. Verified to FAIL when the mount is moved back into the chart box.
+- **Docs:** docs/62-activity-notice-placement.md (decision, measurements, rejected options,
+  the accepted trade-off).
+
+## #139 — The wave's chart jumps 23px whenever the price strip wraps — OPEN (pre-existing, not from #138)
+- **What:** found while asserting that #138's ribbon changes no layout. The classic shell's chart
+  box gains and loses 23px at runtime with nothing on screen being resized by the user.
+- **Evidence (Chromium 131, 390x844, 50s sample at 4Hz):** chart height alternates **397px <-> 374px**,
+  in perfect lockstep with `PriceHeader`'s own height, **36px <-> 59px**. Grouped by strip height the
+  mapping is exact and one-to-one (`strip=36 -> chart 397`, `strip=59 -> chart 374`). Reproduced
+  **identically on the commit before #138** with the card still in the chart box, so it is
+  pre-existing and unrelated.
+- **Root cause:** `PriceHeader`'s single row is `flex flex-wrap items-center justify-between`, and
+  its content width moves at runtime — the staleness label appears and flips between "syncing" and
+  "last known", and the price value and the % pill gain and lose digits. When the total crosses the
+  row width the right-hand group (H / L / Online) wraps to a second line, the strip grows 23px and
+  the chart, which is `flex-1` under it, loses exactly that.
+- **Impact:** `CurveCanvas` watches its canvas with a `ResizeObserver` and recomputes its geometry
+  on every change, so the wave visibly rescales — the chart "jumps" while a player is watching it,
+  with no action of theirs behind it. Worst on narrow phones, where the row is closest to wrapping.
+- **Not fixed here.** What should give way when the strip is tight is a UI decision on a live-data
+  surface (truncate the pair? drop H/L earlier? fix the row height and let the content truncate?),
+  and it is a different issue from #138. Raised with the owner rather than folded into this diff.
+- **Candidate fix:** take the row off `flex-wrap`, give the two groups `min-w-0` and let the
+  secondary stats truncate or drop by breakpoint, so the strip has ONE height at every width.
+
+---
+
+## #137 — Brands were born UNTHEMED, so seven live sites rendered as the stock design system — FIXED (api onboarding + the 7 brands applied)
+- **What:** reported as "why are brand themes not taking effect?". Seven of eighteen live brands wore
+  the generic dark/cyan look no matter what colour had been chosen for them.
+- **Evidence (live production):** a brand's appearance comes from `sites.theme_tokens` (~20 tokens:
+  bg, surface, surface2, border, fg, muted, brand/brandHover/brandText, accent/accentFg, up, down,
+  warn, info, three font faces, heading weight, radius). The three `color_*` columns produce exactly
+  THREE CSS variables (`brandCssVars`). Measured: `invest254.com` (tokens present) renders 14+
+  `--brand-*` variables; `dakafx.com` (tokens null) rendered exactly three — primary, bg, accent —
+  and everything else fell back to globals.css. Unthemed: `66investors, 94wins, betyangu, dakafx,
+  fxhacks, paidpesa, peakpesa`.
+- **Root cause:** two write paths that were never reconciled. `onboard` (`api/src/server.ts`)
+  collected ONE colour (`colors: { primary }`) and wrote `color_primary` only — it never wrote
+  `theme_tokens`. The thing that actually skins a brand is the console's "Apply theme"
+  (`useApplySiteTheme` → `fn_platform_set_site_theme`), a separate, manual, platform-tier action.
+  So every brand created through onboarding was born unthemed and stayed that way until a human
+  noticed. Nothing in the onboarding form said so; it asks for a colour, which implies it is enough.
+- **Not the engine.** The question asked was whether a theme change needs an engine restart like
+  BUGLOG #136 did. It does not, and the two are unrelated: the theme path is
+  `sites` row → `GET /site/brand` → the web root layout → CSS variables, server-rendered per
+  request. The only delay is the 60s brand cache (`BRAND_TTL_MS`). Confirmed by applying the seven
+  themes and watching them appear on production with no deploy and no restart.
+- **Fix:**
+  - `autoThemeFor()` + `themeIdOfTokens()` in `@invest254/shared/siteThemes`, with the theme library,
+    the font registry and the mark/favicon generator moved from `apps/web` to `packages/shared` so
+    the API and the console choose from the SAME 56 themes (two copies would drift, and a brand's
+    look would then depend on which screen created it). The web files remain as re-export shims, so
+    no component changed.
+  - `onboard` now assigns a complete theme when a brand has none: mode + the three colour columns +
+    the full token palette + a generated favicon. It honours a colour the operator actually chose
+    (nearest theme wins, so "I picked blue" yields the whole blue theme), never crosses light and
+    dark, prefers a theme no other brand wears, and only ever FILLS A GAP — a re-onboard of a brand
+    that already has tokens leaves them untouched.
+  - The seven existing brands were applied with the same rule (owner approved), each keeping its
+    stored dark mode: Tezos, Ethereum, Bybit, Solana, Cardano, Chainlink, Binance respectively.
+- **Verification:** 9 unit tests on the rule (determinism, mode never crossed, chosen colour
+  honoured, the stock placeholder NOT treated as a choice, taken-theme avoidance, graceful
+  degradation when every theme is worn, invalid colour fall-through). After applying: 18/18 active
+  brands themed, 18/18 with a favicon, 0 unthemed. Live: dakafx `--brand-primary:#9945FF` with the
+  full palette, paidpesa `#375BD2`, peakpesa `#F0B90B`. 2254 unit tests, `tsc -b` clean, web build
+  clean after the module moves.
+- **A rule refined mid-flight:** the first pass picked purely by slug hash and handed three brands
+  LIGHT themes, though all seven are stored as dark. Flipping a brand to a white site is a far bigger
+  change than giving it a palette, so the mode is now treated as the operator's decision and never
+  overridden. Caught by reading the dry run before writing anything.
+
+## #136 — "The graphs has been loading for the last 5mins": a REFUSED chart that looked like a loading one — FIXED (web + engine restart + one brand's config)
+- **What:** dakafx.com sat on "Fetching market data… The first prices are on their way" indefinitely,
+  on a screen whose badge said LIVE. cpfmarket.com runs the SAME shell and drew fine. Reported by the
+  owner, who correctly pushed back that identical code cannot explain it.
+- **Evidence (live production, browser + raw WS):** both pages send the identical frame
+  `{"type":"candles","tf":"M1","count":180}`. cpfmarket gets 180 bars; dakafx got
+  `{"type":"error","code":"NO_CANDLES","message":"this brand draws a line chart, not candles"}` in
+  ~300ms, while ticks streamed the whole time. Asking the live engine directly, per brand:
+  cpfmarket and muchwins (both candlestick) → bars; dakafx → REFUSED. So the engine does serve
+  candles — it refused this one brand.
+- **Root cause (two, stacked):**
+  1. **A STALE ENGINE.** `sites.chart_style` is read once per brand, when `SiteRegistry.ensure`
+     builds that brand's runtime (seeded at boot in `server.ts:162`; `curveProfileFor` only hits the
+     DB on a cache MISS), and the registry has no eviction path — so a brand's runtime, and its
+     "has candles" decision, are fixed for the life of the process. dakafx was switched to
+     `candlestick` at 13:15:21Z; the Fly machine's own event log shows the engine last started at
+     2026-10-12 22:59:56Z, over 14 hours earlier. It was still serving dakafx as a line brand.
+  2. **A SCREEN THAT COULD NOT SAY "REFUSED".** `CandlestickTape` ended its history fetch in
+     `.catch(() => null)` — the rejection was discarded — and `dataPhaseOf(status, hasData)` had no
+     failure state, so an open socket with nothing drawn was `waiting` forever. A definite "never"
+     rendered as "the first prices are on their way". (`CandleChart`, the broker terminal, already
+     handled this correctly with `setLoadError`; only this shell swallowed it.)
+- **Also found:** paidpesa.com was broken the same way for a DIFFERENT reason — `chart_style=line`
+  with `trade_ui=candlestick`, a candlestick screen on a brand with no candle history. A restart
+  would not have fixed it. Predicted from the mechanism, then confirmed by probing it.
+- **Fix:**
+  - web: `DataPhase` gains `failed`; `dataPhaseOf` takes a third `failed` argument (defaulted, so
+    every existing caller is untouched); `CandlestickTape` records the refusal instead of discarding
+    it and renders a retry that genuinely re-asks. A failure never blanks a chart that already has
+    bars, and never outranks a reconnect (which re-asks by itself). `tradeDisabledReason('failed')`
+    is null on purpose: a chart with no history is no reason to refuse a trade.
+  - ops (owner approved): `paidpesa.chart_style` → `candlestick` to match its screen, then ONE engine
+    restart (0 open positions platform-wide at the time, verified immediately before) so both brands'
+    runtimes rebuilt from the current rows.
+- **Verification:** reproduced locally by making the mock engine answer `NO_CANDLES` exactly as
+  production did — the old build spun, the new one says "No market data to show / This chart could
+  not load its history. Try again.", keeps BUY enabled, and the retry re-asks (1 → 2 requests).
+  Regression: with candles present there is no placeholder, no retry and a printed price. On
+  production after the restart: dakafx PRICE 2844.56 with bars, paidpesa 2694.04, cpfmarket
+  unchanged. 2245 unit tests, `tsc -b` clean.
+- **Caught in review of my own copy:** the first draft of the failed-state text read "The live price
+  is still running", but the price axis arrives WITH the history reply, so a brand with no history
+  shows `—` where the price goes. The screenshot had a dash two inches above that sentence. Reworded,
+  and a test now forbids the claim.
+- **Still open (reported, not actioned):** the engine will go stale again the next time a brand's
+  `chart_style` changes, because nothing invalidates a built runtime. Making it live means rebuilding
+  a brand's runtime in a running trading engine — which re-anchors the price axis that open positions
+  are measured against — so it is a deliberate piece of work, not a quick follow-on.
+
+## #135 — An older PLAYER account on the same phone shadowed a real ADMIN: "can't login anywhere, just 404" — FIXED (api/engine)
+- **What:** an admin could not reach the back office from any domain — every operator surface showed
+  a 404. Reported by the owner against phone `0100406758`.
+- **Evidence (live prod, read-only):** that phone holds TWO accounts, one person: `joy` (role
+  `player`, site tamutraders, active, created 2026-08-19) and `joy_admin` (role **admin**, site
+  invest254, active, created 2026-09-11). Both have credential rows, both active, neither locked.
+  `joy_admin` has never held a privileged session (`privileged_sessions` = 0 rows for either id).
+- **Root cause:** `AuthService.login` resolves the identity-based (`anyBrand`) candidate set
+  **oldest-first** (`identity.ts:426`, `order by p.created_at asc`) and took the FIRST candidate
+  whose password verified, then `break`. When both accounts share a password — one person, one
+  number — the older PLAYER always won. The operator was issued a perfectly valid player token, and
+  `/console` (`console/page.tsx:49-57`), `AdminShell` and `PlatformShell` each then rendered their
+  deliberate wrong-tier 404. No error and no bad-password message, which is exactly why it presented
+  as "just 404". The existing comment called `created_at` a deterministic tie-break; it is one, but
+  determinism is not correctness — at the operator door the account that can use the console is the
+  right answer, not the one that happens to be older.
+- **Impact:** TWO admins, both active: `joy_admin` (above) and `Jay` (admin, site madolar, created
+  2026-08-17), shadowed by the older active player `Jay_254` (invest254, 2026-06-27) on
+  `0791908395`. `zrinok` (platform_superadmin) is unaffected — it is the oldest row on its phone.
+  Marketers are unaffected either way (`marketer` is not in `PRIVILEGED_ROLES`). No unauthorised
+  access: the shadow only ever produced a LOWER-privileged session than intended.
+- **Fix:** a `preferPrivileged` option on `login()`, set by `/auth/admin/login` and nothing else. The
+  scan no longer stops at the first match: it keeps the first match as the fallback (so the default
+  path and the all-player case behave exactly as before) and takes an operator match when one
+  exists. The marketer apps' `anyBrand` login does NOT set it, deliberately — a marketer's wallet
+  lives on one brand, and resolving them to an admin account they also own would land them on the
+  wrong one.
+- **Not an escalation, and tested in both directions:** a candidate is only considered after ITS OWN
+  hash verified the submitted password, so the password that opens the admin session is the admin's
+  own. With DIFFERENT passwords the player's password resolves the player and the admin's resolves
+  the admin (that test passed before the fix too). The same credential already opened the admin
+  account through the per-brand login on its own brand's host, so no new door opens; one that was
+  shut on the operator domain opens.
+- **Verification:** reproduced first as a failing test — `expected: 'admin', actual: 'player'` — then
+  green. Four tests: the shadow case, oldest-first preserved when no operator is on the phone, a
+  wrong password still refused when the phone holds an admin, and the different-passwords case both
+  ways. 2240 unit tests pass, `tsc -b` clean.
+- **Note for the affected operator:** `joy_admin` has MFA enabled, so the sign-in will now ask for
+  the 6-digit authenticator code (`AdminSignIn` handles `MFA_REQUIRED`). If that authenticator is
+  gone, a recovery code is needed — or the owner clears MFA for the account.
+
+## #134 — The operator back office answered on EVERY client brand domain — FIXED (web, middleware + layout gate)
+- **What:** `/console`, `/admin/**` and `/platform/**` were served by hostname-independent routing, so
+  every brand domain on the platform presented the operator sign-in form. The console is supposed to
+  live on the operator domain (`triocodes.com`); nothing stopped a player's domain from serving it too.
+  Surfaced while answering "what is the admin entry point" and closed on the owner's decision that the
+  console be reachable only on the admin domain.
+- **Evidence (live production, before the fix):** `https://cpfmarket.com/console` → **200**,
+  `/admin` → **200**, `/platform` → **200**, each rendering `AdminSignIn` (phone + password). The same
+  three paths on `triocodes.com` → 200, as intended. So the back office had as many front doors as the
+  platform had brands.
+- **Root cause:** host was used for exactly one routing decision — `middleware.ts` redirected `/` →
+  `/console` on the admin host — and for nothing else. Access control on the operator surfaces was
+  entirely ROLE-based (`console/page.tsx:18-22`, `AdminShell`, `PlatformShell`), and a role check runs
+  *after* the page is served, so it can refuse an account but cannot refuse a domain.
+- **Impact:** no unauthorised access — every surface still refused anything below `admin` with a 404,
+  and that held. What leaked was the back office's *existence and its login form* onto client-facing
+  domains: a credential form to brute-force or phish a lookalike of, on a domain whose operator never
+  asked to host one, plus a plain statement to any visitor that the brand is one skin of a larger
+  platform. White-label brands are sold on not advertising that.
+- **Fix:** `operatorSurfaceAllowed(host)` (`lib/brand/adminHost.ts`) — one predicate, allowing the admin
+  host, loopback/`.test`/`.localhost` (the e2e harness drives the console at `127.0.0.1:3100`, and CI's
+  own readiness probe is `curl -sf …/console`), and `*.pages.dev` (so a deploy can be checked before DNS
+  points at it). Enforced twice: `middleware.ts` rewrites the operator paths to `/_not-found` with a 404
+  before Next matches the route, and each operator layout calls `requireOperatorHost()` as the backstop.
+  The middleware is what makes it real — with the layout gate alone the 404 still preloaded
+  `static/chunks/app/console/page-*.js` and carried `Console · CPF Market` in its flight payload, i.e.
+  named the page it was hiding. Also removed the now-dead `/console` link from the affiliate page's
+  staff notice.
+- **Verification:** local production build, status matrix over 6 hosts × 8 paths — player hosts 404 on
+  all operator paths and 200 on `/`, `/wallet`, `/account`; `triocodes.com` and `www.` unchanged at 200
+  (`/` still 307 → `/console`); loopback, `.test` and `.pages.dev` 200. Real browser: the operator
+  sign-in form renders on `triocodes.com/console|/admin|/platform` (password + identity field present),
+  and `cpfmarket.com` shows "404 Page not found" with no form. Body diff confirms the 404 no longer
+  carries any route-naming chunk or title. 2236 unit tests pass (9 in `adminHost.test.ts`), typecheck
+  clean, e2e 199/0 + 20/20 + 20/20 + 26/26.
+- **Residual (reported, not actioned):** the 404 a player host returns for an operator path renders
+  without the player chrome, because `AppShell` suppresses chrome by pathname. The page and status are
+  identical to any other 404; the missing nav is a weak oracle that the path is handled specially.
+  Closing it means threading a host-derived flag through `AppShell`, the most load-bearing component in
+  the player app — not worth that risk unprompted.
+
+## #133 — Marketer's phone sat in PLAIN VIEW on the sign-in / sign-up screen — FIXED (web, docs/61)
+- **What:** Issue 2 masked the marketer phone in the three `/marketers/*` API responses, but the number
+  a marketer actually exposes is the one they TYPE into the website sign-in / sign-up form — rendered
+  plaintext in a `type="tel"` field with no hide toggle. Marketers demo the platform on live streams
+  from sign-up onwards, so their real MSISDN was on camera every time. Reported by the owner.
+- **Evidence:** `AuthModal.tsx:409-421` (one field serves signin/signup/reset) `type="tel"`, no toggle —
+  while the *password* directly beneath it already had a `showPw` eye toggle. Same in
+  `AdminSignIn.tsx:115`. A full own-number render also survived at `billing/parts.tsx:138`
+  (`Enter your M-Pesa PIN on {phone}`) fed by a prefill of `me.phone` into a plaintext input (`:101`).
+- **Root cause:** Issue 2 was scoped to API *response* bodies. Masking a response does nothing about a
+  number the user types, or one the client prefills from `/auth/me` (which legitimately returns the full
+  number for deposit/withdraw prefill). The leak was entirely client-side and was never in scope.
+- **Impact:** every marketer's real phone number, broadcast to their whole audience, on every demo.
+- **Resolution:** the field now shows the house **partial** mask `0798****061` at rest with an eye that
+  reveals the hidden digits — per the owner's requirement, *"not completely hide the number"*. (A first
+  pass used `type="password"`, which the owner rejected as a dots-blob; corrected.) Implemented as
+  `phoneDisplay()` in `apps/web/src/lib/auth/phoneMask.ts`: real digits while the field has FOCUS —
+  an `<input>` renders its own `value`, so masking mid-edit would feed the mask back through `onChange`
+  and silently post `0798061` instead of the real number — mask at rest and on autofill, full number
+  when revealed, and every `onChange` guarded by `isMaskedValue()`. `type="tel"`/`inputMode` unchanged,
+  so keypad and autofill behave as before and the submitted value is identical. Unit-tested in
+  `phoneMask.test.ts`. The billing own-number echo goes through `maskPhoneForDisplay`, and its
+  prefilled field uses the same partial mask. Residual, stated plainly: the digits are visible while
+  the field is actively focused — unavoidable for an editable field, and what the owner asked for.
+  **Deliberately NOT masked:** the deposit / withdrawal *destination* inputs — you must
+  be able to read a number back before money moves, and those screens already show the stored number
+  masked (only a freshly typed replacement is visible). `/auth/me` still returns the full number, since
+  masking it would break deposit/withdraw prefill (a masked string fails `normalizeMsisdn`).
+
+## #132 — "Force all marketers to sign out" never touched their website session — FIXED (migration 0200)
+- **What:** 0198's force sign-out stamped `public.marketers.sessions_valid_after` (all 24 rows) — the
+  TILL APP identity only. A marketer signed in on the WEBSITE holds an ordinary `profiles` token with
+  role='marketer', and that session was never ended. The owner reported "no marketer was logged out",
+  and they were right.
+- **Evidence (read-only prod):** `profiles where role='marketer'` = **28 rows, only 11 stamped** (those
+  11 from unrelated earlier admin actions). Worse, the stamp was irrelevant: the verifier's force-logout
+  gate `AuthService.assertSessionValid` opens with `if (!isPrivilegedRole(role)) return;` and
+  `PRIVILEGED_ROLES = {admin, platform_admin, platform_superadmin}` — **'marketer' is not privileged**,
+  so `profiles.sessions_valid_after` was never even READ for a marketer token.
+- **Root cause:** two separate gaps compounding — the wrong identity was stamped, AND the gate that
+  would have enforced it skips non-privileged roles by design (a deliberate performance choice so
+  player traffic does no DB read per request). 0198 only ever closed the till-app half via
+  `requireMarketer`, which gates `/marketers/*` routes and nothing else.
+- **Impact:** every marketer's website session (7-day JWT) stayed alive indefinitely. The headline
+  control of Issue 1 did not work for the accounts it was written for.
+- **Resolution:** new `SESSION_GATED_ROLES = PRIVILEGED_ROLES ∪ {marketer}` drives `assertSessionValid`,
+  so a marketer's website token is now checked against the epoch (kept as a SEPARATE set, because
+  `PRIVILEGED_ROLES` also drives the password-reset knowledge factor and the MFA requirement, where a
+  marketer must stay non-privileged; players still skip the read). The 0196 five-minute IDLE timeout is
+  deliberately left operator-only — logging a marketer out mid-demo would be worse than the bug.
+  Migration 0200 stamps `profiles.sessions_valid_after` for every role='marketer' and re-stamps
+  `public.marketers`, so both identities end at one moment. Regression test:
+  `authservice.security.test.ts` — "assertSessionValid revokes a MARKETER website token issued before
+  the epoch (0200)" + a set-membership test pinning marketer in/out of the two role sets.
+
+## #131 — Marketer money/PIN RPCs had no DB brand fence (single point of failure) — FIXED (migration 0199, docs/60)
+- **What:** the six marketer mutating RPCs (`fn_marketer_credit` / `_withdraw` / `_set_pin` /
+  `_set_status` / `_set_fuliza` / `_set_airtime`) took only the marketer id and had no actor/brand
+  awareness at the database. The user/brand/advance RPCs got the F-46 DB fence in 0156; the marketer
+  RPCs were the one mutating surface left relying on the API `marketerInScope` guard alone.
+- **Evidence:** `pg_get_functiondef` of all six on prod shows no `fn_assert_actor_site_scope` call and no
+  actor params; their only guard is `marketerInScope` in `apps/api/src/app.marketers.ts`. Not a live
+  exploit — that guard is correct today — but a one-route regression (a new/forgotten `marketerInScope`)
+  would be an immediate cross-tenant marketer takeover (re-PIN) / drain / disable, with no backstop.
+- **Root cause (why it was deferred first):** not clean-additive — `fn_marketer_credit` is called
+  internally by `fn_marketer_game_withdraw` (0109) with no actor, so a *required* actor param would
+  break the live demo→wallet game settlement; `fn_marketer_withdraw`'s defaulted params make an appended
+  required arg illegal.
+- **Impact:** defense-in-depth gap (no live hole). Account-takeover / money class if the API guard ever
+  regressed on one route.
+- **Resolution:** migration 0199 adds OPTIONAL trailing `p_actor`/`p_actor_role` to all six, fenced by
+  the existing `fn_assert_actor_site_scope` (0156) only when a site-tier role is passed; old signatures
+  dropped + recreated, bodies byte-identical apart from the one guard line. The admin routes forward the
+  token actor (fence engages on every admin mutation); the internal + self-service paths pass none (fence
+  no-op, game-withdrawal flow untouched). Deploy-order safe both directions. Validated: 61-assertion
+  `e2e_marketer_rpc_tenant_fence.py` on a full 0001..0199 Postgres 16 apply (fence + system path + no body
+  drift) and `app.marketers.tenantfence.test.ts` (wiring + semantics).
+
+## #65 — 0198 revert block could not drop the appended view column — FIXED (branch `claude/issue1-marketer-signout-2fa`)
+- **What:** the first draft of `0198_marketer_security_and_logout.sql`'s manual revert block restored the
+  14-column `marketer_profiles` view with `create or replace view`, which in Postgres can only APPEND
+  columns, never drop one.
+- **Evidence:** applying 0198 then the revert on a throwaway Postgres 16 raised
+  `ERROR: cannot drop columns from view` and left the view at 15 columns, the epoch column undroppable.
+- **Root cause:** `create or replace view` forbids removing a column; the forward migration appends
+  `sessions_valid_after` (allowed), so only the revert hits the restriction, and the column cannot be
+  dropped while the 15-column view still selects it.
+- **Impact:** documentation-only (a commented manual rollback), never executed by the runner — but a
+  rollback that errors mid-incident is worse than none.
+- **Resolution:** revert now `drop view`s first, recreates the 14-column view, then drops the table and
+  column (order matters). Re-validated on a fresh cluster: forward + revert both clean, view back to 14
+  columns with `security_invoker=true`.
+
 ## #120–#130 — Apple pass: every UI measured on real phone widths — FIXED (branches `ui/apple-pass`, `ui/apple-pass-2`)
 Reported: the Entry Scanner's Market dropdown opened off the bottom of a phone screen. A scripted audit then
 walked every player, admin and owner screen and overlay at 320/360/390/430 (touch) and 1440. It checked five

@@ -5,7 +5,25 @@ import { mulCents } from "./money.js";
 import { winMultiplier, DEFAULT_WIN_SPREAD, type WinSpread } from "./engagement.js";
 import type { Direction, Outcome } from "./types.js";
 
-interface DirParams { tau: number; gain: number; }
+interface DirParams {
+  tau: number;
+  gain: number;
+  /** The continuous payout's break-even move, solved on the same samples. See `solveCost`. */
+  cost: number;
+}
+
+/**
+ * Entry-time span the calibrator samples over. It MUST cover the curve's slowest timescale, or the
+ * sampled move distribution is not representative of the trading day and the realized win-rate/RTP
+ * drift off target.
+ *
+ * This is a full UTC day because the `market` curve profile carries structure all the way out to a
+ * ~1-day period. Measured on the day-scale curve with a 1-hour window the error was real — win-rate
+ * 0.668 vs 0.650 and RTP 0.977 vs 0.950; with a full-day window, 0.644 / 0.941 (both in tolerance).
+ * Widening the window costs nothing: `nSamples` is unchanged, only the range entry times are drawn
+ * from. See curve.ts PROFILES.market.
+ */
+export const CALIBRATION_WINDOW_S = 86_400;
 
 function quantile(sortedAsc: number[], p: number): number {
   if (sortedAsc.length === 0) throw new Error("empty");
@@ -33,10 +51,10 @@ export class SettlementEngine {
   constructor(
     private readonly curve: CurveGenerator,
     private readonly cfg: GameConfig,
-    calibrationSeed = "calibration",
+    private readonly calibrationSeed = "calibration",
     private readonly durationS = cfg.defaultDurationS,
-    sampleWindowS = 3600,
-    nSamples = 200_000,
+    private readonly sampleWindowS = CALIBRATION_WINDOW_S,
+    private readonly nSamples = 200_000,
   ) {
     assertFeasible(cfg);
     this.params = {
@@ -46,9 +64,27 @@ export class SettlementEngine {
   }
 
   private signedMove(dir: Direction, entryT: number): number {
-    const d = dir === "buy" ? 1 : -1;
-    return d * (this.curve.value(entryT + this.durationS) - this.curve.value(entryT));
+    return this.moveAt(dir, entryT, this.durationS);
   }
+
+  /**
+   * The favourable move this contract has made after `elapsedS` seconds.
+   *
+   * The same quantity `signedMove` settles on, read at an arbitrary moment rather than only at
+   * expiry. It is what lets the floating P/L follow the price instead of a timer: at
+   * `elapsedS = durationS` the two are the same number, so the live path and the settlement cannot
+   * disagree about where the contract ends up.
+   *
+   * Public because the game server needs it every tick; the curve it reads is this day's, so a
+   * caller holding a position from an earlier day must not use it (see `livePriceMultiplier`).
+   */
+  moveAt(dir: Direction, entryT: number, elapsedS: number): number {
+    const d = dir === "buy" ? 1 : -1;
+    return d * (this.curve.value(entryT + elapsedS) - this.curve.value(entryT));
+  }
+
+  /** The calibrated move-to-multiplier gain for a direction, which the live path scales with. */
+  gainFor(dir: Direction): number { return this.params[dir].gain; }
 
   private calibrate(dir: Direction, seed: string, windowS: number, n: number): DirParams {
     const rng = new SeededRng(seed, `calib:${dir}`);
@@ -73,7 +109,61 @@ export class SettlementEngine {
       const mid = (lo + hi) / 2;
       if (meanWinMult(mid) < targetMeanWinMult) lo = mid; else hi = mid;
     }
-    return { tau, gain: (lo + hi) / 2 };
+    const gain = (lo + hi) / 2;
+    return { tau, gain, cost: this.solveCost(moves, gain) };
+  }
+
+  /**
+   * The continuous payout's cost, solved on the SAME samples the step calibration just drew.
+   *
+   * Sharing the draw is not only thrift. Calibrating lazily on first use meant 200,000 fresh samples
+   * inside the tick loop, which blocked the event loop long enough to stall the websocket tick
+   * stream: two multiengine tests went from passing to timing out. One pass, both parameters.
+   *
+   * Monotone decreasing in cost (a bigger cost lowers every payout), so a bisection is exact.
+   */
+  private solveCost(moves: readonly number[], gain: number): number {
+    const n = moves.length;
+    const M = this.cfg.maxMultiplier;
+    /**
+     * Sort once, prefix-sum once, then every bisection step is two binary searches.
+     *
+     * The obvious implementation walks all 200,000 samples per step, which at 80 steps is 16M
+     * operations per direction. That is paid synchronously at construction, and it cost ~140ms a
+     * brand: enough to eat half the 600ms window two multiengine tests give the tick stream, which
+     * took them from passing to failing.
+     *
+     * The structure makes that unnecessary. For a cost `c` the payout is piecewise linear in the
+     * move: samples at or below `c - 1/gain` are on the floor and pay 0, samples at or above
+     * `c + (M-1)/gain` are on the cap and pay M, and the band between them pays `1 + gain*(m - c)`,
+     * whose sum needs only the COUNT and the TOTAL of the moves in that band. Both come straight
+     * off a prefix sum, so no sample is ever revisited and the whole solve uses every one of them
+     * rather than a subsample.
+     */
+    const asc = Float64Array.from(moves).sort();
+    const prefix = new Float64Array(n + 1);
+    for (let i = 0; i < n; i++) prefix[i + 1] = prefix[i]! + asc[i]!;
+    /** The first index whose move is >= x, by binary search. */
+    const lowerBound = (x: number): number => {
+      let lo = 0, hi = n;
+      while (lo < hi) { const mid = (lo + hi) >> 1; if (asc[mid]! < x) lo = mid + 1; else hi = mid; }
+      return lo;
+    };
+    const meanPayout = (cost: number): number => {
+      const floorAt = lowerBound(cost - 1 / gain);        // below this, the payout is 0
+      const capAt = lowerBound(cost + (M - 1) / gain);    // at or above this, the payout is M
+      const band = capAt - floorAt;
+      const bandSum = prefix[capAt]! - prefix[floorAt]!;
+      return (band + gain * (bandSum - band * cost) + (n - capAt) * M) / n;
+    };
+    // The payout is zero everywhere once the cost exceeds the largest move, so the bracket is
+    // finite. `asc[n-1]` is that largest move, already to hand from the sort.
+    let lo = 0, hi = 1 / gain + (asc[n - 1] ?? 0) + 1e-9;
+    for (let i = 0; i < 80; i++) {
+      const mid = (lo + hi) / 2;
+      if (meanPayout(mid) > rtp(this.cfg)) lo = mid; else hi = mid;
+    }
+    return (lo + hi) / 2;
   }
 
   /** Settle a position at expiry (hold-to-expiry / auto-sell). */
@@ -83,7 +173,21 @@ export class SettlementEngine {
     const entryRate = this.curve.rate(entryT);
     const exitRate = this.curve.rate(entryT + this.durationS);
     if (move >= p.tau) {
-      const multiplier = Math.min(1 + p.gain * move, this.cfg.maxMultiplier);
+      /**
+       * Floored at zero, because money cannot be negative.
+       *
+       * `tau` is the (1 - targetWinRate) quantile, so a brand with a HIGH target win rate has a
+       * NEGATIVE tau and a contract can win on an adverse move. `1 + gain * move` then goes below
+       * zero once the move passes `-1 / gain`, and `mulCents` rejects it: "invalid factor:
+       * -0.2436...". Reproduced on the live v230 config (edge 0.03, win rate 0.95) at a
+       * fifteen-minute horizon, on the 16th trade.
+       *
+       * It was unreachable rather than impossible before: at a ten-second horizon that config needs
+       * a move past -0.009 to break, which the walk does not make in ten seconds, while at fifteen
+       * minutes -0.12 is an ordinary tail. The same floor is already applied by
+       * `livePriceMultiplier` and assumed by `GameServer.finalize`, which pays nothing below 1x.
+       */
+      const multiplier = Math.max(0, Math.min(1 + p.gain * move, this.cfg.maxMultiplier));
       const payoutCents = mulCents(stakeCents, multiplier);
       return { result: "win", multiplier, payoutCents, pnlCents: payoutCents - stakeCents, entryRate, exitRate, signedMove: move };
     }
@@ -115,6 +219,67 @@ export class SettlementEngine {
     const multiplier = winMultiplier(rng, meanMult, this.cfg.maxMultiplier);
     const payoutCents = mulCents(stakeCents, multiplier);
     return { ...base, multiplier, payoutCents, pnlCents: payoutCents - stakeCents };
+  }
+
+  /**
+   * The CONTINUOUS payout's two parameters, per direction.
+   *
+   * See docs/mt5/20-real-sl-tp.md for the measurements behind this. In short: the step payout above
+   * (nothing until `tau`, then a jump straight to 1 + gain*tau = 1.70x) is what makes a real stop
+   * impossible. A take profit set below `tau` closes the contract on the zero side of the step and
+   * pays the trader NOTHING for being right but modest (measured RTP 0.00%); a target at or above
+   * `tau` leaks a third of the house edge (25% RTP becoming 33%). A step payout and a continuous
+   * target cannot both be sane.
+   *
+   * The continuous form is a line through a cost:
+   *
+   *     payout = clamp(1 + gain * (move - cost), 0, maxMultiplier)
+   *
+   * `cost` is economically the SPREAD: the move a trader must make to break even, and the whole
+   * house edge. `gain` is inherited from the step calibration unchanged, so the payout keeps the
+   * spread the operator already tuned, and only the threshold becomes a cost.
+   *
+   * Measured over 40,000 trades per rule on three seeds: RTP holds at 24.4-25.4% against a 25%
+   * target for every sane stopping rule (held to horizon, tight stops, wide stops, target only,
+   * stop only), where the step payout leaked to 33%. No stopping rule beats the house.
+   */
+  /** The continuous parameters, solved in the same pass as tau and gain. */
+  continuousParams(dir: Direction): { cost: number; gain: number } {
+    const p = this.params[dir];
+    return { cost: p.cost, gain: p.gain };
+  }
+
+  /**
+   * What a contract is worth after `elapsedS` seconds, on the continuous payout.
+   *
+   * This is BOTH the live value and the settlement: closing at any moment pays what this says,
+   * which is the property that makes a stop and a target mean something. There is no committed
+   * endpoint to converge to and no cap that depends on a decision already taken, because under this
+   * model nothing is decided at open except the cost the trader has to overcome.
+   */
+  valueAt(dir: Direction, entryT: number, elapsedS: number): number {
+    const { cost, gain } = this.continuousParams(dir);
+    const move = this.moveAt(dir, entryT, elapsedS);
+    return Math.max(0, Math.min(1 + gain * (move - cost), this.cfg.maxMultiplier));
+  }
+
+  /**
+   * Settle on the continuous payout at an arbitrary holding time.
+   *
+   * `result` is DERIVED from the payout rather than decided in advance: a contract that returns
+   * more than its stake is a win, anything else a loss. That is what lets a stop loss close a
+   * position at a partial loss, which the step model had no way to express.
+   */
+  settleContinuous(stakeCents: number, dir: Direction, entryT: number, elapsedS: number): Outcome {
+    const multiplier = this.valueAt(dir, entryT, elapsedS);
+    const entryRate = this.curve.rate(entryT);
+    const exitRate = this.curve.rate(entryT + elapsedS);
+    const payoutCents = mulCents(stakeCents, multiplier);
+    return {
+      result: payoutCents > stakeCents ? "win" : "loss",
+      multiplier, payoutCents, pnlCents: payoutCents - stakeCents,
+      entryRate, exitRate, signedMove: this.moveAt(dir, entryT, elapsedS),
+    };
   }
 
   /**

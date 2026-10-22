@@ -6,6 +6,7 @@ import { DepositForm } from '@/components/wallet/DepositForm';
 import { PayBillDeposit } from '@/components/wallet/PayBillDeposit';
 import { LipwaDeposit } from '@/components/wallet/LipwaDeposit';
 import { useDepositProviders } from '@/lib/wallet/hooks';
+import { useTerminalSkin } from '@/lib/ui/useTerminalSkin';
 import type { DepositMethodDto, DepositProviderDto } from '@/lib/api/types';
 
 /**
@@ -36,6 +37,9 @@ function methodsFromProviders(providers: DepositProviderDto[]): DepositMethodDto
 
 export function DepositPanel() {
   const { data, isLoading } = useDepositProviders();
+  // Chrome only: on a terminal brand the method strip is MetaTrader's underlined tabs rather than a
+  // filled pill. Nothing below this line touches which methods are offered or how they submit.
+  const mt5 = useTerminalSkin();
   const methods: DepositMethodDto[] = data?.methods ?? methodsFromProviders(data?.providers ?? []);
 
   const [method, setMethod] = useState<string | null>(null);
@@ -58,8 +62,12 @@ export function DepositPanel() {
   return (
     <div className="flex flex-col">
       {methods.length > 1 ? (
-        <div className="px-5 pt-3">
-          <div className="flex rounded-xl border border-border bg-surface-2 p-1" role="tablist" aria-label="Deposit method">
+        <div className={mt5 ? '' : 'px-5 pt-3'}>
+          <div
+            className={cn('flex', mt5 ? 'border-b border-border' : 'rounded-xl border border-border bg-surface-2 p-1')}
+            role="tablist"
+            aria-label="Deposit method"
+          >
             {methods.map((m) => {
               const isActive = active === m.id;
               return (
@@ -70,8 +78,10 @@ export function DepositPanel() {
                   aria-selected={isActive}
                   onClick={() => setMethod(m.id)}
                   className={cn(
-                    'flex-1 rounded-lg py-2 text-sm font-semibold transition',
-                    isActive ? 'bg-accent text-accent-fg shadow-sm' : 'text-muted hover:text-fg',
+                    'flex-1 text-sm font-semibold transition',
+                    mt5
+                      ? cn('border-b-2 py-2.5', isActive ? 'border-[var(--mt5-blue)] text-fg' : 'border-transparent text-muted')
+                      : cn('rounded-lg py-2', isActive ? 'bg-accent text-accent-fg shadow-sm' : 'text-muted hover:text-fg'),
                   )}
                 >
                   {m.label}
@@ -82,9 +92,17 @@ export function DepositPanel() {
         </div>
       ) : null}
       {activeMethod?.channel === 'stk' ? (
-        <DepositForm key={activeMethod.id} provider={activeMethod.provider as 'mpesa' | 'megapay' | 'payhero'} />
+        <DepositForm
+          key={activeMethod.id}
+          provider={activeMethod.provider as 'mpesa' | 'megapay' | 'payhero' | 'payx'}
+          {...(activeMethod.methodCode ? { methodCode: activeMethod.methodCode } : {})}
+        />
       ) : null}
       {activeMethod?.channel === 'lipwa' ? <LipwaDeposit key={activeMethod.id} /> : null}
+      {/* A method the server says it cannot push directly finishes on an embedded checkout. */}
+      {activeMethod?.channel === 'checkout' ? (
+        <LipwaDeposit key={activeMethod.id} rail="payx" {...(activeMethod.methodCode ? { methodCode: activeMethod.methodCode } : {})} />
+      ) : null}
       {activeMethod?.channel === 'paybill' ? <PayBillDeposit key={activeMethod.id} /> : null}
     </div>
   );

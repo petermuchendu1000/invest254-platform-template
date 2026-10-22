@@ -1,33 +1,23 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { WebSocket } from "ws";
 import { DEFAULT_VERSIONED_CONFIG, DEFAULT_POOL_KNOBS, type VersionedGameConfig } from "@invest254/shared";
 import { InMemoryGameRepository } from "./wallet.js";
 import { StaticConfigProvider } from "./gameconfig.js";
 import { SiteRegistry } from "./siteregistry.js";
 import { startMultiEngine } from "./multiengine.js";
 import { PoolController, InMemoryPoolRepo, eatDay } from "./poolcontroller.js";
+import { WsTestClient as Client, SETTLE_MS } from "./wstestkit.js";
 
 /** Phase 2 — MULTIPLIER contracts end-to-end over the real WebSocket transport. */
 const SITE = "00000000-0000-0000-0000-0000000000dd";
 const cfg: VersionedGameConfig = { ...DEFAULT_VERSIONED_CONFIG, version: 1, minStakeCents: 25000 };
 
-class Client {
-  ws: WebSocket; msgs: any[] = [];
-  constructor(url: string) { this.ws = new WebSocket(url); this.ws.on("message", (r) => { try { this.msgs.push(JSON.parse(String(r))); } catch { /* ignore */ } }); }
-  open(): Promise<void> { return new Promise((res, rej) => { this.ws.once("open", () => res()); this.ws.once("error", rej); }); }
-  send(type: string, data: unknown) { this.ws.send(JSON.stringify({ type, data })); }
-  of(type: string) { return this.msgs.filter((m) => m.type === type); }
-  waitFor(type: string, timeoutMs = 6000): Promise<any> {
-    const f = this.msgs.find((m) => m.type === type); if (f) return Promise.resolve(f);
-    return new Promise((res, rej) => {
-      const t = setTimeout(() => rej(new Error(`timeout waiting for ${type}`)), timeoutMs);
-      const h = (raw: any) => { try { const m = JSON.parse(String(raw)); if (m.type === type) { clearTimeout(t); this.ws.off("message", h); res(m); } } catch { /* ignore */ } };
-      this.ws.on("message", h);
-    });
-  }
-  close() { try { this.ws.close(); } catch { /* ignore */ } }
-}
+/**
+ * The shared test client (wstestkit.ts) replaces this file's private one: same `waitFor`, plus a
+ * `waitWhere` that awaits "the frame that says X" and ceilings scaled off measured idle cost rather
+ * than a hand-picked 6000. `mult_update` only arrives on the instrument's own 1s tick, so the waits
+ * that ride that stream take `SETTLE_MS`.
+ */
 
 async function boot(pool?: { controller: PoolController }) {
   const repo = new InMemoryGameRepository();
@@ -58,17 +48,22 @@ test("multiplier WS (statistical): open → live mult_update stream → manual c
     const bal0 = await c.waitFor("balance");
     assert.equal(bal0.data.real, 1_000_000);
 
+    const balFramesBeforeOpen = c.of("balance").length;
     c.send("open_multiplier", { instrumentId: "vol10_1s", dir: "up", multiplier: 50, stakeCents: 25000 });
     const opened = await c.waitFor("mult_opened");
     assert.ok(Number.isFinite(opened.data.entry) && opened.data.entry > 0);
+    // The debit arrives in a balance frame sent AFTER mult_opened, behind a wallet round-trip, so
+    // await that frame rather than sampling the newest one: sampling reads the pre-open auth
+    // snapshot whenever the runner is busy, which is exactly how deploy 170 broke on the digit path.
+    await c.waitWhere("balance", () => c.of("balance").length > balFramesBeforeOpen);
     assert.equal(c.of("balance").at(-1).data.real, 975_000, "stake debited on open");
 
-    const upd = await c.waitFor("mult_update"); // streamer evaluates every instrument tick (1s)
+    const upd = await c.waitFor("mult_update", SETTLE_MS); // streamer evaluates every instrument tick (1s)
     assert.equal(upd.data.positionId, opened.data.positionId);
     assert.ok(Number.isFinite(upd.data.pnlCents) && upd.data.pnlCents >= -25000);
 
     c.send("close_multiplier", { positionId: opened.data.positionId });
-    const closed = await c.waitFor("mult_closed");
+    const closed = await c.waitFor("mult_closed", SETTLE_MS);
     assert.equal(closed.data.positionId, opened.data.positionId);
     assert.equal(closed.data.reason, "manual");
     assert.equal(closed.data.payoutCents, 25000 + closed.data.pnlCents, "payout = stake + realized P/L");
@@ -93,7 +88,7 @@ test("multiplier WS (POOL MODE): manual close is refused; the decided path gover
     c.send("close_multiplier", { positionId: opened.data.positionId });
     const err = await c.waitFor("error");
     assert.match(String(err.data.message ?? ""), /CLOSE_DISABLED/, "manual close refused in pool mode");
-    const upd = await c.waitFor("mult_update"); // the decided path still streams live P/L
+    const upd = await c.waitFor("mult_update", SETTLE_MS); // the decided path still streams live P/L
     assert.ok(Number.isFinite(upd.data.pnlCents));
   } finally { c.close(); await handle.close(); }
 });

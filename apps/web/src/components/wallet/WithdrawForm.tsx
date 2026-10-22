@@ -3,7 +3,7 @@
 import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { kesToCents, formatKes } from '@invest254/shared/money';
-import { normalizeMsisdn, MIN_WITHDRAWAL_CENTS } from '@invest254/shared/payments';
+import { normalizeMsisdn, MIN_WITHDRAWAL_CENTS, maskPhoneForDisplay } from '@invest254/shared/payments';
 import { Input } from '@/components/ui/Input';
 import { Button } from '@/components/ui/Button';
 import { api } from '@/lib/api/endpoints';
@@ -12,7 +12,6 @@ import { walletFigures } from '@/lib/wallet/figures';
 import { useDepositUi } from '@/lib/wallet/depositUi';
 import { useSession } from '@/lib/auth/session';
 import { paymentErrorMessage } from '@/lib/wallet/errors';
-import { maskMsisdn } from '@/lib/wallet/format';
 import { useBrand } from '@/lib/brand/BrandProvider';
 import { useDisplayMoney, USD_LIMITS } from '@/lib/money';
 import { quickAmountEntry } from '@/lib/wallet/quickAmount';
@@ -83,11 +82,15 @@ export function WithdrawForm() {
     ? (Number.isFinite(parsedAmount) && parsedAmount > 0 ? toKesCents(parsedAmount) : 0)
     : (Number.isInteger(Number(amount)) ? kesToCents(Number(amount)) : 0);
   const amountValid = amountCents >= minWithdrawalCents && amountCents <= realCents;
+  // DISPLAY ONLY — the success panel's "To" line. `effectivePhone` above stays the full number
+  // because that is what is submitted: fn_create_withdrawal (0161) needs 9+ digits and matches the
+  // last 9, so a masked value is refused and the payout never happens. The catch masks too, so a
+  // number that failed normalisation is not rendered in full on its way past this screen.
   const destMasked = useMemo(() => {
     try {
-      return maskMsisdn(normalizeMsisdn(effectivePhone));
+      return maskPhoneForDisplay(normalizeMsisdn(effectivePhone));
     } catch {
-      return effectivePhone ? effectivePhone : '—';
+      return effectivePhone ? maskPhoneForDisplay(effectivePhone) : '-';
     }
   }, [effectivePhone]);
 
@@ -226,7 +229,9 @@ export function WithdrawForm() {
               <MpesaIcon />
             </span>
             <div className="min-w-0 flex-1">
-              <div className="text-sm font-semibold tabular-nums text-fg">{maskMsisdn(accountPhone)}</div>
+              {/* The registered number is masked on screen (shoulder-surfing, screenshots, screen
+                  shares); the payout still goes to the FULL `effectivePhone` submitted above. */}
+              <div className="text-sm font-semibold tabular-nums text-fg">{maskPhoneForDisplay(accountPhone)}</div>
               {/* F-49 (BUGLOG #64): withdrawals are paid ONLY to the account's registered number — a stolen
                   password can never redirect a player's money to another phone. */}
               <div className="text-xs text-muted">Withdrawals are paid to your registered number only</div>

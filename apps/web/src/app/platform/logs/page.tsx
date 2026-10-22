@@ -124,7 +124,7 @@ function Row({ r }: { r: AdminSystemLogRow }) {
           </span>
         </div>
       </Td>
-      <Td className={`text-right text-xs font-semibold tabular-nums ${statusTone}`}>{r.status ?? '—'}</Td>
+      <Td className={`text-right text-xs font-semibold tabular-nums ${statusTone}`}>{r.status ?? '-'}</Td>
       <Td className="text-xs">
         <span className="block max-w-[420px] truncate text-fg" title={extra ? `${r.msg} · ${extra}` : r.msg}>{r.msg}</span>
         {extra ? <span className="block max-w-[420px] truncate font-mono text-[11px] text-muted" title={extra}>{extra}</span> : null}

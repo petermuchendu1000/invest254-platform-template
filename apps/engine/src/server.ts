@@ -18,7 +18,10 @@ import { PoolRealtimeDistributor } from "./poolrealtime.js";
 import { makeVerifier } from "./auth.js";
 import { makeSystemLogPersister } from "./systemlog.js";
 import { SharedSiteConfigListener } from "./siteconfiglisten.js";
-import { DEFAULT_VERSIONED_CONFIG, PlatformGate } from "@invest254/shared";
+import {
+  DEFAULT_VERSIONED_CONFIG, PlatformGate, chartStyleOf, curveProfileForChartStyle,
+  defaultConfigForProfile, TERMINAL_VERSIONED_CONFIG, type CurveProfile, type VersionedGameConfig,
+} from "@invest254/shared";
 
 /**
  * Multiplexed engine entrypoint (multi-tenant).
@@ -35,7 +38,72 @@ import { DEFAULT_VERSIONED_CONFIG, PlatformGate } from "@invest254/shared";
  * Without DATABASE_URL the engine runs fully in-memory for local dev (single default brand).
  */
 const PORT = Number(process.env.PORT ?? 8080);
-const MASTER_SEED = process.env.MASTER_SEED ?? process.env.SERVER_SEED ?? "dev-master-seed-0001";
+
+/**
+ * Local-dev-only master seed, used ONLY when DATABASE_URL is unset (in-memory dev). Named so that
+ * if it ever shows up in a reveal/commitment audit it is self-evidently not a production secret.
+ */
+const DEV_ONLY_MASTER_SEED = "INSECURE-LOCAL-DEV-ONLY-MASTER-SEED-NOT-PRODUCTION-SAFE";
+/** The seed literal that used to be the committed fallback here — anyone with the repo knows it. */
+const LEAKED_MASTER_SEED = "dev-master-seed-0001";
+/**
+ * Minimum accepted master-seed length. `openssl rand -hex 32` (the documented generator, see
+ * .env.example) emits 64 hex chars; 32 chars is the floor at which a hex or base64 secret still
+ * carries roughly 128 bits, i.e. is beyond offline search. Anything shorter is a placeholder or a
+ * passphrase, and the master seed is not a password: it is the HMAC key behind EVERY brand's daily
+ * seed (packages/shared/src/seed.ts, packages/shared/src/site.ts), so guessing it yields every
+ * future trade outcome and lets any published fairness commitment be forged after the fact.
+ */
+const MIN_MASTER_SEED_LENGTH = 32;
+
+/**
+ * Resolve the platform master seed, failing CLOSED on a real deployment.
+ *
+ * The previous committed fallback meant a deployment that forgot MASTER_SEED/SERVER_SEED silently
+ * derived every daily seed from a value published in this repository — predictable outcomes and
+ * forgeable commitments, with nothing in the logs to say so. DATABASE_URL is the same "this is a
+ * real deployment" signal already used for the JWT verifier a few lines below, so the two
+ * fail-closed checks agree.
+ *
+ * NEVER log the seed, a prefix of it, or its length: the error names the variable only, because a
+ * boot error is the one message that reliably reaches shared logs, dashboards and support threads.
+ */
+function resolveMasterSeed(): string {
+  const configured = process.env.MASTER_SEED ?? process.env.SERVER_SEED;
+  // In-memory dev (no DATABASE_URL): no real money, no published commitments — keep booting.
+  if (!process.env.DATABASE_URL) return configured ?? DEV_ONLY_MASTER_SEED;
+  const hint = "Generate one with `openssl rand -hex 32` and set MASTER_SEED (SERVER_SEED is the legacy fallback).";
+  const why = "It is the HMAC key for every brand's daily seed, so it determines every trade outcome and every published fairness commitment: a known or guessable value makes outcomes predictable and commitments forgeable.";
+  if (!configured) {
+    throw new Error(`SEED: MASTER_SEED is required when DATABASE_URL is set. ${hint} ${why}`);
+  }
+  const value = configured.trim();
+  if (value === LEAKED_MASTER_SEED || value === DEV_ONLY_MASTER_SEED) {
+    throw new Error(`SEED: MASTER_SEED is set to a development placeholder that is committed to this repository, so it is public. ${hint} ${why}`);
+  }
+  if (value.length < MIN_MASTER_SEED_LENGTH) {
+    throw new Error(`SEED: MASTER_SEED is too short to be a secret (minimum ${MIN_MASTER_SEED_LENGTH} characters). ${hint} ${why}`);
+  }
+  return configured;
+}
+
+const MASTER_SEED = resolveMasterSeed();
+
+/**
+ * The PREVIOUS master seed, if the platform has rotated. Used only to reveal days committed under
+ * it — see SeedManagerOptions.legacyMasterSeed for why rotation is otherwise a one-way door that
+ * permanently orphans every open day.
+ *
+ * Deliberately NOT subjected to the fail-closed checks above. The leaked literal is a legitimate
+ * value here: it is precisely what the already-committed days were derived from, and the whole
+ * point is to be able to open them. It can never produce a new commitment, so a public value in
+ * this variable cannot make any future outcome predictable.
+ */
+const LEGACY_MASTER_SEED = process.env.MASTER_SEED_LEGACY ?? process.env.SERVER_SEED_LEGACY;
+if (LEGACY_MASTER_SEED) {
+  console.log("[engine] legacy master seed configured: days committed before the rotation remain revealable");
+}
+
 const ONLINE_FLOOR = Number(process.env.ONLINE_FLOOR ?? 0);
 const DEFAULT_SITE = process.env.DEFAULT_SITE_ID ?? "00000000-0000-0000-0000-000000000001";
 
@@ -51,6 +119,8 @@ let platformGate: PlatformGate | undefined;
 let overridesRepo: UserOverridesRepository | undefined;
 let configFor: (siteId: string) => ConfigProvider | Promise<ConfigProvider>;
 let masterSeedFor: ((siteId: string) => string | undefined) | undefined;
+// Price-curve shape per brand from sites.chart_style (line ⇒ irregular waves, else trending market).
+let curveProfileFor: ((siteId: string) => Promise<CurveProfile>) | undefined;
 // docs/25: pool controller (shared; site passed per-call) + per-brand pool_mode flag. Only in DB mode.
 let poolController: PoolController | undefined;
 // docs/25 + migration 0088: pool_mode is kept LIVE via SitesStore (LISTEN sites_changed + poll), so a
@@ -89,16 +159,28 @@ if (usingDb) {
   // Resolve aliases (slug + primary_domain -> id) for active brands so a connection can name its
   // site by slug or host, not just uuid.
   const rows = (await q.query(
-    "select id, slug, primary_domain, master_seed_ref, pool_mode from sites where status = 'active'", [])).rows;
+    "select id, slug, primary_domain, master_seed_ref, pool_mode, chart_style from sites where status = 'active'", [])).rows;
   const masterRefBySite = new Map<string, string>();
+  // Price shape per brand, derived from chart_style. Seeded at boot; a brand onboarded AFTER boot
+  // (GAP 2) is looked up live and cached on first use, so it prices under its own shape too.
+  const curveProfileBySite = new Map<string, CurveProfile>();
   for (const r of rows) {
     const id = String(r.id);
     siteAliases.set(id, id);
     if (r.slug) siteAliases.set(String(r.slug), id);
     if (r.primary_domain) siteAliases.set(String(r.primary_domain), id);
     if (r.master_seed_ref && process.env[String(r.master_seed_ref)]) masterRefBySite.set(id, process.env[String(r.master_seed_ref)]!);
+    curveProfileBySite.set(id, curveProfileForChartStyle(chartStyleOf(r.chart_style)));
   }
   masterSeedFor = (siteId) => masterRefBySite.get(siteId);
+  curveProfileFor = async (siteId) => {
+    const cached = curveProfileBySite.get(siteId);
+    if (cached) return cached;
+    const r = (await q.query("select chart_style from sites where id = $1 limit 1", [siteId])).rows[0] as { chart_style?: unknown } | undefined;
+    const profile = curveProfileForChartStyle(chartStyleOf(r?.chart_style));
+    curveProfileBySite.set(siteId, profile);
+    return profile;
+  };
   poolController = new PoolController(new PgPoolRepo(q));
   // Live pool_mode: LISTEN sites_changed (migration 0088) + poll fallback, so toggles / new brands
   // apply without a redeploy. Uses the session pooler for LISTEN, like the per-brand config stores.
@@ -141,7 +223,20 @@ if (usingDb) {
       const cr = await q.query("select currency from sites where id = $1::uuid limit 1", [siteId]);
       if (cr.rows.length) currency = String((cr.rows[0] as Record<string, unknown>).currency ?? "KES");
     } catch { /* default KES → near-miss uses the legacy min_withdrawal */ }
-    const store = new SiteGameConfigStore(siteId, q, { currency }); // poll-only; push comes from the shared listener
+    /**
+     * The fallback economy follows the brand's CURVE, because the two are not interchangeable.
+     *
+     * A candlestick brand settles continuously, and a continuous position's value at open can never
+     * exceed the RTP, so the step economy's 75% edge would open every position at a near-total loss
+     * (see TERMINAL_CONFIG in shared/config.ts). A line brand keeps the step contract and its edge
+     * untouched. This is only what the store holds until the brand's own row is read: an operator's
+     * saved `site_game_config_versions` row always wins, so no live brand is repriced by it.
+     */
+    // Without a profile resolver there is no way to know which curve this brand charts, so it keeps
+    // today's economy exactly: `wave` resolves to DEFAULT_CONFIG, which is the unchanged behaviour.
+    const profile = curveProfileFor ? await curveProfileFor(siteId) : "wave";
+    const fallback: VersionedGameConfig = { ...defaultConfigForProfile(profile), version: 0 };
+    const store = new SiteGameConfigStore(siteId, q, { currency, fallback }); // poll-only; push comes from the shared listener
     await store.init();
     // Instant hot-reload without a per-brand connection: the shared listener nudges THIS brand's
     // refresh when site_game_config_changed fires with its site_id (payload).
@@ -177,7 +272,16 @@ if (usingDb) {
   repo = mem;
   siteAliases.set(DEFAULT_SITE, DEFAULT_SITE);
   siteAliases.set("default", DEFAULT_SITE);
-  configFor = () => new StaticConfigProvider(DEFAULT_VERSIONED_CONFIG);
+  /**
+   * The dev brand is a TERMINAL brand, so it gets the terminal economy.
+   *
+   * `SiteRegistry` defaults an unresolved curve profile to `market` (siteregistry.ts 107), which is
+   * what this path leaves it as, so the in-memory brand charts candlesticks and settles its
+   * positions continuously. Handing it DEFAULT_VERSIONED_CONFIG gave it the step economy's 75% edge,
+   * which cannot price a continuous position: every position opened in local dev was worth about
+   * 0.02x the instant it opened. See TERMINAL_CONFIG in shared/config.ts.
+   */
+  configFor = () => new StaticConfigProvider(TERMINAL_VERSIONED_CONFIG);
   resolver = new SiteResolver({ aliases: siteAliases }); // no live lookup in dev — a miss stays a miss
   console.log("[engine] no DATABASE_URL — in-memory single default brand (dev)");
 }
@@ -186,7 +290,11 @@ const registry = new SiteRegistry({
   masterSeed: MASTER_SEED,
   repo,
   configFor,
+  // Rotation support: days committed under the previous master stay revealable. Only ever read on
+  // a reveal whose primary-seed attempt was refused by the stored commitment.
+  ...(LEGACY_MASTER_SEED ? { seedManagerOpts: { legacyMasterSeed: LEGACY_MASTER_SEED } } : {}),
   ...(masterSeedFor ? { masterSeedFor } : {}),
+  ...(curveProfileFor ? { curveProfileFor } : {}),
   // loadOverride: per-user overrides, COMPOSED with the platform-global cohort economy (0099) when the
   // gate + marketer classifier are present (DB mode). Global-enforced fields win over per-user; the
   // same composed loader is handed to the RecoveryService by SiteRegistry, so open + recovery agree.

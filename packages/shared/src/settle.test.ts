@@ -4,8 +4,16 @@ import { CurveGenerator } from "./curve.js";
 import { SettlementEngine } from "./settle.js";
 import { SeededRng } from "./prng.js";
 import { DEFAULT_CONFIG, rtp } from "./config.js";
+import { CALIBRATION_WINDOW_S } from "./settle.js";
 
-function measureRtp(eng: SettlementEngine, dir: "buy" | "sell" | "both", seed: string, n: number, windowS = 3600) {
+/**
+ * Entry times are drawn from a FULL day, matching both the calibrator and production (players trade
+ * around the clock). A 1-hour window is not a smaller version of the same measurement on the
+ * `market` process: a random walk's 10 s increments are independent, so an hour holds only ~360 of
+ * them and the realized RTP has a standard error of ~0.035 — wider than any tolerance worth
+ * asserting. Over a day it is ~0.0025. See CALIBRATION_WINDOW_S.
+ */
+function measureRtp(eng: SettlementEngine, dir: "buy" | "sell" | "both", seed: string, n: number, windowS = CALIBRATION_WINDOW_S) {
   const rng = new SeededRng(seed, "measure");
   let stakeSum = 0, payoutSum = 0, wins = 0;
   const stake = 20000; // KES 200

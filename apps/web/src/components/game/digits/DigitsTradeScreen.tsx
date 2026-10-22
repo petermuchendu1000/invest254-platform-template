@@ -16,9 +16,12 @@ import { DIcon } from '@/components/game/digits/icons';
 import type { DerivChartHandle } from '@/components/game/digits/DerivChart';
 import { useDigitSession } from '@/lib/game/digitSession';
 import { useAmountText } from '@/lib/game/useAmountText';
+import { useMarketerSkin } from '@/lib/marketer/isMarketer';
+import { MK } from '@/lib/marketer/labels';
 import { play } from '@/lib/sound/sound';
 import { useInvalidateDigitHistory } from '@/lib/game/useDigitHistory';
-import { useGameSocketApi, useInstrumentResetKey, type DigitSettledData } from '@/lib/game/GameSocketProvider';
+import { useGameSocket, useGameSocketApi, useInstrumentResetKey, type DigitSettledData } from '@/lib/game/GameSocketProvider';
+import { dataPhaseOf, tradeDisabledReason } from '@/lib/ui/dataPhase';
 import { instrumentById, DEFAULT_INSTRUMENT_ID, type Instrument } from '@/lib/game/instruments';
 import { payoutForStake, stakeForPayout } from '@/lib/game/digitPayout';
 import { useStakeLimits } from '@/lib/game/useStakeLimits';
@@ -27,7 +30,8 @@ import { pillLabel } from '@/lib/game/stakeLadder';
 import { Segmented } from '@/components/ui/Segmented';
 import { useDisplayMoney } from '@/lib/money';
 import { useWallet, useTopupDemo } from '@/lib/wallet/hooks';
-import { walletFigures } from '@/lib/wallet/figures';
+import { useMarketerDemoTopup } from '@/lib/affiliate/hooks';
+import { walletFigures, shortfallAction } from '@/lib/wallet/figures';
 import { afterSettle, nextAuto, runPnl, startRun, type AutoRun, type AutoStop } from '@/lib/game/autoBot';
 import { useSession } from '@/lib/auth/session';
 import { useDepositUi } from '@/lib/wallet/depositUi';
@@ -103,6 +107,9 @@ export function DigitsTradeScreen() {
   const [instId, setInstId] = useState<string>(DEFAULT_INSTRUMENT_ID);
   const instrument: Instrument = instrumentById(instId);
   const { getInstrumentTicks, getLastInstrumentTick, subscribeInstrument, openDigit, onDigitSettled, onDigitRejected, onDigitOpened } = useGameSocketApi();
+  /* Read ONLY to say what the screen is waiting for. Until now nothing under `digits/` consumed the
+     connection state at all, which is why every one of this shell's dead states was silent. */
+  const { status } = useGameSocket();
   const instrumentResetKey = useInstrumentResetKey();
   useMultiplierSync(); // multiplier positions survive tab switches (BUGLOG #98)
   const { both, symbol, isForeign, toKesCents, toDisplay } = useDisplayMoney();
@@ -112,8 +119,12 @@ export function DigitsTradeScreen() {
   const toast = useToast();
   const { data: wallet } = useWallet();
   const topupDemo = useTopupDemo();
+  // A marketer's funny money is not a demo bucket and is not topped up by the demo call; it has its
+  // own (migration 0102). See shortfallAction in wallet/figures for which balance is which.
+  const topupMarketer = useMarketerDemoTopup();
   const spendable = (wallet?.real ?? 0) + (wallet?.bonus ?? 0);
   const amt = useAmountText();
+  const { isMarketer } = useMarketerSkin();
   // DIGITS-UI: publish the live session to the shell (positions rail/sheet, auto pill, history).
   const publishOpen = useDigitSession((s) => s.setOpenContract);
   const publishClosed = useDigitSession((s) => s.addClosed);
@@ -204,7 +215,16 @@ export function DigitsTradeScreen() {
   // A MANUAL trade blocked for lack of funds -> explicit top-up modal (current/required/shortfall).
   const [needFunds, setNeedFunds] = useState<InsufficientFundsInfo | null>(null);
 
-  const [snap, setSnap] = useState<{ price: number; digit: number | null; changePct: number; freqs: number[] }>({
+  /**
+   * The live snapshot driving the price, the change %, the digit row and the payout maths.
+   *
+   * `ready` matters as much as the figures: every field here has a plausible-looking zero value, so
+   * before the first tick the screen used to assert a price of 0, a green "+0.00%", and ten digit
+   * shares of "0.0%" — numbers indistinguishable from real ones. Nothing derived from this snapshot
+   * is shown as a figure until `ready` is true.
+   */
+  const [snap, setSnap] = useState<{ ready: boolean; price: number; digit: number | null; changePct: number; freqs: number[] }>({
+    ready: false,
     price: 0,
     digit: null,
     changePct: 0,
@@ -324,9 +344,19 @@ export function DigitsTradeScreen() {
       if (cents > spendable) {
         if (manual) {
           // Demo: refill in place (no menu hunt). Real: the top-up sheet with the shortfall.
-          if (wallet?.mode === 'demo') topupDemo.mutate(undefined, { onSuccess: (r) => (r.demoBalance >= cents
+          // Refill the bucket actually being SPENT. `wallet.mode` is permanently 'demo' for a
+          // marketer, so asking it here refilled their practice bucket while they played their funny
+          // money — and said it had worked.
+          const action = shortfallAction(wallet);
+          if (action === 'refill-demo') topupDemo.mutate(undefined, { onSuccess: (r) => (r.demoBalance >= cents
             ? toast.push({ tone: 'success', title: 'Demo refilled', description: amt.text(r.demoBalance) })
             : toast.push({ tone: 'error', title: `Demo max ${amt.text(r.demoBalance)}` })) });   // a refill cannot cover a stake above it
+          else if (action === 'refill-marketer') topupMarketer.mutate(undefined, {
+            onSuccess: (r) => (r.balanceCents >= cents
+              ? toast.push({ tone: 'success', title: 'Balance refilled', description: amt.text(r.balanceCents) })
+              : toast.push({ tone: 'error', title: `Max ${amt.text(r.balanceCents)}` })),
+            onError: () => toast.push({ tone: 'error', title: 'Could not refill', description: 'Try again.' }),
+          });
           else setNeedFunds({ requiredCents: cents, currentCents: spendable });
         }
         return false;
@@ -411,7 +441,7 @@ export function DigitsTradeScreen() {
         const win = Math.min(n, WINDOW);
         const counts = Array<number>(10).fill(0);
         for (let i = n - win; i < n; i++) { const dd = lastDigitOf(ticks[i]!.rate); counts[dd] = (counts[dd] ?? 0) + 1; }
-        setSnap({ price: last.rate, digit, changePct, freqs: counts.map((c) => (c / win) * 100) });
+        setSnap({ ready: true, price: last.rate, digit, changePct, freqs: counts.map((c) => (c / win) * 100) });
       }
 
       // AUTO: one decision whenever nothing is in play (autoBot.ts).
@@ -466,6 +496,16 @@ export function DigitsTradeScreen() {
   }, [snap.freqs, market, barrier, pick]);
   const shareLabel =
     market === 'evenodd' ? 'Even share' : market === 'overunder' ? `Over ${barrier} share` : `Digit ${pick} share`;
+
+  /**
+   * Why the screen is not tradable yet, in words — the digits shell's missing affordance.
+   *
+   * Both BUY cards derive their payout from `snap.freqs`, so with no ticks `winProbability` is 0,
+   * `ctaMeta` disables them, and the player was left looking at two cards faded to 40% opacity
+   * showing a payout figure and no reason at all. This is the reason, and it takes precedence over
+   * `stakeHint` because a feed that has not arrived is the cause of everything else being wrong.
+   */
+  const feedHint = tradeDisabledReason(dataPhaseOf(status, snap.ready));
 
   // Round a cents figure into the input's display-currency string (whole units for KES brands).
   const toAmountStr = (cents: number) =>
@@ -624,12 +664,13 @@ export function DigitsTradeScreen() {
               ) : null}
             </div>
             <div className="min-w-0">
-              <VolatilitySelector wide instrument={instrument} price={snap.price || null} changePct={snap.changePct}
+              <VolatilitySelector wide instrument={instrument} price={snap.price || null} changePct={snap.ready ? snap.changePct : null}
                 onSelect={(i) => { setInstId(i.id); halt(); }} />
             </div>
-            <span title={`${shareLabel} over the last ${WINDOW} ticks`}
+            <span title={snap.ready ? `${shareLabel} over the last ${WINDOW} ticks` : `${shareLabel} — counting ticks`}
               className="ml-auto shrink-0 rounded-lg border border-border bg-surface px-2 py-1 text-[11px] font-semibold tabular-nums text-fg">
-              {Math.round(sharePct)}%
+              {/* A share of "0%" before any tick is counted is a measurement nobody took. */}
+              {snap.ready ? `${Math.round(sharePct)}%` : '—'}
             </span>
           </div>
 
@@ -645,6 +686,8 @@ export function DigitsTradeScreen() {
               variant={chartVariant}
               drawMode={drawMode}
               onLineDrawn={() => setDrawMode(false)}
+              marketer={isMarketer}
+              status={status}
             />
             {/* drawing tools (desktop) */}
             <div className="absolute left-2 top-14 z-10 hidden flex-col gap-1 lg:flex">
@@ -676,13 +719,13 @@ export function DigitsTradeScreen() {
             ) : null}
             {flash ? (
               <div className={cn('pointer-events-none absolute inset-x-0 top-14 mx-auto w-fit rounded-full px-3.5 py-1 text-[13px] font-bold shadow-lg', flash.won ? 'bg-up text-white' : 'bg-down text-white')}>
-                {flash.won ? 'WON ' : 'LOST '}{amt.signed(flash.delta)}
+                {isMarketer ? (flash.won ? `${MK.winHeadline} ` : `${MK.loseHeadline} `) : (flash.won ? 'WON ' : 'LOST ')}{amt.signed(flash.delta)}
               </div>
             ) : null}
           </div>
         </div>
 
-        {!multi ? <DigitHeatmap freqs={snap.freqs} current={snap.digit} /> : null}
+        {!multi ? <DigitHeatmap freqs={snap.freqs} current={snap.digit} ready={snap.ready} /> : null}
       </div>
 
       {/* Right: trading console */}
@@ -739,7 +782,7 @@ export function DigitsTradeScreen() {
         ) : null}
 
         {/* Stake / Payout — one segmented control on every size (the phone caption toggle was a 15 pt target) */}
-        <Segmented label="Amount" value={amountMode} options={[{ id: 'stake', label: 'Stake' }, { id: 'payout', label: 'Payout' }] as const}
+        <Segmented label="Amount" value={amountMode} options={[{ id: 'stake' as const, label: isMarketer ? MK.cost : 'Stake' }, { id: 'payout' as const, label: isMarketer ? MK.reward : 'Payout' }]}
           onChange={(mm) => {
             if (mm === amountMode) return;
             if (mm === 'payout') setPayoutInput(toAmountStr(payoutForStake(stakeCents, primaryProb, PAYOUT_FACTOR)));
@@ -772,7 +815,7 @@ export function DigitsTradeScreen() {
           {presets.map((q) => {
             const active = Number(amountMode === 'payout' ? payoutInput : stake) === q;
             return (
-              <button key={q} type="button" aria-pressed={active} aria-label={`${amountMode === 'payout' ? 'Payout' : 'Stake'} ${q}`} data-compact
+              <button key={q} type="button" aria-pressed={active} aria-label={`${amountMode === 'payout' ? (isMarketer ? MK.reward : 'Payout') : (isMarketer ? MK.cost : 'Stake')} ${q}`} data-compact
                 onClick={() => (amountMode === 'payout' ? setPayoutInput(String(q)) : setStake(String(q)))}
                 className={cn('h-11 min-w-0 rounded-lg border text-[clamp(11px,3.4vw,13px)] font-semibold tabular-nums transition lg:h-8 lg:text-[12px]',
                   active ? 'border-accent bg-accent/15 text-fg' : 'border-border bg-bg/40 text-muted hover:text-fg')}>
@@ -784,11 +827,15 @@ export function DigitsTradeScreen() {
 
         {/* resolved readout (desktop) */}
         <div className="hidden items-center justify-between rounded-xl border border-border bg-bg/40 px-4 py-3.5 lg:flex">
-          <span className="text-[13px] text-muted">{amountMode === 'payout' ? 'Stake' : 'Payout'}</span>
+          <span className="text-[13px] text-muted">{amountMode === 'payout' ? (isMarketer ? MK.cost : 'Stake') : (isMarketer ? MK.reward : 'Payout')}</span>
           <span className="font-mono text-[18px] font-bold tabular-nums text-fg">{amt.num(readout)} <span className="text-[11px] font-medium text-muted">{amt.code}</span></span>
         </div>
 
-        {stakeHint ? <p className="text-center text-[11px] text-warn">{stakeHint}</p> : null}
+        {feedHint ? (
+          <p className="text-center text-[11px] text-muted" role="status" aria-live="polite">{feedHint}</p>
+        ) : stakeHint ? (
+          <p className="text-center text-[11px] text-warn">{stakeHint}</p>
+        ) : null}
 
         {/* AUTO settings */}
         {mode === 'auto' ? (
@@ -818,35 +865,39 @@ export function DigitsTradeScreen() {
             const isUp = outcome === primary.key;
             return (
               <button key={outcome} type="button"
-                aria-label={`Buy ${o.label}: pays ${amt.text(meta.ret)} (${meta.profitPct.toFixed(2)}%)`}
+                aria-label={isMarketer ? `${o.label}: ${amt.text(meta.ret)}` : `Buy ${o.label}: pays ${amt.text(meta.ret)} (${meta.profitPct.toFixed(2)}%)`}
                 disabled={meta.disabled || running}
                 onClick={() => onCta(outcome)}
                 className={cn(
                   'group rounded-2xl border-[1.5px] text-left transition disabled:opacity-40',
-                  isUp ? 'border-up bg-up/10 hover:bg-up/15' : 'border-down bg-down/10 hover:bg-down/15',
+                  // MARKETER: no green/red pair — accent for one side, neutral for the other.
+                  isMarketer
+                    ? (isUp ? 'border-accent bg-accent/10 hover:bg-accent/15' : 'border-border bg-surface-2 hover:bg-surface-2/70')
+                    : (isUp ? 'border-up bg-up/10 hover:bg-up/15' : 'border-down bg-down/10 hover:bg-down/15'),
                   loadedOutcome === outcome ? 'ring-2 ring-accent ring-offset-2 ring-offset-bg' : '',
                   i === 0 && running ? '' : '',
                 )}>
                 {/* desktop card */}
                 <span className="hidden items-center gap-3 px-4 py-4 lg:flex">
-                  <span className={cn('grid h-10 w-10 shrink-0 place-items-center rounded-xl', isUp ? 'bg-up/20 text-up' : 'bg-down/20 text-down')}>
+                  <span className={cn('grid h-10 w-10 shrink-0 place-items-center rounded-xl', isMarketer ? (isUp ? 'bg-accent/20 text-accent' : 'bg-fg/10 text-fg') : isUp ? 'bg-up/20 text-up' : 'bg-down/20 text-down')}>
                     <DIcon name={isUp ? 'grid' : 'triangle'} className="h-5 w-5" />
                   </span>
-                  <span className={cn('shrink-0 text-[19px] font-bold', isUp ? 'text-up' : 'text-down')}>{o.label}</span>
+                  <span className={cn('shrink-0 text-[19px] font-bold', isMarketer ? (isUp ? 'text-accent' : 'text-fg') : isUp ? 'text-up' : 'text-down')}>{o.label}</span>
                   <span className="min-w-0 flex-1 text-right">
                     <FitText minPx={10} className="font-mono text-[13px] font-semibold tabular-nums text-fg">{amt.text(meta.ret)}</FitText>
-                    <span className={cn('block font-mono text-[15px] font-bold tabular-nums', isUp ? 'text-up' : 'text-down')}>{meta.profitPct.toFixed(2)}%</span>
+                    {/* MARKETER: hide the profit % (reads as odds to an OCR classifier). */}
+                    {isMarketer ? null : <span className={cn('block font-mono text-[15px] font-bold tabular-nums', isUp ? 'text-up' : 'text-down')}>{meta.profitPct.toFixed(2)}%</span>}
                   </span>
                 </span>
                 {/* phone card */}
                 <span className="flex items-center justify-between gap-2 px-3.5 py-3 lg:hidden">
                   <span className="shrink-0">
-                    <span className={cn('block text-[17px] font-bold leading-tight', isUp ? 'text-up' : 'text-down')}>{o.label}</span>
-                    <span className="block text-[11px] font-medium tabular-nums text-muted">{meta.profitPct.toFixed(2)}%</span>
+                    <span className={cn('block text-[17px] font-bold leading-tight', isMarketer ? (isUp ? 'text-accent' : 'text-fg') : isUp ? 'text-up' : 'text-down')}>{o.label}</span>
+                    {isMarketer ? null : <span className="block text-[11px] font-medium tabular-nums text-muted">{meta.profitPct.toFixed(2)}%</span>}
                   </span>
                   <span className="min-w-0 flex-1 text-right">
                     <FitText minPx={10} className="font-mono text-[15px] font-bold tabular-nums text-fg">{`${amt.prefix}${amt.num(meta.ret)}`}</FitText>
-                    <span className="block text-[11px] text-muted">Payout</span>
+                    <span className="block text-[11px] text-muted">{isMarketer ? MK.reward : 'Payout'}</span>
                   </span>
                 </span>
               </button>

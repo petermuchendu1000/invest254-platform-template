@@ -3,6 +3,8 @@
 import { useEffect, useState } from 'react';
 import { cn } from '@/lib/cn';
 import { DisplayMoney as Money } from '@/lib/money';
+import { useMarketerSkin } from '@/lib/marketer/isMarketer';
+import { MK } from '@/lib/marketer/labels';
 import type { ActivePosition } from '@/lib/game/betting';
 
 /**
@@ -11,6 +13,7 @@ import type { ActivePosition } from '@/lib/game/betting';
  * rate); `liveMultiplier`/`livePnlCents` come from `position_update`.
  */
 export function LivePnl({ pos }: { pos: ActivePosition }) {
+  const { isMarketer } = useMarketerSkin();
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 100);
@@ -34,25 +37,34 @@ export function LivePnl({ pos }: { pos: ActivePosition }) {
       <div className="flex items-center justify-between">
         <span
           className={cn(
-            'rounded-full px-2 py-0.5 text-xs font-semibold',
-            isBuy ? 'bg-up/15 text-up' : 'bg-down/15 text-down',
+            'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold',
+            // MARKETER: direction is shown by the arrow only — one neutral accent, no green/red.
+            isMarketer ? 'bg-accent/15 text-accent' : isBuy ? 'bg-up/15 text-up' : 'bg-down/15 text-down',
           )}
         >
-          {isBuy ? 'BUY' : 'SELL'} · ×{pos.liveMultiplier.toFixed(2)}
+          {/* MARKETER: wordless arrow instead of BUY/SELL. */}
+          {isMarketer ? (
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="h-3.5 w-3.5" role="img" aria-label={isBuy ? 'Up' : 'Down'}>
+              <path d={isBuy ? 'M12 19V5M5 12l7-7 7 7' : 'M12 5v14M5 12l7 7 7-7'} strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          ) : (
+            `${isBuy ? 'BUY' : 'SELL'} · `
+          )}
+          ×{pos.liveMultiplier.toFixed(2)}
         </span>
         <span className="tabular-nums text-xs text-muted">{phaseLabel}</span>
       </div>
 
       <div className="flex items-end justify-between">
         <div className="flex flex-col">
-          <span className="text-xs text-muted">{'Live P&L'}</span>
+          <span className="text-xs text-muted">{isMarketer ? MK.liveValue : 'Live P&L'}</span>
           <Money
             cents={pos.livePnlCents}
             className={cn('text-2xl font-bold', pnlUp ? 'text-up' : 'text-down')}
           />
         </div>
         <div className="flex flex-col items-end">
-          <span className="text-xs text-muted">Stake</span>
+          <span className="text-xs text-muted">{isMarketer ? MK.cost : 'Stake'}</span>
           <Money cents={pos.stakeCents} className="font-medium" />
         </div>
       </div>
@@ -61,7 +73,7 @@ export function LivePnl({ pos }: { pos: ActivePosition }) {
         <div
           className={cn(
             'h-full rounded-full transition-[width] duration-100 ease-linear',
-            isBuy ? 'bg-up' : 'bg-down',
+            isMarketer ? 'bg-accent' : isBuy ? 'bg-up' : 'bg-down',
           )}
           style={{ width: `${progress * 100}%` }}
         />

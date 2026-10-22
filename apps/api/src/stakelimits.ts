@@ -21,9 +21,9 @@ export const MAX_NATIVE = 1_000_000_000;
 export function validateNative(min: unknown, max: unknown): { min: number; max: number } | string {
   const a = Number(min), b = Number(max);
   if (!Number.isFinite(a) || !Number.isFinite(b)) return "min and max must be numbers";
-  const m5 = (v: number) => Math.abs(v / 5 - Math.round(v / 5)) < 1e-9;
-  if (a < 5 || !m5(a)) return "min must be a multiple of 5, at least 5";
-  if (!m5(b) || b < a) return "max must be a multiple of 5, at least min";
+  // Relaxed from "multiples of 5, ≥5" to whole units ≥ 1, so a brand can offer e.g. a $1 minimum.
+  if (!Number.isInteger(a) || a < 1) return "min must be a whole number, at least 1";
+  if (!Number.isInteger(b) || b < a) return "max must be a whole number, at least min";
   if (b > MAX_NATIVE) return "max is too large";
   return { min: a, max: b };
 }

@@ -75,7 +75,7 @@ function Row({ r }: { r: PlatformAuditRowDto }) {
       </Td>
       <Td className="text-sm"><span className="font-medium">{actionLabel(r.action)}</span><span className="block font-mono text-[11px] text-muted">{r.action}</span></Td>
       <Td className="text-xs text-muted">
-        {summary ? <span className="block max-w-[360px]">{summary}</span> : '—'}
+        {summary ? <span className="block max-w-[360px]">{summary}</span> : '-'}
         {r.detail != null ? (
           <details className="mt-1"><summary className="cursor-pointer text-[11px]">Full record</summary>
             <pre className="mt-1 max-w-[420px] overflow-x-auto whitespace-pre-wrap break-all rounded bg-surface-2 p-2 text-[11px]">{JSON.stringify(r.detail, null, 2)}</pre>

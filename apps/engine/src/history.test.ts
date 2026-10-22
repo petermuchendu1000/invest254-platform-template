@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { commitment } from "@invest254/shared";
 import { InMemoryGameRepository, PgGameRepository, type Querier } from "./wallet.js";
 import { InMemoryPaymentRepository, PgPaymentRepository } from "./payments.js";
 import { encodeCursor, decodeCursor } from "./paging.js";
@@ -52,17 +53,21 @@ test("InMemory listPositions: status filter + newest-first", async () => {
 test("InMemory getPositionDetail: includes fairness (seed hidden pre-reveal); null when unknown/unowned", async () => {
   const r = new InMemoryGameRepository();
   r.seed("u", 1_000_000);
-  const dayId = await r.ensureGameDay("2026-06-17", "h17");
+  // A real (seed, commitment) pair: revealSeed now enforces sha256(seed) == the published hash,
+  // exactly as fn_reveal_game_day does, so "h17"/"s17" would be refused as it would be in production.
+  const SEED = "s17";
+  const HASH = commitment(SEED);
+  const dayId = await r.ensureGameDay("2026-06-17", HASH);
   const o = await r.openPosition({ userId: "u", stakeCents: 20_000, direction: "buy", entryRate: 0.2, durationS: 10, gameDayId: dayId, nonce: 1, openedAtMs: 0 , configVersion: 1});
 
   const pre = await r.getPositionDetail("u", o.positionId);
   assert.ok(pre);
-  assert.equal(pre!.fairness?.serverSeedHash, "h17");
+  assert.equal(pre!.fairness?.serverSeedHash, HASH);
   assert.equal(pre!.fairness?.serverSeed, null);              // not revealed
 
-  await r.revealSeed("2026-06-17", "s17");
+  assert.equal(await r.revealSeed("2026-06-17", SEED), true);
   const post = await r.getPositionDetail("u", o.positionId);
-  assert.equal(post!.fairness?.serverSeed, "s17");
+  assert.equal(post!.fairness?.serverSeed, SEED);
 
   assert.equal(await r.getPositionDetail("u", "missing"), null);          // unknown
   assert.equal(await r.getPositionDetail("intruder", o.positionId), null); // not owned

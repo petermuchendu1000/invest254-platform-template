@@ -19,7 +19,7 @@ const money = (cents: number, _cur = 'KES') => formatKes(cents);
 const SYSTEMS: { key: keyof GlobalConfigDto; api: string; label: string; desc: string }[] = [
   { key: 'depositsEnabled', api: 'deposits_enabled', label: 'Deposits', desc: 'M-Pesa STK deposits across every brand' },
   { key: 'withdrawalsEnabled', api: 'withdrawals_enabled', label: 'Withdrawals', desc: 'Withdrawal requests across every brand' },
-  { key: 'playEnabled', api: 'play_enabled', label: 'Play (open trades)', desc: 'Opening new positions — in-flight trades still settle normally' },
+  { key: 'playEnabled', api: 'play_enabled', label: 'Play (open trades)', desc: 'Opening new positions: in-flight trades still settle normally' },
   { key: 'marketersEnabled', api: 'marketers_enabled', label: 'Marketer app', desc: 'Marketer login across every brand' },
   { key: 'registrationsEnabled', api: 'registrations_enabled', label: 'New registrations', desc: 'New player signups across every brand' },
 ];
@@ -71,7 +71,7 @@ export default function GlobalConfigPage() {
       )}
 
       {/* ── Master switches ── */}
-      <Section title="Master systems — applies to every client">
+      <Section title="Master systems: applies to every client">
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           {SYSTEMS.map((sys) => {
             const on = cfg[sys.key] === true;
@@ -140,7 +140,7 @@ export default function GlobalConfigPage() {
         <Link href="/platform/payments" className="flex items-center justify-between gap-3 rounded-2xl border border-border bg-surface-2 p-5 transition hover:border-accent/50 hover:bg-surface">
           <div>
             <div className="text-sm font-semibold text-fg">Configure payment gateways</div>
-            <div className="mt-1 text-sm text-muted">Mega Pay, Paystack, Binance Pay, PayHero — credentials, availability &amp; connection tests, each on its own page.</div>
+            <div className="mt-1 text-sm text-muted">Mega Pay, Paystack, Binance Pay, PayHero. Credentials, availability &amp; connection tests, each on its own page.</div>
           </div>
           <span className="shrink-0 text-sm font-semibold text-accent">Open Payments →</span>
         </Link>
@@ -151,7 +151,7 @@ export default function GlobalConfigPage() {
         <Link href="/platform/pool" className="flex items-center justify-between gap-3 rounded-2xl border border-border bg-surface-2 p-5 transition hover:border-accent/50 hover:bg-surface">
           <div>
             <div className="text-sm font-semibold text-fg">Daily payout budgets</div>
-            <div className="mt-1 text-sm text-muted">Each brand’s budget today, automatic distribution and history — for one platform or all of them.</div>
+            <div className="mt-1 text-sm text-muted">Each brand’s budget today, automatic distribution and history, for one platform or all of them.</div>
           </div>
           <span className="shrink-0 text-sm font-semibold text-accent">Open Withdrawal pool →</span>
         </Link>

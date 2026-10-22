@@ -6,6 +6,7 @@
  *   • Mega Pay  — POST /transactionstatus with a sentinel id (status query only; host follows env).
  *   • Paystack  — GET  /balance                (read-only; validates the secret key).
  *   • PayHero   — GET  /payment_channels        (read-only; validates the Basic token).
+ *   • Paynicorn — POST /trade/v3/transaction/query for a sentinel order (signed; validates appKey + secret).
  *   • Binance   — POST /binancepay/openapi/v2/order/query with a sentinel id (query only; the HMAC
  *                 signature is what we're really validating — an unknown order is not an error we mind).
  *
@@ -16,6 +17,7 @@
 import { createHmac, randomBytes } from "node:crypto";
 import { getSchema } from "./gatewayschema";
 import { normalizeMegapayBase } from "./megapay";
+import { PAYNICORN_DEFAULT_BASE, PAYNICORN_OK, encodeContent, paynicornSign } from "./paynicorn";
 
 export type ConnStatus = "valid" | "invalid" | "unreachable" | "not_configured";
 export interface ConnResult { ok: boolean; status: ConnStatus; detail: string }
@@ -24,6 +26,42 @@ type Fetch = typeof fetch;
 
 const stripSlash = (u: string) => u.replace(/\/+$/, "");
 const missing = (fields: string[]) => ({ ok: false, status: "not_configured" as const, detail: `Missing: ${fields.join(", ")}` });
+
+/**
+ * SSRF guard for a caller-supplied gateway base URL. The "test connection" path merges a draft
+ * `base_url`/`api_base` over the stored config and then issues an outbound request WITH the decrypted
+ * provider secret attached, so an operator (even the system owner) who points it at
+ * `http://169.254.169.254/...`, `http://localhost`, or an internal host would turn this into blind
+ * SSRF against cloud metadata / the internal network AND exfiltrate the live credential to a host
+ * they chose. Validate the host before any probe runs: HTTPS only, and never a loopback/private/
+ * link-local/metadata/`.internal` target.
+ *
+ * (Residual: a public hostname that later DNS-rebinds to a private address is not caught here —
+ * mitigating that needs resolve-and-pin, noted in docs. This closes the direct-literal and
+ * internal-hostname vectors, which is the exploit the audit demonstrated.)
+ */
+function isPrivateIpv4(host: string): boolean {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (!m) return false;
+  const o = m.slice(1).map(Number);
+  if (o.some((n) => n > 255)) return false;
+  const [a, b] = o as [number, number, number, number];
+  return a === 10 || a === 127 || (a === 169 && b === 254) || a === 0 ||
+    (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) ||
+    (a === 100 && b >= 64 && b <= 127);           // carrier-grade NAT
+}
+export function assertSafeGatewayUrl(raw: string | undefined | null): void {
+  const v = (raw ?? "").trim();
+  if (!v) return;                                  // empty -> the provider default (a known public host) is used
+  let u: URL;
+  try { u = new URL(v); } catch { throw new Error("GATEWAY_URL_INVALID"); }
+  if (u.protocol !== "https:") throw new Error("GATEWAY_URL_INSECURE");
+  const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (host === "localhost" || host.endsWith(".internal") || host.endsWith(".local") ||
+      host === "metadata.google.internal") throw new Error("GATEWAY_URL_BLOCKED");
+  if (host === "::1" || host.startsWith("fe80:") || host.startsWith("fc") || host.startsWith("fd")) throw new Error("GATEWAY_URL_BLOCKED");
+  if (isPrivateIpv4(host)) throw new Error("GATEWAY_URL_BLOCKED");
+}
 
 async function safeJson(res: Response): Promise<any> { try { return await res.json(); } catch { return {}; } }
 
@@ -102,6 +140,32 @@ async function testPayhero(cfg: Record<string, string>, f: Fetch): Promise<ConnR
   } catch (e) { return { ok: false, status: "unreachable", detail: `PayHero unreachable: ${String((e as Error).message).slice(0, 120)}` }; }
 }
 
+/**
+ * Paynicorn: a signed status query for a sentinel order (never moves money). The envelope's responseCode
+ * says whether the signature verified: 000000 = appKey + secret accepted (the unknown order is reported
+ * inside the content), 204005/204004 = bad secret, 204002 = missing appKey.
+ */
+async function testPaynicorn(cfg: Record<string, string>, f: Fetch): Promise<ConnResult> {
+  const need = ["app_key", "merchant_secret"].filter((k) => !cfg[k]);
+  if (need.length) return missing(need);
+  const base = stripSlash(cfg.base_url || PAYNICORN_DEFAULT_BASE);
+  const content = encodeContent({ orderId: "connectivity-probe", txnType: "payment" });
+  try {
+    const res = await f(`${base}/trade/v3/transaction/query`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content, sign: paynicornSign(content, cfg.merchant_secret as string), appKey: cfg.app_key }),
+    });
+    const j = await safeJson(res);
+    const code = String(j.responseCode ?? "");
+    if (code === PAYNICORN_OK) return { ok: true, status: "valid", detail: "PayX accepted the app key and merchant secret." };
+    if (code === "204004" || code === "204005") return { ok: false, status: "invalid", detail: "PayX rejected the signature — check the merchant secret." };
+    if (code === "204002" || code === "204003") return { ok: false, status: "invalid", detail: "PayX did not recognise the app key." };
+    if (code === "204006") return { ok: false, status: "invalid", detail: "The PayX app used up its test-mode requests — reset them in the PayX console." };
+    if (!res.ok) return { ok: false, status: "unreachable", detail: `PayX HTTP ${res.status}` };
+    return { ok: false, status: "invalid", detail: `PayX answered ${code || "an unexpected response"}.` };
+  } catch (e) { return { ok: false, status: "unreachable", detail: `PayX unreachable: ${String((e as Error).message).slice(0, 120)}` }; }
+}
+
 /** Binance Pay: HMAC-SHA512 signed query of a sentinel order. Signature errors ⇒ invalid creds. */
 export function binancePaySignature(secret: string, timestamp: string, nonce: string, body: string): string {
   const payload = `${timestamp}\n${nonce}\n${body}\n`;
@@ -141,7 +205,7 @@ async function testBinance(cfg: Record<string, string>, f: Fetch): Promise<ConnR
 }
 
 const PROBES: Record<string, (cfg: Record<string, string>, f: Fetch) => Promise<ConnResult>> = {
-  megapay: testMegapay, paystack: testPaystack, payhero: testPayhero, binance: testBinance,
+  megapay: testMegapay, paystack: testPaystack, payhero: testPayhero, binance: testBinance, paynicorn: testPaynicorn,
 };
 
 /** Run the safe probe for a provider using the merged (settings + decrypted secrets) config. */
@@ -149,5 +213,14 @@ export async function testConnection(code: string, cfg: Record<string, string>, 
   getSchema(code); // throws PROVIDER_NOT_CONFIGURABLE for unknown codes
   const probe = PROBES[code];
   if (!probe) return { ok: false, status: "not_configured", detail: "No connectivity test for this provider." };
+  // SSRF guard: a caller-supplied base URL is the only attacker-influenced input that becomes an
+  // outbound target (with the live secret attached). Reject an unsafe one up front — before the probe
+  // fetches — rather than in each provider branch. Empty => the provider's known public default is used.
+  try {
+    assertSafeGatewayUrl(cfg.base_url);
+    assertSafeGatewayUrl(cfg.api_base);
+  } catch {
+    return { ok: false, status: "invalid", detail: "Base URL must be a public https:// address." };
+  }
   return probe(cfg, fetchImpl);
 }

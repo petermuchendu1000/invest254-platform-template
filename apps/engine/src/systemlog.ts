@@ -1,4 +1,5 @@
 import type { LogLevel } from "@invest254/shared";
+import { redactValue } from "@invest254/shared/logger";
 
 /**
  * System-log persistence (docs/36, BUGLOG #33/#34) — the single place that writes structured log
@@ -34,7 +35,12 @@ export interface SystemLogPersister {
 function safeStr(a: unknown): string {
   if (typeof a === "string") return a;
   if (a instanceof Error) return a.stack ?? `${a.name}: ${a.message}`;
-  try { return JSON.stringify(a); } catch { return String(a); }
+  // Captured console.* output is persisted to system_logs, which the structured logger sink already
+  // redacts by key. The console path bypassed that, so a future `console.log(obj)` carrying a token,
+  // PIN, phone or gateway secret would land in the DB verbatim. Run object args through the SAME
+  // key-based redactor before stringifying. (Plain-string args can't be key-redacted; a secret
+  // interpolated into a string stays a code-review concern, noted in docs.)
+  try { return JSON.stringify(redactValue(a)); } catch { return String(a); }
 }
 
 /**

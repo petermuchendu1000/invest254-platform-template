@@ -130,7 +130,7 @@ function DecideModal({ review, onClose }: { review: { req: AddonRequestRow; deci
           })}>{approve ? 'Approve and assign' : 'Decline'}</Button></>}>
       <div className="flex flex-col gap-3 text-sm">
         <RequestSummary req={req} />
-        <NoteField value={note} onChange={setNote} label={approve ? 'Note to the brand' : 'Reason (shown to the brand)'} placeholder={approve ? 'e.g. Enjoy — it is live now' : 'e.g. Not available on your plan'} />
+        <NoteField value={note} onChange={setNote} label={approve ? 'Note to the brand' : 'Reason (shown to the brand)'} placeholder={approve ? 'e.g. Enjoy. It is live now' : 'e.g. Not available on your plan'} />
       </div>
     </Modal>
   );
@@ -161,8 +161,8 @@ function Catalog({ items, loading }: { items: CatalogItem[]; loading: boolean })
                       <div className="max-w-md truncate text-xs text-muted" title={i.description}>{i.description || 'No description'}</div></Td>
                     <Td><span className={cn('rounded-full px-2 py-0.5 text-xs font-medium', i.billing_type === 'monthly' ? 'bg-info/15 text-info' : i.billing_type === 'one_off' ? 'bg-accent/15 text-accent' : 'bg-surface-2 text-muted')}>
                       {BILLING.find((b) => b.id === i.billing_type)?.label}</span></Td>
-                    <Td numeric>{i.price_cents ? formatKes(i.price_cents) : '—'}</Td>
-                    <Td numeric>{i.setup_fee_cents ? formatKes(i.setup_fee_cents) : '—'}</Td>
+                    <Td numeric>{i.price_cents ? formatKes(i.price_cents) : '-'}</Td>
+                    <Td numeric>{i.setup_fee_cents ? formatKes(i.setup_fee_cents) : '-'}</Td>
                     <Td numeric>{i.brands ?? 0}{c !== 'payment_gateway' && i.in_use ? <span className="block text-xs text-muted">{i.in_use} using</span> : null}</Td>
                     <Td>{i.active ? <span className="text-sm text-up">Offered</span> : <span className="text-sm text-muted">Hidden</span>}{i.pending ? <span className="block text-xs text-warn">{i.pending} request{i.pending === 1 ? '' : 's'}</span> : null}</Td>
                     <Td><Button size="sm" variant="outline" onClick={() => setEdit(i)} aria-label={`Edit ${i.display_name}`}>Edit</Button></Td>
@@ -214,7 +214,7 @@ function EditAddon({ item, onClose }: { item: CatalogItem | null; onClose: () =>
             className="rounded-brand border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-accent focus:ring-2 focus:ring-accent" />
         </label>
         <fieldset disabled={locked} className="flex flex-col gap-2">
-          <legend className="mb-1.5 text-sm font-medium">Pricing {locked ? <span className="text-xs font-normal text-muted">— the default is always free</span> : null}</legend>
+          <legend className="mb-1.5 text-sm font-medium">Pricing {locked ? <span className="text-xs font-normal text-muted">, the default is always free</span> : null}</legend>
           <div role="radiogroup" aria-label="Pricing model" className="grid grid-cols-3 gap-2">
             {BILLING.map((b) => (
               <button key={b.id} type="button" role="radio" aria-checked={type === b.id} onClick={() => setType(b.id)}

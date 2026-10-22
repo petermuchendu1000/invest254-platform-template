@@ -139,10 +139,14 @@ async function domain<T>(fn: () => Promise<T>): Promise<T> {
   } catch (err) {
     if (err instanceof ApiError) throw err;
     const message = err instanceof Error ? err.message : String(err);
-    // Surface the Postgres CHECK name for an infeasible economy as a clean 422.
-    const code = /site_cfg_feasible/.test(message) ? "site_cfg_feasible" : message.split(":")[0]!.trim();
+    // Map the Postgres economy-feasibility CHECK to a clean 422 with a CURATED message — never the
+    // raw pg text, which names the table + constraint and leaks that this is Postgres / a schema
+    // object. The code is enough for the client; the detail is in the server-side log.
+    const feasible = /site_cfg_feasible/.test(message);
+    const code = feasible ? "site_cfg_feasible" : message.split(":")[0]!.trim();
     const status = PLATFORM_STATUS[code];
     if (code === "CONFIG_CHANGE_RATE_LIMIT") throw new ApiError(code, "6 economy changes in the last hour for this brand. Try again later.", 429);
+    if (feasible) throw new ApiError("site_cfg_feasible", "That economy configuration is not feasible — check RTP, win-rate and the minimum house edge.", 422);
     if (status) throw new ApiError(code, message, status);
     throw err;
   }
@@ -553,7 +557,7 @@ export function registerPlatformRoutes(router: Router, deps: ApiDeps): void {
     // The price chart + trade interface are SYSTEM-admin-assigned add-ons (Issue 2): a platform admin
     // may not set them via a site patch — it requests them (addon flow) and the system admin grants.
     if ((ctx.claims?.role ?? "") !== "platform_superadmin" && ("chart_style" in patch || "trade_ui" in patch))
-      throw new ApiError("ADDON_SYSTEM_ADMIN_ONLY", "price chart and trade interface are assigned by the system admin — request the change instead", 403);
+      throw new ApiError("ADDON_SYSTEM_ADMIN_ONLY", "price chart and trade interface are assigned by the system admin. Request the change instead", 403);
     const out = await domain(() => deps.platform.updateSite(ctx.claims!.userId, ctx.claims!.role ?? "player", ctx.params.id!, patch));
     // a currency change voids stake limits set in the old currency (KES 50 must not become $50)
     if ("currency" in patch && deps.stakeNative) await deps.stakeNative.clear(ctx.params.id!);
@@ -571,6 +575,41 @@ export function registerPlatformRoutes(router: Router, deps: ApiDeps): void {
     return { currency: cur, min: nat?.min ?? null, max: nat?.max ?? null,
       minStakeCents: cfg?.minStakeCents ?? null, maxStakeCents: cfg?.maxStakeCents ?? null };
   };
+  // ── Live sessions (0191): the rules a marketer's Start Live obeys. Platform admin owns them;
+  //    the marketer only starts and stops. Reporting only — none of this moves money. ──────────
+  router.get(`${BASE}/platform/sites/:id/live-settings`, auth, platformAdmin, scopeSiteParam, async (ctx: Ctx) => {
+    if (!deps.liveSessions) throw new ApiError("NOT_AVAILABLE", "live sessions are not available", 501);
+    return deps.liveSessions.settings(ctx.params.id!);
+  });
+
+  router.put(`${BASE}/platform/sites/:id/live-settings`, auth, platformAdmin, scopeSiteParam, async (ctx: Ctx) => {
+    if (!deps.liveSessions) throw new ApiError("NOT_AVAILABLE", "live sessions are not available", 501);
+    const b = asObject(ctx.body);
+    /**
+     * Each bound matches the CHECK constraint in 0191, so a value the database would refuse is
+     * refused here with a message an operator can read instead of a 500 from a constraint.
+     */
+    const num = (key: string, lo: number, hi: number): number | undefined => {
+      if (!(key in b)) return undefined;
+      const n = Number(b[key]);
+      if (!Number.isInteger(n) || n < lo || n > hi) {
+        throw new ApiError("VALIDATION", `${key} must be a whole number between ${lo} and ${hi}`, 400);
+      }
+      return n;
+    };
+    const patch = {
+      ...("enabled" in b ? { enabled: b.enabled === true } : {}),
+      ...(num("sessionMinutes", 5, 1440) !== undefined ? { sessionMinutes: num("sessionMinutes", 5, 1440)! } : {}),
+      ...(num("marginMinutes", 0, 240) !== undefined ? { marginMinutes: num("marginMinutes", 0, 240)! } : {}),
+      ...(num("extendMinutes", 5, 240) !== undefined ? { extendMinutes: num("extendMinutes", 5, 240)! } : {}),
+      ...(num("maxSessionsDaily", 0, 100) !== undefined ? { maxSessionsDaily: num("maxSessionsDaily", 0, 100)! } : {}),
+    };
+    const next = await deps.liveSessions.saveSettings(ctx.params.id!, patch);
+    await deps.admin.recordAction(ctx.claims!.userId, ctx.claims!.role ?? "platform_admin",
+      "platform.site.live_settings", "site", ctx.params.id!, { patch });
+    return next;
+  });
+
   router.get(`${BASE}/platform/sites/:id/stake-limits`, auth, platformAdmin, scopeSiteParam, async (ctx: Ctx) => {
     if (!deps.stakeNative) throw new ApiError("NOT_AVAILABLE", "stake limits are not available", 501);
     return stakeLimitsView(ctx.params.id!);

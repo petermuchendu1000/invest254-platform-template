@@ -101,7 +101,7 @@ export function BrandPicker() {
       {loading ? (
         <Skeleton className="h-64 w-full" />
       ) : plats.length === 0 ? (
-        <p className="text-sm text-muted">No brands yet — onboard one from the console.</p>
+        <p className="text-sm text-muted">No brands yet. Onboard one from the console.</p>
       ) : (
         <div className="grid gap-4 lg:grid-cols-[16rem_1fr]">
           {/* Step 1 — platform. A list on wide screens, a select on phones. */}
@@ -171,7 +171,7 @@ export function BrandPicker() {
                       </span>
                     ) : null}
                   </>
-                ) : 'This platform has no brands yet — onboard one from the console.'}
+                ) : 'This platform has no brands yet. Onboard one from the console.'}
               </div>
             ) : (
               <ul className="flex flex-col divide-y divide-border rounded-xl border border-border bg-surface" aria-label="Brands">

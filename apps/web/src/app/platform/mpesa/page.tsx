@@ -207,7 +207,7 @@ function MpesaBody() {
           {canEdit && tab !== 'c2b' ? (
             <div className="sticky bottom-0 z-10 -mx-4 flex flex-wrap items-center justify-between gap-3 border-t border-border bg-bg/95 px-4 py-3 backdrop-blur md:mx-0 md:rounded-2xl md:border">
               <span className="text-sm text-muted">
-                {userChanges > 0 ? `${userChanges} unsaved change${userChanges > 1 ? 's' : ''}` : dirtyCount > 0 ? 'Suggested endpoints are filled in — save to use them' : 'All changes saved'}
+                {userChanges > 0 ? `${userChanges} unsaved change${userChanges > 1 ? 's' : ''}` : dirtyCount > 0 ? 'Suggested endpoints are filled in. Save to use them' : 'All changes saved'}
               </span>
               <div className="flex items-center gap-2">
                 {userChanges > 0 ? <Button variant="ghost" size="sm" onClick={hydrate}>Discard</Button> : null}

@@ -3,6 +3,8 @@
 import { useEffect, useState } from 'react';
 import { cn } from '@/lib/cn';
 import { DIcon } from '@/components/game/digits/icons';
+import { useMarketerSkin } from '@/lib/marketer/isMarketer';
+import { MK } from '@/lib/marketer/labels';
 
 /**
  * DERIV-UI: the "Trade types" sheet (owner's mock). Filter chips on top, then the trade types in
@@ -51,6 +53,9 @@ const CHIPS = [
 export function TradeTypesSheet({ value, onPick, onClose, demo }: {
   value: TradeTypeId; onPick: (id: TradeTypeId) => void; onClose: () => void; demo: boolean;
 }) {
+  const { isMarketer } = useMarketerSkin();
+  // MARKETER: "Options" is a binary-options tell → "Quick".
+  const chipLabel = (id: (typeof CHIPS)[number]['id'], label: string) => (isMarketer && id === 'options' ? MK.optionsGroup : label);
   const [chip, setChip] = useState<(typeof CHIPS)[number]['id']>('all');
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
@@ -62,20 +67,20 @@ export function TradeTypesSheet({ value, onPick, onClose, demo }: {
   const groups = ['Multipliers', 'Digits'] as const;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center lg:items-center" role="dialog" aria-modal="true" aria-label="Trade types">
+    <div className="fixed inset-0 z-50 flex items-end justify-center lg:items-center" role="dialog" aria-modal="true" aria-label={isMarketer ? 'Game modes' : 'Trade types'}>
       <button type="button" aria-label="Close trade types" onClick={onClose} className="absolute inset-0 bg-black/60 backdrop-blur-[2px]" />
       <div className="relative flex max-h-[85vh] w-full flex-col overflow-hidden rounded-t-2xl border border-border bg-surface shadow-2xl lg:w-[420px] lg:rounded-2xl">
         <div className="flex items-center justify-between px-4 pb-3 pt-4">
-          <h2 className="text-[17px] font-bold text-fg">Trade types</h2>
+          <h2 className="text-[17px] font-bold text-fg">{isMarketer ? MK.gameModes : 'Trade types'}</h2>
           <button type="button" onClick={onClose} aria-label="Close" className="grid h-9 w-9 place-items-center rounded-lg text-muted hover:text-fg">
             <DIcon name="close" className="h-5 w-5" />
           </button>
         </div>
-        <div className="flex gap-2 border-b border-border px-4 pb-3" role="tablist" aria-label="Filter trade types">
+        <div className="flex gap-2 border-b border-border px-4 pb-3" role="tablist" aria-label={isMarketer ? 'Filter game modes' : 'Filter trade types'}>
           {CHIPS.map((c) => (
             <button key={c.id} type="button" role="tab" aria-selected={chip === c.id} onClick={() => setChip(c.id)}
               className={cn('rounded-full px-3.5 py-1.5 text-[12.5px] font-medium transition', chip === c.id ? 'bg-fg text-bg' : 'bg-surface-2 text-muted hover:text-fg')}>
-              {c.label}
+              {chipLabel(c.id, c.label)}
             </button>
           ))}
         </div>
@@ -96,7 +101,7 @@ export function TradeTypesSheet({ value, onPick, onClose, demo }: {
                         active ? 'bg-surface-2' : 'hover:bg-surface-2/60', locked && 'cursor-not-allowed opacity-50 hover:bg-transparent')}>
                       <TradeTypeIcon id={t.id} />
                       <span className="flex-1 text-[14px] font-medium text-fg">{t.label}</span>
-                      {locked ? <span className="rounded-full border border-border px-2 py-0.5 text-[10.5px] font-semibold text-muted">Demo account</span> : null}
+                      {locked ? <span className="rounded-full border border-border px-2 py-0.5 text-[10.5px] font-semibold text-muted">{isMarketer ? 'Practice' : 'Demo account'}</span> : null}
                     </button>
                   );
                 })}

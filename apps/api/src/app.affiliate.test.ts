@@ -58,10 +58,13 @@ test("POST /affiliate/click records a click (funnel), is tolerant, and reflects 
     assert.equal(c2.recorded, true);
 
     // An unknown code is a silent no-op (never errors), and a missing code is a 400.
-    assert.equal((await json(await req(api, "POST", "/api/v1/affiliate/click", { body: { code: "ZZZZZZZZ" } }))).recorded, false);
+    // The response must NOT reveal whether the code existed: `recorded` is constant, otherwise this
+    // unauthenticated endpoint enumerates every brand's live referral codes.
+    assert.equal((await json(await req(api, "POST", "/api/v1/affiliate/click", { body: { code: "ZZZZZZZZ" } }))).recorded, true);
     assert.equal((await req(api, "POST", "/api/v1/affiliate/click", { body: {} })).status, 400);
 
-    // The two valid clicks surface in the marketer funnel.
+    // The two valid clicks surface in the marketer funnel — and only those two: the uninformative
+    // response is a response change only, the unknown code is still not recorded.
     const summary = await json(await req(api, "GET", "/api/v1/affiliate/summary", { token: `${userId}:marketer` }));
     assert.equal(summary.clicks, 2);
     assert.equal(typeof summary.ftdCount, "number");
@@ -279,4 +282,45 @@ test("payout: request with nothing available -> 409; reject releases the reserva
     const s = await json(await req(api, "GET", "/api/v1/affiliate/summary", { token: `${affId}:marketer` }));
     assert.equal(s.availableCents, 1500);  // released back to available
   } finally { await api.close(); }
+});
+
+// The B2C payout-result callback completes a real money movement from its body alone, so it carries
+// the same source lock as the payment callbacks (restrictToCidrs, MPESA_CALLBACK_ALLOWED_CIDRS).
+// The guard reads the env var when the routes are registered, hence the set-before-start.
+test("affiliate B2C result callback is source-restricted when MPESA_CALLBACK_ALLOWED_CIDRS is set", async () => {
+  const prev = process.env.MPESA_CALLBACK_ALLOWED_CIDRS;
+  process.env.MPESA_CALLBACK_ALLOWED_CIDRS = "196.201.212.0/24";
+  const api = await startTestApi();
+  try {
+    const path = `${api.baseUrl}/api/v1/affiliate/payouts/mpesa/result/00000000-0000-0000-0000-000000000000`;
+    const headers = { "content-type": "application/json" };
+    const body = JSON.stringify(b2cResult(0));
+
+    // Off-allowlist source (the test client is 127.0.0.1) -> refused before the handler runs.
+    const blocked = await fetch(path, { method: "POST", headers, body });
+    assert.equal(blocked.status, 403);
+    assert.equal((await json(blocked)).error.code, "FORBIDDEN");
+
+    // C-2: a spoofed X-Forwarded-For is NO LONGER trusted — only Fly's edge header is. A Safaricom
+    // IP in XFF (but no Fly-Client-IP) must still be refused, or the CIDR lock would be defeatable.
+    const spoofed = await fetch(path, {
+      method: "POST",
+      headers: { ...headers, "x-forwarded-for": "196.201.212.17" },
+      body,
+    });
+    assert.equal(spoofed.status, 403, "X-Forwarded-For must not satisfy the source-IP allowlist");
+
+    // A Safaricom source IP passes the guard (the unknown payout id then 404s, not 403). The real
+    // client IP comes from Fly's edge header; X-Forwarded-For is no longer trusted (it was spoofable).
+    const allowed = await fetch(path, {
+      method: "POST",
+      headers: { ...headers, "fly-client-ip": "196.201.212.17" },
+      body,
+    });
+    assert.notEqual(allowed.status, 403);
+  } finally {
+    await api.close();
+    if (prev === undefined) delete process.env.MPESA_CALLBACK_ALLOWED_CIDRS;
+    else process.env.MPESA_CALLBACK_ALLOWED_CIDRS = prev;
+  }
 });

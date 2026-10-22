@@ -122,7 +122,7 @@ export function MyBilling() {
             );
           })}
         </div>
-        <p className="text-sm text-muted">To change your plan, <Link href="/platform/tickets" className="text-accent hover:underline">open a ticket</Link> — the System owner switches it and the new price applies from your next invoice.</p>
+        <p className="text-sm text-muted">To change your plan, <Link href="/platform/tickets" className="text-accent hover:underline">open a ticket</Link>. The System owner switches it and the new price applies from your next invoice.</p>
       </Section>
 
       <PayNowModal invoiceId={paying} open={!!paying} onClose={() => setPaying(null)} />

@@ -3,6 +3,7 @@
 import { useEffect } from 'react';
 import { useDigitSession } from '@/lib/game/digitSession';
 import { DIcon } from '@/components/game/digits/icons';
+import { useMarketerSkin } from '@/lib/marketer/isMarketer';
 
 const SECTIONS: { title: string; body: string }[] = [
   { title: 'How a contract works', body: 'Choose a contract type and a side, then tap it. When the contract settles it shows a result digit (0-9), and it wins if that digit meets the condition of the side you chose. The chart shows the index price; the row of circles under it shows how often each last digit appeared over the recent ticks.' },
@@ -14,8 +15,21 @@ const SECTIONS: { title: string; body: string }[] = [
   { title: 'Digit statistics', body: 'The percentages describe past ticks only. They do not predict the next digit.' },
 ];
 
+// MARKETER: the same rules told as a game — no contract / stake / payout / profit / loss vocabulary.
+const MARKETER_SECTIONS: { title: string; body: string }[] = [
+  { title: 'How a round works', body: 'Pick a mode and a side, then tap it. When the round ends it shows a result number (0-9), and you win points if that number matches the side you chose. The row of circles under the board shows how often each number has come up recently.' },
+  { title: 'Even / Odd', body: 'Even wins on 0, 2, 4, 6 or 8. Odd wins on 1, 3, 5, 7 or 9.' },
+  { title: 'Match / Differ', body: 'Pick a number. Match wins only if the result is exactly that number. Differ wins on any other number, so it wins more often but rewards less.' },
+  { title: 'Over / Under', body: 'Pick a number. Over wins when the result is higher; Under wins when it is lower. If it is equal, neither wins.' },
+  { title: 'Cost and reward', body: 'Each round has a points cost. Every button shows the points you get back if that side wins. Switch Cost to Reward to enter the points you want back instead.' },
+  { title: 'Manual and Auto', body: 'Manual plays one round per tap. Auto keeps playing the side you choose until it reaches your target or your limit, or you press Stop.' },
+  { title: 'Number stats', body: 'The percentages describe past rounds only. They do not predict the next number.' },
+];
+
 /** How to Trade (digits broker mock): plain rules for each contract, stake/payout and Auto. */
 export function HowToTradeModal() {
+  const { isMarketer } = useMarketerSkin();
+  const sections = isMarketer ? MARKETER_SECTIONS : SECTIONS;
   const open = useDigitSession((s) => s.howToOpen);
   const setOpen = useDigitSession((s) => s.setHowToOpen);
   useEffect(() => {
@@ -26,19 +40,19 @@ export function HowToTradeModal() {
   }, [open, setOpen]);
   if (!open) return null;
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center p-3 sm:p-6" role="dialog" aria-modal="true" aria-label="How to trade">
+    <div className="fixed inset-0 z-50 grid place-items-center p-3 sm:p-6" role="dialog" aria-modal="true" aria-label={isMarketer ? 'How to play' : 'How to trade'}>
       <button aria-label="Close" className="absolute inset-0 bg-black/70 backdrop-blur-md" onClick={() => setOpen(false)} />
       <div className="relative flex max-h-[88vh] w-full max-w-[560px] flex-col overflow-hidden rounded-2xl border border-border bg-surface shadow-2xl">
         <header className="flex items-center gap-3 border-b border-border bg-gradient-to-r from-accent/10 to-transparent px-5 py-4">
           <span className="grid h-9 w-9 place-items-center rounded-xl border border-accent/40 bg-accent/10 text-accent"><DIcon name="book" className="h-5 w-5" /></span>
           <div className="flex-1">
-            <h2 className="text-[14px] font-semibold text-fg">How to Trade</h2>
-            <p className="text-[11px] text-muted">Digit contracts in one minute</p>
+            <h2 className="text-[14px] font-semibold text-fg">{isMarketer ? 'How to Play' : 'How to Trade'}</h2>
+            <p className="text-[11px] text-muted">{isMarketer ? 'The game in one minute' : 'Digit contracts in one minute'}</p>
           </div>
           <button type="button" onClick={() => setOpen(false)} aria-label="Close" className="grid h-8 w-8 place-items-center rounded-lg text-muted hover:text-fg"><DIcon name="close" className="h-4 w-4" /></button>
         </header>
         <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">
-          {SECTIONS.map((s) => (
+          {sections.map((s) => (
             <section key={s.title}>
               <h3 className="text-[13px] font-semibold text-fg">{s.title}</h3>
               <p className="mt-1 text-[13px] leading-relaxed text-muted">{s.body}</p>

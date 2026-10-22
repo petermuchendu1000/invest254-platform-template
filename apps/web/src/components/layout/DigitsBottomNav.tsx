@@ -6,6 +6,7 @@ import { useLiveChatUnread } from '@/components/chat/LiveChatPanel';
 import { useEntryScanner } from '@/lib/game/entryScannerUi';
 import { useDigitSession } from '@/lib/game/digitSession';
 import { DIcon } from '@/components/game/digits/icons';
+import { useMarketerSkin } from '@/lib/marketer/isMarketer';
 
 /**
  * Digits-brand bottom navigation (digits broker mock), phones only: Live Chat · AI · Positions.
@@ -13,6 +14,7 @@ import { DIcon } from '@/components/game/digits/icons';
  * History sheet.
  */
 export function DigitsBottomNav() {
+  const { isMarketer } = useMarketerSkin();
   const setSupportOpen = useLiveChat((s) => s.setOpen);
   const chatUnread = useLiveChatUnread();
   const openScanner = useEntryScanner((s) => s.setOpen);
@@ -41,7 +43,7 @@ export function DigitsBottomNav() {
         <li>
           <button type="button" onClick={() => setPositionsOpen(true)} aria-expanded={positionsOpen}
             className={cn(item, 'relative', positionsOpen ? 'text-accent' : 'text-muted hover:text-fg')}>
-            <DIcon name="clock" />Positions
+            <DIcon name="clock" />{isMarketer ? 'Rounds' : 'Positions'}
             {openCount ? <span className="absolute right-4 top-0.5 h-2 w-2 rounded-full bg-accent" /> : null}
           </button>
         </li>

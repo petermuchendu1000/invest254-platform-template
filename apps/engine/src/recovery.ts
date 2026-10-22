@@ -206,6 +206,11 @@ export class RecoveryService {
               durationS: row.durationS, openedAtMs: row.openedAtMs, expiresAtMs, entryT, outcome,
               status: "open", sellable: false, gameDayId: row.gameDayId, configVersion: ctx.configVersion,
               nonce: decision.nonce ?? row.nonce, poolControlled: true,
+              // A pool trade is never continuous: the controller decided it, not the curve.
+              continuous: false, slPrice: null, tpPrice: null,
+              // The SAME ticket the trader has been quoting since the trade opened (0184). A restart
+              // must not renumber a live position.
+              ticket: row.ticket ?? null,
             };
             if (this.game.rearm(p)) report.rearmed++; else report.noop++;
           }
@@ -238,9 +243,34 @@ export class RecoveryService {
           const p: Position = {
             id: row.id, userId: row.userId, stakeCents: row.stakeCents, direction: row.direction,
             durationS: row.durationS, openedAtMs: row.openedAtMs, expiresAtMs, entryT, outcome,
-            status: "open", sellable: outcome.result === "win", gameDayId: row.gameDayId,
+            // The same rule `openPosition` applies: a continuous position can always be closed by
+            // hand, because closing pays what the price says it is worth and there is no committed
+            // outcome to protect. Without this a re-armed loser could not be closed at all, which is
+            // half the bug the levels above fix.
+            status: "open", sellable: this.game.hasPriceAxis || outcome.result === "win", gameDayId: row.gameDayId,
             configVersion: ctx.configVersion,
             nonce: row.nonce, poolControlled: false,
+            /**
+             * A RE-ARMED position comes back the way it was OPENED, levels and all.
+             *
+             * It used to come back with `continuous: false` and no levels, because there was nowhere
+             * to keep them. That was not a cosmetic loss. The engine restarts on every deploy, so
+             * routinely: a trader's stop silently disappeared, the position switched from the
+             * continuous payout it was opened under to the committed step contract, and a loser that
+             * could be closed by hand a second earlier could not be closed at all. The same trade
+             * was priced one way before the restart and another way after it.
+             *
+             * Migration 0183 persists the levels, so `row` now carries them and the objection is
+             * gone. `hasPriceAxis` is the GameServer's own test, the same one `openPosition` makes,
+             * rather than a guess from the row: a brand that charts a line still has nothing to put
+             * a level on and still keeps the committed contract.
+             */
+            continuous: this.game.hasPriceAxis,
+            slPrice: row.slPrice ?? null,
+            tpPrice: row.tpPrice ?? null,
+            // The ticket the trade opened under (0184), for the same reason the levels are here: a
+            // deploy must not change the number a trader is looking at.
+            ticket: row.ticket ?? null,
           };
           if (this.game.rearm(p)) report.rearmed++; else report.noop++;
         }

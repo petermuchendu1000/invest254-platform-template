@@ -12,6 +12,8 @@ import { BALANCE_BUMP_EVENT } from '@/lib/game/outcomeFx';
 import { useToast } from '@/lib/toast/ToastProvider';
 import { ApiError } from '@/lib/api/client';
 import { AccountMenu } from '@/components/wallet/AccountMenu';
+import { MK } from '@/lib/marketer/labels';
+import { useMarketerSkin } from '@/lib/marketer/isMarketer';
 
 /**
  * Top-bar balance + Real/Demo account switcher for the standard shell.
@@ -77,6 +79,7 @@ export function AccountSwitcher() {
     prevRef.current = total;
   }, [total]);
 
+  const { isMarketer: skin } = useMarketerSkin();
   if (!hydrated || !token || !data) return null;
 
   // A MARKETER is a normal player with a Real account (funny money) and a separate Demo practice bucket
@@ -88,6 +91,9 @@ export function AccountSwitcher() {
   // A marketer's active tab is their practice flag (account_mode stays 'demo'), so guard against the
   // PRESENTED tab, not data.mode — otherwise tapping "Demo" (always === data.mode) would no-op.
   const current: 'real' | 'demo' = marketer ? (data.marketerPractice ? 'demo' : 'real') : (data.mode === 'demo' ? 'demo' : 'real');
+  // MARKETER: neutralise the Real/Demo money vocabulary to game labels (Coins/Practice, C/P).
+  const tabLabel = demo ? (skin ? MK.practiceTab : 'Demo') : (skin ? MK.realTab : 'Real');
+  const tabBadge = demo ? (skin ? MK.practiceBadge : 'D') : (skin ? MK.realBadge : 'R');
   const switchTo = (mode: 'real' | 'demo') => {
     if (mode === current || setMode.isPending) return;
     setMode.mutate(mode, {
@@ -107,7 +113,7 @@ export function AccountSwitcher() {
         onClick={() => setOpen((v) => !v)}
         aria-haspopup="dialog"
         aria-expanded={open}
-        aria-label={`${demo ? 'Demo' : 'Real'} account, ${fmt(total)}. Switch account`}
+        aria-label={`${tabLabel} account, ${fmt(total)}. Switch account`}
         className={cn(
           'inline-flex h-11 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border bg-surface pl-1.5 pr-3 transition',
           demo ? 'border-warn/60' : 'border-border',
@@ -120,11 +126,11 @@ export function AccountSwitcher() {
           className={cn('grid h-8 w-8 shrink-0 place-items-center rounded-full text-[11px] font-bold',
             demo ? 'bg-warn/15 text-warn' : 'bg-accent/15 text-accent')}
         >
-          {demo ? 'D' : 'R'}
+          {tabBadge}
         </span>
         <span className="flex flex-col items-start leading-none">
           <span className={cn('text-[9px] font-semibold uppercase tracking-wider', demo ? 'text-warn' : 'text-muted')}>
-            {demo ? 'Demo' : 'Real'}
+            {tabLabel}
           </span>
           <span className="mt-0.5 font-mono text-[13px] font-bold tabular-nums text-fg">{fmt(Math.round(shown))}</span>
         </span>

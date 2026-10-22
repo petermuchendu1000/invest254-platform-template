@@ -16,12 +16,21 @@
     "./payments": "./src/payments.ts",
     "./curve": "./src/curve.ts",
     "./chart": "./src/chart.ts",
+    "./candles": "./src/candles.ts",
+    "./symbols": "./src/symbols.ts",
+    "./account": "./src/account.ts",
     "./engagement": "./src/engagement.ts",
     "./activity": "./src/activity.ts",
     "./chatfilter": "./src/chatfilter.ts",
     "./logger": "./src/logger.ts",
     "./fx": "./src/fx.ts",
     "./geo": "./src/geo.ts",
-    "./capabilities": "./src/capabilities.ts"
+    "./capabilities": "./src/capabilities.ts",
+    "./indicators": "./src/indicators.ts",
+    "./calendar": "./src/calendar.ts",
+    "./pending": "./src/pending.ts",
+    "./siteThemes": "./src/siteThemes.ts",
+    "./brandFonts": "./src/brandFonts.ts",
+    "./brandMark": "./src/brandMark.ts"
   }
 }

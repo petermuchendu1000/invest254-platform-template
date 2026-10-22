@@ -14,12 +14,12 @@ function typeLabel(kind: string, target: number | null): string {
     case 'under': return `Under ${target ?? ''}`.trim();
     case 'matches': return `Matches ${target ?? ''}`.trim();
     case 'differs': return `Differs ${target ?? ''}`.trim();
-    default: return kind || '—';
+    default: return kind || '-';
   }
 }
 
 const fmtTime = (ms: number | null): string =>
-  ms ? new Date(ms).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
+  ms ? new Date(ms).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '-';
 
 /**
  * Persisted, reviewable DIGIT trade history (docs/34). Each row is a full receipt: type + barrier,
@@ -76,7 +76,7 @@ export function DigitHistoryPanel({ embedded = true }: { embedded?: boolean } = 
                       {r.openIndex != null ? <span className="text-muted"> #{r.openIndex}</span> : null}
                     </div>
                     <div>
-                      out <span className="text-fg">{r.exitRate != null ? r.exitRate.toFixed(2) : '—'}</span>
+                      out <span className="text-fg">{r.exitRate != null ? r.exitRate.toFixed(2) : '-'}</span>
                       {r.settleIndex != null ? <span className="text-muted"> #{r.settleIndex}</span> : null}
                     </div>
                   </div>
@@ -92,9 +92,9 @@ export function DigitHistoryPanel({ embedded = true }: { embedded?: boolean } = 
                   {/* P/L */}
                   <div className="w-20 shrink-0 text-right">
                     <div className={cn('text-sm font-bold tabular-nums', !settled ? 'text-muted' : won ? 'text-up' : 'text-down')}>
-                      {settled ? `${pnl >= 0 ? '+' : ''}${fmt(pnl)}` : '—'}
+                      {settled ? `${pnl >= 0 ? '+' : ''}${fmt(pnl)}` : '-'}
                     </div>
-                    <div className="text-[10px] text-muted">payout {r.payoutCents != null ? fmt(r.payoutCents) : '—'}</div>
+                    <div className="text-[10px] text-muted">payout {r.payoutCents != null ? fmt(r.payoutCents) : '-'}</div>
                   </div>
                 </li>
               );

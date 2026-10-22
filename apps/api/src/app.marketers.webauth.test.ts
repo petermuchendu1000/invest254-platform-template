@@ -94,7 +94,8 @@ test("happy path: website login fetches the correct marketer name + number", asy
     // The whole point: real identity is returned, not the hardcoded demo values.
     assert.equal(body.marketer.id, id);
     assert.equal(body.marketer.name, "Peter Muchendu");
-    assert.equal(body.marketer.phone, "0722000001");
+    // Issue 2: the marketer side only ever sees its own number MASKED (0798****061 style).
+    assert.equal(body.marketer.phone, "0722****001");
     assert.equal(body.marketer.first_name, "Peter");
     assert.equal(body.marketer.initials, "PM");
   } finally { await api.close(); }
@@ -111,9 +112,9 @@ test("distinct marketers get their own identity from the same endpoint", async (
     const a = await json(await loginWeb(api, "0722000001", "wallet2pass"));
     const b = await json(await loginWeb(api, "0733000002", "wallet3pass"));
     assert.equal(a.marketer.name, "Peter Muchendu");
-    assert.equal(a.marketer.phone, "0722000001");
+    assert.equal(a.marketer.phone, "0722****001");   // masked on the marketer side (Issue 2)
     assert.equal(b.marketer.name, "Jane Wanjiru");
-    assert.equal(b.marketer.phone, "0733000002");
+    assert.equal(b.marketer.phone, "0733****002");   // masked on the marketer side (Issue 2)
     assert.equal(b.marketer.initials, "JW");
     assert.notEqual(a.marketer.id, b.marketer.id);
   } finally { await api.close(); }

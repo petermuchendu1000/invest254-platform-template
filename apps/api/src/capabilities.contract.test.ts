@@ -65,6 +65,9 @@ const PROBES: Record<Capability, Probe | { exempt: string }> = {
   "backoffice.users.set_role_admin": async (api, t, fx) => req(api, "POST", `/admin/users/${await fx.player("ra")}/role`, t, { role: "admin" }),
   "backoffice.users.delete": async (api, t, fx) => req(api, "POST", `/admin/users/${await fx.player("del")}/delete`, t),
   "backoffice.users.delete_admin": async (api, t, fx) => req(api, "POST", `/admin/users/${await fx.adminTarget()}/delete`, t),
+  // A SITE ADMIN target: the role this capability exists to help, and the one a site admin must not
+  // be able to reach. fx.adminTarget() is not the caller, so NO_SELF_ACTION cannot mask the gate.
+  "backoffice.users.reset_security_answers": async (api, t, fx) => req(api, "POST", `/admin/users/${await fx.adminTarget()}/reset-security-answers`, t),
   "backoffice.users.overrides_write": async (api, t, fx) => req(api, "POST", `/admin/users/${await fx.player("ov")}/overrides`, t, {}),
   "backoffice.marketers.default": async (api, t, fx) => req(api, "POST", `/admin/marketers/${await fx.marketer()}/make-default`, t),
   "backoffice.economy_integrity": (api, t) => req(api, "GET", "/admin/real-cash-rtp", t),

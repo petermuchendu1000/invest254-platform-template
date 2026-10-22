@@ -114,12 +114,12 @@ export default function ReportsPage() {
                 <button
                   onClick={() => setUsersSort('losers')}
                   className={usersSort === 'losers' ? 'rounded-md bg-accent/15 px-2.5 py-1 text-xs font-medium text-accent' : 'rounded-md px-2.5 py-1 text-xs font-medium text-muted hover:text-fg'}
-                  title="Highest GGR first — players the house earned the most from"
+                  title="Highest GGR first. Players the house earned the most from"
                 >Biggest losers (house +)</button>
                 <button
                   onClick={() => setUsersSort('winners')}
                   className={usersSort === 'winners' ? 'rounded-md bg-accent/15 px-2.5 py-1 text-xs font-medium text-accent' : 'rounded-md px-2.5 py-1 text-xs font-medium text-muted hover:text-fg'}
-                  title="Lowest (negative) GGR first — players who are net-winning (risk)"
+                  title="Lowest (negative) GGR first. Players who are net-winning (risk)"
                 >Biggest winners (house −)</button>
               </div>
             ) : null}
@@ -149,7 +149,7 @@ export default function ReportsPage() {
                 transactions (withdrawals exclude internal marketer transfers). <b>Turnover</b> = Σ stakes
                 on settled trades; <b>GGR</b> = Σ&nbsp;stakes&nbsp;−&nbsp;Σ&nbsp;payouts (positive = house
                 profit). Internal marketer accounts are excluded. Computed live from transactions + settled
-                positions — no cached table.
+                positions. No cached table.
               </ReportNote>
               <DailyTable rows={dailyRows} />
             </div>
@@ -172,7 +172,7 @@ export default function ReportsPage() {
 }
 
 function pct(n: number, d: number): string {
-  if (!d) return '—';
+  if (!d) return '-';
   return `${((n / d) * 100).toFixed(1)}%`;
 }
 
@@ -258,7 +258,7 @@ function DayBody({ d }: { d: AdminDayReport }) {
     <div className="flex flex-col gap-5">
       <ReportNote>
         All figures are for the selected day and <b>exclude internal marketer accounts</b>.
-        <b> Net revenue (GGR)</b> = turnover − payouts (a <i>game</i> metric from settled trades) — it is
+        <b> Net revenue (GGR)</b> = turnover − payouts (a <i>game</i> metric from settled trades). It is
         <b> not</b> a deposit. <b>Deposits</b> below is real cash in via M‑Pesa. A day can show GGR with
         zero deposits when players trade an existing balance.
       </ReportNote>

@@ -32,9 +32,10 @@ import type { Querier } from "./wallet.js";
 
 const CONFIG_COLUMNS =
   "house_edge, max_multiplier, min_stake, max_stake, min_withdrawal, default_duration_s, tick_rate_ms, drift_bias, volatility, target_win_rate, version";
-// The per-brand current row also carries the currency-native withdrawal minimum (migration 0120);
-// the legacy game_config singleton + *_versions tables do not, so only the site current query adds it.
-const SITE_CONFIG_COLUMNS = CONFIG_COLUMNS + ", min_withdrawal_native";
+// The per-brand current row also carries the currency-native withdrawal/deposit minimums (migrations
+// 0120 / 0178); the legacy game_config singleton + *_versions tables do not, so only the site current
+// query adds them.
+const SITE_CONFIG_COLUMNS = CONFIG_COLUMNS + ", min_withdrawal_native, min_deposit_native";
 
 export const CONFIG_CHANNEL = "game_config_changed";
 
@@ -58,6 +59,19 @@ export interface GameConfigStoreOptions {
   /** Brand DISPLAY currency (sites.currency). When non-KES, the store resolves the near-miss
    *  withdrawal line to KES cents at the live FX rate (docs/25 §16). Omit / 'KES' ⇒ legacy value. */
   currency?: string;
+  /**
+   * The economy to use until a stored row is read, and if the brand has none.
+   *
+   * A candlestick brand settles CONTINUOUSLY, and the step economy's 75% edge cannot price a
+   * continuous position: the best a trader could ever be shown on opening is the RTP, so at that
+   * edge every position starts near a total loss. See TERMINAL_CONFIG in shared/config.ts for the
+   * measurements. Pass `defaultConfigForProfile(profile)` so a terminal brand falls back to the
+   * spread economy and a line brand falls back to the step one.
+   *
+   * It is only a FALLBACK. A brand with a stored `site_game_config_versions` row keeps exactly what
+   * the operator saved, so this can never reprice a live brand.
+   */
+  fallback?: VersionedGameConfig;
 }
 
 export type ConfigChangeListener = (next: VersionedGameConfig, prev: VersionedGameConfig) => void;
@@ -73,6 +87,7 @@ export function mapConfigRow(x: Record<string, unknown>): VersionedGameConfig {
     maxStakeCents: Math.round(toNum(x.max_stake)),
     minWithdrawalCents: Math.round(toNum(x.min_withdrawal)),
     minWithdrawalNative: x.min_withdrawal_native == null ? null : toNum(x.min_withdrawal_native),
+    minDepositNative: x.min_deposit_native == null ? null : toNum(x.min_deposit_native),
     defaultDurationS: Math.round(toNum(x.default_duration_s)),
     tickRateMs: Math.round(toNum(x.tick_rate_ms)),
     driftBias: toNum(x.drift_bias),
@@ -301,7 +316,7 @@ export const SITE_CONFIG_CHANNEL = "site_game_config_changed";
  * fails `checkFeasible` is rejected so a bad save can never crash-loop or mis-price a brand.
  */
 export class SiteGameConfigStore implements ConfigProvider {
-  private cfg: VersionedGameConfig = DEFAULT_VERSIONED_CONFIG;
+  private cfg: VersionedGameConfig;
   private loaded = false;
   private readonly history = new Map<number, VersionedGameConfig>();
   private readonly listeners = new Set<ConfigChangeListener>();
@@ -315,7 +330,10 @@ export class SiteGameConfigStore implements ConfigProvider {
     private readonly siteId: string,
     private readonly q: Querier,
     private readonly opts: GameConfigStoreOptions = {},
-  ) {}
+  ) {
+    // See GameConfigStoreOptions.fallback: a terminal brand cannot be priced by the step economy.
+    this.cfg = opts.fallback ?? DEFAULT_VERSIONED_CONFIG;
+  }
 
   private report(err: Error, ctx: string): void {
     if (this.opts.onError) this.opts.onError(err, `${ctx} [site ${this.siteId}]`);

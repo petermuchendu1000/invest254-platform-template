@@ -8,6 +8,8 @@ import { useAmountText } from '@/lib/game/useAmountText';
 import { useWallet } from '@/lib/wallet/hooks';
 import { walletFigures } from '@/lib/wallet/figures';
 import { DIcon } from '@/components/game/digits/icons';
+import { useGameSocket } from '@/lib/game/GameSocketProvider';
+import { valueIsStale } from '@/lib/ui/dataPhase';
 import type { DigitHistoryDto } from '@/lib/api/types';
 
 type Tab = 'open' | 'closed' | 'history';
@@ -24,7 +26,7 @@ function kindLabel(kind: string, target: number | null): string {
     case 'under': return `Under ${t}`.trim();
     case 'matches': return `Matches ${t}`.trim();
     case 'differs': return `Differs ${t}`.trim();
-    default: return kind || '—';
+    default: return kind || '-';
   }
 }
 
@@ -47,6 +49,10 @@ export function PositionsPanel({ onClose, className }: { onClose?: () => void; c
   const stats = sessionStats(closed.filter((c) => !!c.demo === demo));
   const amt = useAmountText();
   const openCount = open ? 1 : 0;
+  /* These lists come from the client-side session store, not a query, so they keep reading as
+     authoritative while the socket is down. See the note passed to <Empty> below. */
+  const { status } = useGameSocket();
+  const offline = valueIsStale(status);
 
   return (
     <section className={cn('flex min-h-0 flex-col', className)} aria-label="Positions">
@@ -94,13 +100,22 @@ export function PositionsPanel({ onClose, className }: { onClose?: () => void; c
               </li>
             </ul>
           ) : (
-            <Empty title="No open positions" />
+            /* This list is the client-side session store, so with the socket down it said "No open
+               positions" with total confidence — on a screen where the player may well have one.
+               The note is the qualification; the list itself stays as it is. */
+            <Empty
+              title="No open positions"
+              {...(offline ? { note: 'Reconnecting to the live feed — this list may be out of date.' } : {})}
+            />
           )
         ) : tab === 'closed' ? (
           closed.length ? (
             <ul>{closed.map((c) => <ClosedRow key={c.id} c={c} />)}</ul>
           ) : (
-            <Empty title="No closed positions" />
+            <Empty
+              title="No closed positions"
+              {...(offline ? { note: 'Reconnecting to the live feed — this list may be out of date.' } : {})}
+            />
           )
         ) : (
           <HistoryList />
@@ -186,13 +201,14 @@ function DemoTag() {
   return <span className="rounded bg-warn/15 px-1 py-px font-sans text-[9px] font-bold text-warn">DEMO</span>;
 }
 
-function Empty({ title }: { title: string }) {
+function Empty({ title, note }: { title: string; note?: string }) {
   return (
     <div className="flex h-full min-h-[240px] flex-col items-center justify-center gap-2 px-6 py-10 text-center">
       <span className="mb-2 grid h-16 w-16 place-items-center rounded-full border border-border bg-surface-2 text-muted">
         <DIcon name="target" className="h-7 w-7" />
       </span>
       <p className="text-[15px] font-semibold text-fg">{title}</p>
+      {note ? <p className="max-w-[30ch] text-[12px] leading-snug text-muted">{note}</p> : null}
     </div>
   );
 }

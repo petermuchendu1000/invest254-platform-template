@@ -46,10 +46,10 @@ export function WalletWidget() {
         <p className="text-sm text-muted">{figures.demo ? 'Demo balance' : 'Balance'}</p>
         <Money cents={data.real + data.bonus} className="text-3xl font-semibold" />
         {figures.demo ? (
-          <p className="mt-1 text-xs text-muted">Practice money — not real cash, and never withdrawable.</p>
+          <p className="mt-1 text-xs text-muted">Practice money: not real cash, and never withdrawable.</p>
         ) : data.bonus > 0 ? (
           <p className="mt-1 text-xs text-muted">
-            Includes <Money cents={data.bonus} className="font-medium text-fg" /> bonus — stakeable now,
+            Includes <Money cents={data.bonus} className="font-medium text-fg" /> bonus: stakeable now,
             withdrawable after wagering.
           </p>
         ) : null}

@@ -11,6 +11,9 @@ import { useCountUp } from '@/lib/useCountUp';
 import { BALANCE_BUMP_EVENT } from '@/lib/game/outcomeFx';
 import { useWelcomeBonusFx } from '@/lib/game/welcomeBonusFx';
 import { useDepositUi } from '@/lib/wallet/depositUi';
+import { useTerminalSkin } from '@/lib/ui/useTerminalSkin';
+import { MT5BalanceNotice } from '@/components/game/MT5BalanceNotice';
+import { logJournal } from '@/lib/game/journal';
 
 function prefersReducedMotion(): boolean {
   return (
@@ -35,6 +38,14 @@ export function WelcomeBonusOverlay() {
   const openDeposit = useDepositUi((s) => s.openDeposit);
   const brand = useBrand();
   const { fmt } = useDisplayMoney();
+  /**
+   * A terminal reports a credit; it does not celebrate one.
+   *
+   * MetaTrader files a broker credit as a balance operation: a History deal of type `balance`, a
+   * Journal line, and the ordinary notification. No confetti, no count-up, no "Deposit and play".
+   * This file had no MetaTrader branch at all, so a terminal brand showed the gold card too.
+   */
+  const mt5 = useTerminalSkin();
 
   const { data: config } = useQuery({
     queryKey: ['gameConfig', brand.slug],
@@ -59,7 +70,10 @@ export function WelcomeBonusOverlay() {
   useEffect(() => {
     if (!current) return;
     setVisible(true);
-    if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+    // MetaTrader writes a line to the Journal for a balance operation, so this platform's own
+    // Journal tab carries one too.
+    if (mt5) logJournal('info', 'Account', `balance operation: ${fmt(current.amountCents)} credited`);
+    if (!mt5 && typeof navigator !== 'undefined' && 'vibrate' in navigator) {
       try {
         navigator.vibrate([0, 40, 60, 40, 60, 90]);
       } catch {
@@ -68,7 +82,7 @@ export function WelcomeBonusOverlay() {
     }
     const t = setTimeout(() => setVisible(false), 6000);
     return () => clearTimeout(t);
-  }, [current]);
+  }, [current, mt5, fmt]);
 
   // Remove from the store shortly after the exit transition.
   useEffect(() => {
@@ -80,6 +94,8 @@ export function WelcomeBonusOverlay() {
   // Confetti (gold + brand-green for a premium "gift" feel).
   useEffect(() => {
     if (!visible || !current) return;
+    // No confetti on a terminal, for the same reason there is no dialog: see `mt5` above.
+    if (mt5) return;
     if (prefersReducedMotion()) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -136,12 +152,14 @@ export function WelcomeBonusOverlay() {
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
       ctx.clearRect(0, 0, W, H);
     };
-  }, [visible, current]);
+  }, [visible, current, mt5]);
 
   // Bonus chip flies from the card into the balance pill, then pulses it — the same reward cue as a win.
   useEffect(() => {
     if (!visible || !current) return;
-    if (prefersReducedMotion()) {
+    // A terminal has no card for the chip to fly from, but the balance pill must still be told the
+    // money landed — without this it kept the pre-credit figure until something else refreshed it.
+    if (mt5 || prefersReducedMotion()) {
       window.dispatchEvent(new CustomEvent(BALANCE_BUMP_EVENT));
       return;
     }
@@ -179,11 +197,23 @@ export function WelcomeBonusOverlay() {
       clearTimeout(t1);
       fly.removeEventListener('transitionend', onEnd);
     };
-  }, [visible, current]);
+  }, [visible, current, mt5]);
 
   const nudge = useMemo(() => (minStakeCents && minStakeCents > 0 ? `Min stake ${fmt(minStakeCents)}` : ''), [minStakeCents, fmt]);
 
   if (!current) return null;
+
+  if (mt5) {
+    return (
+      <MT5BalanceNotice
+        amountCents={amountCents}
+        visible={visible}
+        onDismiss={() => setVisible(false)}
+        // MetaTrader prints the broker's own comment against a balance operation. This is ours.
+        comment="Welcome credit applied to your account."
+      />
+    );
+  }
 
   return (
     <div

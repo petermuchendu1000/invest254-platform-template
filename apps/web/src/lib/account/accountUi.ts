@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch, ApiError } from '@/lib/api/client';
 import { env } from '@/lib/env';
 import { useSession } from '@/lib/auth/session';
+import { kycLabelSuffix } from './kycLabel';
 
 /** ACCT-1: which account dialog is open (Two-factor, Verify identity). */
 export const useAccountUi = create<{ dialog: null | 'twofactor' | 'verify'; open: (d: 'twofactor' | 'verify') => void; close: () => void }>((set) => ({
@@ -22,6 +23,8 @@ export interface KycStaffRow {
 /** Player two-factor (authenticator app) is switched off until SMS codes via Africa's Talking are ready.
  *  Staff two-factor is unaffected. The sign-in code step stays, so nobody already enrolled is locked out. */
 export const PLAYER_TWO_FACTOR = false;
+export { kycLabelSuffix };
+
 export const DOC_LABEL: Record<string, string> = { national_id: 'National ID', passport: 'Passport', driving_licence: 'Driving licence' };
 
 export function useMyKyc(enabled = true) {
@@ -44,9 +47,24 @@ export function useSubmitKyc() {
       const frontId = await uploadKycFile(token as string, v.front);
       const backId = v.back ? await uploadKycFile(token as string, v.back) : undefined;
       const selfieId = await uploadKycFile(token as string, v.selfie);
-      return apiFetch<{ id: string }>('/kyc', { method: 'POST', token, body: { docType: v.docType, fullName: v.fullName, idNumber: v.idNumber, dateOfBirth: v.dateOfBirth, frontId, selfieId, ...(backId ? { backId } : {}) } });
+      return apiFetch<{ id: string; status: KycMine['status'] }>('/kyc', { method: 'POST', token, body: { docType: v.docType, fullName: v.fullName, idNumber: v.idNumber, dateOfBirth: v.dateOfBirth, frontId, selfieId, ...(backId ? { backId } : {}) } });
     },
-    onSuccess: () => { void qc.invalidateQueries({ queryKey: ['kyc'] }); },
+    /**
+     * Write what the server just said, THEN refetch.
+     *
+     * The POST's own reply carries `{ id, status: "pending" }` and it was being thrown away, so the
+     * only way the screen ever learned about the submission was the refetch below. If that refetch
+     * was slow or failed, react-query kept serving the last good answer — `status: 'none'` — and
+     * the form came back. The known result must not depend on a second request succeeding.
+     */
+    onSuccess: (r, v) => {
+      qc.setQueryData<KycMine>(['kyc', 'me'], (prev) => ({
+        ...(prev ?? {}),
+        status: r.status ?? 'pending',
+        latest: { ...(prev?.latest ?? {}), id: r.id, status: 'pending', docType: v.docType },
+      } as KycMine));
+      void qc.invalidateQueries({ queryKey: ['kyc'] });
+    },
   });
 }
 

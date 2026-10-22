@@ -66,7 +66,7 @@ export function DomainImport({ platformId }: { platformId?: string | undefined }
             ...(platformId ? { platformId } : {}),
           });
           const dm = r.domain;
-          const msg = !dm ? 'Brand created' : dm.nameserversUpdated ? 'Live — nameservers set' : `Set NS: ${dm.nameServers.join(', ')}`;
+          const msg = !dm ? 'Brand created' : dm.nameserversUpdated ? 'Live: nameservers set' : `Set NS: ${dm.nameServers.join(', ')}`;
           setState(d.domain, { status: 'done', message: msg });
         } catch (e) {
           setState(d.domain, { status: 'error', message: (e as Error).message });
@@ -146,14 +146,14 @@ export function DomainImport({ platformId }: { platformId?: string | undefined }
                       : <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-500">Available</span>}
                   </td>
                   <td className="px-3 py-2">
-                    {d.alreadyClient ? <span className="text-xs text-muted">—</span> : (
+                    {d.alreadyClient ? <span className="text-xs text-muted">-</span> : (
                       <input value={slugOf(d)} onChange={(e) => setSlugs((s) => ({ ...s, [d.domain]: e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '') }))}
                         className="w-32 rounded-md border border-border bg-surface px-2 py-1 text-xs text-fg outline-none focus:border-accent" />
                     )}
                   </td>
-                  <td className="px-3 py-2 text-xs text-muted">{d.expires ?? '—'}</td>
+                  <td className="px-3 py-2 text-xs text-muted">{d.expires ?? '-'}</td>
                   <td className="px-3 py-2 text-xs">
-                    {!rs ? <span className="text-muted">—</span>
+                    {!rs ? <span className="text-muted">-</span>
                       : rs.status === 'working' ? <span className="text-accent">Working…</span>
                       : rs.status === 'queued' ? <span className="text-muted">Queued</span>
                       : rs.status === 'done' ? <span className="text-emerald-500">✓ {rs.message}</span>

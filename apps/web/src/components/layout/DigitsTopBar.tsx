@@ -18,9 +18,11 @@ import { useLiveChatUnread } from '@/components/chat/LiveChatPanel';
 import { useMyNotifications, useDismissNotification } from '@/lib/notifications/hooks';
 import { DIcon, type IconName } from '@/components/game/digits/icons';
 import { AccountMenu, AccountPill, ChangePasswordModal } from '@/components/layout/DigitsAccount';
-import { useAccountUi } from '@/lib/account/accountUi';
+import { useAccountUi, useMyKyc, kycLabelSuffix } from '@/lib/account/accountUi';
 import { SoundToggle } from '@/components/layout/SoundToggle';
 import { useSound } from '@/lib/sound/sound';
+import { useMarketerSkin } from '@/lib/marketer/isMarketer';
+import { MK } from '@/lib/marketer/labels';
 
 /** Brand wordmark in two tones (first word light, the rest in the accent), e.g. "Tamu" + "Traders". */
 function Wordmark({ text, className }: { text: string; className?: string }) {
@@ -123,6 +125,7 @@ function Bell() {
  */
 export function DigitsTopBar() {
   const brand = useBrand();
+  const { isMarketer } = useMarketerSkin();
   const wordmark = brandWordmark(brand);
   const hydrated = useHydrated();
   const token = useSession((s) => s.token);
@@ -153,22 +156,27 @@ export function DigitsTopBar() {
   }, [menuOpen]);
 
   const authed = hydrated && !!token;
+  // Only once signed in: the entry it labels is itself behind `authed`.
+  const kyc = useMyKyc(authed);
   const figures = useWalletFigures();
   const needAuth = (fn: () => void) => () => (authed ? fn() : openAuth('login'));
 
   const drawer: { icon: IconName; label: string; onClick?: () => void; href?: string }[] = [
-    { icon: 'trend', label: "Trader's Hub", href: '/' },
+    { icon: 'trend', label: isMarketer ? MK.navHome : "Trader's Hub", href: '/' },
     { icon: 'deposit', label: 'Deposit', onClick: needAuth(() => openDeposit()) },
     // DEMO-3: no way out of the Demo account — the item is absent, not disabled. Signed-out visitors
     // still see it (they have no account yet, so nothing is being hidden from them).
     ...(!authed || figures.canWithdraw ? [{ icon: 'withdraw' as IconName, label: 'Withdraw', onClick: needAuth(openWithdraw) }] : []),
     { icon: 'history', label: 'History', onClick: needAuth(() => setHistoryOpen(true)) },
     { icon: 'chat', label: 'Live Chat', onClick: () => setSupportOpen(true) },
-    { icon: 'book', label: 'How to Trade', onClick: () => setHowToOpen(true) },
+    { icon: 'book', label: isMarketer ? MK.howToPlay : 'How to Trade', onClick: () => setHowToOpen(true) },
     { icon: 'user', label: 'Account', href: '/account' },
     // phones had no way to these two (the avatar menu is desktop-only)
     ...(authed ? [
-      { icon: 'idcard' as IconName, label: 'Verify Identity', onClick: () => openAccountDialog('verify') },
+      // The state goes in the label, as the desktop menu already does. On a phone this drawer is
+      // the only way to the dialog, so a plain "Verify Identity" was the one place a trader whose
+      // documents were already under review saw no trace of it.
+      { icon: 'idcard' as IconName, label: `Verify Identity${kycLabelSuffix(kyc.data?.status)}`, onClick: () => openAccountDialog('verify') },
       { icon: 'lock' as IconName, label: 'Change Password', onClick: () => setPwOpen(true) },
     ] : []),
     { icon: 'shield', label: 'Legal', href: '/legal' },
@@ -180,16 +188,16 @@ export function DigitsTopBar() {
         {/* ── Desktop ── */}
         <div className="hidden h-[72px] items-center gap-2 px-4 lg:flex">
           <Link href="/" aria-label={`${brand.name} home`} className="shrink-0"><Wordmark text={wordmark} className="text-[19px]" /></Link>
-          <Link href="/" aria-label="Trade" className="ml-4 grid h-10 w-10 place-items-center rounded-xl border border-accent/40 bg-accent/10 text-accent">
-            <DIcon name="trend" className="h-5 w-5" />
+          <Link href="/" aria-label={isMarketer ? 'Play' : 'Trade'} className="ml-4 grid h-10 w-10 place-items-center rounded-xl border border-accent/40 bg-accent/10 text-accent">
+            {isMarketer ? <svg viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5" aria-hidden><path d="M8 5v14l11-7z" /></svg> : <DIcon name="trend" className="h-5 w-5" />}
           </Link>
-          <Link href="/" className="ml-2 hidden whitespace-nowrap px-2 text-[14px] font-semibold text-fg xl:inline">Trader’s Hub</Link>
+          <Link href="/" className="ml-2 hidden whitespace-nowrap px-2 text-[14px] font-semibold text-fg xl:inline">{isMarketer ? MK.navHome : 'Trader’s Hub'}</Link>
           <NavButton icon="deposit" label="Deposit" onClick={needAuth(() => openDeposit())} />
           {!authed || figures.canWithdraw ? <NavButton icon="withdraw" label="Withdraw" onClick={needAuth(openWithdraw)} /> : null}
           <NavButton icon="history" label="History" onClick={needAuth(() => setHistoryOpen(true))} />
           <NavButton icon="sparkles" label="AI" variant="accent" onClick={() => openScanner(true)} />
           <span className="relative"><NavButton icon="chat" label="Live Chat" variant="pill" onClick={() => setSupportOpen(true)} />{chatUnread ? <span data-badge="chat" className="absolute -right-1 -top-1 grid h-4 min-w-4 place-items-center rounded-full bg-down px-1 text-[9px] font-bold text-white">{chatUnread}</span> : null}</span>
-          <NavButton icon="book" label="How to Trade" variant="pill" onClick={() => setHowToOpen(true)} />
+          <NavButton icon="book" label={isMarketer ? MK.howToPlay : 'How to Trade'} variant="pill" onClick={() => setHowToOpen(true)} />
 
           <div className="ml-auto flex min-w-0 items-center gap-3">
             {authed ? (

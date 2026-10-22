@@ -138,7 +138,7 @@ function TodaySection({ loading, error, rows, showPlatform }: { loading: boolean
                     <Td numeric>{kes(r.defaultCents)}</Td>
                     <Td numeric className="font-medium text-fg" >{kes(r.todayCents)}</Td>
                     <Td numeric>{kes(r.paidCents)}</Td>
-                    <Td numeric>{r.reservedCents ? kes(r.reservedCents) : '—'}</Td>
+                    <Td numeric>{r.reservedCents ? kes(r.reservedCents) : '-'}</Td>
                     <Td numeric className={r.poolMode && r.todayCents > 0 && r.availableCents === 0 ? 'text-down' : ''}>{kes(r.availableCents)}</Td>
                     <Td>
                       <div className="flex items-center gap-2" title={`${used}% used or reserved`}>
@@ -148,7 +148,7 @@ function TodaySection({ loading, error, rows, showPlatform }: { loading: boolean
                         <span className="text-xs tabular-nums text-muted">{used}%</span>
                       </div>
                     </Td>
-                    <Td numeric>{r.pendingCount ? <span className="text-warn">{r.pendingCount} · {kes(r.pendingCents)}</span> : '—'}</Td>
+                    <Td numeric>{r.pendingCount ? <span className="text-warn">{r.pendingCount} · {kes(r.pendingCents)}</span> : '-'}</Td>
                     <Td numeric>{kes(r.paid7dCents)}</Td>
                     {isOwner ? <Td><Button size="sm" variant="outline" onClick={() => setEdit(r)} aria-label={`Adjust ${r.name}`}>Adjust…</Button></Td> : null}
                   </tr>
@@ -156,8 +156,8 @@ function TodaySection({ loading, error, rows, showPlatform }: { loading: boolean
               })}
               <tr className="border-t border-border bg-surface-2/40 font-medium">
                 <Td>Total (pool on)</Td><Td numeric>{kes(t.def)}</Td><Td numeric>{kes(t.budget)}</Td><Td numeric>{kes(t.paid)}</Td>
-                <Td numeric>{t.reserved ? kes(t.reserved) : '—'}</Td><Td numeric>{kes(t.avail)}</Td><Td><span className="text-xs text-muted">{usedPct}%</span></Td>
-                <Td numeric>{t.pend || '—'}</Td><Td numeric>{kes(t.p7)}</Td>{isOwner ? <Td /> : null}
+                <Td numeric>{t.reserved ? kes(t.reserved) : '-'}</Td><Td numeric>{kes(t.avail)}</Td><Td><span className="text-xs text-muted">{usedPct}%</span></Td>
+                <Td numeric>{t.pend || '-'}</Td><Td numeric>{kes(t.p7)}</Td>{isOwner ? <Td /> : null}
               </tr>
             </tbody>
           </TableWrap>
@@ -233,7 +233,7 @@ function AutoSection({ target }: { target: string | undefined }) {
           <div className="flex flex-col gap-0.5">
             <span className="flex items-center gap-2 text-sm font-semibold">
               <span className={cn('h-2 w-2 rounded-full', s.mode === 'off' ? 'bg-muted' : 'bg-up')} />
-              {s.mode === 'off' ? 'Off' : s.mode === 'dynamic' ? 'On — by demand' : 'On — even split'}
+              {s.mode === 'off' ? 'Off' : s.mode === 'dynamic' ? 'On: by demand' : 'On: even split'}
               {s.isDefault ? <span className="rounded-full bg-surface-2 px-2 py-0.5 text-[11px] font-medium text-muted">default</span> : null}
             </span>
             <span className="text-xs text-muted">Runs every day at 00:15 (Nairobi time) and sets each brand’s daily default for the new day.</span>

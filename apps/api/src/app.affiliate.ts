@@ -1,7 +1,9 @@
-import { Router, ApiError, requireAuth, requireRole, requireSiteAdmin, requireSite, requireEarningRole, adminScopeSite, adminListSite, rateLimit, DEFAULT_SITE_ID, type Ctx } from "./http.js";
+import { Router, ApiError, requireAuth, requireRole, requireSiteAdmin, requireSite, requireEarningRole, adminScopeSite, adminListSite, rateLimit, restrictToCidrs, DEFAULT_SITE_ID, type Ctx } from "./http.js";
 import { assertUserTarget, assertSiteTarget } from "./scope.js";
 import type { PageQuery } from "@invest254/engine";
 import type { ApiDeps } from "./app.js";
+import type { LiveSession } from "./livesessions.pg.js";
+import type { MarketerMoneyRepo, MoneyRangeBounds } from "./referral.pg.js";
 import { parseB2cResult } from "./app.payments.js";
 import { requireApprovalPassword } from "./approvalgate.js";
 
@@ -47,6 +49,72 @@ function pageQuery(ctx: Ctx): PageQuery {
   return { limit: limitRaw === null ? undefined : Number(limitRaw), cursor: ctx.query.get("cursor") };
 }
 
+// ── The marketer money table's range filter ─────────────────────────────────────────────────────
+//
+// CONVENTION REUSED (quoted so the next reader does not have to go looking). The bounds this enum
+// resolves to are the admin money-report convention, `reportRange` in app.admin.ts:112-126 and
+// `PgAdminRepo.reportDaily` in apps/engine/src/admin.ts:1104-1138:
+//
+//     and ($1::date is null or (created_at at time zone 'Africa/Nairobi')::date >= $1::date)
+//     and ($2::date is null or (created_at at time zone 'Africa/Nairobi')::date <= $2::date)
+//
+// i.e. inclusive `YYYY-MM-DD` bounds [from, to] (NOT half-open), `null` meaning unbounded on that
+// side, and the day boundary taken in EAT — the brand's own day. "Today (EAT)" is spelled exactly
+// as the admin day explorer spells it (app.admin.ts:625):
+//     new Date().toLocaleDateString("en-CA", { timeZone: "Africa/Nairobi" })
+// The response ECHOES the resolved window (`{ range, from, to }`), following
+// `GET /platform/performance` (app.platform.ts:480-495) and `GET /site/leaderboard`
+// (app.activity.ts:55-60) — a UI showing a windowed figure must be able to label what it is showing.
+//
+// The trailing-window lengths match the client-side period resolver the app already ships,
+// `periodRange` in apps/web/src/lib/history/mt5history.ts:66-140 (`week: today - 6 * DAY_MS`,
+// `month: today - 29 * DAY_MS`, `quarter: today - 89 * DAY_MS`): N days ENDING TODAY, inclusive.
+// They are named `7d`/`30d`/`90d`/`180d` rather than `week`/`month` on purpose — the leaderboard's
+// `week`/`month` (activity.pg.ts:62-68) are calendar-TO-DATE (`date_trunc('week', now())`), which is
+// a different window, and reusing those names for a trailing one would be a trap.
+//
+// DEPARTURE, deliberate: the leaderboard reads an unknown `period` as `today` rather than refusing,
+// because "it reaches this from a tab, and a bad tab should show a board, not an error"
+// (app.activity.ts:44-45). This is a money statement, not a board: a range we did not understand
+// must not be silently answered with a different range's figures, so an unknown value is a 400 in
+// the style of the report parser's own `INVALID_DATE`/`INVALID_RANGE` refusals (app.admin.ts:131-137).
+export const MONEY_RANGES = ["today", "yesterday", "7d", "30d", "90d", "180d", "all"] as const;
+export type MoneyRangeKey = (typeof MONEY_RANGES)[number];
+
+/** Trailing window length in days, INCLUDING today (so `7d` is today and the six days before it). */
+const TRAILING_DAYS: Readonly<Record<string, number>> = { "7d": 7, "30d": 30, "90d": 90, "180d": 180 };
+
+/** The EAT (Africa/Nairobi, UTC+3, no DST) calendar date for an instant — the brand's own day key. */
+function eatDay(nowMs: number): string {
+  return new Date(nowMs).toLocaleDateString("en-CA", { timeZone: "Africa/Nairobi" });
+}
+
+/** Shift a `YYYY-MM-DD` calendar date by whole days (date arithmetic only — no clock, no zone). */
+function shiftDay(ymd: string, days: number): string {
+  const [y, m, d] = ymd.split("-").map(Number);
+  return new Date(Date.UTC(y as number, (m as number) - 1, (d as number) + days)).toISOString().slice(0, 10);
+}
+
+/** Resolve a range key to inclusive EAT date bounds; `all` is unbounded on both sides. */
+export function resolveMoneyRange(key: MoneyRangeKey, nowMs: number): MoneyRangeBounds {
+  if (key === "all") return { from: null, to: null };
+  const today = eatDay(nowMs);
+  if (key === "today") return { from: today, to: today };
+  if (key === "yesterday") { const y = shiftDay(today, -1); return { from: y, to: y }; }
+  return { from: shiftDay(today, -(TRAILING_DAYS[key] as number) + 1), to: today };
+}
+
+/** Parse `?range=` as a CLOSED enum. Absent means today; anything unrecognised is refused (400). */
+export function moneyRangeOf(ctx: Ctx): MoneyRangeKey {
+  const raw = ctx.query.get("range");
+  if (raw === null || raw.trim() === "") return "today";
+  const key = raw.trim().toLowerCase();
+  if (!(MONEY_RANGES as readonly string[]).includes(key)) {
+    throw new ApiError("INVALID_RANGE", `range must be one of ${MONEY_RANGES.join("|")}`, 400);
+  }
+  return key as MoneyRangeKey;
+}
+
 /** Run an AffiliateService call, translating thrown domain error codes into controlled ApiErrors. */
 async function domain<T>(fn: () => Promise<T>): Promise<T> {
   try {
@@ -76,10 +144,15 @@ export function registerAffiliateRoutes(router: Router, deps: ApiDeps): void {
   // F-44: tier-aware, fail-closed target scope for marketer-addressed admin routes (scope.ts).
   const scope = { siteOfUser: (id: string) => deps.admin.siteOfUser(id), platformOfSite: (s: string) => deps.platform.platformOfSite(s) };
   const strictScope = scope;
+  // Lock the public Daraja B2C payout-result callback to Safaricom's source IPs when
+  // MPESA_CALLBACK_ALLOWED_CIDRS is set — the same guard, the same env var and the same
+  // fail-open-when-unset semantics as the payment callbacks in app.payments.ts.
+  const darajaOnly = restrictToCidrs("MPESA_CALLBACK_ALLOWED_CIDRS");
 
   // Public referral-link click tracking (funnel stage 0, docs/19). Fire-and-forget from the
   // /r/<code> landing page BEFORE signup, so no auth. Tolerant: an unknown/inactive code is a
-  // silent no-op (recorded:false) and never errors. IP rate-limited to blunt click-spam.
+  // silent no-op and never errors — and the response does not say which (see below). IP
+  // rate-limited to blunt click-spam.
   const clickLimit = rateLimit({ name: "aff-click", by: "ip", limit: Number(process.env.RATE_LIMIT_AFF_CLICK_PER_MIN) || 60, windowMs: 60_000 });
   router.post(`${BASE}/affiliate/click`, clickLimit, async (ctx: Ctx) => {
     const b = ctx.body && typeof ctx.body === "object" ? (ctx.body as Record<string, unknown>) : {};
@@ -89,8 +162,14 @@ export function registerAffiliateRoutes(router: Router, deps: ApiDeps): void {
     let siteId: string | undefined;
     const ref = typeof b.site === "string" && b.site.trim() ? b.site.trim() : undefined;
     if (ref) siteId = /^[0-9a-f-]{36}$/i.test(ref) ? ref : (await deps.brandByHost(ref.toLowerCase()))?.siteId;
-    const recorded = await domain(() => deps.affiliate.recordClick(code.trim(), siteId));
-    return { recorded };
+    // Record only real codes (unchanged server-side), but NEVER tell the caller which it was: the
+    // old `recorded:false` made this unauthenticated endpoint a free oracle for enumerating the
+    // live referral-code space across every brand — the input to commission fraud (seed a funnel
+    // with harvested codes) and a privacy leak about which marketers exist. The response is
+    // deliberately uninformative and constant; the real outcome is in the funnel data, which only
+    // the owning marketer can read via /affiliate/summary.
+    await domain(() => deps.affiliate.recordClick(code.trim(), siteId));
+    return { recorded: true };
   });
 
   router.post(`${BASE}/affiliate/enroll`, auth, earner, site, async (ctx: Ctx) => {
@@ -132,6 +211,146 @@ export function registerAffiliateRoutes(router: Router, deps: ApiDeps): void {
       deps.marketerExpenses.total(ctx.claims!.userId),
     ]));
     return { items, totalCents };
+  });
+
+  /**
+   * ── The marketer's money, as a range-filterable statement (the /dashboard money table) ────────
+   *
+   * IDENTITY: gated `auth, site, marketer` — the same gate as every other route on this dashboard —
+   * so `ctx.claims!.userId` is the AFFILIATE marketer's `profiles.id`, which is the key on
+   * `deposit_commissions.beneficiary_user`, `marketer_expenses.marketer_user_id`,
+   * `marketer_advance_requests.marketer_user_id` and `commission_payouts.beneficiary_user` (see the
+   * identity note above and the schema citations in referral.pg.ts). It is NOT the `public.marketers`
+   * till-app id; gating this on `requireMarketer` would 403 the dashboard's own marketer.
+   *
+   * LIFETIME vs WINDOWED. The response carries BOTH, separately named, and never mixes them:
+   *   - `lifetime` is the authoritative ladder behind the hero: earned − expenses − paid − held,
+   *     floored at 0 by fn_commission_balance, over ALL time. fn_commission_balance takes only
+   *     (p_user uuid); there is no ranged variant and this route does not invent one, because
+   *     "Available to withdraw" is a lifetime balance and a windowed "available" would be a
+   *     different, unpayable number.
+   *   - `window` is what happened inside [from, to]. Its own figures reconcile among themselves, and
+   *     the response echoes `{ range, from, to }` so the client can label every windowed figure as
+   *     windowed. The two are never added together.
+   *
+   * BUGLOG #23: `commissions`/`expenses`/`advances` are limit-capped display PAGES; every total in
+   * `window` and `lifetime` is an independent SQL aggregate over the full range. No total is derived
+   * from a page.
+   */
+  const moneyRepo = (): MarketerMoneyRepo => {
+    // The Postgres referral repo (makePgReferralRepo) implements this; an in-memory fake that does
+    // not gets a refusal it can act on rather than a 500.
+    const r = deps.referral as Partial<MarketerMoneyRepo>;
+    if (typeof r.marketerMoney !== "function") {
+      throw new ApiError("MONEY_UNAVAILABLE", "the ranged money statement is not configured", 503);
+    }
+    return r as MarketerMoneyRepo;
+  };
+  router.get(`${BASE}/affiliate/money`, auth, site, marketer, async (ctx: Ctx) => {
+    const range = moneyRangeOf(ctx);                      // closed enum, parsed here; bad value -> 400
+    const bounds = resolveMoneyRange(range, Date.now());
+    const raw = Number(ctx.query.get("limit"));
+    const limit = Number.isFinite(raw) && raw > 0 ? Math.min(Math.floor(raw), 200) : 50;
+    const statement = await domain(() => moneyRepo().marketerMoney(ctx.claims!.userId, bounds, limit));
+    return { range, from: bounds.from, to: bounds.to, limit, ...statement };
+  });
+
+  /**
+   * ── LIVE SESSIONS (0191). A marketer marks when they are live; the window reports what they
+   *    already earned inside it. Reporting only — attribution is unchanged. ──────────────────
+   *
+   * These live HERE, under the affiliate gate, and not beside the `public.marketers` routes, which
+   * is where they were first written and where they could never have worked. The two "marketers"
+   * in this codebase are different entities:
+   *
+   *   - `public.marketers` — the field-agent till app, its own table, its own PIN login, whose
+   *     token subject is a `marketers.id` and whose money lives in `marketer_wallets`.
+   *   - a `profiles` row with role='marketer' — the affiliate who earns `deposit_commissions` and
+   *     reads the /dashboard this panel is mounted on. Its token subject is a `profiles.id`.
+   *
+   * Everything a live session touches is keyed to the SECOND one: `marketer_live_sessions
+   * .marketer_id` and `community_posts.author_id` both reference `profiles(id)`, and
+   * `deposit_commissions.beneficiary_user` — the column the earnings join matches on — is a
+   * `profiles.id` too. Gated by `requireMarketer` (the till app) the dashboard's own marketer got
+   * 403 NOT_MARKETER, so the panel rendered nothing and Start Live never appeared; a till-app token
+   * that did reach it would have failed the foreign key with a 500. Same gate as every other route
+   * on this dashboard now, so the id the store receives is the id the schema expects.
+   */
+  const liveStore = () => {
+    if (!deps.liveSessions) throw new ApiError("LIVE_UNAVAILABLE", "live sessions are not configured", 503);
+    return deps.liveSessions;
+  };
+  /** A refusal the marketer can act on, rather than a 500. */
+  const liveError = (e: unknown): never => {
+    const m = e instanceof Error ? e.message : "";
+    if (m === "LIVE_DISABLED") throw new ApiError("LIVE_DISABLED", "live sessions are off for this brand", 409);
+    if (m === "ALREADY_LIVE") throw new ApiError("ALREADY_LIVE", "a session is already running", 409);
+    if (m === "DAILY_LIMIT_REACHED") throw new ApiError("DAILY_LIMIT_REACHED", "no sessions left today", 409);
+    throw e;
+  };
+  // requireSite has already rejected a token naming another brand, so ctx.siteId IS this marketer's
+  // brand. DEFAULT_SITE_ID only covers a single-brand deployment that sends no site at all.
+  const liveSiteId = (ctx: Ctx): string => ctx.siteId ?? DEFAULT_SITE_ID;
+
+  /** The marketer's own view: the running session (if any), the brand's rules, and recent history. */
+  router.get(`${BASE}/affiliate/live`, auth, site, marketer, async (ctx: Ctx) => {
+    const siteId = liveSiteId(ctx);
+    const store = liveStore();
+    const [settings, current, history] = await Promise.all([
+      store.settings(siteId),
+      store.current(siteId, ctx.claims!.userId),
+      store.history(siteId, ctx.claims!.userId, 20),
+    ]);
+    return { settings, current, history };
+  });
+
+  router.post(`${BASE}/affiliate/live/start`, auth, site, marketer, async (ctx: Ctx) => {
+    const body = ctx.body && typeof ctx.body === "object" ? (ctx.body as Record<string, unknown>) : {};
+    const url = typeof body.streamUrl === "string" ? body.streamUrl : null;
+    const siteId = liveSiteId(ctx);
+    let session: LiveSession;
+    try {
+      session = await liveStore().start(siteId, ctx.claims!.userId, url);
+    } catch (e) { return liveError(e); }
+
+    /**
+     * Going live tells the brand's players, in the app.
+     *
+     * This runs AFTER the session exists and never fails the request: a marketer who is about to
+     * stream must not be told "you are not live" because a notification fan-out had a bad minute.
+     * A session with no announcement is a working session; a refused Start Live is not.
+     */
+    try {
+      // scopeNames is optional on ApiDeps; without it the copy stays brand-neutral rather than
+      // naming the wrong brand, and the session is unaffected either way.
+      const brandName = (deps.scopeNames ? (await deps.scopeNames(siteId, null)).siteName : null) ?? "We";
+      if (deps.community) await deps.community.announceLive(siteId, ctx.claims!.userId, session.streamUrl, brandName);
+      if (deps.notifications) {
+        const { title, body: text } = liveAnnouncement(brandName, session.streamUrl);
+        await deps.notifications.broadcast(
+          ctx.claims!.userId, ctx.claims!.role ?? "marketer", "brand_live",
+          // Every account on THIS brand, players only. The audience is brand-scoped inside
+          // fn_broadcast_notification too, which is what stops one brand reaching another's people.
+          { sites: [siteId], roles: ["player"] },
+          { title, body: text },
+        );
+      }
+    } catch {
+      /* announced or not, the session is live — see the note above */
+    }
+    return session;
+  });
+
+  router.post(`${BASE}/affiliate/live/end`, auth, site, marketer, async (ctx: Ctx) => {
+    const ended = await liveStore().end(liveSiteId(ctx), ctx.claims!.userId);
+    if (!ended) throw new ApiError("NOT_LIVE", "no session to end", 409);
+    return ended;
+  });
+
+  router.post(`${BASE}/affiliate/live/extend`, auth, site, marketer, async (ctx: Ctx) => {
+    const extended = await liveStore().extend(liveSiteId(ctx), ctx.claims!.userId);
+    if (!extended) throw new ApiError("NOT_LIVE", "no session to extend", 409);
+    return extended;
   });
 
   // ── Payouts (I4): marketer request → admin approve/reject → M-Pesa B2C result ──
@@ -200,7 +419,10 @@ export function registerAffiliateRoutes(router: Router, deps: ApiDeps): void {
   });
 
   // Public: Daraja B2C result for a payout (network-allowlisted at the edge). Always acks.
-  router.post(`${BASE}/affiliate/payouts/mpesa/result/:payoutId`, async (ctx: Ctx) => {
+  // Same source lock as every other Daraja callback (app.payments.ts): this route COMPLETES a real
+  // commission payout from its body alone, so without the allowlist anyone who can guess a payout
+  // id can forge a success/failure result. Unset MPESA_CALLBACK_ALLOWED_CIDRS = disabled (fail-open).
+  router.post(`${BASE}/affiliate/payouts/mpesa/result/:payoutId`, darajaOnly, async (ctx: Ctx) => {
     const r = parseB2cResult(ctx.body);
     await domain(() => deps.affiliate.completePayout(ctx.params.payoutId!, r.resultCode, r.conversationId, r.receipt, null, ctx.body));
     return DARAJA_ACK;
@@ -307,4 +529,24 @@ export function registerAffiliateRoutes(router: Router, deps: ApiDeps): void {
     const r = await domain(() => deps.affiliate.accrueDaily(period, site));
     return { period, site: site ?? null, buckets: r.buckets, totalCommissionCents: r.totalCommissionCents };
   });
+}
+
+/**
+ * The broadcast copy for a live session.
+ *
+ * Persuasive and true: it names the brand, says what is happening, and invites people in. It does
+ * NOT promise a win, imply the session pays better, invent a countdown, or claim others are winning
+ * right now — the lines that turn marketing into misrepresentation on a real-money product.
+ *
+ * The PER-PLAYER version (which also states that player's own balance) is `liveMessage` in
+ * community.pg.ts. This one is the single text a broadcast sends to everyone, so it carries no
+ * figure that would be wrong for anybody.
+ */
+function liveAnnouncement(brandName: string, streamUrl: string | null): { title: string; body: string } {
+  return {
+    title: `${brandName} is live now`,
+    body: streamUrl
+      ? `We are trading live right now. Come and trade along with us: ${streamUrl}`
+      : `We are trading live right now. Come and trade along with us.`,
+  };
 }

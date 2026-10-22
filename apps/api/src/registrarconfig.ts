@@ -131,7 +131,7 @@ export class RegistrarConfigService {
     if (!apiUser || !apiKey) return { ok: false, detail: "Enter the Namecheap API user and API key first.", egressIp };
     try {
       await makeNamecheapRegistrar({ apiUser, userName, apiKey, clientIp }).listDomains();
-      return { ok: true, detail: "Connected — Namecheap API responded successfully.", egressIp };
+      return { ok: true, detail: "Connected. Namecheap API responded successfully.", egressIp };
     } catch (e) {
       return { ok: false, detail: (e as Error).message.slice(0, 240), egressIp };
     }

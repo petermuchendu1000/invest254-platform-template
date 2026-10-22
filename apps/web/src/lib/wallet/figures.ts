@@ -67,3 +67,28 @@ export function walletFigures(w: WalletLike | null | undefined): WalletFigures {
     demoBalance: w.demoBalance ?? (inDemo ? w.real : 0),
   };
 }
+
+/**
+ * What to offer when a stake is larger than the spendable balance.
+ *
+ * Three outcomes, because there are three kinds of balance a shortfall can happen on, and they are
+ * refilled by three different calls:
+ *
+ *   refill-demo      the DEMO bucket — a player's demo, or a marketer's practice bucket (0176).
+ *                    `POST /wallet/demo/topup` tops up whichever of the two the account has.
+ *   refill-marketer  a MARKETER's funny money, which is not a demo bucket and is not topped up by
+ *                    that call. It has its own: `POST /marketers/me/demo-topup` (migration 0102).
+ *   deposit          real money. Only a player ever reaches this.
+ *
+ * It is a function here rather than a condition at each call site because the digits shell had the
+ * condition twice, both times written as `wallet.mode === 'demo'` — which is permanently true for a
+ * marketer. A marketer short on their funny money therefore refilled their PRACTICE bucket: a bucket
+ * they were not playing, while a toast told them the refill had worked and the stake still would not
+ * place. Getting that wrong silently is exactly what one tested function prevents.
+ */
+export type ShortfallAction = 'refill-demo' | 'refill-marketer' | 'deposit';
+
+export function shortfallAction(w: WalletLike | null | undefined): ShortfallAction {
+  if (walletFigures(w).demo) return 'refill-demo';
+  return w?.modeLocked ? 'refill-marketer' : 'deposit';
+}

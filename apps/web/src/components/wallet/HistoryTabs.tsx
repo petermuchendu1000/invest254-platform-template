@@ -5,10 +5,15 @@ import { cn } from '@/lib/cn';
 import { TransactionsList } from '@/components/wallet/TransactionsList';
 import { LedgerList } from '@/components/wallet/LedgerList';
 import { PositionHistory } from '@/components/positions/PositionHistory';
+import { useTerminalSkin } from '@/lib/ui/useTerminalSkin';
+import { dealsTabLabel } from '@/lib/game/dealWording';
 
 type Tab = 'transactions' | 'ledger' | 'positions';
 
 export function HistoryTabs() {
+  // A terminal brand heads this `Deals`, as MetaTrader's History tab does. The classic shell keeps
+  // `Bets`, because it is not pretending to be MetaTrader. See lib/game/dealWording.
+  const terminal = useTerminalSkin();
   const [tab, setTab] = useState<Tab>('transactions');
   return (
     <div className="flex flex-col gap-3">
@@ -20,7 +25,7 @@ export function HistoryTabs() {
           Ledger
         </TabButton>
         <TabButton active={tab === 'positions'} onClick={() => setTab('positions')}>
-          Bets
+          {dealsTabLabel(terminal)}
         </TabButton>
       </div>
       {tab === 'transactions' ? (

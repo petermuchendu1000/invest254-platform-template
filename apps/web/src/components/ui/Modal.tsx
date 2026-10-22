@@ -1,7 +1,7 @@
 'use client';
 
 import * as React from 'react';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, type CSSProperties } from 'react';
 import { cn } from '@/lib/cn';
 
 /**
@@ -28,11 +28,25 @@ export function Modal({
   footer,
   size = 'md',
   chrome = true,
+  panelStyle,
+  panelClassName,
   children,
 }: {
   open: boolean;
   onClose: () => void;
   title: string;
+  /**
+   * Inline style for the PANEL (not the backdrop). Its one use is re-pointing the `--pp-*` theme
+   * tokens for a sheet that has to render in another palette — see lib/ui/mt5Tokens.
+   */
+  panelStyle?: CSSProperties | undefined;
+  /**
+   * Extra classes on the panel itself — for `mt5-square`, which squares a tree written against the
+   * app's soft-cornered look. `panelStyle` repaints the COLOURS by re-pointing the --pp-* tokens,
+   * but a radius written as a literal class is not a token and survives that, so a MetaTrader sheet
+   * needs both.
+   */
+  panelClassName?: string | undefined;
   /** Optional sub-title under the title (chrome mode). */
   description?: React.ReactNode;
   /** Optional sticky footer, e.g. Cancel / Confirm (chrome mode). */
@@ -85,9 +99,11 @@ export function Modal({
       <div
         ref={panelRef}
         tabIndex={-1}
+        {...(panelStyle ? { style: panelStyle } : {})}
         className={cn(
           'relative z-10 flex w-full flex-col bg-surface outline-none',
           'border border-border shadow-2xl shadow-black/60 ring-1 ring-white/5',
+          panelClassName,
           chrome
             ? 'max-h-dvh overflow-hidden sm:max-h-[88dvh] sm:rounded-2xl'
             : 'max-h-dvh overflow-y-auto sm:my-8 sm:max-h-[90dvh] sm:rounded-2xl sm:max-w-md',

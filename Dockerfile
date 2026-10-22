@@ -30,6 +30,17 @@ COPY apps/engine     ./apps/engine
 COPY apps/api        ./apps/api
 
 ENV NODE_ENV=production
+
+# The commit this image was built from, so a running container can say what it is.
+#
+# Until this existed, "what is actually live?" could only be answered through the Fly API —
+# /health returned {status,time} and nothing else, so nobody without Fly credentials could tell a
+# deployed fix from an undeployed one. That gap cost real time: a fix was merged, the site looked
+# unchanged, and distinguishing "not deployed" from "deployed but broken" needed `flyctl releases`.
+# ARG not ENV for the default, so a plain `docker build` still works; the deploy passes the real SHA.
+ARG GIT_SHA=unknown
+ENV GIT_SHA=$GIT_SHA
+
 EXPOSE 8080 8081
 
 ENTRYPOINT ["dumb-init", "--"]

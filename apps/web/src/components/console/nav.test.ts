@@ -25,7 +25,7 @@ test('UI-A: a platform admin never gets a System-only destination; the owner get
   assert.ok(pa.includes('/platform/addons') && owner.includes('/platform/addons'), 'ADDON-1: both tiers manage add-ons');
 });
 
-test('UI-A: exactly one current item — the most specific match', () => {
+test('UI-A: exactly one current item. The most specific match', () => {
   const owner = consoleNav(true);
   assert.equal(currentHref(owner, '/platform'), '/platform');
   assert.equal(currentHref(owner, '/platform/clients/abc'), '/platform', 'a brand page belongs to Overview');

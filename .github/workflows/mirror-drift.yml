@@ -11,6 +11,14 @@ on:
     branches: [main]          # confirm a sync actually converged
   workflow_dispatch: {}
 
+# Serialise, do NOT cancel. The rolling-issue bookkeeping is a non-atomic `gh issue list` ->
+# `gh issue create`, and the nightly check collides with the push `mirror-sync` makes every 3h:
+# two runs would each find no open issue and each open one. `mirror-sync` already serialises itself
+# for the same reason (BUGLOG #156).
+concurrency:
+  group: mirror-drift
+  cancel-in-progress: false
+
 permissions:
   contents: read
   issues: write
@@ -22,6 +30,7 @@ jobs:
   drift:
     if: github.repository == 'petermuchendu1000/invest254-platform-template'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with: { ref: main, fetch-depth: 0 }

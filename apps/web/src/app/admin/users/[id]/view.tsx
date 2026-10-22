@@ -17,6 +17,7 @@ import { PageHeader, StatCard, Section, Empty, ConfirmButton, TableWrap, Th, Td,
 import { useUser, useUserActivity, useSetUserStatus, useAdjustBalance, useClearBalance, useResetBalance, useSetCommissionRate, useCommissionRate, useSetUserRole, useDeleteUser, useSetDefaultMarketer, useUpdateUserDetails, useUserNotifications, useSendNotification, useResolveNotification, useUserOverrides } from '@/lib/admin/hooks';
 import type { AdminUserActivityRow, AdminNotificationRow, NotificationLevel } from '@/lib/admin/types';
 import { formatKes } from '@invest254/shared/money';
+import { maskPhoneForDisplay } from '@invest254/shared/payments';
 import { useKycList, DOC_LABEL } from '@/lib/account/accountUi';
 
 
@@ -47,7 +48,7 @@ export default function UserDetailPage({ params }: { params: { id: string } }) {
           <Section title="Balances">
             {q.data.isMarketer && (
               <p className="mb-2 rounded-md bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800 dark:bg-amber-950 dark:text-amber-300">
-                Demo / social-proof account — plays on a non-withdrawable <strong>demo balance</strong>; its
+                Demo / social-proof account, plays on a non-withdrawable <strong>demo balance</strong>; its
                 winnings are excluded from real cash (GGR/RTP) and can never be withdrawn to M-Pesa.
               </p>
             )}
@@ -68,17 +69,19 @@ export default function UserDetailPage({ params }: { params: { id: string } }) {
               <StatCard label="Deposits" money={q.data.depositsCents} tone="up" />
               <StatCard label="Withdrawals" money={q.data.withdrawalsCents} tone="down" />
               <StatCard label="Net deposits" money={q.data.netDepositsCents} tone={q.data.netDepositsCents >= 0 ? 'up' : 'down'} />
-              <StatCard label="Settled bets" value={formatNumber(q.data.betCount)} />
+              <StatCard label="Settled trades" value={formatNumber(q.data.betCount)} />
             </div>
           </Section>
 
           <Section title="Profile">
             <Card className="flex flex-col gap-2 text-sm">
               <Row label="User ID" value={q.data.userId} mono />
-              <Row label="Phone" value={q.data.phone || '—'} />
-              <Row label="Referred by" value={q.data.referredBy ? `${q.data.referredBy.slice(0, 8)}…` : '—'} mono />
-              <Row label="Last transaction" value={q.data.lastTxAtMs ? `${q.data.lastTxKind ?? ''} · ${formatDateTime(q.data.lastTxAtMs)}` : '—'} />
-              <Row label="Last active" value={q.data.lastActiveAtMs ? formatDateTime(q.data.lastActiveAtMs) : '—'} />
+              {/* Masked for the profile card. "Edit details" below still prefills the FULL number:
+                  saving the mask would overwrite the login identity and payout destination. */}
+              <Row label="Phone" value={maskPhoneForDisplay(q.data.phone) || '-'} />
+              <Row label="Referred by" value={q.data.referredBy ? `${q.data.referredBy.slice(0, 8)}…` : '-'} mono />
+              <Row label="Last transaction" value={q.data.lastTxAtMs ? `${q.data.lastTxKind ?? ''} · ${formatDateTime(q.data.lastTxAtMs)}` : '-'} />
+              <Row label="Last active" value={q.data.lastActiveAtMs ? formatDateTime(q.data.lastActiveAtMs) : '-'} />
             </Card>
           </Section>
 
@@ -91,7 +94,7 @@ export default function UserDetailPage({ params }: { params: { id: string } }) {
               <Card className="flex flex-col gap-1">
                 <span className="text-sm font-medium text-fg">Protected account</span>
                 <span className="text-sm text-muted">
-                  This is the system owner. Their role and status are locked and their wallet can&apos;t be adjusted — no
+                  This is the system owner. Their role and status are locked and their wallet can&apos;t be adjusted. No
                   account can demote, suspend, ban, or modify the owner.
                 </span>
               </Card>
@@ -147,9 +150,9 @@ const ACTIVITY_KINDS = [
   { value: '', label: 'All activity' },
   { value: 'deposit', label: 'Deposits' },
   { value: 'withdrawal', label: 'Withdrawals' },
-  { value: 'bet', label: 'Bets' },
+  { value: 'bet', label: 'Trades' },
 ];
-const KIND_LABEL: Record<string, string> = { deposit: 'Deposit', withdrawal: 'Withdrawal', bet: 'Bet', adjustment: 'Manual adjustment' };
+const KIND_LABEL: Record<string, string> = { deposit: 'Deposit', withdrawal: 'Withdrawal', bet: 'Trade', adjustment: 'Manual adjustment' };
 
 function ActivityTimeline({ id }: { id: string }) {
   const [kind, setKind] = useState('');
@@ -166,7 +169,7 @@ function ActivityTimeline({ id }: { id: string }) {
       ) : q.isError ? (
         <Empty title="Couldn't load activity" description="Try again shortly." />
       ) : rows.length === 0 ? (
-        <Empty title="No activity yet" description="Deposits, withdrawals and bets will appear here." />
+        <Empty title="No activity yet" description="Deposits, withdrawals and trades will appear here." />
       ) : (
         <>
           <TableWrap>
@@ -202,7 +205,9 @@ function ActivityRow({ r }: { r: AdminUserActivityRow }) {
     ? [r.direction?.toUpperCase(), r.multiplier != null ? `×${r.multiplier.toFixed(2)}` : null, r.result]
         .filter(Boolean)
         .join(' · ')
-    : [r.phone, r.mpesaReceipt].filter(Boolean).join(' · ');
+    // The number is only a label on this timeline row; the M-Pesa receipt beside it is what an
+    // operator reconciles against, and that stays whole.
+    : [r.phone ? maskPhoneForDisplay(r.phone) : null, r.mpesaReceipt].filter(Boolean).join(' · ');
 
   return (
     <tr className="border-b border-border last:border-0">
@@ -222,7 +227,7 @@ function ActivityRow({ r }: { r: AdminUserActivityRow }) {
           {KIND_LABEL[r.kind]}
         </span>
       </Td>
-      <Td className="text-xs text-muted">{detail || '—'}</Td>
+      <Td className="text-xs text-muted">{detail || '-'}</Td>
       <Td className="text-right font-medium tabular-nums">
         <Money cents={r.amountCents} />
         {isBet && r.pnlCents != null ? (
@@ -302,6 +307,9 @@ function EditDetails({ id, phone, username, targetRole }: { id: string; phone: s
   const toast = useToast();
   const canEdit = useCan('backoffice.users.edit_details');
   const canManageAdmins = useCan('backoffice.users.set_role_admin');
+  // NOT masked, deliberately: this field is an editable prefill that is saved back. A masked
+  // prefill would be written to the DB as the player's login identity and payout number, and the
+  // "did it change?" check below compares against the stored value.
   const [ph, setPh] = useState(phone ?? '');
   const [un, setUn] = useState(username ?? '');
 
@@ -511,7 +519,7 @@ function DefaultMarketerControl({ id, isDefault, username, role }: { id: string;
         ) : role === 'marketer' ? (
           <ConfirmButton
             label="Make brand default"
-            confirmLabel="Confirm — earns 25% of deposits"
+            confirmLabel="Confirm: earns 25% of deposits"
             size="md"
             variant="primary"
             busy={m.isPending}
@@ -568,7 +576,7 @@ function ResetBalance({ id }: { id: string }) {
         <input
           value={reason}
           onChange={(e) => setReason(e.target.value)}
-          placeholder="Reason (required, audited) — e.g. settlement bug correction"
+          placeholder="Reason (required, audited), e.g. settlement bug correction"
           className="h-10 w-full rounded-xl border border-border bg-surface-2 px-3 text-sm text-fg outline-none focus:border-accent"
         />
         <ConfirmButton
@@ -581,7 +589,7 @@ function ResetBalance({ id }: { id: string }) {
           onConfirm={run}
         />
         <p className="text-xs text-muted">
-          Sets the REAL wallet to the amount of the user&apos;s most recent successful deposit (their last funded amount) —
+          Sets the REAL wallet to the amount of the user&apos;s most recent successful deposit (their last funded amount),
           use when a system issue corrupted the balance. Writes a reconciling ledger entry and an audit record. The bonus
           wallet is untouched. {canReset ? '' : 'This user has no successful deposit to reset to.'}
         </p>
@@ -776,7 +784,7 @@ function NotificationSend({ id }: { id: string }) {
       {
         onSuccess: () => {
           setTitle(''); setBody(''); setCategory(''); setLevel('info'); setDismissible(true);
-          toast.push({ tone: 'success', title: 'Notification sent', description: dismissible ? 'The player can dismiss it.' : 'Blocking — stays until resolved.' });
+          toast.push({ tone: 'success', title: 'Notification sent', description: dismissible ? 'The player can dismiss it.' : 'Blocking: stays until resolved.' });
         },
         onError: (e) => toast.push({ tone: 'error', title: 'Send failed', description: e instanceof ApiError ? e.message : 'Try again.' }),
       },

@@ -4,7 +4,7 @@ import type {
   AdminRepository, AdminOverview, AdminUserRow, AdminUserDetail, AdminWithdrawalRow, AdminAuditRow,
   AdminSystemLogRow, AdminSystemLogQuery,
   AdminUserListQuery, AdminWithdrawalListQuery, AdminTransactionRow, AdminTransactionListQuery,
-  SetUserStatusResult, SetCommissionRateResult,
+  SetUserStatusResult, SetCommissionRateResult, ResetSecurityAnswersResult,
   AdjustBalanceResult, AdjustBalanceKindResult, ClearBalanceResult, ResetBalanceResult, BalanceKind, UserOverrideRow, UserOverridePatch,
   AdminDepositRow, AdminDepositListQuery, AdminDepositsReconcile,
   ReportRange, DailyReportRow, UserReportRow, AdminDayReport,
@@ -57,6 +57,10 @@ export class AdminService {
 
   deleteUser(actorId: string, actorRole: string, targetId: string): Promise<SetUserStatusResult> {
     return this.repo.deleteUser(actorId, actorRole, targetId);
+  }
+
+  resetSecurityAnswers(actorId: string, actorRole: string, targetId: string): Promise<ResetSecurityAnswersResult> {
+    return this.repo.resetSecurityAnswers(actorId, actorRole, targetId);
   }
 
   /** Edit a user's phone/username (item 6). Guards + per-brand uniqueness live in the RPC/mirror. */

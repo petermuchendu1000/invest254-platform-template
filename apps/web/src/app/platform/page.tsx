@@ -176,8 +176,8 @@ export default function PlatformOverviewPage() {
         {!live.denied ? <LiveOnlineCard total={live.totalOnline} connected={live.connected} /> : null}
         <StatCard label="Players" value={formatNumber(totals.users)} hint="registered" />
         {customPending ? (<>
-          <StatCard label={`Deposits · ${rangeLabel}`} value="—" className="col-span-2 sm:col-span-1 2xl:col-span-2" />
-          <StatCard label={`House revenue · ${rangeLabel}`} value="—" className="col-span-2 sm:col-span-1 2xl:col-span-2" />
+          <StatCard label={`Deposits · ${rangeLabel}`} value="-" className="col-span-2 sm:col-span-1 2xl:col-span-2" />
+          <StatCard label={`House revenue · ${rangeLabel}`} value="-" className="col-span-2 sm:col-span-1 2xl:col-span-2" />
         </>) : (<>
           <StatCard label={`Deposits · ${rangeLabel}`} money={windowTotals.deposits} tone="up" className="col-span-2 sm:col-span-1 2xl:col-span-2" />
           <StatCard label={`House revenue · ${rangeLabel}`} money={windowTotals.ggr} tone={windowTotals.ggr >= 0 ? 'up' : 'down'} className="col-span-2 sm:col-span-1 2xl:col-span-2" />
@@ -232,7 +232,7 @@ export default function PlatformOverviewPage() {
               {rangeActive ? <Sortable label="New" k="newplayers" sort={sort} setSort={setSort} align="right" /> : null}
               <Sortable label="Deposits" k="deposits" sort={sort} setSort={setSort} align="right" />
               <Sortable label="House revenue" k="ggr" sort={sort} setSort={setSort} align="right" />
-              <Sortable label="Bets" k="bets" sort={sort} setSort={setSort} align="right" />
+              <Sortable label="Trades" k="bets" sort={sort} setSort={setSort} align="right" />
             </tr>
           </thead>
           <tbody>
@@ -243,7 +243,7 @@ export default function PlatformOverviewPage() {
                 <Td><span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${s.status === 'active' ? 'bg-up/20 text-up' : s.status === 'paused' ? 'bg-warn/20 text-warn' : 'bg-surface-2 text-muted'}`}>{s.status}</span></Td>
                 <Td className="text-right"><LiveCount count={online} /></Td>
                 <Td><HealthPill r={r} /></Td>
-                <Td className="text-muted">{s.primaryDomain ?? '—'}</Td>
+                <Td className="text-muted">{s.primaryDomain ?? '-'}</Td>
                 <Td className="text-right tabular-nums">{formatNumber(k?.users ?? 0)}</Td>
                 {rangeActive ? <Td className="text-right tabular-nums">{formatNumber(m.newPlayers ?? 0)}</Td> : null}
                 <Td className="text-right tabular-nums">{money(m.deposits, s.currency)}</Td>
@@ -275,7 +275,7 @@ function LiveOnlineCard({ total, connected }: { total: number; connected: boolea
 
 /** Per-brand live online count: pulsing green dot + number when anyone is online, else a dash. */
 function LiveCount({ count }: { count: number }) {
-  if (count <= 0) return <span className="text-muted">—</span>;
+  if (count <= 0) return <span className="text-muted">-</span>;
   return (
     <span className="inline-flex items-center gap-1.5 tabular-nums text-fg">
       <span className="inline-block h-2 w-2 rounded-full bg-up animate-pulse" />
@@ -298,7 +298,7 @@ function LiveDeposits({ live, nameById }: { live: ReturnType<typeof usePlatformL
           <span>{live.deposits.length ? `${live.deposits.length} recent` : 'waiting for deposits'}</span>
         </div>
         {live.deposits.length === 0 ? (
-          <p className="px-3 py-6 text-center text-sm text-muted">No deposits yet this session — new confirmations appear here instantly.</p>
+          <p className="px-3 py-6 text-center text-sm text-muted">No deposits yet this session. New confirmations appear here instantly.</p>
         ) : (
           <ul className="max-h-64 divide-y divide-border overflow-y-auto">
             {live.deposits.map((d) => (
@@ -350,7 +350,7 @@ function HealthPill({ r }: { r: { domainState: 'live' | 'pending' | 'unprovision
     live: { cls: 'bg-up/15 text-up', icon: '●', label: 'Domain live' },
     pending: { cls: 'bg-warn/15 text-warn', icon: '◐', label: 'Domain pending' },
     unprovisioned: { cls: 'bg-down/15 text-down', icon: '○', label: 'Not provisioned' },
-    none: { cls: 'bg-surface-2 text-muted', icon: '—', label: 'No domain' },
+    none: { cls: 'bg-surface-2 text-muted', icon: '-', label: 'No domain' },
   }[r.domainState];
   return (
     <span className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium ${map.cls}`}

@@ -17,7 +17,21 @@ Run: python3 packages/db/_testkit/e2e_function_grants.py   (needs local PG on /t
 import os, sys, glob
 import psycopg2
 
-DSN  = dict(host="/tmp", port=5433, user="postgres", dbname="invest254_test")
+# Connection, from the standard PG* env vars when they are set, else the sandbox default every
+# other script here uses (a local Postgres on the /tmp socket, port 5433). CI runs this against a
+# throwaway service container over TCP, so the defaults alone were not enough to make it runnable
+# there — and a check nobody can run is how #143 survived two migrations.
+_HOST = os.environ.get("PGHOST", "/tmp")
+_PORT = int(os.environ.get("PGPORT", "5433"))
+_USER = os.environ.get("PGUSER", "postgres")
+_PASS = os.environ.get("PGPASSWORD") or None
+def _dsn(dbname: str) -> dict:
+    d = dict(host=_HOST, port=_PORT, user=_USER, dbname=dbname)
+    if _PASS:
+        d["password"] = _PASS
+    return d
+
+DSN  = _dsn("invest254_test")
 BASE = os.path.join(os.path.dirname(__file__), "..")
 SHIM = os.path.join(os.path.dirname(__file__), "00_supabase_shim.sql")
 
@@ -27,7 +41,7 @@ def check(name, cond, detail=""):
     print(f"  [{'PASS' if cond else 'FAIL'}] {name}" + (f"  -- {detail}" if detail and not cond else ""))
 
 def reset_and_migrate():
-    admin = psycopg2.connect(host="/tmp", port=5433, user="postgres", dbname="postgres")
+    admin = psycopg2.connect(**_dsn("postgres"))
     admin.set_client_encoding("UTF8"); admin.autocommit = True
     with admin.cursor() as c:
         c.execute("select pg_terminate_backend(pid) from pg_stat_activity where datname='invest254_test' and pid<>pg_backend_pid()")

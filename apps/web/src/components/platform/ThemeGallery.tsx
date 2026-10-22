@@ -56,7 +56,7 @@ function ThemeCard({
         className="border-t px-2 py-1.5 text-[11px] font-semibold transition disabled:opacity-60"
         style={{ borderColor: k.border, color: k.accentFg, background: isCurrent ? k.brand : k.accent }}
       >
-        {isApplying ? 'Applying…' : isCurrent ? 'Current — reapply' : 'Apply to client'}
+        {isApplying ? 'Applying…' : isCurrent ? 'Current: reapply' : 'Apply to client'}
       </button>
     </div>
   );
@@ -115,7 +115,7 @@ export function ThemeGallery({ site }: { site: SiteWithConfig }) {
 
           {appliedLabel ? (
             <div className="rounded-lg border border-up/40 bg-up/10 px-3 py-2 text-xs text-up">
-              Applied <strong>{appliedLabel}</strong> to {site.name}. Live on next load — colours apply
+              Applied <strong>{appliedLabel}</strong> to {site.name}. Live on next load, colours apply
               immediately; radius/fonts/weight render after the next web deploy.
             </div>
           ) : null}

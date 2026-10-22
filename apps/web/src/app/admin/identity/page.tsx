@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { cn } from '@/lib/cn';
 import { formatAgo } from '@/lib/format';
+import { maskPhoneForDisplay } from '@invest254/shared/payments';
 import { useToast } from '@/lib/toast/ToastProvider';
 import { ApiError } from '@/lib/api/client';
 import { PageHeader, TableWrap, Th, Td, Empty } from '@/components/admin/ui';
@@ -41,11 +42,11 @@ export default function IdentityChecksPage() {
           <tbody>
             {rows.map((r) => (
               <tr key={r.id} className="border-b border-border last:border-0">
-                <Td><Link href={`/admin/users/${r.userId}`} className="font-medium text-accent hover:underline">@{r.username ?? 'player'}</Link><div className="text-[11px] text-muted">{r.phone}</div></Td>
+                <Td><Link href={`/admin/users/${r.userId}`} className="font-medium text-accent hover:underline">@{r.username ?? 'player'}</Link><div className="text-[11px] text-muted">{maskPhoneForDisplay(r.phone)}</div></Td>
                 <Td>{DOC_LABEL[r.docType]}</Td>
                 <Td>{r.fullName}</Td>
                 <Td className="text-xs text-muted">{formatAgo(Date.parse(r.submittedAt))}</Td>
-                {tab !== 'pending' ? <Td className="text-xs text-muted">{r.reviewedAt ? formatAgo(Date.parse(r.reviewedAt)) : '—'}{r.reviewerName ? ` by @${r.reviewerName}` : ''}</Td> : null}
+                {tab !== 'pending' ? <Td className="text-xs text-muted">{r.reviewedAt ? formatAgo(Date.parse(r.reviewedAt)) : '-'}{r.reviewerName ? ` by @${r.reviewerName}` : ''}</Td> : null}
                 <Td className="text-right"><button type="button" onClick={() => setOpen(r.id)} className="rounded-lg border border-border px-3 py-1.5 text-[12px] font-semibold text-fg hover:border-accent/50">{tab === 'pending' ? 'Review' : 'View'}</button></Td>
               </tr>
             ))}
@@ -88,12 +89,15 @@ function ReviewDialog({ id, onClose }: { id: string; onClose: () => void }) {
             </div>
             <div className="flex flex-col gap-2 text-sm">
               <Row k="Full name" v={s.fullName} /><Row k="Document number" v={s.idNumber} /><Row k="Date of birth" v={s.dateOfBirth} />
-              <Row k="Phone" v={s.phone ?? '—'} /><Row k="Status" v={s.status} />
+              {/* Masked: the reviewer checks the NAME, document number and date of birth against the
+                  document (an ID carries no phone number), so nothing in the review needs the
+                  digits — and those three fields are left whole for exactly that reason. */}
+              <Row k="Phone" v={maskPhoneForDisplay(s.phone) || '-'} /><Row k="Status" v={s.status} />
               {s.reviewNote ? <Row k="Note" v={s.reviewNote} /> : null}
               {s.status === 'pending' ? (
                 <>
                   <label className="mt-2 flex flex-col gap-1 text-xs text-muted">Note to the player (required to reject)
-                    <textarea value={note} onChange={(e) => setNote(e.target.value.slice(0, 500))} rows={3} className="rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-fg outline-none focus:border-accent" placeholder="e.g. The photo is blurry — please send a clearer one." />
+                    <textarea value={note} onChange={(e) => setNote(e.target.value.slice(0, 500))} rows={3} className="rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-fg outline-none focus:border-accent" placeholder="e.g. The photo is blurry, please send a clearer one." />
                   </label>
                   <div className="grid grid-cols-2 gap-2">
                     <button type="button" disabled={decide.isPending || !note.trim()} onClick={() => act('rejected')} className="rounded-lg border border-down/50 py-2 text-[13px] font-semibold text-down disabled:opacity-40">Reject</button>

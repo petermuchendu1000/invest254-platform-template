@@ -7,18 +7,17 @@ import { useEffect, useState } from 'react';
 const COOLDOWN_S = 6;
 import { useQuery } from '@tanstack/react-query';
 import { centsToKes, formatKes, kesToCents } from '@invest254/shared/money';
-import { normalizeMsisdn, MIN_DEPOSIT_CENTS } from '@invest254/shared/payments';
+import { normalizeMsisdn, MIN_DEPOSIT_CENTS, maskPhoneForDisplay } from '@invest254/shared/payments';
 import { useDisplayMoney, USD_LIMITS } from '@/lib/money';
 import { Input } from '@/components/ui/Input';
 import { Button } from '@/components/ui/Button';
 import { api } from '@/lib/api/endpoints';
-import { useDeposit, useDepositMegapay, useDepositPayhero } from '@/lib/wallet/hooks';
+import { useDeposit, useDepositMegapay, useDepositPayhero, useDepositPayx } from '@/lib/wallet/hooks';
 import { useBrand } from '@/lib/brand/BrandProvider';
 import { useDepositUi } from '@/lib/wallet/depositUi';
 import { useAuthUi } from '@/lib/auth/ui';
 import { useSession } from '@/lib/auth/session';
 import { paymentErrorMessage } from '@/lib/wallet/errors';
-import { maskMsisdn } from '@/lib/wallet/format';
 import { MpesaIcon } from '@/components/wallet/MpesaIcon';
 
 /** Common top-up amounts (KES). One tap beats typing on mobile (NN/g: match input to data). */
@@ -32,7 +31,7 @@ const grouped = (s: string) => (s ? Number(s).toLocaleString('en-KE') : '');
  * The gateway is intentionally NOT surfaced to players — the flow is a simple amount + phone +
  * "Continue to Pay"; only the API mutation differs by provider.
  */
-export function DepositForm({ provider = 'mpesa' }: { provider?: 'mpesa' | 'megapay' | 'payhero' } = {}) {
+export function DepositForm({ provider = 'mpesa', methodCode }: { provider?: 'mpesa' | 'megapay' | 'payhero' | 'payx'; methodCode?: string } = {}) {
   const close = useDepositUi((s) => s.close);
   const prefillAmountCents = useDepositUi((s) => s.prefillAmountCents);
   const pending = useDepositUi((s) => s.pending);
@@ -44,7 +43,8 @@ export function DepositForm({ provider = 'mpesa' }: { provider?: 'mpesa' | 'mega
   const mpesaDeposit = useDeposit();
   const megaDeposit = useDepositMegapay();
   const payheroDeposit = useDepositPayhero();
-  const deposit = provider === 'megapay' ? megaDeposit : provider === 'payhero' ? payheroDeposit : mpesaDeposit;
+  const payxDeposit = useDepositPayx();
+  const deposit = provider === 'megapay' ? megaDeposit : provider === 'payhero' ? payheroDeposit : provider === 'payx' ? payxDeposit : mpesaDeposit;
   // Live economy from the SAME endpoint the engine/PaymentService enforce, so the deposit floor/cap
   // the browser validates against is the effective global/brand economy — never a hardcoded constant.
   const brand = useBrand();
@@ -59,8 +59,14 @@ export function DepositForm({ provider = 'mpesa' }: { provider?: 'mpesa' | 'mega
   const sanitizeAmount = (v: string) => (isForeign ? v.replace(/[^0-9.]/g, '').replace(/(\..*)\./g, '$1') : digitsOnly(v));
 
   // Effective deposit limits (live global/brand economy over the static default). Computed FIRST so
-  // the quick-amount chips can derive from the MIN. Foreign brands: USD-native min floored to the KES floor.
-  const minDepositCents = limit(USD_LIMITS.minDeposit, config?.minDepositCents ?? MIN_DEPOSIT_CENTS);
+  // the quick-amount chips can derive from the MIN. An operator-set native floor (min_deposit_native)
+  // enforces it directly for ANY currency — a foreign brand's $1 OR a KES brand's e.g. KES 2 — via
+  // toKesCents at the SAME live rate the entered amount uses, so the client floor matches the server
+  // exactly (API siteMinDepositCents). Unset (null) → fall back to the site KES floor, USD-limit-guarded.
+  const nativeMinDeposit = config?.minDepositNative ?? null;
+  const minDepositCents = (nativeMinDeposit != null && nativeMinDeposit > 0)
+    ? toKesCents(nativeMinDeposit)
+    : limit(USD_LIMITS.minDeposit, config?.minDepositCents ?? MIN_DEPOSIT_CENTS);
   const maxDepositCents = config?.maxDepositCents ?? null;
   // Quick-amount chips SYNC to the minimum deposit: the first chip IS the min, the rest scale it by
   // 1/2/5/10 (min 100 -> 100,200,500,1000; min 500 -> 500,1000,2500,5000). Derived in the entry unit,
@@ -159,7 +165,9 @@ export function DepositForm({ provider = 'mpesa' }: { provider?: 'mpesa' | 'mega
     // and a second prompt cannot help a player who is still looking at the first one.
     setCooldown(COOLDOWN_S);
     try {
-      const res = await deposit.mutateAsync({ amount: amountKesCents, phone: effectivePhone });
+      // PayX settles whole shillings only: a converted foreign amount rounds UP, so the floor still holds.
+      const amount = provider === 'payx' ? Math.ceil(amountKesCents / 100) * 100 : amountKesCents;
+      const res = await deposit.mutateAsync({ amount, phone: effectivePhone, ...(provider === 'payx' && methodCode ? { method: methodCode } : {}) });
       setTxId(res.transactionId);
       setDone(true);
     } catch (err) {
@@ -202,7 +210,9 @@ export function DepositForm({ provider = 'mpesa' }: { provider?: 'mpesa' | 'mega
         <Spinner />
         <h3 className="text-base font-semibold text-fg">Check your phone</h3>
         <p className="text-sm text-muted">
-          We sent a prompt to <span className="font-medium text-fg">{maskMsisdn(normalizeMsisdn(effectivePhone))}</span>.
+          {/* Masked for the screen only: the STK push already went out with the FULL
+              `effectivePhone` (a masked MSISDN would be rejected by the gateway). */}
+          We sent a prompt to <span className="font-medium text-fg">{maskPhoneForDisplay(normalizeMsisdn(effectivePhone))}</span>.
           Enter your M-Pesa PIN to approve {formatKes(amountKesCents)}.
         </p>
         <Button variant="ghost" fullWidth onClick={close}>Cancel</Button>
@@ -274,7 +284,9 @@ export function DepositForm({ provider = 'mpesa' }: { provider?: 'mpesa' | 'mega
                 <MpesaIcon />
               </span>
               <div className="min-w-0 flex-1">
-                <div className="text-sm font-semibold tabular-nums text-fg">{maskMsisdn(accountPhone)}</div>
+                {/* Masked on screen; "Change" clears the field rather than prefilling it, so the
+                    mask can never be typed back in as the number to charge. */}
+                <div className="text-sm font-semibold tabular-nums text-fg">{maskPhoneForDisplay(accountPhone)}</div>
                 <div className="text-xs text-muted">Your account number</div>
               </div>
               <button

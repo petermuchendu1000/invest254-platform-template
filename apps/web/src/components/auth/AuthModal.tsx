@@ -15,7 +15,10 @@ import { useBrand } from '@/lib/brand/BrandProvider';
 import { authErrorMessage } from '@/lib/auth/errors';
 import { phoneError, usernameError, passwordError, referralError } from '@/lib/auth/validation';
 import { REF_KEY } from '@/lib/auth/referral';
+import { phoneDisplay, isMaskedValue } from '@/lib/auth/phoneMask';
 import { cn } from '@/lib/cn';
+import { useTerminalSkin } from '@/lib/ui/useTerminalSkin';
+import { MT5_TOKENS } from '@/lib/ui/mt5Tokens';
 import type { RegisterInput } from '@/lib/api/endpoints';
 
 /*
@@ -142,6 +145,12 @@ export function AuthModal() {
   const { open, mode, openAuth, close } = useAuthUi();
   const { login, register } = useAuthActions();
   const brand = useBrand();
+  /**
+   * On a terminal brand the sign-in screen is MetaTrader's too. The form itself — validation,
+   * two-factor, recovery codes, the reset sub-flow — is not rewritten; re-pointing the theme tokens
+   * repaints it (lib/ui/mt5Tokens) and only the header changes, to MetaTrader's blue band.
+   */
+  const mt5 = useTerminalSkin();
   // If the user arrived here from a logged-out deposit, reopen that sheet once they're in.
   const resumeAfterAuth = useDepositUi((s) => s.resumeAfterAuth);
   const resumeDeposit = useDepositUi((s) => s.resumeDeposit);
@@ -153,6 +162,12 @@ export function AuthModal() {
   const [referral, setReferral] = useState('');
   const [showRef, setShowRef] = useState(false);
   const [showPw, setShowPw] = useState(false);
+  // Marketers demo the platform on LIVE STREAMS and sign in/up on camera, so the phone field reads
+  // as the partial mask 0798****061 at rest and the eye reveals the hidden digits. `phoneFocused`
+  // exists because an input renders its own value: while editing it must show the real digits (see
+  // phoneDisplay). Nothing functional changes — the real value is what is submitted.
+  const [showPhone, setShowPhone] = useState(false);
+  const [phoneFocused, setPhoneFocused] = useState(false);
   const [errors, setErrors] = useState<Record<string, string | undefined>>({});
   const [serverError, setServerError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -324,9 +339,9 @@ export function AuthModal() {
   /* ── password updated confirmation ─────────────────────────────────────────── */
   if (isReset && resetDone) {
     return (
-      <Modal open={open} onClose={close} title="Password updated" chrome={false}>
+      <Modal open={open} onClose={close} title="Password updated" chrome={false} panelStyle={mt5 ? MT5_TOKENS : undefined} panelClassName={mt5 ? 'mt5-square sm:!rounded-sm' : undefined}>
         <Header onClose={close} />
-        <div className="flex flex-col items-center gap-3 px-6 pb-8 pt-2 text-center">
+        <div className="flex flex-col items-center gap-3 px-4 pb-8 pt-2 text-center sm:px-6">
           <CheckIcon />
           <h2 className="text-lg font-semibold tracking-tight text-fg">Password updated</h2>
           <p className="max-w-xs text-sm leading-relaxed text-muted">
@@ -341,18 +356,23 @@ export function AuthModal() {
   }
 
   return (
-    <Modal open={open} onClose={close} title={copy.title} chrome={false}>
-      <Header onClose={close} />
+    <Modal open={open} onClose={close} title={copy.title} chrome={false} panelStyle={mt5 ? MT5_TOKENS : undefined} panelClassName={mt5 ? 'mt5-square sm:!rounded-sm' : undefined}>
+      <Header onClose={close} mt5={mt5} title={copy.title} />
 
-      {/* Title block — left aligned, tight hierarchy */}
-      <div className="px-6 pb-4">
-        <h2 className="text-[22px] font-semibold leading-tight tracking-tight text-fg">{copy.title}</h2>
-        {copy.sub ? <p className="mt-1 text-sm text-muted">{copy.sub}</p> : null}
-      </div>
+      {/* Title block — left aligned, tight hierarchy. MetaTrader's blue bar already carries the
+          screen name, so repeating it underneath would say the same thing twice on a phone. */}
+      {mt5 ? (
+        copy.sub ? <p className="px-4 pb-3 pt-3 text-[13px] text-muted">{copy.sub}</p> : <div className="pt-1" />
+      ) : (
+        <div className="px-4 pb-4 sm:px-6">
+          <h2 className="text-[22px] font-semibold leading-tight tracking-tight text-fg">{copy.title}</h2>
+          {copy.sub ? <p className="mt-1 text-sm text-muted">{copy.sub}</p> : null}
+        </div>
+      )}
 
       {/* Quiet underline tabs (hidden in reset, which is a sub-flow of log in) */}
       {!isReset ? (
-        <div className="px-6">
+        <div className="px-4 sm:px-6">
           <div className="flex gap-6 border-b border-border" role="tablist" aria-label="Authentication mode">
             {(['login', 'register'] as const).map((m) => {
               const active = mode === m;
@@ -364,7 +384,9 @@ export function AuthModal() {
                   aria-selected={active}
                   onClick={() => openAuth(m)}
                   className={cn(
-                    '-mb-px border-b-2 pb-2.5 text-sm font-semibold transition-colors',
+                    // The underline stays as quiet as before; the padding is what makes the tab a
+                    // finger-sized target rather than the height of its own 14px label.
+                    '-mb-px border-b-2 px-0.5 pb-3 pt-2.5 text-sm font-semibold transition-colors',
                     active ? 'border-accent text-fg' : 'border-transparent text-muted hover:text-fg',
                   )}
                 >
@@ -375,11 +397,11 @@ export function AuthModal() {
           </div>
         </div>
       ) : (
-        <div className="px-6">
+        <div className="px-4 sm:px-6">
           <button
             type="button"
             onClick={() => openAuth('login')}
-            className="inline-flex items-center gap-1 text-sm font-medium text-muted transition hover:text-fg"
+            className="-ml-1 inline-flex min-h-11 items-center gap-1 px-1 text-sm font-medium text-muted transition hover:text-fg"
           >
             <BackIcon />
             Back to log in
@@ -387,18 +409,40 @@ export function AuthModal() {
         </div>
       )}
 
-      <form className="flex flex-col gap-4 px-6 pt-5" onSubmit={onSubmit} noValidate>
+      {/* A 24px gutter either side costs a 320px phone a sixth of its width, which is what pushed
+          the field adornments and the "At least 4 characters" placeholder against each other; the
+          wider gutter comes back as soon as there is room for it. */}
+      <form className="flex flex-col gap-4 px-4 pt-5 sm:px-6" onSubmit={onSubmit} noValidate>
         <Input
           label="Phone number"
           name="phone"
+          // Shows the partial mask 0798****061 at rest, the real digits while editing, and the full
+          // number when the eye is on (see phoneDisplay). type stays 'tel' so the keypad and autofill
+          // behave exactly as before, and `phone` — the real value — is what gets submitted.
           type="tel"
           inputMode="numeric"
           autoComplete="tel"
           required
           autoFocus
           placeholder="07XX XXX XXX"
-          value={phone}
-          onChange={(e) => setPhone(localPhone(e.target.value))}
+          trailing={
+            <button
+              type="button"
+              onClick={() => setShowPhone((v) => !v)}
+              aria-label={showPhone ? 'Hide phone number' : 'Show the hidden digits'}
+              className="flex h-10 w-10 items-center justify-center rounded-lg transition hover:bg-border hover:text-fg"
+            >
+              <EyeIcon off={showPhone} />
+            </button>
+          }
+          value={phoneDisplay(phone, showPhone, phoneFocused)}
+          onFocus={() => setPhoneFocused(true)}
+          onBlur={() => setPhoneFocused(false)}
+          // Guard: the mask is display-only and must never be read back as input. onChange can only
+          // see the real value (typing requires focus; autofill supplies real digits), but a stray
+          // masked value would have its '*' stripped by localPhone and silently corrupt the number —
+          // on the login field. Cheap insurance: ignore anything carrying the mask character.
+          onChange={(e) => { if (!isMaskedValue(e.target.value)) setPhone(localPhone(e.target.value)); }}
           error={errors['phone']}
         />
 
@@ -419,14 +463,16 @@ export function AuthModal() {
         <div className="flex flex-col gap-1.5">
           {/* Label row carries the inline recovery affordance, as on major exchanges. */}
           {!isRegister && !isReset ? (
-            <div className="flex items-baseline justify-between">
-              <span className="text-sm font-medium text-fg">
+            <div className="flex items-center justify-between gap-2">
+              <span className="min-w-0 truncate text-sm font-medium text-fg">
                 Password<span className="text-down" aria-hidden> *</span>
               </span>
+              {/* Negative margins keep the label row visually tight while the recovery link itself
+                  carries a full-height hit area. */}
               <button
                 type="button"
                 onClick={() => openAuth('reset')}
-                className="text-xs font-medium text-accent transition hover:underline"
+                className="-my-2 -mr-1 inline-flex min-h-11 shrink-0 items-center whitespace-nowrap px-1 text-xs font-medium text-accent transition hover:underline"
               >
                 Forgot password?
               </button>
@@ -438,14 +484,14 @@ export function AuthModal() {
             type={showPw ? 'text' : 'password'}
             autoComplete={isRegister || isReset ? 'new-password' : 'current-password'}
             required
-            placeholder={isRegister || isReset ? 'At least 8 characters' : '••••••••'}
+            placeholder={isRegister || isReset ? 'At least 4 characters' : '••••'}
             leading={<LockIcon />}
             trailing={
               <button
                 type="button"
                 onClick={() => setShowPw((v) => !v)}
                 aria-label={showPw ? 'Hide password' : 'Show password'}
-                className="flex h-9 w-9 items-center justify-center rounded-lg transition hover:bg-border hover:text-fg"
+                className="flex h-10 w-10 items-center justify-center rounded-lg transition hover:bg-border hover:text-fg"
               >
                 <EyeIcon off={showPw} />
               </button>
@@ -479,7 +525,7 @@ export function AuthModal() {
               <span className="text-up">
                 <ShieldIcon />
               </span>
-              <span>Admin account — verify your security questions</span>
+              <span>Admin account: verify your security questions</span>
             </div>
             {resetKeys.map((k) => (
               <Input
@@ -514,7 +560,7 @@ export function AuthModal() {
             <button
               type="button"
               onClick={() => setShowRef(true)}
-              className="self-start text-xs font-medium text-muted transition hover:text-accent"
+              className="-my-1.5 -ml-1 inline-flex min-h-11 items-center self-start px-1 text-xs font-medium text-muted transition hover:text-accent"
             >
               + Add a referral code
             </button>
@@ -531,7 +577,7 @@ export function AuthModal() {
               <line x1="12" y1="8" x2="12" y2="13" strokeLinecap="round" />
               <circle cx="12" cy="16.5" r="0.5" fill="currentColor" />
             </svg>
-            <span>{serverError}</span>
+            <span className="min-w-0 break-words">{serverError}</span>
           </p>
         ) : null}
 
@@ -548,7 +594,7 @@ export function AuthModal() {
               onChange={(e) => setCode(useRecovery ? e.target.value.slice(0, 32) : e.target.value.replace(/[^0-9]/g, '').slice(0, 6))}
             />
             <p className="text-xs text-muted">{useRecovery ? 'Use one of the recovery codes you saved when you turned on two-factor.' : 'Two-factor is on for this account. Enter the 6-digit code from your authenticator app.'}</p>
-            <button type="button" onClick={() => { setUseRecovery((v) => !v); setCode(''); }} className="self-start text-xs font-medium text-accent hover:underline">
+            <button type="button" onClick={() => { setUseRecovery((v) => !v); setCode(''); }} className="-ml-1 inline-flex min-h-11 items-center self-start px-1 text-left text-xs font-medium text-accent hover:underline">
               {useRecovery ? 'Use the app code instead' : 'Lost your phone? Use a recovery code'}
             </button>
           </div>
@@ -572,7 +618,7 @@ export function AuthModal() {
             <button
               type="button"
               onClick={() => openAuth(isRegister ? 'login' : 'register')}
-              className="min-w-11 px-1 font-semibold text-accent transition hover:underline"
+              className="inline-flex min-h-11 min-w-11 items-center justify-center px-1 align-middle font-semibold text-accent transition hover:underline"
             >
               {isRegister ? 'Log in' : 'Create one'}
             </button>
@@ -581,7 +627,7 @@ export function AuthModal() {
       </form>
 
       {/* Trust + legal footer */}
-      <div className="mt-2 flex flex-col gap-2.5 border-t border-border px-6 py-5">
+      <div className="mt-2 flex flex-col gap-2.5 border-t border-border px-4 py-5 sm:px-6">
         <div className="flex items-center justify-center gap-1.5 text-xs text-muted">
           <span className="text-up">
             <ShieldIcon />
@@ -601,17 +647,38 @@ export function AuthModal() {
 }
 
 /** Compact brand row with the dismiss control. */
-function Header({ onClose }: { onClose: () => void }) {
+function Header({ onClose, mt5, title }: { onClose: () => void; mt5?: boolean; title?: string }) {
+  // MetaTrader titles a screen with a solid blue band carrying the screen's own name — see its
+  // "Login to an account" screen. The brand lockup and the theme toggle belong to the site's own
+  // header, not to MetaTrader's.
+  if (mt5) {
+    return (
+      <div className="flex items-center gap-3 border-b border-[var(--mt5-border)] bg-[var(--mt5-blue)] px-3 py-2.5">
+        <div className="min-w-0 flex-1 truncate text-[15px] font-semibold leading-tight text-white">{title}</div>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close"
+          className="-mr-1 grid h-10 w-10 shrink-0 place-items-center rounded text-white transition hover:bg-white/20"
+        >
+          <svg viewBox="0 0 24 24" className="h-[18px] w-[18px]" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
+            <line x1="6" y1="6" x2="18" y2="18" strokeLinecap="round" />
+            <line x1="18" y1="6" x2="6" y2="18" strokeLinecap="round" />
+          </svg>
+        </button>
+      </div>
+    );
+  }
   return (
-    <div className="flex items-center justify-between px-6 pb-5 pt-5">
+    <div className="flex items-center justify-between gap-2 px-4 pb-5 pt-5 sm:px-6">
       <Logo />
-      <div className="flex items-center gap-1">
+      <div className="flex shrink-0 items-center gap-1">
         <ThemeToggle />
         <button
           type="button"
           onClick={onClose}
           aria-label="Close"
-          className="flex h-8 w-8 items-center justify-center rounded-lg text-muted transition hover:bg-surface-2 hover:text-fg"
+          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-muted transition hover:bg-surface-2 hover:text-fg"
         >
           <svg viewBox="0 0 24 24" className="h-[18px] w-[18px]" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
             <line x1="6" y1="6" x2="18" y2="18" strokeLinecap="round" />

@@ -1,9 +1,9 @@
-import { randomBytes, scrypt as _scrypt, timingSafeEqual, type ScryptOptions } from "node:crypto";
+import { createHmac, randomBytes, scrypt as _scrypt, timingSafeEqual, type ScryptOptions } from "node:crypto";
 import { SignJWT } from "jose";
 import { validatePassword, validateUsername, validateReferralCode, normalizeMsisdn,
-  generateTotpSecret, verifyTotp, otpauthUrl, generateRecoveryCodes, normalizeRecoveryCode,
+  generateTotpSecret, verifyTotp, matchTotpStep, otpauthUrl, generateRecoveryCodes, normalizeRecoveryCode,
   normalizeSecurityAnswer, validateSecurityAnswerSet, isValidSecurityQuestionKey,
-  SECURITY_ANSWERS_REQUIRED } from "@invest254/shared";
+  SECURITY_ANSWERS_REQUIRED, SECURITY_QUESTIONS } from "@invest254/shared";
 import type { IdentityRepository, MfaRecord, CredentialRecord, SecurityAnswerHash } from "./identity.js";
 
 /**
@@ -19,6 +19,30 @@ export const PRIVILEGED_ROLES: ReadonlySet<string> = new Set([
 /** True when `role` is an administrative role gated by the security-question second factor. */
 export function isPrivilegedRole(role: string | undefined | null): boolean {
   return typeof role === "string" && PRIVILEGED_ROLES.has(role);
+}
+
+/**
+ * Roles whose session is FORCE-LOGOUT checked on every request (0097 epoch + migration 0200).
+ *
+ * Deliberately WIDER than PRIVILEGED_ROLES, and a separate set on purpose: `marketer` must be
+ * revocable because marketers demo the platform on LIVE STREAMS, so "sign every marketer out now"
+ * has to actually end their WEBSITE session — not just the till-app one. 0198 added the epoch to the
+ * `public.marketers` identity (token subject = marketers.id, gated in requireMarketer), but a marketer
+ * signed in to the website holds a `profiles` token with role='marketer', and assertSessionValid
+ * skipped it entirely because 'marketer' is not privileged — so profiles.sessions_valid_after was
+ * never even read and the force-logout silently did nothing for them.
+ *
+ * It is NOT folded into PRIVILEGED_ROLES because that set also drives the password-reset
+ * knowledge-factor gate and the MFA requirement; a marketer must stay a non-privileged account there.
+ * Players are still excluded, so the high-volume path keeps skipping the DB read. This gate is only
+ * the force-logout epoch — the 0196 five-minute IDLE timeout stays operator-only, since logging a
+ * marketer out mid-demo every five minutes would be worse than the problem.
+ */
+export const SESSION_GATED_ROLES: ReadonlySet<string> = new Set([...PRIVILEGED_ROLES, "marketer"]);
+
+/** True when `role`'s token must be checked against the account's force-logout epoch. */
+export function isSessionGatedRole(role: string | undefined | null): boolean {
+  return typeof role === "string" && SESSION_GATED_ROLES.has(role);
 }
 
 /**
@@ -117,6 +141,47 @@ export interface AuthServiceOptions {
 
 const DEFAULT_TTL_SECONDS = 7 * 24 * 60 * 60;
 
+/**
+ * Progressive login lockout (0197). `[failuresAtOrAbove, lockMs]`, applied highest-match-first.
+ *
+ * The control this replaces is a 40/minute counter keyed on the CALLER'S IP, held in one API
+ * process. With PASSWORD_MIN_LENGTH at 4 and no character classes, a password can be one of 10,000
+ * values; an attacker spread over a /24 never trips a per-IP bucket, and a deploy resets every
+ * bucket anyway. credentials.ts says so in as many words: the throttle "is now the ONLY thing
+ * standing between an account and an exhaustive search ... do not raise its limit without replacing
+ * it with per-account lockout." This is that lockout.
+ *
+ * Shaped so the attacker's cost grows and the honest user's does not:
+ *   - the first four failures cost nothing at all, so a fumbled password is never punished;
+ *   - from the fifth the delay climbs steeply, and a successful login clears the streak outright.
+ * Against 10,000 candidates the schedule is decisive: reaching even a thousand attempts costs days.
+ *
+ * It is deliberately NOT a flat 15-minute lock like the marketer PIN's (0034). A flat lock makes
+ * denial cheap and repeatable — five deliberate wrong passwords and a brand's admin cannot reach
+ * their own back office, which on this platform means nobody is approving withdrawals. Starting at
+ * 30 seconds keeps that attack expensive to sustain while still stopping a search dead.
+ */
+const LOCKOUT_SCHEDULE: ReadonlyArray<readonly [number, number]> = [
+  [25, 60 * 60_000],   // 25+ failures: an hour. Nobody mistypes a password 25 times.
+  [15, 15 * 60_000],
+  [10, 5 * 60_000],
+  [7, 60_000],
+  [5, 30_000],         // first lock, deliberately short
+];
+
+/**
+ * A failure streak older than this is forgotten, so a lock cannot be assembled from single failures
+ * weeks apart. Long enough to cover a real attack's pace, short enough that an honest mistake last
+ * month does not count against someone today.
+ */
+const LOCKOUT_STREAK_TTL_MS = 12 * 60 * 60_000;
+
+/** The lock a given failure count earns; 0 = no lock. Exported for test and for the comment above. */
+export function lockMsForFailures(failures: number): number {
+  for (const [threshold, ms] of LOCKOUT_SCHEDULE) if (failures >= threshold) return ms;
+  return 0;
+}
+
 // A real scrypt hash of a throwaway secret, verified against when the phone is unknown so a
 // failed login costs the same whether or not the account exists (anti-enumeration).
 const DUMMY_HASH = hashPassword(randomBytes(24).toString("hex"));
@@ -214,7 +279,7 @@ export class AuthService {
    * Privileged roles that have not enrolled yet are still admitted but flagged with
    * `mfaEnrolmentRequired` so enabling MFA can never lock an operator out of their own back office.
    */
-  async login(input: { phone: string; password: string; totp?: string; recoveryCode?: string; siteId?: string; anyBrand?: boolean }): Promise<AuthSession> {
+  async login(input: { phone: string; password: string; totp?: string; recoveryCode?: string; siteId?: string; anyBrand?: boolean; preferPrivileged?: boolean }): Promise<AuthSession> {
     let phone: string;
     try { phone = normalizeMsisdn(input.phone); } catch { throw new Error("INVALID_CREDENTIALS"); }
 
@@ -225,6 +290,11 @@ export class AuthService {
     //    brand's account is signing in, and its brand becomes the session's site. This is OPT-IN so
     //    it never weakens the default per-brand identity isolation of the normal web login.
     //  - otherwise (default) -> the legacy single lookup (scoped/default bucket): brand isolation.
+    //
+    // `preferPrivileged` then decides WHICH match wins when several do — see the scan below. It is
+    // passed by the operator sign-in alone, so the marketer apps' anyBrand login is untouched (a
+    // marketer's wallet lives on one brand, and resolving them to an admin account they happen to
+    // also own would send them to the wrong one).
     const candidates = input.anyBrand && !input.siteId
       ? await this.repo.findAllByPhone(phone)
       : await this.repo.findByPhone(phone, input.siteId).then((r) => (r ? [r] : []));
@@ -244,12 +314,53 @@ export class AuthService {
         // was blocking his active safitraders marketer login.)
         if (c.status === "deleted") continue;
         verifiedAny = true;
-        if (await verifyPassword(input.password, c.passwordHash)) { rec = c; break; }
+        if (await verifyPassword(input.password, c.passwordHash)) {
+          // The first match is the answer, and on the default path it ends the scan — oldest-first,
+          // exactly as before.
+          if (!rec) rec = c;
+          if (!input.preferPrivileged) break;
+          // preferPrivileged (the OPERATOR entry point only): an operator candidate outranks a
+          // non-operator one, whatever the ages. One person, one phone, two accounts — an older
+          // PLAYER and a newer ADMIN — used to resolve to the player whenever both accounts shared
+          // a password, because oldest-first took the first match and stopped. The operator was
+          // handed a valid player session and every console surface answered with its wrong-tier
+          // 404: "an admin who can't login anywhere, just 404" (BUGLOG #135). `created_at` is a
+          // deterministic tie-break, which is not the same as a correct one.
+          //
+          // This cannot escalate anything. A candidate is only ever considered here after ITS OWN
+          // hash verified the submitted password, so the password that wins the admin's session is
+          // the admin's own. When the two accounts have different passwords, the player's password
+          // matches only the player and still resolves to the player — there is a test for each
+          // direction. And the same credential already opened this account through the per-brand
+          // login on its own brand's host, so no new door is being opened; one that was shut on the
+          // operator domain is being opened.
+          if (isPrivilegedRole(c.role)) { rec = c; break; }
+        }
       }
       // Constant time when every candidate was skipped (all-deleted phone): still cost one verify.
       if (!verifiedAny) await verifyPassword(input.password, await DUMMY_HASH);
     }
-    if (!rec) throw new Error("INVALID_CREDENTIALS");
+    // ── Progressive per-account lockout (0197) ──────────────────────────────────────────────────
+    // Checked AFTER the password verification above, not before, and this ordering is the whole
+    // trick. Refusing a locked account up front would make the lock itself an oracle: an attacker
+    // probing a phone with any password would learn, from a LOCKED answer, that the account exists
+    // and is being attacked — handing them the account-enumeration result that `login` goes to real
+    // lengths (the dummy-hash verify above) to deny. So the password is always verified first, at
+    // the same cost either way, and a locked account is then refused with the SAME
+    // INVALID_CREDENTIALS a wrong password gives. The attacker learns nothing; the honest user is
+    // told what happened by the retry-after their client already handles.
+    //
+    // The consequence to be clear about: a locked-out operator with the RIGHT password still cannot
+    // get in until the lock lapses. That is the point of a lockout, and it is why the schedule
+    // starts at 30 seconds rather than 15 minutes.
+    const locked = rec && rec.lockedUntilMs != null && rec.lockedUntilMs > Date.now();
+    if (!rec || locked) {
+      // Count the failure against the account when we know which one it was. An unknown phone has
+      // no row to count against — that is the IP limiter's job, not this one's.
+      if (rec) await this.noteLoginFailure(rec);
+      else if (candidates.length === 1) await this.noteLoginFailure(candidates[0]!);
+      throw new Error("INVALID_CREDENTIALS");
+    }
     // A soft-DELETED account is treated as if it does not exist: same error as bad credentials, so a
     // deleted user can never sign in and the deletion can't be enumerated. (suspended/banned still
     // sign in — see below — so deposits/support stay open; only 'deleted' is a hard login block.)
@@ -269,6 +380,9 @@ export class AuthService {
     }
     const mfa = await this.repo.getMfa(rec.userId);
     if (mfa?.enabled) await this.assertSecondFactor(rec.userId, mfa, input.totp, input.recoveryCode);
+    // The password (and second factor, if any) checked out: forget the failure streak. Done only
+    // now, so a correct password with a wrong TOTP code does not reset an attacker's counter.
+    if (rec.failedAttempts !== 0 || rec.lockedUntilMs != null) await this.repo.clearLoginFailures(rec.userId);
     // The brand is the matched account's own site (falling back to an explicit siteId for the web).
     const resolvedSite = input.siteId ?? rec.siteId ?? undefined;
     // Platform tier (Issue 1): a platform_admin carries an explicit `platform` claim = the platform
@@ -285,13 +399,98 @@ export class AuthService {
   }
 
   /**
+   * Count one failed login against an account and apply whatever lock the schedule now says it has
+   * earned (0197).
+   *
+   * A streak older than LOCKOUT_STREAK_TTL_MS is treated as starting over, so a lock can never be
+   * assembled out of isolated mistakes weeks apart — and so a shared family phone does not slowly
+   * accumulate its way into a permanent lockout.
+   *
+   * Never throws: a failure to record a failure must not change the answer the caller gives. The
+   * worst case is one uncounted attempt, which is strictly better than a store hiccup turning a
+   * wrong password into a 500 (and telling the attacker something changed).
+   */
+  /**
+   * Fetch + verify a user's security answers, throwing the same two errors `resetPassword` throws.
+   *
+   * Extracted so the knowledge factor has ONE enforcement point used by all three callers (reset,
+   * password change, step-up). The two-part shape of `verifyAllSecurityAnswers` — load the hashes,
+   * then compare — is easy to call with the fail-closed count check accidentally omitted, and the
+   * omission looks like working code: every answer verifies against an empty stored set, so a
+   * caller that forgot it would let an operator who has set NO answers through on no answers at all.
+   */
+  private async assertSecurityAnswers(
+    userId: string, answers: ReadonlyArray<{ key: string; answer: string }>,
+  ): Promise<void> {
+    const stored = await this.repo.getSecurityAnswers(userId);
+    if (stored.length < SECURITY_ANSWERS_REQUIRED) throw new Error("SECURITY_QUESTIONS_NOT_SET");
+    if (!(await this.verifyAllSecurityAnswers(stored, answers))) throw new Error("SECURITY_ANSWERS_MISMATCH");
+  }
+
+  private async noteLoginFailure(rec: CredentialRecord): Promise<void> {
+    try {
+      const stale = rec.lockedUntilMs != null && rec.lockedUntilMs + LOCKOUT_STREAK_TTL_MS < Date.now();
+      const priorFailures = stale ? 0 : rec.failedAttempts;
+      await this.repo.recordLoginFailure(rec.userId, lockMsForFailures(priorFailures + 1));
+    } catch { /* recording is best-effort; the refusal above already happened */ }
+  }
+
+  /**
+   * Prove a second factor for an already-authenticated operator, mid-session (0196).
+   *
+   * This is the step-up gate's verifier. It deliberately reuses the SAME primitives as login —
+   * `assertSecondFactor` for TOTP and recovery codes, `verifyAllSecurityAnswers` for the knowledge
+   * factor — rather than growing a parallel implementation. A second code path for "the same check,
+   * but later" is how the two drift, and the half nobody looks at is the one that gets weaker.
+   *
+   * Which factor is required is the API's decision (see apps/api/src/stepup.ts: possession for the
+   * platform tiers, knowledge for a site admin), because it is a policy question. This method's job
+   * is to verify whatever was offered and report WHICH factor was proven, so the session record and
+   * the audit trail can say what actually happened rather than merely that something did.
+   *
+   * Throws the same errors as login (MFA_REQUIRED / MFA_INVALID /
+   * SECURITY_ANSWERS_MISMATCH / SECURITY_QUESTIONS_NOT_SET) so the API's existing error mapping
+   * covers it with no new vocabulary.
+   */
+  async verifyStepUp(
+    userId: string,
+    proof: { totp?: string; recoveryCode?: string; answers?: ReadonlyArray<{ key: string; answer: string }> },
+  ): Promise<{ method: "totp" | "recovery_code" | "security_questions" }> {
+    if (proof.totp || proof.recoveryCode) {
+      const mfa = await this.repo.getMfa(userId);
+      // Fail CLOSED on an unenrolled or disabled account. The alternative — "no MFA configured, so
+      // nothing to check, so pass" — would make the gate a no-op for exactly the accounts that
+      // never finished enrolment, which are the weakest ones on the platform.
+      if (!mfa?.enabled) throw new Error("MFA_REQUIRED");
+      await this.assertSecondFactor(userId, mfa, proof.totp, proof.recoveryCode);
+      return { method: proof.totp ? "totp" : "recovery_code" };
+    }
+    if (proof.answers) {
+      await this.assertSecurityAnswers(userId, proof.answers);
+      return { method: "security_questions" };
+    }
+    throw new Error("MFA_REQUIRED");
+  }
+
+  /**
    * Verify the second factor: a live TOTP code, or burn one single-use recovery code. Throws
    * MFA_REQUIRED when nothing was supplied and MFA_INVALID when it doesn't check out (the same
    * error for a bad code and a spent one, so neither reveals which).
    */
   private async assertSecondFactor(userId: string, mfa: MfaRecord, totp?: string, recoveryCode?: string): Promise<void> {
     if (totp) {
-      if (!verifyTotp(mfa.secret, totp)) throw new Error("MFA_INVALID");
+      const step = matchTotpStep(mfa.secret, totp);
+      if (step === null) throw new Error("MFA_INVALID");
+      // Single use (0196). Without this a code stays good for its whole ±1-step window — about 90
+      // seconds — so one glimpsed or screenshotted code authorises a second sign-in, or (once the
+      // step-up gate uses this same path) a second critical action the operator never approved. A
+      // replay is reported as MFA_INVALID, identical to a wrong code, so a replaying attacker is
+      // not told that the code was right and merely late.
+      //
+      // The visible cost, stated plainly because a support agent will eventually be asked: signing
+      // in twice inside the same 30-second window requires waiting for the next code. That is how
+      // every conformant TOTP implementation behaves.
+      if (!(await this.repo.consumeTotpStep(userId, step))) throw new Error("MFA_INVALID");
       return;
     }
     if (recoveryCode) {
@@ -353,16 +552,46 @@ export class AuthService {
   }
 
   /**
-   * Change your own password. Requires the current password as possession proof, so this is safe
-   * to expose to every logged-in player and is always enabled.
+   * Change your own password.
+   *
+   * For a PLAYER or MARKETER: the current password is the proof, which is what this has always
+   * done and is appropriate for a self-service change.
+   *
+   * For a PRIVILEGED account (admin, platform_admin, platform_superadmin) the current password is
+   * no longer enough, and `answers` (all stored security questions) is required as well.
+   *
+   * WHY, because the asymmetry is the point: until now the code path for a platform_superadmin
+   * changing their password was byte-identical to a player's — same method, same single check, and
+   * on the web the same player modal. Anyone holding a privileged session for the five minutes it
+   * takes to read the current password off a sticky note, or who found the browser already logged
+   * in, could rotate the password and own the account outright. A password reset ALREADY demanded
+   * all three security answers for exactly these roles (0097); changing a password from inside a
+   * session — the easier path, and the one an attacker actually has — demanded nothing. This closes
+   * that gap with the mechanism already in place rather than a new one.
+   *
+   * Fails CLOSED: a privileged account that has never set its answers cannot change its password
+   * (SECURITY_QUESTIONS_NOT_SET), which is the same stance `resetPassword` takes. The mandatory
+   * setup gate at login means an operator is prompted to set them before they can get this far, so
+   * this is not a lockout in practice — and it is the right failure if ever it were.
+   *
+   * Note that the step-up gate ALSO covers this route (/auth/password/change is deliberately not
+   * exempt), so a platform admin additionally presents a live authenticator code. The two are not
+   * redundant: the gate proves someone with the device is present now, these answers prove the
+   * person knows the account's own secrets. Either alone has a gap the other covers.
    */
-  async changePassword(userId: string, currentPassword: string, newPassword: string): Promise<{ changed: boolean }> {
+  async changePassword(
+    userId: string, currentPassword: string, newPassword: string,
+    answers?: ReadonlyArray<{ key: string; answer: string }>,
+  ): Promise<{ changed: boolean }> {
     const pw = validatePassword(newPassword);
     if (!pw.ok) throw new Error(`PASSWORD_${pw.reason}`);
     const profile = await this.repo.getProfile(userId);
     if (!profile) throw new Error("NOT_FOUND");
     const rec = await this.repo.findByPhone(profile.phone);
     if (!rec || !(await verifyPassword(currentPassword, rec.passwordHash))) throw new Error("INVALID_CREDENTIALS");
+    // Order matters: the current password is verified FIRST, so a caller who does not know it
+    // learns nothing about the account's security questions (not even whether any are set).
+    if (isPrivilegedRole(profile.role)) await this.assertSecurityAnswers(userId, answers ?? []);
     await this.repo.setPasswordHash(userId, await hashPassword(newPassword));
     return { changed: true };
   }
@@ -392,24 +621,41 @@ export class AuthService {
     // account. Undefined siteId preserves single-tenant behaviour (default site).
     const rec = await this.repo.findByPhone(normalized, siteId);
 
-    // ── PRIVILEGED accounts (admin / superadmin / platform_superadmin) ──────────────────────────
+    // ── PRIVILEGED accounts (admin / platform_admin / platform_superadmin) ──────────────────────
     // The reset is gated by the security-question SECOND FACTOR, INDEPENDENT of the
-    // allowUnverifiedReset flag. It FAILS CLOSED: if the account has not set its answers yet the
-    // reset is refused entirely (SECURITY_QUESTIONS_NOT_SET), so the phone-only takeover vector is
-    // shut even before the operator finishes setup. All three answers must verify.
+    // allowUnverifiedReset flag. It FAILS CLOSED: an account that has not set its answers cannot be
+    // reset at all, so the phone-only takeover vector is shut even before the operator finishes
+    // setup. All three answers must verify.
+    //
+    // EVERY failure below reports the SAME error, and that uniformity is load-bearing — it is the
+    // other half of the decoy question keys in `decoyQuestionKeys`. The three outcomes used to be
+    // distinguishable, and each told an unauthenticated caller something they should not know:
+    //   SECURITY_QUESTIONS_NOT_SET  -> "this IS an operator account, and it is half-configured"
+    //   SECURITY_ANSWERS_MISMATCH   -> "this IS an operator account, fully configured"
+    //   RESET_DISABLED              -> "this is NOT an operator account"
+    // Together they turned a public endpoint into a directory of the people who approve withdrawals
+    // on this platform, ranked by how under-defended each one was. Serving decoy questions while
+    // still answering differently when they are attempted would have closed nothing.
+    //
+    // The cost, stated plainly: an operator who genuinely mistypes an answer is told only that the
+    // reset is unavailable, not which part failed. That is the right trade for a flow that is rare,
+    // unauthenticated, and ends in a password change on an account that can move money — and they
+    // keep an in-session path (`changePassword`) and a support channel. Diagnostic failure messages
+    // on an anonymous endpoint are a luxury this endpoint cannot afford.
     if (rec && isPrivilegedRole(rec.role)) {
-      const stored = await this.repo.getSecurityAnswers(rec.userId);
-      if (stored.length < SECURITY_ANSWERS_REQUIRED) throw new Error("SECURITY_QUESTIONS_NOT_SET");
-      const ok = await this.verifyAllSecurityAnswers(stored, answers ?? []);
-      if (!ok) throw new Error("SECURITY_ANSWERS_MISMATCH");
+      try {
+        await this.assertSecurityAnswers(rec.userId, answers ?? []);
+      } catch {
+        throw new Error("RESET_UNAVAILABLE");
+      }
       await this.repo.setPasswordHash(rec.userId, await hashPassword(newPassword));
       return { reset: true };
     }
 
-    // ── NON-privileged (players): unchanged legacy stop-gap ─────────────────────────────────────
-    // Still gated by the opt-in flag; the account lookup ran first so timing/response is uniform
-    // whether or not the phone exists (anti-enumeration) and privileged accounts are handled above.
-    if (!this.allowUnverifiedReset) throw new Error("RESET_DISABLED");
+    // ── NON-privileged (players): the legacy stop-gap, still behind the opt-in flag ──────────────
+    // The account lookup ran first so timing/response is uniform whether or not the phone exists
+    // (anti-enumeration), and privileged accounts are handled above.
+    if (!this.allowUnverifiedReset) throw new Error("RESET_UNAVAILABLE");
     const hash = await hashPassword(newPassword); // computed unconditionally: uniform timing
     if (rec) await this.repo.setPasswordHash(rec.userId, hash);
     return { reset: true };
@@ -447,6 +693,26 @@ export class AuthService {
    * plaintext never touches the database. Allowed for any account (harmless), but only privileged
    * roles are REQUIRED to have them (see securitySetupRequired).
    */
+  /**
+   * Which security questions the CALLER set on their OWN account.
+   *
+   * Not an enumeration risk, and the distinction from `getResetQuestionKeys` is the whole point:
+   * that one answers an UNAUTHENTICATED caller about an ARBITRARY phone number, which is why it
+   * serves decoys. This one answers an authenticated caller about themselves — they have already
+   * proven they are that account, so telling them which three of the ten questions they picked
+   * discloses nothing they do not own.
+   *
+   * It exists because the step-up prompt otherwise has to offer the whole catalog and make an
+   * operator GUESS which three they chose, against a 10/min budget. For the `admin` tier, whose
+   * second factor IS the questions, mis-remembering would mean being locked out of every critical
+   * action on the platform — a self-inflicted outage, and the likeliest support call in this whole
+   * feature. Returns [] when none are set, which the client reads as "finish setup first".
+   */
+  async myQuestionKeys(userId: string): Promise<string[]> {
+    const stored = await this.repo.getSecurityAnswers(userId);
+    return stored.map((s) => s.questionKey);
+  }
+
   async setSecurityAnswers(userId: string, answers: ReadonlyArray<{ key: string; answer: string }>): Promise<{ set: true }> {
     const check = validateSecurityAnswerSet(answers.map((a) => ({ key: a.key, answer: a.answer })));
     if (!check.ok) throw new Error(`SECURITY_ANSWERS_${check.reason}`);
@@ -469,6 +735,75 @@ export class AuthService {
     return n < SECURITY_ANSWERS_REQUIRED;
   }
 
+  // ── Security-question primitives for a NON-profile subject (0198: the marketer-app identity) ────
+  //
+  // The marketer app authenticates as a marketers.id, not a profiles.id, so its answers live in a
+  // separate table owned by the marketer repo — not in IdentityRepository. Rather than grow a second
+  // copy of the knowledge-factor crypto there (the exact drift the 0097 comments warn against), the
+  // marketer flow hands its stored hashes to these methods, which reuse the SAME validation, scrypt
+  // hashing, normalization and uniform-timing verification as the operator path. One enforcement
+  // point; the only thing that differs between the two subjects is where the row is stored.
+
+  /**
+   * Validate a submitted answer set and return its scrypt hashes, ready to persist. Throws
+   * `SECURITY_ANSWERS_<reason>` for an invalid set (too few, unknown/duplicate key, too short/long),
+   * identical to `setSecurityAnswers`. Pure with respect to storage — the caller persists the result.
+   */
+  async hashSecurityAnswers(
+    answers: ReadonlyArray<{ key: string; answer: string }>,
+  ): Promise<SecurityAnswerHash[]> {
+    const check = validateSecurityAnswerSet(answers.map((a) => ({ key: a.key, answer: a.answer })));
+    if (!check.ok) throw new Error(`SECURITY_ANSWERS_${check.reason}`);
+    return Promise.all(
+      answers.map(async (a) => ({ questionKey: a.key, answerHash: await hashPassword(normalizeSecurityAnswer(a.answer)) })),
+    );
+  }
+
+  /**
+   * Verify provided answers against an already-loaded stored set. Throws SECURITY_QUESTIONS_NOT_SET
+   * (fewer than the required number stored — fail closed) or SECURITY_ANSWERS_MISMATCH (one or more
+   * wrong), the same two errors the operator reset throws. Reuses `verifyAllSecurityAnswers`, so the
+   * no-early-exit uniform timing is identical. The caller loads `stored` from wherever that subject's
+   * answers live.
+   */
+  async assertSecurityAnswersAgainst(
+    stored: ReadonlyArray<SecurityAnswerHash>,
+    provided: ReadonlyArray<{ key: string; answer: string }>,
+  ): Promise<void> {
+    if (stored.length < SECURITY_ANSWERS_REQUIRED) throw new Error("SECURITY_QUESTIONS_NOT_SET");
+    if (!(await this.verifyAllSecurityAnswers(stored, provided))) throw new Error("SECURITY_ANSWERS_MISMATCH");
+  }
+
+  /**
+   * Deterministic decoy question keys for a phone that has no answers, so a public "which questions
+   * do I answer" step cannot be used to tell a real marketer account from a non-existent one. Thin
+   * public wrapper over the same HMAC-seeded shuffle the operator reset uses.
+   */
+  publicDecoyQuestionKeys(seed: string): string[] {
+    return this.decoyQuestionKeys(seed);
+  }
+
+  /**
+   * Set a NON-privileged account's password by phone (+ brand), for the marketer-gated website
+   * password reset (0198). The caller MUST have already verified that subject's security answers;
+   * this is the credential write only.
+   *
+   * Refuses a privileged target outright — an operator account is never reset through the marketer
+   * flow, whatever phone it shares — and returns false (rather than throwing a distinguishable error)
+   * when no eligible account exists, so the caller can answer with one uniform code and leak nothing
+   * about which accounts exist. A soft-deleted account is treated as absent.
+   */
+  async setNonPrivilegedPasswordByPhone(phone: string, newPassword: string, siteId?: string): Promise<boolean> {
+    const pw = validatePassword(newPassword);
+    if (!pw.ok) throw new Error(`PASSWORD_${pw.reason}`);
+    let normalized: string;
+    try { normalized = normalizeMsisdn(phone); } catch { throw new Error("INVALID_PHONE"); }
+    const rec = await this.repo.findByPhone(normalized, siteId);
+    if (!rec || rec.status === "deleted" || isPrivilegedRole(rec.role)) return false;
+    await this.repo.setPasswordHash(rec.userId, await hashPassword(newPassword));
+    return true;
+  }
+
   /**
    * Public reset flow step 1: the question keys a privileged account must answer to reset. Returns
    * an EMPTY array for a non-privileged/unknown phone or one without answers set (anti-enumeration:
@@ -477,12 +812,49 @@ export class AuthService {
    */
   async getResetQuestionKeys(phone: string, siteId?: string): Promise<string[]> {
     let normalized: string;
-    try { normalized = normalizeMsisdn(phone); } catch { return []; }
+    try { normalized = normalizeMsisdn(phone); } catch { return this.decoyQuestionKeys(String(phone ?? "")); }
     const rec = await this.repo.findByPhone(normalized, siteId);
-    if (!rec || !isPrivilegedRole(rec.role)) return [];
+    if (!rec || !isPrivilegedRole(rec.role)) return this.decoyQuestionKeys(normalized);
     const stored = await this.repo.getSecurityAnswers(rec.userId);
-    if (stored.length < SECURITY_ANSWERS_REQUIRED) return [];
+    if (stored.length < SECURITY_ANSWERS_REQUIRED) return this.decoyQuestionKeys(normalized);
     return stored.map((s) => s.questionKey);
+  }
+
+  /**
+   * Three plausible question keys for a phone that has none, so this endpoint stops being an
+   * oracle that identifies operator accounts.
+   *
+   * THE LEAK THIS CLOSES: returning the real keys for a privileged account and `[]` for everyone
+   * else meant an unauthenticated caller could test any phone number and learn, from the SHAPE of
+   * the response alone, whether it belongs to an admin of this platform — and if so, which three
+   * questions guard it. The route's own comment claimed anti-enumeration on the grounds that it
+   * "always returns 200", which was true and beside the point: the status code was never the
+   * channel, the body was. Run against a few hundred staff or suspected numbers at the 5/min limit,
+   * that yields a target list of the people who approve withdrawals on a real-money platform,
+   * ready for SIM-swap or spear-phishing — and, worst of all, an empty list for a privileged
+   * account meant "this admin has not finished their security setup yet", ranking the targets by
+   * how under-defended they are.
+   *
+   * DETERMINISTIC, not random: the same phone must always produce the same three questions, or
+   * refreshing the page twice reveals which responses are fabricated. Derived by HMAC under the
+   * service's own signing secret, so the mapping cannot be recomputed by an outsider and no state
+   * is stored for phones that do not exist.
+   *
+   * What this does NOT claim: someone who answers the decoys gets a refusal, and that refusal has
+   * to be indistinguishable from a genuine wrong answer — which is why `resetPassword` now
+   * collapses all of its failure modes into one error. The two changes only work together.
+   */
+  private decoyQuestionKeys(seed: string): string[] {
+    const digest = createHmac("sha256", this.secret).update(`reset-questions-decoy:${seed}`).digest();
+    const keys = SECURITY_QUESTIONS.map((q) => q.key);
+    // Fisher-Yates driven by the digest, then take the first three: a deterministic shuffle rather
+    // than three independent picks, which could otherwise repeat a question and look wrong.
+    const order = [...keys];
+    for (let i = order.length - 1; i > 0; i--) {
+      const j = digest[i % digest.length]! % (i + 1);
+      [order[i], order[j]] = [order[j]!, order[i]!];
+    }
+    return order.slice(0, SECURITY_ANSWERS_REQUIRED);
   }
 
   /**
@@ -491,7 +863,9 @@ export class AuthService {
    * high-volume player traffic pays no extra DB read — only the handful of admin tokens do.
    */
   async assertSessionValid(userId: string, role: string | undefined, iat: unknown): Promise<void> {
-    if (!isPrivilegedRole(role)) return;
+    // Force-logout applies to operators AND marketers (see SESSION_GATED_ROLES) — a marketer's
+    // website session must actually end when they are signed out. Players still skip the DB read.
+    if (!isSessionGatedRole(role)) return;
     const va = await this.repo.getSessionsValidAfterMs(userId);
     const iatSeconds = typeof iat === "number" ? iat : undefined;
     if (!isTokenSessionValid(iatSeconds, va)) throw new Error("SESSION_REVOKED");

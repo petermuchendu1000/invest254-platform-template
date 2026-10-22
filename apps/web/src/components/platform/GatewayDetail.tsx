@@ -238,7 +238,7 @@ function Detail({ code, schema, config }: { code: string; schema: import('@/lib/
               <div className="rounded-xl border border-info/30 bg-info/5 p-4">
                 <div className="text-sm font-medium text-info">Coming soon for players</div>
                 <p className="mt-1 text-xs text-muted">
-                  Players can’t pay with {schema.displayName} in the app yet. Save and test the account now — it can be offered as soon as it is switched on in the app.
+                  Players can’t pay with {schema.displayName} in the app yet. Save and test the account now. It can be offered as soon as it is switched on in the app.
                 </p>
               </div>
             )}

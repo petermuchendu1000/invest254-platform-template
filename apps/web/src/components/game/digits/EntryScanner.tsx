@@ -106,12 +106,19 @@ export function EntryScanner({
   const [scanning, setScanning] = useState(false);
   const [progress, setProgress] = useState(0);
   const [best, setBest] = useState<ScanSuggestion | null>(null);
+  /**
+   * Has a scan completed for the current market? Distinguishes "not scanned yet" from "scanned and
+   * found nothing": without it, a scan whose feeds were all silent drove the progress bar to 100%
+   * and then emptied the sheet body, leaving the player who had just watched it finish with no
+   * result and no explanation of why.
+   */
+  const [scanned, setScanned] = useState(false);
 
   const cancelledRef = useRef(false);
   const total = INSTRUMENTS.length;
 
   // Reset transient scan state whenever the sheet is reopened or the market changes.
-  useEffect(() => { setBest(null); setProgress(0); }, [market, open]);
+  useEffect(() => { setBest(null); setProgress(0); setScanned(false); }, [market, open]);
 
   // On unmount / close: cancel any in-flight scan and restore the user's instrument feed.
   useEffect(() => {
@@ -147,6 +154,7 @@ export function EntryScanner({
       // strongest lean = the biggest gap between observed and expected share for its side
       found.sort((a, b) => b.edge - a.edge);
       setBest(found[0] ?? null);
+      setScanned(true);
     } finally {
       // Always restore the user's instrument feed, and always end the scan: closing the sheet mid-scan
       // used to leave it "Scanning…" with both buttons disabled for good (BUGLOG #84).
@@ -229,6 +237,23 @@ export function EntryScanner({
                 </span>
               </div>
             </div>
+          </div>
+        ) : scanned ? (
+          /* Scanned, nothing to suggest. Every market was either silent or too close to its
+             expected share to call — which is a RESULT, and has to be said, because a sheet that
+             empties itself the instant the bar reaches 100% reads as a crash. */
+          <div className="mt-4">
+            <div className="flex items-center justify-between text-[12px] font-semibold text-muted">
+              <span>No lean found</span>
+              <span className="tabular-nums">{total}/{total}</span>
+            </div>
+            <div className="mt-1.5 h-2 w-full overflow-hidden rounded-full bg-surface-2">
+              <div className="h-full rounded-full bg-border" style={{ width: '100%' }} />
+            </div>
+            <p className="mt-3 rounded-xl border border-dashed border-border p-3 text-center text-[12px] leading-snug text-muted">
+              No market is leaning far enough from its expected share to call right now. Scan again
+              in a moment, or pick a different market above.
+            </p>
           </div>
         ) : null}
 

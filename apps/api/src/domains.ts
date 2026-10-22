@@ -194,7 +194,7 @@ export function makeNamecheapRegistrar(cfg: { apiUser: string; userName: string;
     const xml = await res.text();
     if (/ApiResponse\s+Status="ERROR"/.test(xml)) {
       const ipErr = xml.match(/Invalid request IP:\s*([0-9.]+)/i);
-      if (ipErr) throw new Error(`NAMECHEAP_IP_NOT_WHITELISTED: ${ipErr[1]} — add this IP in Namecheap → Profile → Tools → API Access → Whitelisted IPs, then update NAMECHEAP_CLIENT_IP.`);
+      if (ipErr) throw new Error(`NAMECHEAP_IP_NOT_WHITELISTED: ${ipErr[1]}. Add this IP in Namecheap → Profile → Tools → API Access → Whitelisted IPs, then update NAMECHEAP_CLIENT_IP.`);
       throw new Error(`Namecheap error: ${(xml.match(/<Error[^>]*>([^<]+)</)?.[1] ?? "unknown").slice(0, 160)}`);
     }
     return xml;

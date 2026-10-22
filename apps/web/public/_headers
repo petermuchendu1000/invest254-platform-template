@@ -12,5 +12,131 @@
 /manifest.webmanifest
   Cache-Control: public, max-age=0, must-revalidate
 
+# ----------------------------------------------------------------------------------------------
+# Security headers for every document — all 19 player-facing brand domains AND the operator
+# console (triocodes.com). The API tier already sets its own set (apps/api/src/http.ts
+# applySecurityHeaders); the web tier had none at all, which is the gap this closes.
+#
+# Why the web tier needs this MORE than a typical site: the session bearer token is kept in
+# localStorage (src/lib/auth/session.ts) with no HttpOnly cookie backstop, so any script that
+# executes in this origin — a stored XSS in a community post, a chat message, a username, an
+# admin-set brand field, or one compromised npm dependency — walks off with a durable token, up
+# to platform_superadmin on the console host.
+#
+# `_headers` is a Cloudflare Pages deploy artifact: `next dev` never reads it, so nothing below
+# affects the local dev loop and no localhost origin needs allowing. It is also the ONLY place
+# these can be set — the app runs on the Edge runtime via next-on-pages, where a Next.js
+# `headers()` entry is not honoured for the static/edge output Pages serves.
+#
+# Per-header reasoning (the rule block itself must stay one header per line):
+#
+# Content-Security-Policy
+#   default-src 'self'      — nothing loads from anywhere unless a directive below says so.
+#   script-src              — 'unsafe-inline' is UNAVOIDABLE here and that is a real limitation,
+#                             not an oversight. Next 14's App Router streams the RSC payload as
+#                             inline `<script>self.__next_f.push(...)</script>` tags whose content
+#                             differs per request and per route, so no hash list can cover them,
+#                             and there is a second inline script in app/layout.tsx (the
+#                             pre-paint theme init). A nonce is the correct fix but CANNOT come
+#                             from a static file — it has to be minted per response, which means
+#                             src/middleware.ts setting the CSP and Next picking the nonce up.
+#                             That is the follow-up; it is owned by another file.
+#                             'strict-dynamic' is not an option either: it needs a nonce or hash
+#                             to bootstrap from, so with neither it would block EVERY script and
+#                             take the whole app down.
+#                             What 'self' still buys with 'unsafe-inline' present: no EXTERNAL
+#                             script file can load. The usual stored-XSS payload is a short
+#                             injection that pulls a stage-2 from an attacker host, and that is
+#                             blocked — as is a compromised CDN. What it does NOT buy: inline
+#                             script injected into our own HTML still runs, can read the token,
+#                             and can still exfiltrate by navigation or by an <img> URL. This is
+#                             defence in depth, not an XSS fix; the fix is an HttpOnly cookie.
+#                             'unsafe-eval' is deliberately absent — nothing here needs eval
+#                             (verified against the built client chunks).
+#   style-src 'unsafe-inline' — genuinely required, not assumed: ~39 components pass React
+#                             `style={{…}}` and layout.tsx sets the whole per-brand palette as an
+#                             inline style attribute on <html> via brandRootStyle(), which CSP
+#                             covers under style-src-attr. Without it every brand loses its
+#                             colours. fonts.googleapis.com is the per-brand Google Fonts
+#                             stylesheet (lib/brand/fonts.ts).
+#   font-src                — fonts.gstatic.com serves the actual face files for that stylesheet.
+#   img-src https:          — deliberately open to any https host, because a brand's logo_url and
+#                             favicon_url are operator-set arbitrary URLs in the DB (console →
+#                             brand settings). Pinning this would silently break the logo on any
+#                             brand pointing at its own CDN, which is the kind of breakage that
+#                             gets a CSP reverted wholesale. It does leave an exfiltration channel
+#                             open; that is the price of not breaking 19 live brands.
+#   media-src               — chat voice notes and video attachments are served by the API
+#                             (lib/chat/liveChat.ts mediaUrl); blob: covers locally recorded audio.
+#   connect-src             — the REST API and the wss:// game engine. These are inlined at BUILD
+#                             time from NEXT_PUBLIC_API_BASE_URL / NEXT_PUBLIC_WS_URL and are the
+#                             SAME for production and preview (HOSTING.md §3.2), so hardcoding
+#                             them here is safe. ⚠ IF EITHER OF THOSE ENV VARS EVER CHANGES HOST,
+#                             THIS LINE MUST CHANGE IN THE SAME COMMIT or every brand goes dead
+#                             (no login, no ticks). This directive is the main win of the whole
+#                             policy: a stolen localStorage token cannot be fetch()ed, XHR'd,
+#                             sendBeacon'd or WebSocket'd to an attacker origin.
+#   frame-src https:        — the PayHero Lipwa checkout is embedded in an iframe
+#                             (components/wallet/LipwaDeposit.tsx) from a per-brand
+#                             operator-configured `lipwa_url` (gatewayschema.ts), so the host is
+#                             not knowable here. Pinning app.payhero.africa would break card
+#                             deposits for any brand on a different checkout host. Note this does
+#                             NOT weaken the clickjacking defence — that is frame-ancestors.
+#   worker-src/manifest-src — /sw.js and /manifest.webmanifest, both same-origin.
+#   base-uri 'self'         — blocks an injected <base href> from silently repointing every
+#                             relative script and form URL in the document at an attacker host.
+#   form-action 'self'      — no form in this app posts off-origin, so a planted login form
+#                             cannot POST a password or a withdrawal to a third party.
+#   object-src 'none'       — no Flash/applet/plugin surface at all.
+#   frame-ancestors 'none'  — see X-Frame-Options below.
+#
+# Strict-Transport-Security
+#   Two years, matching the API's max-age, with includeSubDomains. `preload` is deliberately NOT
+#   asserted. These are 19 apex domains belonging to CLIENTS, not to us: the preload token is a
+#   claim that the apex and every subdomain under it will be HTTPS-only forever, it lets anyone
+#   submit the domain to the browser-baked preload list, and removal then takes months and a
+#   browser release — with no user override if a client still runs an http-only mail or cPanel
+#   subdomain. That is not a commitment a shared static header file should make on someone else's
+#   behalf. The API, a single domain we own, keeps its preload. includeSubDomains is kept because
+#   every brand zone is fronted by Cloudflare with SSL already, but it carries the same
+#   subdomain-forcing caveat and is worth re-checking before onboarding a brand with legacy
+#   plain-HTTP subdomains.
+#
+# X-Frame-Options: DENY (+ the CSP frame-ancestors above, for browsers that prefer it)
+#   The deposit amount field and the withdrawal confirm button are one-click, irreversible,
+#   real-money controls. Framed and overlaid, they are a textbook clickjack.
+#
+# X-Content-Type-Options: nosniff
+#   A user-uploaded KYC document or chat attachment proxied through this origin must never be
+#   re-sniffed into text/html and executed as a page in the session's own origin.
+#
+# Referrer-Policy: strict-origin-when-cross-origin
+#   This one is load-bearing, not boilerplate. Real capability tokens travel in QUERY STRINGS —
+#   `?t=<hmac>` on /kyc/file/:id and /chat/media/:id, `?token=` on /w/act — and this origin loads
+#   a third-party stylesheet (Google Fonts, per brand). With no policy, the full URL of the page
+#   goes out as the Referer, which hands a national-ID document link or a withdrawal-approval
+#   link to every third-party origin the page touches. The API uses the stricter `no-referrer`;
+#   the web tier cannot, because same-origin navigations here legitimately read the referrer, so
+#   this sends the full URL only same-origin and bare origin cross-origin.
+#
+# Permissions-Policy
+#   Deny every device/sensor feature this app does not use. `microphone=(self)` stays because chat
+#   voice notes call getUserMedia (components/chat/ChatParts.tsx); `autoplay`/`fullscreen` stay at
+#   self for the trade sounds and the chart. `payment` and `clipboard-write` are deliberately NOT
+#   listed: the PayHero checkout iframe carries allow="payment; clipboard-write", and denying
+#   either here would revoke that delegation and break card deposits. Their browser defaults are
+#   already `self`, so leaving them out loses nothing.
+#
+# X-Permitted-Cross-Domain-Policies: none
+#   Matches the API — no Adobe cross-domain policy file is honoured for this origin.
+# ----------------------------------------------------------------------------------------------
+
 /*
   Cache-Control: public, max-age=0, must-revalidate
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob: https:; media-src 'self' blob: https://invest254-api.fly.dev; connect-src 'self' https://invest254-api.fly.dev wss://invest254-engine-pm.fly.dev; frame-src https:; worker-src 'self'; manifest-src 'self'; base-uri 'self'; form-action 'self'; object-src 'none'; frame-ancestors 'none'
+  Strict-Transport-Security: max-age=63072000; includeSubDomains
+  X-Frame-Options: DENY
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: accelerometer=(), ambient-light-sensor=(), autoplay=(self), bluetooth=(), browsing-topics=(), camera=(), display-capture=(), encrypted-media=(), fullscreen=(self), geolocation=(), gyroscope=(), hid=(), idle-detection=(), local-fonts=(), magnetometer=(), midi=(), microphone=(self), screen-wake-lock=(), serial=(), usb=(), window-management=(), xr-spatial-tracking=()
+  X-Permitted-Cross-Domain-Policies: none

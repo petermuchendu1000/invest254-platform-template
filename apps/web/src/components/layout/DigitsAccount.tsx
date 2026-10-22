@@ -7,6 +7,7 @@ import { api } from '@/lib/api/endpoints';
 import { ApiError } from '@/lib/api/client';
 import { useBrand } from '@/lib/brand/BrandProvider';
 import { useSession } from '@/lib/auth/session';
+import { maskPhoneForDisplay } from '@invest254/shared/payments';
 import { useAuthActions } from '@/lib/auth/useAuthActions';
 import { useWallet, useSetAccountMode, useTopupDemo } from '@/lib/wallet/hooks';
 // aliased: this file already exports its own `AccountMenu` (the avatar menu).
@@ -16,10 +17,12 @@ import { useAmountText } from '@/lib/game/useAmountText';
 import { useDigitSession } from '@/lib/game/digitSession';
 import { useMultSession } from '@/lib/game/multSession';
 import { useLiveChat } from '@/lib/chat/liveChat';
-import { useAccountUi, useMyKyc, PLAYER_TWO_FACTOR } from '@/lib/account/accountUi';
+import { useAccountUi, useMyKyc, kycLabelSuffix, PLAYER_TWO_FACTOR } from '@/lib/account/accountUi';
 import { useToast } from '@/lib/toast/ToastProvider';
 import { passwordError } from '@/lib/auth/validation';
 import { DIcon, type IconName } from '@/components/game/digits/icons';
+import { MK } from '@/lib/marketer/labels';
+import { useMarketerSkin } from '@/lib/marketer/isMarketer';
 
 /** Close a popover on outside click / Escape. */
 function useDismiss(open: boolean, close: () => void) {
@@ -63,6 +66,7 @@ export function AccountPill({ compact = false }: { compact?: boolean }) {
   const toast = useToast();
   const [open, setOpen] = useState(false);
   const ref = useDismiss(open, () => setOpen(false));
+  const { isMarketer: skin } = useMarketerSkin();
   if (!data) return null;
   // A MARKETER is a normal player with a Real account (their funny money) and a separate Demo practice
   // bucket (0176). Which tab is active is their `marketerPractice` flag — NOT account_mode, which stays
@@ -71,6 +75,9 @@ export function AccountPill({ compact = false }: { compact?: boolean }) {
   const marketer = data.modeLocked === true;
   const demo = marketer ? data.marketerPractice === true : data.mode === 'demo';
   const spend = (data.real ?? 0) + (data.bonus ?? 0);
+  // MARKETER: neutralise the Real/Demo money vocabulary to game labels (Coins/Practice, C/P).
+  const tabLabel = demo ? (skin ? MK.practiceTab : 'Demo') : (skin ? MK.realTab : 'Real');
+  const tabBadge = demo ? (skin ? MK.practiceBadge : 'D') : (skin ? MK.realBadge : 'R');
 
   // A marketer's active tab is their practice flag (account_mode stays 'demo'), so guard against the
   // PRESENTED tab, not data.mode — otherwise tapping "Demo" (always === data.mode) would no-op.
@@ -91,17 +98,17 @@ export function AccountPill({ compact = false }: { compact?: boolean }) {
         onClick={() => setOpen((v) => !v)}
         aria-haspopup="dialog"
         aria-expanded={open}
-        aria-label={`${demo ? 'Demo' : 'Real'} account, ${amt.text(spend)}. Switch account`}
+        aria-label={`${tabLabel} account, ${amt.text(spend)}. Switch account`}
         className={cn('flex items-center rounded-xl border bg-surface/70 py-1 pl-1 transition hover:border-accent/50', demo ? 'border-warn/50' : 'border-border', compact ? 'h-10 gap-1.5 pr-1.5' : 'h-11 gap-2 pr-2')}
       >
-        <span className={cn('grid shrink-0 place-items-center rounded-full font-bold', demo ? 'bg-warn/15 text-warn' : 'bg-accent/15 text-accent', compact ? 'h-6 w-6 text-[10px]' : 'h-7 w-7 text-[11px]')}>{demo ? 'D' : 'R'}</span>
+        <span className={cn('grid shrink-0 place-items-center rounded-full font-bold', demo ? 'bg-warn/15 text-warn' : 'bg-accent/15 text-accent', compact ? 'h-6 w-6 text-[10px]' : 'h-7 w-7 text-[11px]')}>{tabBadge}</span>
         {auto && compact ? (
           <span className="flex items-center gap-1.5 whitespace-nowrap rounded-full bg-bg px-2.5 py-1 text-[11px] font-semibold text-fg">
             <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent" />Auto · {auto.side.toUpperCase()}
           </span>
         ) : (
           <span className="flex flex-col items-start leading-none">
-            <span className={cn('text-[9px] font-semibold uppercase tracking-wider', demo ? 'text-warn' : 'text-muted')}>{demo ? 'Demo' : 'Real'}</span>
+            <span className={cn('text-[9px] font-semibold uppercase tracking-wider', demo ? 'text-warn' : 'text-muted')}>{tabLabel}</span>
             {/* The full balance, never cut off: long figures step down a size so the phone header
                 (menu, pill, Deposit, bell) still fits at 320px (BUGLOG #80). */}
             <span className={cn('mt-0.5 whitespace-nowrap font-mono font-bold tabular-nums text-fg', balanceSize(`${amt.prefix}${amt.num(spend)}`, compact))}>{amt.prefix}{amt.num(spend)}</span>
@@ -129,12 +136,6 @@ export function AccountPill({ compact = false }: { compact?: boolean }) {
       ) : null}
     </div>
   );
-}
-
-/** Mask everything but the first two and last four characters ("25*****5678"). */
-function mask(v: string): string {
-  if (v.length <= 6) return v;
-  return `${v.slice(0, 2)}${'*'.repeat(Math.max(3, v.length - 6))}${v.slice(-4)}`;
 }
 
 /**
@@ -173,13 +174,15 @@ export function AccountMenu() {
         <div className="absolute right-0 top-[calc(100%+8px)] z-50 w-64 rounded-xl border border-border bg-surface p-1.5 shadow-2xl" role="menu">
           <div className="border-b border-border px-3 pb-3 pt-2">
             <div className="truncate text-[14px] font-semibold text-fg">@{user.username}</div>
-            {user.phone ? <div className="font-mono text-[11px] text-muted">{mask(user.phone)}</div> : null}
+            {/* The file-local mask here rendered "25*****5678" while the wallet rendered
+                "0712 •••678" for the same number. One helper now, so the player sees one shape. */}
+            {user.phone ? <div className="font-mono text-[11px] text-muted">{maskPhoneForDisplay(user.phone)}</div> : null}
           </div>
           <div className="py-1">
             <Item icon="user" label="Profile" href="/account" />
             <Item icon="lock" label="Change Password" onClick={() => setPw(true)} />
             {PLAYER_TWO_FACTOR ? <Item icon="shield" label="Two-Factor Auth" onClick={() => openDialog('twofactor')} /> : null}
-            <Item icon="idcard" label={`Verify Identity${kyc.data?.status === 'approved' ? ' · verified' : kyc.data?.status === 'pending' ? ' · in review' : ''}`} onClick={() => openDialog('verify')} />
+            <Item icon="idcard" label={`Verify Identity${kycLabelSuffix(kyc.data?.status)}`} onClick={() => openDialog('verify')} />
             <Item icon="gift" label="Referrals" href="/account" />
           </div>
           <div className="border-t border-border py-1">

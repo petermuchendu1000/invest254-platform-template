@@ -31,6 +31,9 @@ export const CAPABILITIES = {
   "backoffice.users.set_role_admin": OWNER,              // promote to / change an admin
   "backoffice.users.delete": SITE_TIER,                  // players & marketers
   "backoffice.users.delete_admin": OWNER,
+  // Clearing a SUBORDINATE operator's security answers (0210). Platform tier, not SITE_TIER: a site
+  // admin clearing a peer's second factor is a lateral move inside a tier, not supervision.
+  "backoffice.users.reset_security_answers": PLATFORM_TIER,
   "backoffice.users.overrides_write": OWNER,
   "backoffice.marketers.default": SITE_TIER,
   "backoffice.economy_integrity": SITE_TIER,             // real-cash RTP + config-change review (read)

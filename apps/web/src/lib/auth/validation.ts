@@ -38,10 +38,8 @@ export function passwordError(v: string): string | undefined {
   if (r.ok) return undefined;
   return pick(
     {
-      TOO_SHORT: 'At least 8 characters.',
+      TOO_SHORT: 'At least 4 characters.',
       TOO_LONG: 'Too long.',
-      NEEDS_LETTER: 'Add at least one letter.',
-      NEEDS_DIGIT: 'Add at least one number.',
     },
     r.reason,
     'Invalid password.',
@@ -52,5 +50,5 @@ export function referralError(v: string): string | undefined {
   if (!v.trim()) return undefined; // optional
   const r = validateReferralCode(v);
   if (r.ok) return undefined;
-  return 'Referral code looks wrong — it is 8 characters.';
+  return 'Referral code looks wrong. It is 8 characters.';
 }

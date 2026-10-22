@@ -2,8 +2,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-
-type Theme = 'dark' | 'light';
+import { applyTheme, currentTheme, type Theme } from '@/lib/ui/theme';
 
 function SunIcon() {
   return (
@@ -28,16 +27,14 @@ function MoonIcon() {
 export function ThemeToggle() {
   const [theme, setTheme] = useState<Theme>('dark');
 
-  useEffect(() => {
-    const stored = window.localStorage.getItem('pp-theme');
-    setTheme(stored === 'light' ? 'light' : 'dark');
-  }, []);
+  // Read what is ON SCREEN, not just what is stored: a brand whose default is light has no stored
+  // value and this control must still show the right icon.
+  useEffect(() => { setTheme(currentTheme()); }, []);
 
   function toggle() {
     const next: Theme = theme === 'dark' ? 'light' : 'dark';
     setTheme(next);
-    document.documentElement.classList.toggle('light', next === 'light');
-    window.localStorage.setItem('pp-theme', next);
+    applyTheme(next);
   }
 
   return (

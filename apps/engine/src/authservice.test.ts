@@ -36,18 +36,22 @@ test("register issues an HS256 token verifiable by makeVerifier's verifier", asy
   assert.equal(claims.role, "player");
 });
 
-test("register rejects weak password and bad username before touching the repo", async () => {
+test("register rejects a too-short password and a bad username before touching the repo", async () => {
   const { auth } = svc();
-  await assert.rejects(() => auth.register({ phone: "0712345678", username: "alice", password: "short" }), /PASSWORD_TOO_SHORT/);
+  // Four is the floor (migration-free, packages/shared/credentials): "123" is refused, "1234" is not.
+  await assert.rejects(() => auth.register({ phone: "0712345678", username: "alice", password: "abc" }), /PASSWORD_TOO_SHORT/);
   await assert.rejects(() => auth.register({ phone: "0712345678", username: "al", password: "Password1" }), /USERNAME_TOO_SHORT/);
   await assert.rejects(() => auth.register({ phone: "not-a-phone", username: "alice", password: "Password1" }), /INVALID_PHONE/);
 });
 
-test("register surfaces PHONE_TAKEN and USERNAME_TAKEN", async () => {
+test("register surfaces PHONE_TAKEN, and a shared username is allowed", async () => {
   const { auth } = svc();
   await auth.register({ phone: "0712345678", username: "alice", password: "Password1" });
   await assert.rejects(() => auth.register({ phone: "0712345678", username: "bob", password: "Password1" }), /PHONE_TAKEN/);
-  await assert.rejects(() => auth.register({ phone: "0722222222", username: "alice", password: "Password1" }), /USERNAME_TAKEN/);
+  // A namesake signs up fine now (migration 0190): the phone is the identity, the username is a
+  // display name, and refusing the second Wanjiku was a refusal at the worst possible moment.
+  const twin = await auth.register({ phone: "0722222222", username: "alice", password: "Password1" });
+  assert.ok(twin.userId);
 });
 
 // ── login ───────────────────────────────────────────────────────────
@@ -259,7 +263,11 @@ test("changePassword: requires the current password, then the new one works", as
   const auth = new AuthService(repo, { jwtSecret: SECRET, jwtTtlSeconds: 3600 });
   const s = await auth.register({ phone: PHONE, username: "operator", password: PASS });
   await assert.rejects(() => auth.changePassword(s.userId, "wrong-password-9", "Brand3wPass"), /INVALID_CREDENTIALS/);
-  await assert.rejects(() => auth.changePassword(s.userId, PASS, "short"), /PASSWORD_TOO_SHORT/);
+  await assert.rejects(() => auth.changePassword(s.userId, PASS, "abc"), /PASSWORD_TOO_SHORT/);
+  // A four-digit PIN is a valid new password, which is the whole point of the change.
+  assert.deepEqual(await auth.changePassword(s.userId, PASS, "1234"), { changed: true });
+  assert.ok((await auth.login({ phone: PHONE, password: "1234" })).token);
+  assert.deepEqual(await auth.changePassword(s.userId, "1234", PASS), { changed: true });
   assert.deepEqual(await auth.changePassword(s.userId, PASS, "Brand3wPass"), { changed: true });
   await assert.rejects(() => auth.login({ phone: PHONE, password: PASS }), /INVALID_CREDENTIALS/);
   assert.ok((await auth.login({ phone: PHONE, password: "Brand3wPass" })).token);
@@ -269,16 +277,16 @@ test("resetPassword: refused unless unverified reset is explicitly enabled", asy
   const repo = new InMemoryIdentityRepository();
   const auth = new AuthService(repo, { jwtSecret: SECRET, jwtTtlSeconds: 3600 });
   await auth.register({ phone: PHONE, username: "operator", password: PASS });
-  await assert.rejects(() => auth.resetPassword(PHONE, "Brand3wPass"), /RESET_DISABLED/);
+  await assert.rejects(() => auth.resetPassword(PHONE, "Brand3wPass"), /RESET_UNAVAILABLE/);
   // the old password still works — nothing was changed
   assert.ok((await auth.login({ phone: PHONE, password: PASS })).token);
 });
 
-test("resetPassword: when enabled, sets the new password and rejects a weak one", async () => {
+test("resetPassword: when enabled, sets the new password and rejects a too-short one", async () => {
   const repo = new InMemoryIdentityRepository();
   const auth = new AuthService(repo, { jwtSecret: SECRET, jwtTtlSeconds: 3600, allowUnverifiedPasswordReset: true });
   await auth.register({ phone: PHONE, username: "operator", password: PASS });
-  await assert.rejects(() => auth.resetPassword(PHONE, "short"), /PASSWORD_TOO_SHORT/);
+  await assert.rejects(() => auth.resetPassword(PHONE, "abc"), /PASSWORD_TOO_SHORT/);
   await assert.rejects(() => auth.resetPassword("not-a-phone", "Brand3wPass"), /INVALID_PHONE/);
   assert.deepEqual(await auth.resetPassword("0712345678", "Brand3wPass"), { reset: true });
   assert.ok((await auth.login({ phone: PHONE, password: "Brand3wPass" })).token);

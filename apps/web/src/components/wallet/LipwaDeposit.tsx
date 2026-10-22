@@ -7,7 +7,7 @@ import { MIN_DEPOSIT_CENTS } from '@invest254/shared/payments';
 import { useDisplayMoney, USD_LIMITS } from '@/lib/money';
 import { Button } from '@/components/ui/Button';
 import { api } from '@/lib/api/endpoints';
-import { useDepositLipwa } from '@/lib/wallet/hooks';
+import { useDepositLipwa, useDepositPayx } from '@/lib/wallet/hooks';
 import { useBrand } from '@/lib/brand/BrandProvider';
 import { useDepositUi } from '@/lib/wallet/depositUi';
 import { useSession } from '@/lib/auth/session';
@@ -22,14 +22,21 @@ const grouped = (s: string) => (s ? Number(s).toLocaleString('en-KE') : '');
  * card data: the payment fields render inside an embedded PayHero (PCI-hosted) checkout that slides
  * up as a modal within the wallet sheet, so the player never leaves the app. On success the ledger
  * reconcile credits the wallet and this sheet — which polls THIS deposit's status — flips to a tick.
+ *
+ * PayX reuses this body for the methods it CANNOT push directly (card, bank, anything whose inputs the
+ * collection API has no field for). Those finish on the gateway's own page, embedded here so the player
+ * never leaves the app. Methods PayX can push — anything needing only a phone/email — go through
+ * DepositForm instead and show no third-party page at all (docs/53).
  */
-export function LipwaDeposit() {
+export function LipwaDeposit({ rail = 'lipwa', methodCode }: { rail?: 'lipwa' | 'payx'; methodCode?: string } = {}) {
   const close = useDepositUi((s) => s.close);
   const prefillAmountCents = useDepositUi((s) => s.prefillAmountCents);
   const deferToAuth = useDepositUi((s) => s.deferToAuth);
   const openAuth = useAuthUi((s) => s.openAuth);
   const token = useSession((s) => s.token);
   const lipwa = useDepositLipwa();
+  const payx = useDepositPayx();
+  const submitting = rail === 'payx' ? payx.isPending : lipwa.isPending;
   const brand = useBrand();
 
   const { data: config } = useQuery({
@@ -39,7 +46,12 @@ export function LipwaDeposit() {
   });
   const { fmt, both, symbol, isForeign, toKesCents, toDisplay, limit, currency } = useDisplayMoney();
 
-  const minDepositCents = limit(USD_LIMITS.minDeposit, config?.minDepositCents ?? MIN_DEPOSIT_CENTS);
+  // A foreign brand with an operator-set native floor (min_deposit_native) enforces it directly at the
+  // live rate, matching the server; otherwise the site KES floor, USD-limit-guarded. Mirrors DepositForm.
+  const nativeMinDeposit = config?.minDepositNative ?? null;
+  const minDepositCents = (isForeign && nativeMinDeposit != null && nativeMinDeposit > 0)
+    ? toKesCents(nativeMinDeposit)
+    : limit(USD_LIMITS.minDeposit, config?.minDepositCents ?? MIN_DEPOSIT_CENTS);
   const maxDepositCents = config?.maxDepositCents ?? null;
   const minEntry = isForeign ? toDisplay(minDepositCents) : centsToKes(minDepositCents);
   const chipBase = Math.max(1, isForeign ? Math.round(minEntry * 100) / 100 : Math.ceil(minEntry));
@@ -91,6 +103,13 @@ export function LipwaDeposit() {
     setAmountError(null);
     if (!token) { deferToAuth(amountKesCents); openAuth('register'); return; }
     try {
+      if (rail === 'payx') {
+        // PayX settles whole units of the collection currency: round UP so the floor still holds.
+        const res = await payx.mutateAsync({ amount: Math.ceil(amountKesCents / 100) * 100, ...(methodCode ? { method: methodCode } : {}) });
+        if (!res.checkoutUrl) throw new Error('NO_CHECKOUT_URL');
+        setCheckout({ url: res.checkoutUrl, txId: res.transactionId });
+        return;
+      }
       const res = await lipwa.mutateAsync({ amount: amountKesCents });
       setCheckout({ url: res.lipwaUrl, txId: res.transactionId });
     } catch (err) {
@@ -149,13 +168,13 @@ export function LipwaDeposit() {
 
       <div className="flex items-center justify-center gap-2 rounded-xl border border-border bg-surface-2 px-3 py-2.5">
         <ShieldIcon />
-        <p className="text-xs text-muted">Pay by <span className="font-medium text-fg">card, bank or mobile money</span> — securely, without leaving the app.</p>
+        <p className="text-xs text-muted">Pay by <span className="font-medium text-fg">card, bank or mobile money</span>, securely, without leaving the app.</p>
       </div>
 
       {serverError ? <p className="rounded-xl border border-down/40 bg-down/10 px-3 py-2 text-sm text-down" role="alert">{serverError}</p> : null}
 
-      <Button type="submit" size="lg" fullWidth disabled={lipwa.isPending}>
-        {!token ? 'Sign up to deposit' : lipwa.isPending ? 'Opening secure checkout…' : 'Continue to Pay'}
+      <Button type="submit" size="lg" fullWidth disabled={submitting}>
+        {!token ? 'Sign up to deposit' : submitting ? 'Opening secure checkout…' : 'Continue to Pay'}
       </Button>
     </form>
   );

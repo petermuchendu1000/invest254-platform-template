@@ -105,14 +105,14 @@ export default function RegistrarConfigPage() {
               <p className="mt-1 text-xs text-muted">
                 This is the platform server’s egress IP. Namecheap only accepts API calls from whitelisted IPs, so add
                 this exact value under <b>Profile → Tools → API Access → Whitelisted IPs</b>. It is saved with your config
-                automatically — you don’t need to type it.
+                automatically. You don’t need to type it.
               </p>
             </div>
 
             <Input label="API user" name="apiUser" value={apiUser} onChange={(e) => setApiUser(e.target.value)} placeholder="your-namecheap-username" required />
             <Input label="Account username" name="userName" value={userName} onChange={(e) => setUserName(e.target.value)} placeholder="usually the same as the API user" optional />
             <Input
-              label={cfg?.hasSecret ? `API key (saved •••• ${last4} — leave blank to keep)` : 'API key'}
+              label={cfg?.hasSecret ? `API key (saved •••• ${last4}, leave blank to keep)` : 'API key'}
               name="apiKey" type="password" autoComplete="off"
               value={apiKey} onChange={(e) => setApiKey(e.target.value)}
               placeholder={cfg?.hasSecret ? '•••• •••• •••• keep current' : 'paste your Namecheap API key'}
@@ -168,7 +168,7 @@ export default function RegistrarConfigPage() {
               <span>Click <b>Test connection</b>. When it succeeds, <b>Save</b>. New client domains you onboard will then be pointed to the platform automatically.</span>
             </li>
             <li className="mt-1 rounded-lg bg-surface-2 p-3 text-xs text-muted">
-              🔒 Your API key is encrypted before it’s stored and is never shown again — only the last 4 characters, so you can confirm which key is saved.
+              🔒 Your API key is encrypted before it’s stored and is never shown again. Only the last 4 characters, so you can confirm which key is saved.
             </li>
           </ol>
         </Section>

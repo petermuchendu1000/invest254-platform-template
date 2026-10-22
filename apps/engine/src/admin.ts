@@ -125,6 +125,8 @@ export interface AdminWithdrawalListQuery extends PageQuery { status?: string | 
 export interface SetUserStatusResult { userId: string; status: string; }
 export interface SetCommissionRateResult { userId: string; commissionRate: number; }
 export interface SetUserRoleResult { userId: string; role: string; }
+/** How many stored security answers were discarded by a reset (0210). */
+export interface ResetSecurityAnswersResult { userId: string; cleared: number; }
 export interface UpdateUserDetailsResult { userId: string; phone: string; username: string; }
 /** Result of a manual wallet balance adjustment (J3). */
 export interface AdjustBalanceResult { userId: string; amountCents: Cents; newBalanceCents: Cents; direction: "credit" | "debit"; }
@@ -353,6 +355,11 @@ export interface AdminRepository {
   setUserRole(actorId: string, actorRole: string, targetId: string, role: string): Promise<SetUserRoleResult>;
   /** Soft-delete a user/admin (status='deleted', force-logout, hidden, login-blocked). History preserved. */
   deleteUser(actorId: string, actorRole: string, targetId: string): Promise<SetUserStatusResult>;
+  /**
+   * Clear a SUBORDINATE's security answers so they must enrol a fresh set (0210), and end their
+   * sessions in the same step. platform_admin+ only, never self, never a superadmin target.
+   */
+  resetSecurityAnswers(actorId: string, actorRole: string, targetId: string): Promise<ResetSecurityAnswersResult>;
   /** Edit a user's phone/username (item 6). Admin+ (a plain admin may not edit an admin). Per-brand unique. */
   updateUserDetails(actorId: string, actorRole: string, targetId: string, phone: string | null, username: string | null): Promise<UpdateUserDetailsResult>;
   listWithdrawals(q: AdminWithdrawalListQuery): Promise<Page<AdminWithdrawalRow>>;
@@ -845,6 +852,15 @@ export class PgAdminRepository implements AdminRepository {
       const r = await this.q.query("select user_id, status from fn_admin_delete_user($1,$2,$3)", [actorId, actorRole, targetId]);
       const x = r.rows[0];
       return { userId: String(x.user_id), status: String(x.status) };
+    } catch (e) { mapAdminError(e); }
+  }
+
+  async resetSecurityAnswers(actorId: string, actorRole: string, targetId: string): Promise<ResetSecurityAnswersResult> {
+    try {
+      const r = await this.q.query(
+        "select user_id, cleared from fn_admin_reset_security_answers($1,$2,$3)", [actorId, actorRole, targetId]);
+      const x = r.rows[0];
+      return { userId: String(x.user_id), cleared: Number(x.cleared) };
     } catch (e) { mapAdminError(e); }
   }
 
@@ -1814,6 +1830,30 @@ export class InMemoryAdminRepository implements AdminRepository {
     return { userId: targetId, status: "deleted" };
   }
 
+  /**
+   * Mirrors fn_admin_reset_security_answers (0210). The guard ladder is copied from the RPC in the
+   * same order, so a test that proves a refusal here is proving the production rule, not a
+   * convenient approximation of it.
+   *
+   * NOT a site admin: clearing a peer's second factor is a lateral move, not supervision. NEVER
+   * self — otherwise any live privileged session could drop its own knowledge factor and enrol a
+   * replacement, which is step-up defeating itself.
+   */
+  async resetSecurityAnswers(actorId: string, actorRole: string, targetId: string): Promise<ResetSecurityAnswersResult> {
+    if (!["platform_admin", "platform_superadmin"].includes(actorRole)) throw new Error("NOT_AUTHORIZED");
+    if (actorId === targetId) throw new Error("NO_SELF_ACTION");
+    const u = this.identity.adminUser(targetId);
+    if (!u) throw new Error("USER_NOT_FOUND");
+    if (u.role === "platform_superadmin") throw new Error("SUPERADMIN_PROTECTED");
+    if (u.role === "platform_admin" && actorRole !== "platform_superadmin") throw new Error("INSUFFICIENT_PRIVILEGE");
+    const cleared = this.identity.adminClearSecurityAnswers(targetId);
+    // Same step as the delete: a surviving session would keep acting inside a step-up window
+    // granted by a factor that no longer exists.
+    this.identity._forceLogout(targetId);
+    this.record(actorId, actorRole, "user.reset_security_answers", "user", targetId, { cleared, targetRole: u.role });
+    return { userId: targetId, cleared };
+  }
+
   async updateUserDetails(actorId: string, actorRole: string, targetId: string, phone: string | null, username: string | null): Promise<UpdateUserDetailsResult> {
     if (!["admin", "platform_admin", "platform_superadmin"].includes(actorRole)) throw new Error("NOT_AUTHORIZED");
     const u = this.identity.adminUser(targetId);
@@ -1828,8 +1868,9 @@ export class InMemoryAdminRepository implements AdminRepository {
       if (all.some((x) => x.userId !== targetId && (x.siteId ?? ADMIN_DEFAULT_SITE) === site && x.phone === newPhone)) throw new Error("PHONE_TAKEN");
     }
     if (newName != null) {
+      // Length only. Two players may share a display name (migration 0190) — the phone checked
+      // above is the identity, and an admin renaming someone must not be blocked by a namesake.
       if (newName.length < 2 || newName.length > 40) throw new Error("INVALID_USERNAME");
-      if (all.some((x) => x.userId !== targetId && (x.siteId ?? ADMIN_DEFAULT_SITE) === site && x.username.toLowerCase() === newName.toLowerCase())) throw new Error("USERNAME_TAKEN");
     }
     this.identity.adminSetContact(targetId, newPhone, newName);
     const after = this.identity.adminUser(targetId)!;

@@ -6,10 +6,18 @@ on:
   pull_request:
   workflow_dispatch: {}
 
+# One run per ref: a new push to a PR cancels the run it supersedes, because nobody reads the result
+# of a commit that is already history. NOT on main — there each commit's result is the record of
+# whether THAT commit was green, and deploy.yml's gate reads it.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
   build:
     name: build
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -32,31 +40,61 @@ jobs:
   # Gate: the migrations/ directory must exactly match the applied-ledger (schema_migrations, 0091).
   # Fails on any UNRECORDED (file added but not applied+recorded) or CHANGED (file edited after apply).
   # Skips gracefully when DATABASE_URL is absent (e.g. the mirrored template CI has no DB secret).
-  migrations-ledger:
-    name: migrations-ledger
+  # Gate: no public function is reachable with the Supabase ANON key (BUGLOG #143, migrations 0153/0204).
+  #
+  # Postgres grants EXECUTE to PUBLIC on every newly created function, so a migration that adds a
+  # SECURITY DEFINER function and forgets to revoke it silently re-opens the hole 0153 closed. That
+  # is exactly what happened twice (0172 and 0176) and went unnoticed BECAUSE THIS CHECK ALREADY
+  # EXISTED BUT WAS NEVER RUN: it lives in packages/db/_testkit, needs a database, and nothing in CI
+  # ever called it. Wiring it in is the half of #143 that stops the next one.
+  #
+  # Runs against a THROWAWAY Postgres built from the shim + every migration, so it needs no secret
+  # and gates forks and PRs too. pgvector is in the image because migration 0057 creates that
+  # extension and the stock postgres image cannot apply the chain without it.
+  function-grants:
+    name: function-grants (anon surface)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_USER: postgres
+          POSTGRES_DB: postgres
+        ports: ['5433:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-      - name: Install
-        run: npm ci
-      - name: Reconcile migrations against the ledger
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - name: Install psycopg2
+        run: pip install --quiet psycopg2-binary
+      - name: Every public function is closed to anon / authenticated
         env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: |
-          if [ -z "$DATABASE_URL" ]; then
-            echo "No DATABASE_URL secret (non-prod mirror) — skipping migration-ledger gate."; exit 0
-          fi
-          node --import tsx scripts/migrations_status.mts
+          PGCLIENTENCODING: UTF8
+          PGHOST: 127.0.0.1
+          PGPORT: '5433'
+          PGPASSWORD: postgres
+        run: python3 packages/db/_testkit/e2e_function_grants.py
+
+  # NOTE: `migrations-ledger` MOVED to .github/workflows/deploy.yml, where it runs after `migrate`
+  # (BUGLOG #144). It is not gone and it is not weakened — it is asked at the only moment it can be
+  # answered. Here it raced the deploy that records the rows and reported every new migration as
+  # UNRECORDED, so `main` went red on every migration merge until somebody re-ran it. Do not add it
+  # back to this workflow; CI has no step that records a migration, so the race would return.
 
   # Gate: provable-fairness reproducibility must hold (>= 98% of the clean recent sample reproduces).
   # Dry-run (no audit-row write; the nightly reproducibility.yml persists rows). Skips without DATABASE_URL.
   reproducibility:
     name: reproducibility
+    # Inert in the mirror template, which can never hold DATABASE_URL: a job-level `if` allocates no
+    # runner, while the step's own `exit 0` still bills a whole minute. "Not the mirror" rather than
+    # "is production" is deliberate — see docs/15 §4.2 rule 3 and BUGLOG #156.
+    if: github.repository != 'petermuchendu1000/invest254-platform-template'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -80,6 +118,7 @@ jobs:
   web-roles-e2e:
     name: web roles e2e
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

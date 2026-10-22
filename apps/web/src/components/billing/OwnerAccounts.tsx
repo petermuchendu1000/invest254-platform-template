@@ -39,9 +39,9 @@ export function OwnerAccounts({ onManage }: { onManage: (platformId: string) => 
                 <Td><div className="font-medium">{a.platformName}</div><div className="text-xs text-muted">{a.sites} brand{a.sites === 1 ? '' : 's'} · {a.users.toLocaleString('en-KE')} players</div></Td>
                 <Td><div>{a.planName ?? a.planKey}</div>{a.customPrice ? <div className="text-xs text-muted">Custom price</div> : null}</Td>
                 <Td>{a.billingExempt ? <span className="rounded-full bg-surface-2 px-2 py-0.5 text-xs font-medium text-muted">Not billed</span> : <SubPill status={a.status} />}</Td>
-                <Td className="whitespace-nowrap">{a.nextInvoiceAt ? formatDate(a.nextInvoiceAt) : '—'}</Td>
+                <Td className="whitespace-nowrap">{a.nextInvoiceAt ? formatDate(a.nextInvoiceAt) : '-'}</Td>
                 <Td numeric>{a.priceCents == null ? 'Custom' : formatKes(a.priceCents + a.monthlyAddonsCents)}</Td>
-                <Td numeric className={cn(a.overdueCents > 0 && 'font-semibold text-down')}>{a.balanceDueCents ? formatKes(a.balanceDueCents) : '—'}</Td>
+                <Td numeric className={cn(a.overdueCents > 0 && 'font-semibold text-down')}>{a.balanceDueCents ? formatKes(a.balanceDueCents) : '-'}</Td>
                 <Td><Button size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); onManage(a.platformId); }}>Manage</Button></Td>
               </tr>
             ))}
@@ -84,7 +84,7 @@ function Summary({ a, go, onNewInvoice }: { a: BillingAccount; go: (p: Pane) => 
       <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         {[
           ['Balance due', a.balanceDueCents ? formatKes(a.balanceDueCents) : 'Nothing', a.overdueCents > 0],
-          ['Next invoice', a.nextInvoiceAt ? formatDate(a.nextInvoiceAt) : '—', false],
+          ['Next invoice', a.nextInvoiceAt ? formatDate(a.nextInvoiceAt) : '-', false],
           ['Monthly add-ons', formatKes(a.monthlyAddonsCents), false],
           ['Last payment', a.lastPaymentAt ? formatDate(a.lastPaymentAt) : 'None yet', false],
         ].map(([k, v, bad]) => (
@@ -150,12 +150,12 @@ function Summary({ a, go, onNewInvoice }: { a: BillingAccount; go: (p: Pane) => 
 }
 
 function eventText(reason: string, from: string | null, to: string | null, amount: number | null): string {
-  const s = (x: string | null) => (x ? subState(x).label : '—');
+  const s = (x: string | null) => (x ? subState(x).label : '-');
   switch (reason) {
-    case 'payment': return `Payment${amount ? ` of ${formatKes(amount)}` : ''}${from !== to ? ` — ${s(from)} → ${s(to)}` : ''}`;
+    case 'payment': return `Payment${amount ? ` of ${formatKes(amount)}` : ''}${from !== to ? `: ${s(from)} → ${s(to)}` : ''}`;
     case 'plan_change': return 'Plan changed';
     case 'created': return 'Subscription started';
-    case 'trial_converted': return 'Trial ended — first invoice sent';
+    case 'trial_converted': return 'Trial ended: first invoice sent';
     case 'past_due': return 'Invoice overdue';
     case 'grace': return 'Final notice (grace period started)';
     case 'suspended': return 'Suspended for non-payment';
@@ -178,7 +178,7 @@ function PlanPane({ a, done }: { a: BillingAccount; done: () => void }) {
     <div className="flex flex-col gap-4">
       <Select label="Plan" value={plan} onChange={(e) => setPlan(e.target.value)}>
         {(plans.data?.plans ?? []).filter((x) => x.active || x.key === a.planKey).map((x) => (
-          <option key={x.key} value={x.key}>{x.name} — {x.priceCents == null ? 'custom' : `${formatKes(x.priceCents)}/${x.billingPeriod}`}</option>
+          <option key={x.key} value={x.key}>{x.name}, {x.priceCents == null ? 'custom' : `${formatKes(x.priceCents)}/${x.billingPeriod}`}</option>
         ))}
       </Select>
       <div className="grid gap-3 sm:grid-cols-3">

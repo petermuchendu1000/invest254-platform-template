@@ -5,6 +5,7 @@ import { Skeleton } from '@/components/ui/Skeleton';
 import { StatusBadge } from '@/components/ui/Badge';
 import { Modal } from '@/components/ui/Modal';
 import { formatRelativeTime } from '@/lib/format';
+import { maskPhoneForDisplay } from '@invest254/shared/payments';
 import { PageHeader, TableWrap, Th, Td, Empty, Toolbar, FilterSelect } from '@/components/admin/ui';
 import { PageTabs, useTabParam } from '@/components/admin/Tabs';
 import { LiveChatInbox } from '@/components/chat/LiveChatInbox';
@@ -80,7 +81,9 @@ function AssistantLog() {
                   </div>
                 </Td>
                 <Td>
-                  <span className="text-sm text-muted">{c.contactEmail ?? c.contactPhone ?? 'none'}</span>
+                  {/* The contact phone is masked (the email is not a harvestable MSISDN and stays
+                      whole). An operator who needs to call back opens the player's record. */}
+                  <span className="text-sm text-muted">{c.contactEmail ?? (c.contactPhone ? maskPhoneForDisplay(c.contactPhone) : null) ?? 'none'}</span>
                 </Td>
                 <Td>
                   <span className="text-sm text-muted">{formatRelativeTime(ms(c.lastAt))}</span>
@@ -124,7 +127,7 @@ function ThreadModal({ id, onClose }: { id: string | null; onClose: () => void }
             <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
               <StatusBadge status={q.data.conversation.status} />
               {q.data.conversation.contactEmail ? <span>{q.data.conversation.contactEmail}</span> : null}
-              {q.data.conversation.contactPhone ? <span>{q.data.conversation.contactPhone}</span> : null}
+              {q.data.conversation.contactPhone ? <span>{maskPhoneForDisplay(q.data.conversation.contactPhone)}</span> : null}
             </div>
             {q.data.messages.length === 0 ? (
               <Empty title="No messages" />

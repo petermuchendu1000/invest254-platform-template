@@ -363,7 +363,7 @@ try {
     check('owner: no raw "User id" field anywhere', (await page.getByLabel('User id').count()) === 0);
     await page.getByLabel('Find a person').fill('bob'); await page.waitForTimeout(900);
     check('owner: appoint searches people across brands', await page.getByText('@bobkamau').isVisible());
-    check("owner: an ineligible person is shown with the reason (default marketer)", await page.getByText(/default marketer — reassign/).isVisible());
+    check("owner: an ineligible person is shown with the reason (default marketer)", await page.getByText(/default marketer: reassign/).isVisible());
     check('owner: the search called the directory route', calls.some((c) => c.startsWith('GET /platform/users/search')), calls.join());
 
     const poolStart = full.length;
@@ -443,7 +443,7 @@ try {
     check('platform admin: the page lists the whole platform and each brand, with who they pay into', await page.getByText('Whole platform · Alpha Platform').isVisible() && await page.getByText('Players pay into the System accounts').isVisible());
     check('platform admin: configs are drafts until go-live (plain statement)', await page.getByText(/drafts until you go live/).isVisible());
     check('platform admin: readiness is shown as a checklist (deposits ready / withdrawals still needed)', await page.getByText('Ready: M-Pesa').isVisible() && await page.getByText(/Add M-Pesa payout details/).isVisible());
-    check('platform admin: a saved secret is write-only (masked, "leave blank to keep")', await page.getByText(/saved •••• 1234 — leave blank to keep/).isVisible());
+    check('platform admin: a saved secret is write-only (masked, "leave blank to keep")', await page.getByText(/saved •••• 1234, leave blank to keep/).isVisible());
     await page.getByLabel('Business shortcode').fill('600222');
     await page.getByRole('button', { name: 'Save', exact: true }).click(); await page.waitForTimeout(400);
     const put = bodies.find(([k]) => k === `PUT /platform/payment-scopes/platform/${PLATFORM}/gateways/mpesa`);
@@ -569,7 +569,7 @@ try {
     const today = await page.locator('section').filter({ hasText: 'Budget today' }).first().innerText().catch(() => '');
     check('POOL-1: the pool page lists each brand with budget, paid, reserved and available today', /Tamu Traders/.test(today) && /KES 2,500/.test(today) && /KES 500/.test(today) && /Total \(pool on\)/.test(today), today.slice(0, 300));
     check('POOL-1: a brand with withdrawals off is flagged', await page.getByText('withdrawals off').isVisible().catch(() => false));
-    check('POOL-1: automatic distribution is on, by demand, and marked as the default', await page.getByText('On — by demand').isVisible().catch(() => false) && await page.getByText('default', { exact: true }).isVisible().catch(() => false));
+    check('POOL-1: automatic distribution is on, by demand, and marked as the default', await page.getByText('On: by demand').isVisible().catch(() => false) && await page.getByText('default', { exact: true }).isVisible().catch(() => false));
     await page.getByRole('radio', { name: /Even split/ }).first().click({ timeout: 3000 }).catch(() => {});
     check('POOL-1: an even split cannot be saved without a daily total', await page.getByText('An even split needs a daily total.').isVisible().catch(() => false) && await page.getByRole('button', { name: 'Save', exact: true }).isDisabled().catch(() => false));
     await page.getByRole('radio', { name: /By demand/ }).first().click({ timeout: 3000 }).catch(() => {});
@@ -597,8 +597,21 @@ try {
     check('BILL-1: invoices show a plain overdue state', await page.getByText('Overdue 5 days').first().isVisible().catch(() => false));
     check('BILL-1: platform admins get no owner money controls', !(await page.getByRole('button', { name: 'Run billing now' }).count()) && !(await page.getByRole('tab', { name: 'Settings' }).count()));
     await page.getByRole('alert').getByRole('button', { name: /Pay KES 45,000/ }).click({ timeout: 3000 }).catch(() => {}); await page.waitForTimeout(300);
-    const phone = await page.getByLabel('M-Pesa phone number').inputValue().catch(() => '');
-    check('BILL-1: Pay now pre-fills the admin’s own phone', phone === '0700000003', phone);
+    /**
+     * The prefilled number is MASKED at rest, and revealed on request.
+     *
+     * This used to assert the raw number was in the field. It is not any more, and deliberately:
+     * billing is walked through on camera, so the admin's own number is shown as 0700****003 until
+     * they ask for it (see the note on the Input in components/billing/parts.tsx). The money half
+     * is unchanged and is asserted two lines down — what gets POSTed is still the real number, and
+     * the display mask can never be read back as input.
+     */
+    const masked = await page.getByLabel('M-Pesa phone number').inputValue().catch(() => '');
+    check('BILL-1: Pay now pre-fills the admin’s own phone, masked', masked === '0700****003', masked);
+    await page.getByRole('button', { name: 'Show the hidden digits' }).click({ timeout: 3000 }).catch(() => {});
+    await page.waitForTimeout(150);
+    const revealed = await page.getByLabel('M-Pesa phone number').inputValue().catch(() => '');
+    check('BILL-1: …and Show reveals the real digits', revealed === '0700000003', revealed);
     await page.getByRole('button', { name: /Send prompt for KES 45,000/ }).click({ timeout: 3000 }).catch(() => {}); await page.waitForTimeout(400);
     const sent = bodies.find(([k]) => k === 'POST /platform/billing/invoices/inv-1/pay');
     check('BILL-1: Pay now sends the STK request for that invoice with the phone', !!sent && sent[1]?.phone === '0700000003', JSON.stringify(bodies.map(([k]) => k)));

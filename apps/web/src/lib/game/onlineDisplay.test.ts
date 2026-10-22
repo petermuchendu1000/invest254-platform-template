@@ -11,6 +11,19 @@ test('isStaffRole: only admin/superadmin are staff', () => {
   assert.equal(isStaffRole(null), false);
 });
 
+test('the public bounds are exactly 220-700, the figure the product owner chose', () => {
+  /**
+   * Pinned to literals on purpose. Every other test here reads the constants symbolically, so a
+   * change to the band passes all of them silently — and this band is not an implementation
+   * detail: it is the range of an INVENTED number shown to every non-staff visitor of a real-money
+   * product. A change to it should be a deliberate edit to this line, with whoever makes it
+   * looking straight at what it means.
+   */
+  assert.equal(ONLINE_MIN, 220);
+  assert.equal(ONLINE_MAX, 700);
+  assert.ok(ONLINE_MAX - ONLINE_MIN > 60, 'the band must be wide enough for the walk to move within it');
+});
+
 test('seedOnline stays within bounds across many draws', () => {
   for (let i = 0; i < 10_000; i++) {
     const v = seedOnline();

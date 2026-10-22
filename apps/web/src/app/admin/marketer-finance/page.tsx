@@ -4,6 +4,7 @@ import { useFailToast } from '@/lib/toast/useFailToast';
 import { PageTabs, useTabParam } from '@/components/admin/Tabs';
 import { useEffect, useState } from 'react';
 import { formatKes, kesToCents } from '@invest254/shared/money';
+import { maskPhoneForDisplay } from '@invest254/shared/payments';
 import { PageHeader, Section, TableWrap, Th, Td, Toolbar, FilterSelect, Empty, PasswordConfirmButton } from '@/components/admin/ui';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
@@ -53,7 +54,7 @@ const PAYOUT_STATUSES = [
 ];
 
 function fmtDate(ms: number | null | undefined): string {
-  if (!ms) return '—';
+  if (!ms) return '-';
   return formatDateTime(ms);
 }
 
@@ -115,6 +116,15 @@ function ReferralPayouts() {
   const action = useCommissionPayoutAction();
   const rows: AdminCommissionPayoutRow[] = q.data?.items ?? [];
   const [rejecting, setRejecting] = useState<AdminCommissionPayoutRow | null>(null);
+  /*
+   * WHICH ROW is in flight, not WHETHER one is (BUGLOG #152).
+   *
+   * These buttons were gated on the shared `action.isPending`, so one slow or stuck decision
+   * disabled approve AND reject on every other row too. That turned an unreachable step-up prompt
+   * into a dead panel: nothing on the page could be actioned until a reload. React Query already
+   * carries the variables of the call in flight, so the row it belongs to needs no extra state.
+   */
+  const busyId = action.isPending ? action.variables?.id : undefined;
 
   const markPaid = (r: AdminCommissionPayoutRow, password: string) => {
     const input = window.prompt('M-Pesa / bank reference (optional):');
@@ -145,25 +155,27 @@ function ReferralPayouts() {
           {rows.map((r) => (
             <tr key={r.id} className="border-t border-border">
               <Td><span className="font-medium text-fg">{r.username ?? r.beneficiaryUser.slice(0, 8)}</span></Td>
-              <Td className="text-muted">{r.phone ?? '—'}</Td>
+              {/* Masked: the payout is dispatched server-side from the stored number, so nothing
+                  here needs the digits — the operator only has to recognise the row. */}
+              <Td className="text-muted">{maskPhoneForDisplay(r.phone) || '-'}</Td>
               <Td className="text-right"><Money cents={r.amountCents} /></Td>
               <Td><StatusPill status={r.status} /></Td>
               <Td className="text-muted">{fmtDate(r.requestedAtMs)}</Td>
-              <Td className="text-muted">{r.paidRef ?? '—'}</Td>
+              <Td className="text-muted">{r.paidRef ?? '-'}</Td>
               <Td className="text-right">
                 <span className="flex justify-end gap-1.5">
                   {r.status === 'requested' ? (
                     <>
-                      <PasswordConfirmButton label="Approve" confirmLabel="Authorize" variant="up" busy={action.isPending} onConfirm={(pw) => action.mutate({ id: r.id, action: 'approve', password: pw }, { onError: (e) => fail(e) })} />
-                      <Button size="sm" variant="down" disabled={action.isPending} onClick={() => setRejecting(r)}>Reject</Button>
+                      <PasswordConfirmButton label="Approve" confirmLabel="Authorize" variant="up" busy={busyId === r.id} onConfirm={(pw) => action.mutate({ id: r.id, action: 'approve', password: pw }, { onError: (e) => fail(e) })} />
+                      <Button size="sm" variant="down" disabled={busyId === r.id} onClick={() => setRejecting(r)}>Reject</Button>
                     </>
                   ) : r.status === 'approved' ? (
                     <>
-                      <PasswordConfirmButton label="Mark paid" confirmLabel="Authorize" variant="up" busy={action.isPending} onConfirm={(pw) => markPaid(r, pw)} />
-                      <Button size="sm" variant="down" disabled={action.isPending} onClick={() => setRejecting(r)}>Reject</Button>
+                      <PasswordConfirmButton label="Mark paid" confirmLabel="Authorize" variant="up" busy={busyId === r.id} onConfirm={(pw) => markPaid(r, pw)} />
+                      <Button size="sm" variant="down" disabled={busyId === r.id} onClick={() => setRejecting(r)}>Reject</Button>
                     </>
                   ) : (
-                    <span className="text-xs text-muted">—</span>
+                    <span className="text-xs text-muted">-</span>
                   )}
                 </span>
               </Td>
@@ -228,9 +240,11 @@ function Expenses() {
           <span>Marketer</span>
           <select value={marketerId} onChange={(e) => setMarketerId(e.target.value)} className="h-9 rounded-lg border border-border bg-surface-2 px-2 text-sm text-fg outline-none focus:border-accent">
             <option value="">Select a marketer…</option>
+            {/* The number is masked in the option LABEL only — the option's value is the user id,
+                so masking it cannot change which marketer an expense is logged against. */}
             {marketers.map((m) => (
               <option key={m.id} value={m.affiliate_user_id ?? ''} disabled={!m.affiliate_user_id}>
-                {m.name} · {m.phone}{m.affiliate_user_id ? '' : ' (no website account)'}
+                {m.name} · {maskPhoneForDisplay(m.phone)}{m.affiliate_user_id ? '' : ' (no website account)'}
               </option>
             ))}
           </select>
@@ -261,7 +275,7 @@ function Expenses() {
                 <tr key={e.id} className="border-t border-border">
                   <Td className="capitalize">{e.category.replace(/_/g, ' ')}</Td>
                   <Td className="text-right"><Money cents={e.amountCents} /></Td>
-                  <Td className="text-muted">{e.note ?? '—'}</Td>
+                  <Td className="text-muted">{e.note ?? '-'}</Td>
                   <Td className="text-muted">{fmtDate(e.createdAtMs)}</Td>
                 </tr>
               ))}
@@ -290,6 +304,7 @@ function Advances() {
   const decide = useDecideAdvance();
   const rows: AdminAdvanceDto[] = q.data?.items ?? [];
   const [rejecting, setRejecting] = useState<AdminAdvanceDto | null>(null);
+  const busyId = decide.isPending ? decide.variables?.id : undefined;   // per row, see ReferralPayouts
   const pending = rows.filter((r) => r.status === 'requested').length;
 
   const approve = (r: AdminAdvanceDto) => {
@@ -328,21 +343,21 @@ function Advances() {
           {rows.map((r) => (
             <tr key={r.id} className="border-t border-border">
               <Td><span className="font-medium text-fg">{r.username ?? r.marketerUserId.slice(0, 8)}</span></Td>
-              <Td className="text-muted">{r.phone ?? '—'}</Td>
+              <Td className="text-muted">{maskPhoneForDisplay(r.phone) || '-'}</Td>
               <Td className="text-right"><Money cents={r.amountCents} /></Td>
-              <Td className="text-muted">{r.reason ?? '—'}</Td>
+              <Td className="text-muted">{r.reason ?? '-'}</Td>
               <Td><StatusPill status={r.status} /></Td>
               <Td className="text-muted">{fmtDate(r.createdAtMs)}</Td>
-              <Td className="text-muted">{r.decisionNote ?? (r.decidedAtMs ? fmtDate(r.decidedAtMs) : '—')}</Td>
+              <Td className="text-muted">{r.decisionNote ?? (r.decidedAtMs ? fmtDate(r.decidedAtMs) : '-')}</Td>
               <Td className="text-right">
                 <span className="flex justify-end gap-1.5">
                   {r.status === 'requested' ? (
                     <>
-                      <Button size="sm" variant="up" disabled={decide.isPending} onClick={() => approve(r)}>Approve</Button>
-                      <Button size="sm" variant="down" disabled={decide.isPending} onClick={() => setRejecting(r)}>Reject</Button>
+                      <Button size="sm" variant="up" disabled={busyId === r.id} onClick={() => approve(r)}>Approve</Button>
+                      <Button size="sm" variant="down" disabled={busyId === r.id} onClick={() => setRejecting(r)}>Reject</Button>
                     </>
                   ) : (
-                    <span className="text-xs text-muted">—</span>
+                    <span className="text-xs text-muted">-</span>
                   )}
                 </span>
               </Td>

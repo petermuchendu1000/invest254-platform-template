@@ -86,6 +86,9 @@ test("e2e: nothing enforced => unchanged behaviour (site min + default duration)
   const gs = new GameServer(() => ctx, repo, () => cfg, () => clock.ms, load, undefined, isMkt);
   repo.seed("p4", 1_000_000);
   const { position } = await gs.openPosition({ userId: "p4", stakeCents: 25000, direction: "buy" });
-  assert.equal(position.durationS, 10, "default duration");
+  // The brand's configured horizon, whatever the rig set it to. Pinning the literal 10 made this
+  // a test of the shipped default rather than of "nothing enforced leaves the duration alone",
+  // which is what it is actually for.
+  assert.equal(position.durationS, cfg.defaultDurationS, "default duration");
   assert.equal(position.stakeCents, 25000, "site min (25000) still admits the trade");
 });

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { CurveGenerator, SettlementEngine, DEFAULT_CONFIG } from "@invest254/shared";
+import { CurveGenerator, SettlementEngine, DEFAULT_CONFIG, CALIBRATION_WINDOW_S } from "@invest254/shared";
 import { InMemoryGameRepository } from "./wallet.js";
 import { GameServer } from "./game.js";
 import { userSettlement, overrideAffectsPricing, InMemoryUserOverridesRepository, type UserOverride } from "./overrides.js";
@@ -10,10 +10,21 @@ const ov = (p: Partial<UserOverride>): UserOverride => ({
   minStakeCents: null, maxStakeCents: null, notes: null, updatedBy: null, updatedAtMs: 0, ...p,
 });
 
+/**
+ * The realised win fraction, sampled over the window the engine was CALIBRATED on.
+ *
+ * It used to spread its entries over the first hour of the day. That was only accidentally valid
+ * while a contract lasted ten seconds: entries 4.5 seconds apart each looking ten seconds ahead are
+ * nearly independent, so an hour held 800 real samples. Once the horizon is fifteen minutes those
+ * same 800 entries all look through very nearly the SAME window, so they collapse to about one
+ * sample and the estimate swings between 0 and 1 (measured: a win fraction of exactly 0 against a
+ * 0.125 target). Sampling across the whole calibration window keeps consecutive entries
+ * non-overlapping at any horizon the config can express.
+ */
 function winFraction(eng: SettlementEngine, n = 800): number {
   let wins = 0;
   for (let i = 0; i < n; i++) {
-    const t = (i / n) * 3600;
+    const t = (i / n) * CALIBRATION_WINDOW_S;
     if (eng.settle(20000, "buy", t).result === "win") wins++;
   }
   return wins / n;

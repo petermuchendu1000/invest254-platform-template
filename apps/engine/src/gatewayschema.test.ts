@@ -15,8 +15,8 @@ test("playerAvailable: mpesa/megapay/payhero have live rails; paystack/binance a
   assert.equal(PLAYER_DEPOSIT_RAILS.has("paystack"), false);
 });
 
-test("all four gateways are registered with a stable shape", () => {
-  assert.deepEqual(GATEWAY_CODES.sort(), ["binance", "megapay", "payhero", "paystack"]);
+test("all five gateways are registered with a stable shape", () => {
+  assert.deepEqual(GATEWAY_CODES.sort(), ["binance", "megapay", "payhero", "paynicorn", "paystack"]);
   for (const code of GATEWAY_CODES) {
     const s = GATEWAY_SCHEMAS[code]!;
     assert.equal(s.code, code);

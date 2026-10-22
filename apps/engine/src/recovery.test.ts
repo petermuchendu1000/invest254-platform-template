@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { DEFAULT_VERSIONED_CONFIG } from "@invest254/shared";
+import { DEFAULT_VERSIONED_CONFIG, priceAtRate, axisDateKey, XAUUSD, type PriceAxis } from "@invest254/shared";
 import { InMemoryGameRepository } from "./wallet.js";
-import { GameServer } from "./game.js";
+import { GameServer, type SettledEvent } from "./game.js";
 import { SeedManager } from "./daycontext.js";
 import { RecoveryService } from "./recovery.js";
 import { StaticConfigProvider } from "./gameconfig.js";
@@ -13,7 +13,17 @@ const MASTER = "recovery-test-master";
 const OPTS = { calibrationSamples: 4000 };
 
 test("recovery: settles expired, re-arms in-flight, deterministically and idempotently", async () => {
-  const cfg = DEFAULT_VERSIONED_CONFIG;
+  /**
+   * A TEN-SECOND contract, pinned rather than read from the shipped default.
+   *
+   * This test is about recovery mechanics: an expired position is settled, an in-flight one is
+   * re-armed, both idempotently. Its clock arithmetic encodes that term directly (`recoverAtMs =
+   * C1 + 10000 + 1`, "P1 expired (opened C1, 10s)"), so it has always meant ten seconds rather than
+   * whatever the default happens to be. The shipped default is now fifteen minutes, because a stop
+   * needs room to be reached, and reading it here would leave P1 still running at the recovery
+   * instant and settle nothing.
+   */
+  const cfg = { ...DEFAULT_VERSIONED_CONFIG, defaultDurationS: 10 };
   const config = new StaticConfigProvider(cfg);
   const repo = new InMemoryGameRepository();
   repo.seed("u1", 100000);
@@ -83,4 +93,80 @@ test("recovery: settles expired, re-arms in-flight, deterministically and idempo
   // a P1 settle attempt would be an idempotent no-op (already settled in the DB)
   const reSettle = await repo.settlePosition({ positionId: p1.id, exitRate: 0, result: "loss", multiplier: 0, payoutCents: 0 });
   assert.equal(reSettle.settled, false);
+});
+
+/**
+ * A restart must hand the position back the way it was OPENED, levels and all.
+ *
+ * This is the half of the bug that lived in recovery itself. Even once the levels were persisted, a
+ * re-armed position came back with `continuous: false`, which silently moved it from the continuous
+ * payout it was opened under to the committed step contract and made a loser impossible to close by
+ * hand. Because the engine restarts on every deploy, that happened to real trades routinely.
+ *
+ * The test crashes a brand that HAS a price axis and checks the recovered position on three counts:
+ * it is continuous again, it still carries the stop and the target, and the stop still fires on a
+ * tick with nothing watching.
+ */
+test("recovery re-arms a continuous position WITH its levels, and the stop still fires", async () => {
+  const cfg = { ...DEFAULT_VERSIONED_CONFIG, defaultDurationS: 900 };
+  const config = new StaticConfigProvider(cfg);
+  const repo = new InMemoryGameRepository();
+  repo.seed("u1", 100_000);
+  const clock = { ms: 0 };
+  // A fixed anchor, so a curve rate maps to a chart price the same way every run.
+  const axis: PriceAxis = {
+    instrument: XAUUSD,
+    anchorFor: (dateKey: string) => (dateKey === axisDateKey(0) ? { base: 3000, openValue: 0 } : null),
+  };
+
+  const seeds1 = new SeedManager(MASTER, config, repo, () => clock.ms, OPTS);
+  await seeds1.init();
+  const game1 = new GameServer(() => seeds1.getActive(), repo, () => cfg, () => clock.ms, undefined, undefined, undefined, () => axis);
+  clock.ms = 1000;
+  const { position } = await game1.openPosition({ userId: "u1", stakeCents: 25_000, direction: "buy" });
+  assert.equal(position.continuous, true, "the brand has an axis, so the trade opened continuous");
+
+  const ctx1 = seeds1.getActive();
+  const entryPrice = priceAtRate(axis, clock.ms, ctx1.curve.rate(position.entryT))!;
+  /**
+   * A stop the price DEMONSTRABLY reaches, read from the path rather than guessed.
+   *
+   * The walk is a martingale, so over any short window it is perfectly ordinary for the price never
+   * to trade below its open. Placing the stop at the lowest price the curve actually visits inside
+   * the horizon makes the assertion about the engine's level check rather than about a coin flip.
+   */
+  let low = Infinity;
+  for (let dt = 1; dt <= 300; dt++) {
+    const p = priceAtRate(axis, clock.ms + dt * 1000, ctx1.curve.rate(position.entryT + dt))!;
+    if (p < low) low = p;
+  }
+  assert.ok(low < entryPrice, "this seed's price does go against a buy inside the window");
+  const sl = (entryPrice + low) / 2; // between the entry and the low: reached, but not instantly
+  game1.setLevels(position.id, "u1", sl, null);
+  await Promise.resolve();
+  await Promise.resolve();
+
+  // --- crash: a fresh process boots with only the durable repository ---
+  const seeds2 = new SeedManager(MASTER, config, repo, () => clock.ms, OPTS);
+  await seeds2.init();
+  const game2 = new GameServer(() => seeds2.getActive(), repo, () => cfg, () => clock.ms, undefined, undefined, undefined, () => axis);
+  const report = await new RecoveryService(repo, seeds2, game2, () => clock.ms).recover();
+  assert.equal(report.rearmed, 1, "the in-flight position is re-armed");
+
+  const back = game2.getPosition(position.id)!;
+  assert.ok(back, "the position is on the live server again");
+  assert.equal(back.continuous, true, "it is priced the way it was OPENED, not as a committed contract");
+  assert.equal(back.slPrice, sl, "the stop the trader set survived the restart");
+  assert.equal(back.sellable, true, "and it can still be closed by hand, winner or loser");
+
+  // The stop fires on a tick, after the restart, with nothing watching.
+  let settled: SettledEvent | undefined;
+  game2.subscribe({ onSettled: (e) => (settled = e) });
+  for (let dt = 1; dt <= 300 && !settled; dt++) {
+    clock.ms = 1000 + dt * 1000;
+    await game2.step();
+  }
+  assert.ok(settled, "the recovered stop closed the position");
+  assert.equal(settled!.position.id, position.id);
+  assert.equal(settled!.closedBy, "sl", "and it closed BECAUSE of the stop, not at the horizon");
 });

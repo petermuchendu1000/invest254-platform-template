@@ -16,7 +16,7 @@ const MESSAGES: Record<string, string> = {
   DEFAULT_MUST_BE_FREE: "The default of a category is what every brand falls back to, so it stays free and offered.",
   ALREADY_ENTITLED: "This brand already has it.",
   REQUEST_NOT_OPEN: "That request was already decided or withdrawn.",
-  NOT_ENTITLED: "The brand doesn't own that system yet — request it first.",
+  NOT_ENTITLED: "The brand doesn't own that system yet. Request it first.",
   NOT_SWITCHABLE: "Only price charts and trade screens can be switched.",
   NOTE_TOO_LONG: "Keep the note under 500 characters.",
   CANNOT_REVOKE_DEFAULT: "The free default can't be removed.",

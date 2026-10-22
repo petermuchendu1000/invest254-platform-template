@@ -91,7 +91,7 @@ export function InvoiceDocument({ inv }: { inv: Invoice }) {
         <section className="mt-6 grid gap-4 rounded-xl bg-surface-2 p-4 sm:grid-cols-2 print:bg-transparent print:p-0">
           <div>
             <div className="text-xs font-medium uppercase tracking-wide text-muted">Pay by M-Pesa</div>
-            <p className="mt-1">{inv.seller.mpesaPayEnabled ? 'Use Pay now on this page — a prompt is sent to your phone.' : 'Pay using the instructions alongside.'}</p>
+            <p className="mt-1">{inv.seller.mpesaPayEnabled ? 'Use Pay now on this page. A prompt is sent to your phone.' : 'Pay using the instructions alongside.'}</p>
             <p className="mt-1 text-muted">Account / reference: <span className="font-mono text-fg">{mpesaRefFor(inv.number)}</span></p>
           </div>
           {inv.seller.paymentInstructions ? (

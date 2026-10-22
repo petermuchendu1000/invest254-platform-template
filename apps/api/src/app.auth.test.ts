@@ -31,14 +31,16 @@ test("POST /auth/register → 201 with token + player role", async () => {
   } finally { await api.close(); }
 });
 
-test("POST /auth/register → 400 on missing field / weak password / bad phone", async () => {
+test("POST /auth/register → 400 on missing field / too-short password / bad phone", async () => {
   const api = await startTestApi();
   try {
     let res = await req(api, "POST", "/api/v1/auth/register", { body: { phone: "0712345678", username: "alice" } });
     assert.equal(res.status, 400);
     assert.equal((await json(res)).error.code, "VALIDATION");
 
-    res = await req(api, "POST", "/api/v1/auth/register", { body: { ...REG, password: "short" } });
+    // Four characters is the floor and there are no character classes, so "short" (5) registers
+    // and only something under four is refused.
+    res = await req(api, "POST", "/api/v1/auth/register", { body: { ...REG, password: "abc" } });
     assert.equal(res.status, 400);
     assert.equal((await json(res)).error.code, "PASSWORD_TOO_SHORT");
 
@@ -48,7 +50,7 @@ test("POST /auth/register → 400 on missing field / weak password / bad phone",
   } finally { await api.close(); }
 });
 
-test("POST /auth/register → 409 on duplicate phone / username", async () => {
+test("POST /auth/register → 409 on a duplicate PHONE; a duplicate username is fine", async () => {
   const api = await startTestApi();
   try {
     await req(api, "POST", "/api/v1/auth/register", { body: REG });
@@ -56,9 +58,9 @@ test("POST /auth/register → 409 on duplicate phone / username", async () => {
     assert.equal(res.status, 409);
     assert.equal((await json(res)).error.code, "PHONE_TAKEN");
 
+    // Same username, different phone: two people may share a display name (migration 0190).
     res = await req(api, "POST", "/api/v1/auth/register", { body: { ...REG, phone: "0722222222" } });
-    assert.equal(res.status, 409);
-    assert.equal((await json(res)).error.code, "USERNAME_TAKEN");
+    assert.equal(res.status, 201);
   } finally { await api.close(); }
 });
 

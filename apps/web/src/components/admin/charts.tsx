@@ -251,7 +251,7 @@ export function Donut({
           <div key={i} className="flex items-center gap-2 text-xs">
             <span className={`h-2.5 w-2.5 rounded-full ${seg.tone === 'up' ? 'bg-up' : seg.tone === 'down' ? 'bg-down' : 'bg-accent'}`} />
             <span className="text-muted">{seg.label}</span>
-            <span className="ml-auto font-medium tabular-nums text-fg">{total > 0 ? `${((Math.max(0, seg.value) / total) * 100).toFixed(0)}%` : '—'}</span>
+            <span className="ml-auto font-medium tabular-nums text-fg">{total > 0 ? `${((Math.max(0, seg.value) / total) * 100).toFixed(0)}%` : '-'}</span>
           </div>
         ))}
       </div>

@@ -331,6 +331,34 @@ test("PaymentService: global min-deposit fail-open (0 / throw) defers to the sta
   assert.ok((await svcThrow.initiateDeposit("u", 20_000, "0712345678")).txId, "throw => static default, not a block");
 });
 
+test("PaymentService: an EXPLICIT per-brand native min-deposit WINS over the global enforce (may sit below it)", async () => {
+  const repo = new InMemoryPaymentRepository(); repo.seed("u", 1_000_000);
+  // Global enforces KES 200 (20_000), but the brand set its own native floor ≈ $1 = KES 130 (13_000).
+  // The per-brand native intent overrides the global, so a KES 130 deposit is accepted, not BELOW_MIN.
+  const svc = new PaymentService(repo, new StubDarajaClient(), {
+    minDepositForGlobal: async () => 20_000,
+    minDepositForSite: (siteId) => (siteId === "usd-brand" ? 13_000 : 0),
+  });
+  assert.ok((await svc.initiateDeposit("u", 13_000, "0712345678", "usd-brand")).txId, "native $1 floor wins over global KES 200");
+  await assert.rejects(() => svc.initiateDeposit("u", 12_999, "0712345678", "usd-brand"), /BELOW_MIN/);
+  // A brand with NO native floor (sentinel 0) keeps the global KES 200 floor.
+  await assert.rejects(() => svc.initiateDeposit("u", 13_000, "0712345678", "kes-brand"), /BELOW_MIN/);
+  assert.ok((await svc.initiateDeposit("u", 20_000, "0712345678", "kes-brand")).txId);
+});
+
+test("PaymentService: an EXPLICIT per-brand native min-withdrawal WINS over the global enforce", async () => {
+  const repo = new InMemoryPaymentRepository(); repo.seed("u", 1_000_000);
+  // Global enforces KES 2,000 (200_000), but the brand set its own native floor ≈ $5 = KES 650 (65_000).
+  const svc = new PaymentService(repo, new StubDarajaClient(), {
+    minWithdrawalForGlobal: async () => 200_000,
+    minWithdrawalNativeForSite: (siteId) => (siteId === "usd-brand" ? 65_000 : 0),
+    minWithdrawalForSite: () => 200_000,
+  });
+  await assert.rejects(() => svc.requestWithdrawal("u", 64_999, "0712345678", "usd-brand"), /BELOW_MIN/);
+  // A brand with no native floor (sentinel 0) keeps the global KES 2,000 floor.
+  await assert.rejects(() => svc.requestWithdrawal("u", 65_000, "0712345678", "kes-brand"), /BELOW_MIN/);
+});
+
 test("PaymentService: global max-deposit caps a single deposit (ABOVE_MAX)", async () => {
   const repo = new InMemoryPaymentRepository(); repo.seed("u", 100_000_000);
   const svc = new PaymentService(repo, new StubDarajaClient(), { maxDepositForGlobal: async () => 5_000_000 }); // KES 50k cap

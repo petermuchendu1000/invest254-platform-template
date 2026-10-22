@@ -3,7 +3,7 @@ import { InMemoryKycStore } from "./app.kyc.js";
 import type { AddressInfo } from "node:net";
 import { DEFAULT_CONFIG, normalizeHost, type Cents } from "@invest254/shared";
 import {
-  InMemoryEngagementRepository, InMemoryPaymentRepository, InMemoryGameRepository, StubDarajaClient, StubMegaPayClient, StubPayHeroClient,
+  InMemoryEngagementRepository, InMemoryPaymentRepository, InMemoryGameRepository, StubDarajaClient, StubMegaPayClient, StubPayHeroClient, StubPaynicornClient,
   InMemoryIdentityRepository, PaymentService, AuthService, AffiliateService, AdminService, InMemoryAdminRepository, PlatformService, InMemoryPlatformRepository, maskHandle,
   SubscriptionService, InMemorySubscriptionRepository, TicketService, InMemoryTicketRepository,
   NotificationService, InMemoryNotificationRepository,
@@ -14,7 +14,7 @@ import {
 } from "@invest254/engine";
 import { createApp, type ApiDeps, type WalletBalance, type Brand } from "./app.js";
 import { createLogger } from "@invest254/shared/logger";
-import type { MarketerRepo, MarketerRow, MarketerProfile, MarketerLedgerRow, WithdrawResult } from "./app.marketers.js";
+import type { MarketerRepo, TransferResult, MarketerRow, MarketerProfile, MarketerLedgerRow, WithdrawResult, MarketerActor } from "./app.marketers.js";
 import type { ReferralRepo, CommissionPayoutRow, AdminCommissionPayoutRow } from "./app.referral.js";
 import type { SupportDeps, SupportStore, SupportConversation, SupportMessageRow } from "./app.support.js";
 import type { PlatformOnboardDeps, OnboardInput, OnboardResult, RegistrarConfigDeps } from "./app.platform.js";
@@ -84,10 +84,17 @@ export function makeInMemoryReferralRepo(): InMemoryReferralRepo {
 export interface InMemoryMarketerRepo extends MarketerRepo {
   /** Register a site_id -> brand display name so profiles resolve `brand_name` (0096). */
   _setBrandName(siteId: string, name: string): void;
+  /** Register a site-admin actor's home brand, so the in-memory repo can mirror the DB brand fence
+   *  (0199 / A1): a site-tier actor acting on another brand's marketer raises SITE_SCOPE_FORBIDDEN. */
+  _setActorSite(actorId: string, siteId: string): void;
+  /** The actor last forwarded to a given mutating method ('credit'|'withdraw'|'setPin'|'setStatus'|
+   *  'setFuliza'|'setAirtime'), so wiring tests can assert the admin routes pass the token actor and
+   *  the system/self-service paths pass none. undefined when the method ran with no actor. */
+  _lastActor(method: string): MarketerActor | undefined;
 }
 
 export function makeInMemoryMarketerRepo(): InMemoryMarketerRepo {
-  interface Rec { id: string; name: string; phone: string; status: string; created_at: string; updated_at: string; balance: number; fuliza: number; airtime: number; site_id: string; }
+  interface Rec { id: string; name: string; phone: string; status: string; created_at: string; updated_at: string; balance: number; fuliza: number; airtime: number; site_id: string; email?: string | null; }
   const byId = new Map<string, Rec>();
   // Keyed by phone WITHIN a brand: a phone is only unique per site, so two brands may each own a
   // marketer with the same number (mirrors the SQL `marketers (phone, site_id)` scoping).
@@ -103,14 +110,38 @@ export function makeInMemoryMarketerRepo(): InMemoryMarketerRepo {
   const ledgers = new Map<string, MarketerLedgerRow[]>();
   const refs = new Map<string, { balance: number; ledgerId: number }>();
   const pins = new Map<string, string>();
+  // 0198: marketer security answers (marketer id -> question_key -> answer_hash) and the force-logout
+  // epoch (marketer id -> epoch ms). Mirror the SQL semantics so the in-memory and Pg paths agree.
+  const securityAnswers = new Map<string, Map<string, string>>();
+  const forceLogoutAt = new Map<string, number>();
+  // 0199/A1: the DB brand fence mirrored in memory. `actorSites` maps a site-admin actor to its home
+  // brand; `lastActor` records the actor each mutating method last received (for wiring assertions).
+  const actorSites = new Map<string, string>();
+  const lastActor = new Map<string, MarketerActor | undefined>();
+  // Mirrors fn_assert_actor_site_scope (0156): a site-tier actor confined to a single brand (registered
+  // here with `_setActorSite`) may not act on another brand's marketer. A platform actor / the owner
+  // (no registered home => acts across brands) and a null actor (internal/system + self-service) are a
+  // no-op, as is a missing marketer (null site) — left to the method's own MARKETER_NOT_FOUND, exactly
+  // like the SQL helper's `p_site is not null` guard. (The real role→scope mapping lives in the DB and
+  // is proven by packages/db/_testkit/e2e_marketer_rpc_tenant_fence.py; this models it via the home.)
+  const fence = (method: string, marketerSite: string | undefined, actor?: MarketerActor): void => {
+    lastActor.set(method, actor);
+    if (!actor || marketerSite == null) return;
+    const home = actorSites.get(actor.id);
+    if (home !== undefined && home !== marketerSite) throw new Error("SITE_SCOPE_FORBIDDEN");
+  };
   let mseq = 0, lseq = 0;
   const now = () => new Date().toISOString();
   const parts = (n: string) => n.trim().split(/\s+/).filter(Boolean);
   const firstName = (n: string) => parts(n)[0] ?? "";
   const initials = (n: string) => { const p = parts(n); return p.length === 0 ? "" : p.length === 1 ? p[0]!.slice(0, 2).toUpperCase() : (p[0]![0]! + p[p.length - 1]![0]!).toUpperCase(); };
-  const profileOf = (m: Rec): MarketerProfile => ({ id: m.id, name: m.name, first_name: firstName(m.name), initials: initials(m.name), phone: m.phone, status: m.status, balance_cents: m.balance, available_fuliza_cents: m.fuliza, airtime_balance_cents: m.airtime, currency: "KES", site_id: m.site_id, brand_name: brandBySite.get(m.site_id) ?? null });
-  const push = (id: string, entry_type: string, amount_cents: number, balance_after_cents: number, ref: string | null, meta: unknown): number => {
-    const row: MarketerLedgerRow = { id: ++lseq, entry_type, amount_cents, balance_after_cents, ref, meta: meta ?? {}, created_at: now() };
+  const profileOf = (m: Rec): MarketerProfile => ({ id: m.id, name: m.name, first_name: firstName(m.name), initials: initials(m.name), phone: m.phone, status: m.status, balance_cents: m.balance, available_fuliza_cents: m.fuliza, airtime_balance_cents: m.airtime, currency: "KES", site_id: m.site_id, brand_name: brandBySite.get(m.site_id) ?? null, sessions_valid_after: forceLogoutAt.has(m.id) ? new Date(forceLogoutAt.get(m.id)!).toISOString() : null, email: m.email ?? null });
+  // `createdAt` is passed only by the transfer mirror, where both halves must carry the SAME
+  // timestamp: in Postgres they do, because created_at defaults to now() and now() is transaction
+  // start. Letting each row take its own clock reading here would quietly make the in-memory
+  // harness disagree with the database about whether the two sides of one transfer are simultaneous.
+  const push = (id: string, entry_type: string, amount_cents: number, balance_after_cents: number, ref: string | null, meta: unknown, createdAt?: string): number => {
+    const row: MarketerLedgerRow = { id: ++lseq, entry_type, amount_cents, balance_after_cents, ref, meta: meta ?? {}, created_at: createdAt ?? now() };
     (ledgers.get(id) ?? []).push(row);
     return row.id;
   };
@@ -120,7 +151,7 @@ export function makeInMemoryMarketerRepo(): InMemoryMarketerRepo {
       const existing = byPhone.get(pkey(phone, site));
       if (existing) { const m = byId.get(existing)!; m.name = name; m.updated_at = now(); return { id: m.id, name: m.name, phone: m.phone, status: m.status, created_at: m.created_at, updated_at: m.updated_at }; }
       const id = `m-${++mseq}`; const ts = now();
-      const m: Rec = { id, name, phone, status: "active", created_at: ts, updated_at: ts, balance: 0, fuliza: 0, airtime: 0, site_id: site };
+      const m: Rec = { id, name, phone, status: "active", created_at: ts, updated_at: ts, balance: 0, fuliza: 0, airtime: 0, site_id: site, email: null };
       byId.set(id, m); byPhone.set(pkey(phone, site), id); ledgers.set(id, []);
       return { id, name, phone, status: "active", created_at: ts, updated_at: ts };
     },
@@ -145,7 +176,84 @@ export function makeInMemoryMarketerRepo(): InMemoryMarketerRepo {
       const m = [...byId.values()].find((r) => sig9(r.phone) === sig9(phone) && sig9(phone).length === 9);
       return m ? profileOf(m) : null;
     },
-    async credit(id: string, amountCents: number, ref: string | null, meta: unknown): Promise<number> {
+    /**
+     * Mirrors fn_marketer_transfer (0203) closely enough that a route test proves the ROUTE, not a
+     * convenient fiction: same refusal order, same opaque RECIPIENT_NOT_FOUND for "another brand /
+     * suspended / absent", same cash-only rule (Fuliza is never consulted), same `<ref>:out` /
+     * `<ref>:in` idempotency, same rolling-24h cap. What it cannot mirror is atomicity under
+     * concurrency — that is proven against real Postgres in
+     * packages/db/_testkit/e2e_marketer_transfer.py, which is where it belongs.
+     */
+    async transfer(fromId: string, toId: string, amountCents: number, ref: string | null, meta: unknown, dailyCapCents: number): Promise<TransferResult> {
+      if (!Number.isInteger(amountCents) || amountCents <= 0) throw new Error("AMOUNT_MUST_BE_POSITIVE");
+      if (amountCents < 100) throw new Error("AMOUNT_BELOW_MINIMUM");
+      if (fromId === toId) throw new Error("TRANSFER_TO_SELF");
+
+      const refOut = ref ? `${ref}:out` : null;
+      const refIn = ref ? `${ref}:in` : null;
+      if (refOut) {
+        for (const [mid, rows] of ledgers) {
+          const hit = rows.find((r) => r.ref === refOut);
+          if (hit) {
+            return {
+              idempotent: true,
+              from_balance_cents: hit.balance_after_cents,
+              to_balance_cents: byId.get(toId)?.balance ?? 0,
+              out_ledger_id: hit.id,
+              in_ledger_id: [...ledgers.values()].flat().find((r) => r.ref === refIn)?.id ?? 0,
+              recipient_name: byId.get(toId)?.name ?? "",
+              sent_cents: -hit.amount_cents,
+              // The STORED row's time (0205) — a replay reprints the original receipt. Returning a
+              // fresh clock reading here is the exact bug the field exists to prevent.
+              out_created_at: hit.created_at,
+            };
+            void mid;
+          }
+        }
+      }
+
+      const from = byId.get(fromId);
+      if (!from) throw new Error("MARKETER_NOT_FOUND");
+      if (from.status !== "active") throw new Error(`MARKETER_NOT_ACTIVE:${from.status}`);
+      const to = byId.get(toId);
+      // ONE refusal for absent / other-brand / suspended — see the RPC header.
+      if (!to || to.site_id !== from.site_id || to.status !== "active") throw new Error("RECIPIENT_NOT_FOUND");
+
+      if (dailyCapCents !== null && dailyCapCents >= 0) {
+        const since = Date.now() - 24 * 60 * 60 * 1000;
+        const sent = (ledgers.get(fromId) ?? [])
+          .filter((r) => r.entry_type === "transfer_out" && Date.parse(r.created_at) > since)
+          .reduce((acc, r) => acc - r.amount_cents, 0);
+        if (sent + amountCents > dailyCapCents) throw new Error(`TRANSFER_DAILY_CAP: sent ${sent}, cap ${dailyCapCents}`);
+      }
+
+      // CASH ONLY — `from.fuliza` is deliberately not consulted (0203 header).
+      if (from.balance < amountCents) throw new Error(`INSUFFICIENT_FUNDS: have ${from.balance}, need ${amountCents}`);
+
+      from.balance -= amountCents; from.updated_at = now();
+      to.balance += amountCents;   to.updated_at = now();
+      const baseMeta = (meta && typeof meta === "object" ? meta : {}) as Record<string, unknown>;
+      // One reading for both rows — see the note on `push`.
+      const at = now();
+      const outId = push(fromId, "transfer_out", -amountCents, from.balance, refOut,
+        { ...baseMeta, source: "marketer_transfer", name: to.name, counterparty_marketer_id: toId }, at);
+      // `pair_ledger_id` on the IN row only (0205): it is what makes the recipient's confirmation
+      // carry the sender's code instead of a second one for the same transfer.
+      const inId = push(toId, "transfer_in", amountCents, to.balance, refIn,
+        { ...baseMeta, source: "marketer_transfer", name: from.name, counterparty_marketer_id: fromId, pair_ledger_id: outId }, at);
+      return {
+        idempotent: false,
+        from_balance_cents: from.balance,
+        to_balance_cents: to.balance,
+        out_ledger_id: outId,
+        in_ledger_id: inId,
+        recipient_name: to.name,
+        sent_cents: amountCents,
+        out_created_at: at,
+      };
+    },
+    async credit(id: string, amountCents: number, ref: string | null, meta: unknown, actor?: MarketerActor): Promise<number> {
+      fence("credit", byId.get(id)?.site_id, actor);
       if (amountCents <= 0) throw new Error("AMOUNT_MUST_BE_POSITIVE");
       if (ref && refs.has(ref)) return refs.get(ref)!.balance;
       const m = byId.get(id); if (!m) throw new Error("MARKETER_NOT_FOUND");
@@ -163,21 +271,132 @@ export function makeInMemoryMarketerRepo(): InMemoryMarketerRepo {
       push(id, "credit", add, m.balance, `self_demo_topup:${now()}`, { source: "self_service_demo" });
       return m.balance;
     },
-    async withdraw(id: string, amountCents: number, ref: string | null, meta: unknown, _method: string): Promise<WithdrawResult> {
+    async withdraw(id: string, amountCents: number, ref: string | null, meta: unknown, _method: string, actor?: MarketerActor): Promise<WithdrawResult> {
+      fence("withdraw", byId.get(id)?.site_id, actor);
       if (amountCents <= 0) throw new Error("AMOUNT_MUST_BE_POSITIVE");
       if (ref && refs.has(ref)) { const e = refs.get(ref)!; return { idempotent: true, balance_cents: e.balance, ledger_id: e.ledgerId }; }
       const m = byId.get(id); if (!m) throw new Error("MARKETER_NOT_FOUND");
       if (m.status !== "active") throw new Error(`MARKETER_NOT_ACTIVE:${m.status}`);
-      if (m.balance < amountCents) throw new Error(`INSUFFICIENT_FUNDS: have ${m.balance}, need ${amountCents}`);
-      m.balance -= amountCents; m.updated_at = now();
-      const lid = push(id, "withdrawal", -amountCents, m.balance, ref, meta);
+      // FULIZA COVERS A SHORTFALL ON A WITHDRAWAL, exactly as fn_marketer_withdraw (0033) does.
+      // This mirror used to refuse at `m.balance < amountCents` and never touch m.fuliza, so every
+      // route test about a withdrawal was testing behaviour the database does not have — and the
+      // `fuliza_used_cents` branch of ledgerToTxDto had never been exercised by anything. BUGLOG #147.
+      const spendable = m.balance + m.fuliza;
+      if (spendable < amountCents) throw new Error(`INSUFFICIENT_FUNDS: have ${spendable}, need ${amountCents}`);
+      const fromFuliza = Math.max(amountCents - m.balance, 0);
+      m.balance = Math.max(m.balance - amountCents, 0);
+      m.fuliza -= fromFuliza;
+      m.updated_at = now();
+      const wMeta = (meta && typeof meta === "object" ? meta : {}) as Record<string, unknown>;
+      const lid = push(id, "withdrawal", -amountCents, m.balance, ref, { ...wMeta, fuliza_used_cents: fromFuliza });
       if (ref) refs.set(ref, { balance: m.balance, ledgerId: lid });
       return { idempotent: false, balance_cents: m.balance, withdrawal_id: `w-${lid}`, ledger_id: lid };
     },
-    async setFuliza(id: string, amountCents: number): Promise<number> { if (amountCents < 0) throw new Error("AMOUNT_MUST_BE_NONNEGATIVE"); const m = byId.get(id); if (!m) throw new Error("MARKETER_NOT_FOUND"); m.fuliza = amountCents; m.updated_at = now(); return amountCents; },
-    async setAirtime(id: string, amountCents: number): Promise<number> { if (amountCents < 0) throw new Error("AMOUNT_MUST_BE_NONNEGATIVE"); const m = byId.get(id); if (!m) throw new Error("MARKETER_NOT_FOUND"); m.airtime = amountCents; m.updated_at = now(); return amountCents; },
+    async setFuliza(id: string, amountCents: number, actor?: MarketerActor): Promise<number> { fence("setFuliza", byId.get(id)?.site_id, actor); if (amountCents < 0) throw new Error("AMOUNT_MUST_BE_NONNEGATIVE"); const m = byId.get(id); if (!m) throw new Error("MARKETER_NOT_FOUND"); m.fuliza = amountCents; m.updated_at = now(); return amountCents; },
+    async setAirtime(id: string, amountCents: number, actor?: MarketerActor): Promise<number> { fence("setAirtime", byId.get(id)?.site_id, actor); if (amountCents < 0) throw new Error("AMOUNT_MUST_BE_NONNEGATIVE"); const m = byId.get(id); if (!m) throw new Error("MARKETER_NOT_FOUND"); m.airtime = amountCents; m.updated_at = now(); return amountCents; },
     async statement(id: string, limit: number): Promise<MarketerLedgerRow[]> { return (ledgers.get(id) ?? []).slice().reverse().slice(0, limit); },
-    async setPin(id: string, pin: string): Promise<void> { if (!/^\d{4,6}$/.test(pin)) throw new Error("INVALID_PIN"); if (!byId.has(id)) throw new Error("MARKETER_NOT_FOUND"); pins.set(id, pin); },
+    /**
+     * Mirrors fn_marketer_statement_summary (0206) — SAME bucket mapping, including the reading
+     * that game-winnings credits are OTHERS and not an AGENT DEPOSIT. If these two ever disagree,
+     * the route tests are proving a convenient fiction rather than the product.
+     */
+    async setEmail(id: string, email: string | null): Promise<string | null> {
+      // Mirrors fn_marketer_set_email: trimmed, lower-cased, empty becomes null.
+      const m = byId.get(id); if (!m) throw new Error("MARKETER_NOT_FOUND");
+      if (m.status !== "active") throw new Error(`MARKETER_NOT_ACTIVE:${m.status}`);
+      const clean = (email ?? "").trim().toLowerCase() || null;
+      if (clean !== null && (clean.length < 6 || clean.length > 254 || !/.+@.+\..{2,}/.test(clean))) {
+        throw new Error("INVALID_EMAIL");
+      }
+      m.email = clean;
+      return clean;
+    },
+
+    /** Mirrors fn_marketer_buy_airtime (0207): cash only, one debit row, idempotent on ref. */
+    async buyAirtime(id: string, amountCents: number, ref: string | null, meta: unknown, minCents: number) {
+      if (!Number.isInteger(amountCents) || amountCents <= 0) throw new Error("AMOUNT_MUST_BE_POSITIVE");
+      if (amountCents < Math.max(minCents, 1)) throw new Error(`AMOUNT_BELOW_MINIMUM: min ${Math.max(minCents, 1)}`);
+      if (ref) {
+        const hit = [...ledgers.values()].flat().find((r) => r.ref === ref);
+        if (hit) {
+          return {
+            idempotent: true,
+            balance_cents: hit.balance_after_cents,
+            airtime_balance_cents: byId.get(id)?.airtime ?? 0,
+            ledger_id: hit.id,
+            created_at: hit.created_at,
+          };
+        }
+      }
+      const m = byId.get(id); if (!m) throw new Error("MARKETER_NOT_FOUND");
+      if (m.status !== "active") throw new Error(`MARKETER_NOT_ACTIVE:${m.status}`);
+      // CASH ONLY — `m.fuliza` is deliberately not consulted (0207 header).
+      if (m.balance < amountCents) throw new Error(`INSUFFICIENT_FUNDS: have ${m.balance}, need ${amountCents}`);
+      m.balance -= amountCents;
+      m.airtime += amountCents;
+      m.updated_at = now();
+      const baseMeta = (meta && typeof meta === "object" ? meta : {}) as Record<string, unknown>;
+      const lid = push(id, "airtime", -amountCents, m.balance, ref, { ...baseMeta, source: "airtime_purchase" });
+      const row = (ledgers.get(id) ?? []).find((r) => r.id === lid)!;
+      return {
+        idempotent: false,
+        balance_cents: m.balance,
+        airtime_balance_cents: m.airtime,
+        ledger_id: lid,
+        created_at: row.created_at,
+      };
+    },
+
+    async statementSummary(id: string, fromIso: string, toIso: string) {
+      const from = Date.parse(fromIso), to = Date.parse(toIso);
+      const rows = (ledgers.get(id) ?? []).filter((r) => {
+        const t = Date.parse(r.created_at);
+        return t >= from && t < to;
+      });
+      const buckets: Record<string, { in: number; out: number }> = {
+        "SEND MONEY": { in: 0, out: 0 }, "RECEIVED MONEY": { in: 0, out: 0 },
+        "AGENT DEPOSIT": { in: 0, out: 0 }, "AGENT WITHDRAWAL": { in: 0, out: 0 },
+        OTHERS: { in: 0, out: 0 },
+      };
+      for (const r of rows) {
+        const meta = (r.meta && typeof r.meta === "object" ? r.meta : {}) as Record<string, unknown>;
+        const source = typeof meta.source === "string" ? meta.source : "";
+        const bucket =
+          r.entry_type === "transfer_out" ? "SEND MONEY"
+          : r.entry_type === "transfer_in" ? "RECEIVED MONEY"
+          : r.entry_type === "withdrawal" ? "AGENT WITHDRAWAL"
+          : r.entry_type === "credit" && source !== "game_withdrawal" && source !== "game_withdrawal_approved"
+            ? "AGENT DEPOSIT"
+            : "OTHERS";
+        buckets[bucket]!.in += Math.max(r.amount_cents, 0);
+        buckets[bucket]!.out += Math.max(-r.amount_cents, 0);
+      }
+      const paid_in_cents = Object.values(buckets).reduce((a, b) => a + b.in, 0);
+      const paid_out_cents = Object.values(buckets).reduce((a, b) => a + b.out, 0);
+      return { buckets, txn_count: rows.length, paid_in_cents, paid_out_cents };
+    },
+    /**
+     * Newest `cap` rows of the range, returned oldest-first — the shape 0206/0208 guarantee.
+     *
+     * Sorted by (created_at, id), not by insertion order: `id` and `created_at` can disagree,
+     * because now() is transaction START time while the id is drawn at INSERT time (BUGLOG #149).
+     * `id` remains the tie-breaker so the two halves of a transfer, which share a timestamp to the
+     * microsecond, keep the debit before the credit.
+     */
+    async statementRange(id: string, fromIso: string, toIso: string, cap: number): Promise<MarketerLedgerRow[]> {
+      const from = Date.parse(fromIso), to = Date.parse(toIso);
+      const inRange = (ledgers.get(id) ?? []).filter((r) => {
+        const t = Date.parse(r.created_at);
+        return t >= from && t < to;
+      });
+      // Mirrors fn_marketer_statement_range (0209): take the NEWEST `cap` rows, then hand them back
+      // newest-first. The two steps are separate on purpose — sorting descending and then slicing
+      // the head would look equivalent and would be, but doing it in one step invites the inverse
+      // mistake of slicing the OLDEST rows, which is silent and wrong.
+      inRange.sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at) || a.id - b.id);
+      return inRange.slice(-Math.max(cap, 1)).reverse();
+    },
+    async setPin(id: string, pin: string, actor?: MarketerActor): Promise<void> { fence("setPin", byId.get(id)?.site_id, actor); if (!/^\d{4,6}$/.test(pin)) throw new Error("INVALID_PIN"); if (!byId.has(id)) throw new Error("MARKETER_NOT_FOUND"); pins.set(id, pin); },
     async login(phone: string, pin: string, siteId?: string): Promise<string | null> {
       // Mirrors fn_marketer_login (0093): a phone is unique only within a brand, so match the PIN
       // across every brand holding this phone (or scope to one brand when siteId is given). The PIN
@@ -197,7 +416,8 @@ export function makeInMemoryMarketerRepo(): InMemoryMarketerRepo {
       if (pins.get(id) !== currentPin) throw new Error("INVALID_CREDENTIALS");
       pins.set(id, newPin);
     },
-    async setStatus(id: string, status: string): Promise<string> {
+    async setStatus(id: string, status: string, actor?: MarketerActor): Promise<string> {
+      fence("setStatus", byId.get(id)?.site_id, actor);
       if (!["active", "suspended", "disabled"].includes(status)) throw new Error("INVALID_STATUS");
       const m = byId.get(id); if (!m) throw new Error("MARKETER_NOT_FOUND");
       m.status = status; m.updated_at = now(); return status;
@@ -208,9 +428,22 @@ export function makeInMemoryMarketerRepo(): InMemoryMarketerRepo {
       byId.delete(id); byPhone.delete(pkey(m.phone, m.site_id)); ledgers.delete(id); pins.delete(id);
       return { deleted: true };
     },
+    // ── Security questions + force-logout (0198) ──
+    async getSecurityAnswers(id: string): Promise<{ questionKey: string; answerHash: string }[]> {
+      const m = securityAnswers.get(id);
+      if (!m) return [];
+      return [...m.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([questionKey, answerHash]) => ({ questionKey, answerHash }));
+    },
+    async setSecurityAnswers(id: string, answers: { questionKey: string; answerHash: string }[]): Promise<void> {
+      // Replace the whole set (mirror the Pg upsert-and-prune): the stored map becomes exactly `answers`.
+      securityAnswers.set(id, new Map(answers.map((a) => [a.questionKey, a.answerHash])));
+    },
+    async forceLogout(id: string): Promise<void> { forceLogoutAt.set(id, Date.now()); },
     // Test-only: register a brand (site) display name so profiles resolve `brand_name` like the
     // 0096 view does in production. Mirrors the `_seed*` helpers on the affiliate in-memory repo.
     _setBrandName(siteId: string, name: string): void { brandBySite.set(siteId, name); },
+    _setActorSite(actorId: string, siteId: string): void { actorSites.set(actorId, siteId); },
+    _lastActor(method: string): MarketerActor | undefined { return lastActor.get(method); },
   };
 }
 
@@ -361,10 +594,13 @@ export function stubVerifier(): Verifier {
     if (!token) throw new Error("TOKEN_REQUIRED");
     // `<userId>` | `<userId>:<role>` | `<userId>:<role>:<siteId>` | `<userId>:<role>:<siteId>:<platformId>`
     // — the optional 3rd/4th segments exercise the JWT `site` (requireSite) and `platform`
-    // (adminScopePlatform, Issue 1) claims.
-    const [userId, role, site, platform] = token.split(":");
+    // (adminScopePlatform, Issue 1) claims. An optional 5th segment is the token `iat` (seconds),
+    // which the 0196 idle gate and the 0198 marketer force-logout epoch read from `raw.iat`; tokens
+    // with four or fewer segments keep `raw: {}` exactly as before.
+    const [userId, role, site, platform, iat] = token.split(":");
     if (!userId) throw new Error("TOKEN_INVALID");
-    return { userId, role: role || "player", ...(site ? { site } : {}), ...(platform ? { platform } : {}), raw: {} };
+    const raw = iat !== undefined && iat !== "" ? { iat: Number(iat) } : {};
+    return { userId, role: role || "player", ...(site ? { site } : {}), ...(platform ? { platform } : {}), raw };
   };
 }
 
@@ -484,6 +720,7 @@ export async function startTestApi(opts: TestApiOptions = {}): Promise<TestApi> 
   const payments = new PaymentService(payRepo, daraja, {
     megapay: new StubMegaPayClient(), // Mega Pay rail (0116): deterministic offline client for route tests
     payhero: new StubPayHeroClient(), // PayHero rail: deterministic offline client for route tests
+    paynicorn: new StubPaynicornClient(), // Paynicorn rail: offline client; postbacks sign with STUB_PAYNICORN_SECRET
     withdrawalsEnabledForSite: async (siteId) =>
       adminRepoRef ? adminRepoRef.getWithdrawalsEnabled(siteId ?? TU_DEFAULT_SITE_ID) : true,
     events: {
@@ -593,7 +830,7 @@ export async function startTestApi(opts: TestApiOptions = {}): Promise<TestApi> 
     },
     async test(_a, _r, _platformId, draft) {
       const ok = Boolean((draft.apiKey ?? "").trim() && (draft.apiUser ?? "").trim());
-      return { ok, detail: ok ? "Connected — Namecheap API responded successfully." : "Enter the Namecheap API user and API key first.", egressIp: "203.0.113.9" };
+      return { ok, detail: ok ? "Connected. Namecheap API responded successfully." : "Enter the Namecheap API user and API key first.", egressIp: "203.0.113.9" };
     },
   };
 
@@ -703,6 +940,19 @@ export async function startTestApi(opts: TestApiOptions = {}): Promise<TestApi> 
     // Silent logger in tests: exercises the request-logging path without spamming test output.
     logger: createLogger({ level: "error", sink: () => {} }),
     auth,
+    // The 0196 per-session port, backed by the same in-memory identity repo the rest of this
+    // harness uses, so the step-up and logout ROUTES are exercised for real.
+    //
+    // `stepUp` is deliberately NOT set here: the gate is off by default in tests. Turning it on
+    // globally would make every one of the ~2100 tests present a second factor before any write,
+    // which tests the gate over and over and the routes not at all. The gate has its own
+    // end-to-end test that switches it on explicitly and asserts the splice happens.
+    privilegedSessions: {
+      getSession: (userId, iat) => identity.getPrivilegedSession(userId, iat),
+      recordStepUp: (userId, iat, method) => identity.recordStepUp(userId, iat, method),
+      endSessions: (userId) => identity.endPrivilegedSessions(userId),
+      forceLogout: (userId) => identity.stampForceLogout(userId),
+    },
     affiliate,
     admin,
     platform,

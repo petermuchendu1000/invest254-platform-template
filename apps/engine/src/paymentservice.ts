@@ -3,6 +3,9 @@ import type { PaymentRepository, CompleteResult, CreateWithdrawalResult, Withdra
 import type { DarajaClient } from "./daraja.js";
 import type { MegaPayClient } from "./megapay.js";
 import type { PayHeroClient } from "./payhero.js";
+import { toPaynicornPhone, methodIsDirect, type PaynicornClient, type PaynicornMethod } from "./paynicorn.js";
+import { paynicornCountry, formatPaynicornAmount } from "./paynicorncountries.js";
+import { kesToCurrencyRate } from "@invest254/shared/fx";
 import { PLAYER_DEPOSIT_RAILS } from "./gatewayschema.js";
 import { parseScope, type GatewayRouter, type OwnerScope, type PaymentScopeRef } from "./paymentscopes.js";
 
@@ -46,6 +49,23 @@ export interface PaymentServiceOptions {
    * a transient bad per-brand value can never open the floor below the safe default.
    */
   minWithdrawalForSite?: (siteId: string | undefined) => Cents | Promise<Cents>;
+  /**
+   * EXPLICIT per-brand native minimum withdrawal (site_game_config.min_withdrawal_native), converted to
+   * KES cents at the live rate, or a non-positive sentinel when the brand has set none. This is the
+   * operator's stated intent in the brand's own currency (e.g. $5), so — unlike `minWithdrawalForSite`
+   * — it OVERRIDES the platform GLOBAL enforce: a brand that has set its own native floor is not clamped
+   * up to the global one. Brands with no native value fall through to the global → legacy → static chain.
+   */
+  minWithdrawalNativeForSite?: (siteId: string | undefined) => Cents | Promise<Cents>;
+  /**
+   * EXPLICIT per-brand native minimum DEPOSIT (site_game_config.min_deposit_native), converted to KES
+   * cents at the live rate, or a non-positive sentinel when the brand has set none. This is the
+   * operator's stated intent in the brand's own currency (e.g. $1 on a USD brand), so it OVERRIDES the
+   * platform GLOBAL enforce and may sit BELOW the static default — a brand that has set its own native
+   * floor is not clamped up to the global one. Brands with no native value fall through to the global →
+   * static chain, so the platform floor still protects everyone who hasn't opted out of it.
+   */
+  minDepositForSite?: (siteId: string | undefined) => Cents | Promise<Cents>;
   /**
    * Platform-wide GLOBAL economy overrides (migration 0099 — the platform_superadmin global console).
    * When the platform owner ENFORCES a value it OVERRIDES every brand (decision: global wins), so these
@@ -100,6 +120,15 @@ export interface PaymentServiceOptions {
   /** PayHero (Lipwa) provider client — the third deposit rail. Absent => PayHero deposits refuse loudly. */
   payhero?: PayHeroClient;
   /**
+   * Paynicorn hosted-cashier client — a System-owner (global scope) rail only: a brand on its own payment
+   * accounts never routes here (assertRail refuses it). Absent => Paynicorn deposits refuse loudly.
+   */
+  paynicorn?: PaynicornClient;
+  /** The ISO-2 country a brand collects in (PayX). Absent/unknown => Kenya, which is how it shipped. */
+  countryForSite?: (siteId: string | undefined) => Promise<string | null>;
+  /** KES -> local-currency multiplier. Absent => the shared live FX table. */
+  fxRateFor?: (currency: string) => Promise<number>;
+  /**
    * PAY-1 (docs/43): per-platform / per-brand payment accounts. When present, every money flow of a brand
    * uses its payment OWNER's accounts (site > platform > global), transactions are stamped with the scope,
    * and verification/reconcile use the INITIATING scope. Absent => the global clients only (legacy).
@@ -109,11 +138,15 @@ export interface PaymentServiceOptions {
   verifyStkCallbacks?: boolean;
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export class PaymentService {
   private readonly minDeposit: Cents;
   private readonly minWithdrawal: Cents;
   private readonly minWithdrawalProvider?: () => Cents;
   private readonly minWithdrawalForSite?: (siteId: string | undefined) => Cents | Promise<Cents>;
+  private readonly minWithdrawalNativeForSite?: (siteId: string | undefined) => Cents | Promise<Cents>;
+  private readonly minDepositForSite?: (siteId: string | undefined) => Cents | Promise<Cents>;
   private readonly minDepositForGlobal?: () => Cents | Promise<Cents>;
   private readonly maxDepositForGlobal?: () => Cents | null | Promise<Cents | null>;
   private readonly minWithdrawalForGlobal?: () => Cents | Promise<Cents>;
@@ -124,6 +157,11 @@ export class PaymentService {
   private readonly entitledGatewaysForSite?: (siteId: string | undefined) => Promise<string[] | null>;
   private readonly megapay?: MegaPayClient;
   private readonly payhero?: PayHeroClient;
+  private readonly paynicorn?: PaynicornClient;
+  private readonly countryForSite?: (siteId: string | undefined) => Promise<string | null>;
+  private readonly fxRateFor: (currency: string) => Promise<number>;
+  /** Short-lived cache of the live method list, keyed by country+currency. */
+  private readonly methodCache = new Map<string, { at: number; methods: PaynicornMethod[] }>();
   private readonly gateways?: GatewayRouter;
   private readonly events: PaymentEvents;
   private readonly verifyStk: boolean;
@@ -132,6 +170,8 @@ export class PaymentService {
     this.minWithdrawal = opts.minWithdrawalCents ?? MIN_WITHDRAWAL_CENTS;
     if (opts.minWithdrawalProvider) this.minWithdrawalProvider = opts.minWithdrawalProvider;
     if (opts.minWithdrawalForSite) this.minWithdrawalForSite = opts.minWithdrawalForSite;
+    if (opts.minWithdrawalNativeForSite) this.minWithdrawalNativeForSite = opts.minWithdrawalNativeForSite;
+    if (opts.minDepositForSite) this.minDepositForSite = opts.minDepositForSite;
     if (opts.minDepositForGlobal) this.minDepositForGlobal = opts.minDepositForGlobal;
     if (opts.maxDepositForGlobal) this.maxDepositForGlobal = opts.maxDepositForGlobal;
     if (opts.minWithdrawalForGlobal) this.minWithdrawalForGlobal = opts.minWithdrawalForGlobal;
@@ -142,6 +182,9 @@ export class PaymentService {
     if (opts.entitledGatewaysForSite) this.entitledGatewaysForSite = opts.entitledGatewaysForSite;
     if (opts.megapay) this.megapay = opts.megapay;
     if (opts.payhero) this.payhero = opts.payhero;
+    if (opts.paynicorn) this.paynicorn = opts.paynicorn;
+    if (opts.countryForSite) this.countryForSite = opts.countryForSite;
+    this.fxRateFor = opts.fxRateFor ?? ((c) => kesToCurrencyRate(c));
     if (opts.gateways) this.gateways = opts.gateways;
     this.events = opts.events ?? {};
     // Secure by default: a client can POST to the public STK callback URL, so a raw
@@ -216,7 +259,7 @@ export class PaymentService {
 
   async initiateDeposit(userId: string, amountCents: number, phoneRaw: string, siteId?: string): Promise<{ txId: string; checkoutRequestId: string }> {
     if (!Number.isInteger(amountCents) || amountCents <= 0) throw new Error("INVALID_AMOUNT");
-    const minDep = await this.currentMinDeposit();
+    const minDep = await this.currentMinDeposit(siteId);
     if (amountCents < minDep) throw new Error("BELOW_MIN");
     const maxDep = await this.currentMaxDeposit();
     if (maxDep !== null && amountCents > maxDep) throw new Error("ABOVE_MAX");
@@ -249,7 +292,7 @@ export class PaymentService {
     const owner = await this.ownerOf(siteId);
     if (owner.scope === "global" && !this.megapay) throw new Error("MEGAPAY_NOT_CONFIGURED");
     if (!Number.isInteger(amountCents) || amountCents <= 0) throw new Error("INVALID_AMOUNT");
-    const minDep = await this.currentMinDeposit();
+    const minDep = await this.currentMinDeposit(siteId);
     if (amountCents < minDep) throw new Error("BELOW_MIN");
     const maxDep = await this.currentMaxDeposit();
     if (maxDep !== null && amountCents > maxDep) throw new Error("ABOVE_MAX");
@@ -324,7 +367,7 @@ export class PaymentService {
     const owner = await this.ownerOf(siteId);
     if (owner.scope === "global" && !this.payhero) throw new Error("PAYHERO_NOT_CONFIGURED");
     if (!Number.isInteger(amountCents) || amountCents <= 0) throw new Error("INVALID_AMOUNT");
-    const minDep = await this.currentMinDeposit();
+    const minDep = await this.currentMinDeposit(siteId);
     if (amountCents < minDep) throw new Error("BELOW_MIN");
     const maxDep = await this.currentMaxDeposit();
     if (maxDep !== null && amountCents > maxDep) throw new Error("ABOVE_MAX");
@@ -352,7 +395,7 @@ export class PaymentService {
     const owner = await this.ownerOf(siteId);
     if (owner.scope === "global" && !this.payhero) throw new Error("PAYHERO_NOT_CONFIGURED");
     if (!Number.isInteger(amountCents) || amountCents <= 0) throw new Error("INVALID_AMOUNT");
-    const minDep = await this.currentMinDeposit();
+    const minDep = await this.currentMinDeposit(siteId);
     if (amountCents < minDep) throw new Error("BELOW_MIN");
     const maxDep = await this.currentMaxDeposit();
     if (maxDep !== null && amountCents > maxDep) throw new Error("ABOVE_MAX");
@@ -385,6 +428,153 @@ export class PaymentService {
       this.reconcilePayHeroLedger().catch(() => ({ settled: 0 })),
     ]);
     return { settled: status.settled + ledger.settled };
+  }
+
+  // ── Deposit (Paynicorn / "PayX" M-Pesa push) ──
+  /**
+   * Initiate a Paynicorn deposit as a plain M-Pesa prompt: the order names the method and the payer's
+   * phone, so Paynicorn pushes the STK itself and no Paynicorn page is ever shown. Same validation and
+   * limits as every other rail, plus whole shillings (KES has no decimals on Paynicorn). Our txId is the
+   * Paynicorn `orderId` and the checkout_request_id, so the postback, the query and the reconcile sweep
+   * all key on it. Nothing is credited here; the player's sheet polls this tx until it settles.
+   */
+  async initiatePaynicornDeposit(
+    userId: string,
+    amountCents: number,
+    siteId?: string,
+    opts: { method?: string; phone?: string; email?: string; frontPage?: string } = {},
+  ): Promise<{ txId: string; checkoutRequestId: string; checkoutUrl?: string }> {
+    const owner = await this.ownerOf(siteId);
+    if (owner.scope === "global" && !this.paynicorn) throw new Error("PAYNICORN_NOT_CONFIGURED");
+    if (!Number.isInteger(amountCents) || amountCents <= 0) throw new Error("INVALID_AMOUNT");
+    const minDep = await this.currentMinDeposit(siteId);
+    if (amountCents < minDep) throw new Error("BELOW_MIN");
+    const maxDep = await this.currentMaxDeposit();
+    if (maxDep !== null && amountCents > maxDep) throw new Error("ABOVE_MAX");
+
+    const ctx = await this.paynicornContext(siteId);
+    // Collecting in the platform's own currency means the player typed this amount: it must be a whole
+    // unit, as it always has been. A converted amount rounds to the local currency's precision instead.
+    if (ctx.currency === "KES" && amountCents % 100 !== 0) throw new Error("INVALID_AMOUNT");
+
+    // The method must be one this country actually offers, so a client cannot name an arbitrary code.
+    const methods = await this.listPaynicornMethods(siteId);
+    if (!methods.length) throw new Error("PAYNICORN_NO_METHODS");
+    const chosen = opts.method
+      ? methods.find((m) => m.code.toUpperCase() === opts.method!.toUpperCase())
+      : methods[0];
+    if (!chosen) throw new Error("PAYNICORN_METHOD_UNAVAILABLE");
+
+    // Only a phone and an email can ever be supplied to the collection API, so a method needing
+    // anything else must finish on the gateway's own page (docs/53).
+    const direct = methodIsDirect(chosen);
+    const msisdn = opts.phone ? normalizeMsisdn(opts.phone) : null;
+    const wantsPhone = chosen.inputs.some((i) => /phone/i.test(i.type));
+    const wantsEmail = chosen.inputs.some((i) => /email/i.test(i.type));
+    if (direct && wantsPhone && !msisdn) throw new Error("INVALID_PHONE");
+    if (direct && wantsEmail && !opts.email) throw new Error("EMAIL_REQUIRED");
+
+    await this.assertRail(owner, "paynicorn");
+    const client = this.paynicornClient();
+    await this.guardInitiate(userId, "paynicorn", owner.scope);
+    const txId = await this.repo.createDepositProvider(userId, amountCents, msisdn ?? "", "paynicorn", siteId);
+    await this.stamp(txId, owner.scope);
+
+    const amount = formatPaynicornAmount((amountCents / 100) * ctx.rate, ctx.decimals);
+    const description = `Deposit ${await this.resolveAccountRef(siteId)}`;
+    const res = await this.withAbandonOnReject(txId, userId, "paynicorn", () => client.pay({
+      amount, countryCode: ctx.country, currency: ctx.currency, orderId: txId, description,
+      payMethod: chosen.code,
+      ...(direct && wantsPhone && msisdn ? { phone: toPaynicornPhone(msisdn) } : {}),
+      ...(direct && wantsEmail && opts.email ? { email: opts.email } : {}),
+      ...(opts.frontPage ? { frontPage: opts.frontPage } : {}),
+    }));
+    await this.repo.attachStk(txId, res.txnId || `paynicorn:${txId}`, txId);
+    // A hosted method hands back the page to open; a direct push has none and never leaves our app.
+    return { txId, checkoutRequestId: txId, ...(res.webUrl ? { checkoutUrl: res.webUrl } : {}) };
+  }
+
+  /** The country, local currency, decimals and live KES->local rate a brand collects with. */
+  private async paynicornContext(siteId?: string): Promise<{ country: string; currency: string; decimals: 0 | 1 | 2; rate: number }> {
+    let code: string | null = null;
+    if (this.countryForSite) { try { code = await this.countryForSite(siteId); } catch { code = null; } }
+    const c = paynicornCountry(code) ?? paynicornCountry("KE")!;
+    const rate = c.currency === "KES" ? 1 : await this.fxRateFor(c.currency);
+    if (!(rate > 0)) throw new Error("FX_UNAVAILABLE");
+    return { country: c.code, currency: c.currency, decimals: c.decimals, rate };
+  }
+
+  /**
+   * The methods Paynicorn will actually accept for this brand's country, cached briefly so the deposit
+   * sheet does not call out on every render. A country outside the merchant's console scope returns an
+   * empty list, which simply means PayX offers nothing there.
+   */
+  async listPaynicornMethods(siteId?: string): Promise<PaynicornMethod[]> {
+    if (!this.paynicorn) return [];
+    let ctx: { country: string; currency: string };
+    try { ctx = await this.paynicornContext(siteId); } catch { return []; }
+    const key = `${ctx.country}:${ctx.currency}`;
+    const hit = this.methodCache.get(key);
+    if (hit && Date.now() - hit.at < 60_000) return hit.methods;
+    try {
+      const methods = await this.paynicorn.listMethods(ctx.country, ctx.currency);
+      this.methodCache.set(key, { at: Date.now(), methods });
+      return methods;
+    } catch (err) {
+      console.warn(`[payments] PayX method list failed for ${key}: ${(err as Error).message}`);
+      return hit?.methods ?? [];
+    }
+  }
+
+  /**
+   * Paynicorn postback. The signature (md5 with OUR merchant secret) must verify, and even then the body's
+   * status is NOT what credits: we re-query Paynicorn by orderId and settle on that authoritative answer.
+   * Returns Paynicorn's txnId so the route can answer `success_{txnId}`; `settled` says whether this call
+   * moved money. An order we don't hold (e.g. a console address check) is acknowledged and ignored.
+   */
+  async handlePaynicornCallback(raw: unknown): Promise<{ txnId: string; settled: boolean }> {
+    const client = this.paynicornClient();
+    const pb = await client.verifyPostback(raw);
+    if (!pb) throw new Error("PAYNICORN_BAD_SIGNATURE");
+    // Our orderIds are transaction uuids; anything else is not ours (and would make Postgres throw).
+    const tx = UUID_RE.test(pb.orderId) ? await this.repo.getTransaction(pb.orderId) : null;
+    if (!tx || tx.kind !== "deposit" || (tx.provider != null && tx.provider !== "paynicorn")) return { txnId: pb.txnId, settled: false };
+    // A signed amount that disagrees with the order is never credited (left for review). Only checkable
+    // when the collection currency IS our own: a converted amount was rounded to the local currency and
+    // the rate has moved since. The authoritative query below is what actually decides either way.
+    const paid = Number(pb.amount);
+    if (pb.currency === "KES" && pb.amount !== "" && Number.isFinite(paid) && Math.round(paid * 100) !== tx.amountCents) {
+      throw new Error("PAYNICORN_AMOUNT_MISMATCH");
+    }
+    const q = await client.queryPayment(pb.orderId);
+    if (q.processing || q.resultCode == null) return { txnId: pb.txnId, settled: false };
+    const res = await this.repo.completeDeposit(pb.orderId, q.resultCode, q.resultCode === 0 ? "verified:paynicorn" : `verified:paynicorn:${q.resultCode}`,
+      q.txnId ?? (pb.txnId || null), { provider: "paynicorn", postback: { txnId: pb.txnId, status: pb.status, code: pb.code }, at: new Date().toISOString() });
+    return { txnId: pb.txnId, settled: res.applied };
+  }
+
+  /** Reconcile sweep for 'paynicorn' deposits whose postback never arrived — the same authoritative query. */
+  async reconcilePaynicornDeposits(opts: { olderThanMs?: number; limit?: number } = {}): Promise<{ scanned: number; settled: number; stillPending: number; errors: number }> {
+    if (!this.paynicorn) return { scanned: 0, settled: 0, stillPending: 0, errors: 0 };
+    const rows = await this.repo.listUnsettledDeposits(opts.olderThanMs ?? 120_000, opts.limit ?? 25, "paynicorn");
+    let settled = 0, stillPending = 0, errors = 0;
+    for (const d of rows) {
+      try {
+        const q = await this.paynicorn.queryPayment(d.checkoutRequestId);
+        if (q.processing || q.resultCode == null) { stillPending += 1; continue; }
+        const res = await this.repo.completeDeposit(d.checkoutRequestId, q.resultCode, `reconciled:paynicorn:${q.resultCode}`, q.txnId, { reconciled: true, provider: "paynicorn", at: new Date().toISOString() });
+        if (res.applied) settled += 1;
+      } catch (err) {
+        errors += 1;
+        console.warn(`[payments] Paynicorn reconcile failed for ${d.checkoutRequestId}: ${(err as Error).message}`);
+      }
+    }
+    return { scanned: rows.length, settled, stillPending, errors };
+  }
+
+  private paynicornClient(): PaynicornClient {
+    if (!this.paynicorn) throw new Error("PAYNICORN_NOT_CONFIGURED");
+    return this.paynicorn;
   }
 
   /**
@@ -430,9 +620,25 @@ export class PaymentService {
     try { rows = await (await this.payheroForScope(null)).listInboundPayments({ page: opts.page ?? 1 }); }
     catch { return { scanned: 0, settled: 0, ingested: 0, errors: 1 }; }
     let settled = 0, ingested = 0, errors = 0;
+    // WHICH references are ours, asked once for the whole page before the loop.
+    //
+    // Most rows here are not ours — PayHero's ledger is ONE SHARED ACCOUNT, so it carries references
+    // written by whatever else uses it. The loop below used to find that out the only way available:
+    // call fn_complete_deposit and catch the TX_NOT_FOUND it raises. Correct, and the fallback below
+    // still handles it, but a raised plpgsql exception reaches Postgres as an ERROR — and this sweep
+    // runs every 60 seconds over a page that barely changes, so the SAME misses were re-raised every
+    // minute forever: measured at ~10 a minute, 954 in 96 minutes, every error line in the database
+    // log. That buries the TX_NOT_FOUND that is a REAL failure (fn_complete_withdrawal,
+    // fn_reject_withdrawal, fn_admin_mark_withdrawal_paid all raise it when an operator acts on a
+    // transaction that is not there) in noise nobody can filter.
+    //
+    // One indexed lookup per sweep replaces N exceptions. Money semantics are unchanged: a reference
+    // we own still goes through the same idempotent RPC, and one we do not still falls through to
+    // claimable-by-code, so a payment is still EITHER credited to its tx OR claimable, never both.
+    const owned = await this.repo.ownedDepositRefs(rows.map((p) => p.externalReference).filter((r): r is string => r !== null));
     for (const p of rows) {
       try {
-        if (p.externalReference) {
+        if (p.externalReference && owned.has(p.externalReference)) {
           try {
             const res = await this.repo.completeDeposit(p.externalReference, 0, "ledger:payhero", p.mpesaCode,
               { ledger: true, provider: "payhero", mpesaCode: p.mpesaCode, at: new Date().toISOString() });
@@ -440,7 +646,10 @@ export class PaymentService {
             continue; // a tx owns this reference (credited now, or already terminal) — never also ingest it
           } catch (err) {
             if (!/TX_NOT_FOUND/.test((err as Error).message)) throw err; // real error -> count it, don't lose the payment
-            // else: reference we don't own -> fall through to claimable-by-code so nothing is stranded
+            // Kept as the race fallback: the tx could vanish between the batch lookup above and this
+            // call. Behaviour is then exactly what it always was — fall through to claimable-by-code
+            // so nothing is stranded. (The reverse race, a tx created in that window, is credited by
+            // the next sweep, which is also what happened before.)
           }
         }
         const stored = await this.repo.ingestC2b({
@@ -509,14 +718,35 @@ export class PaymentService {
     const enabled = new Set(providers.map((p) => p.code));
     const methods: DepositMethod[] = [];
 
-    providers.forEach((p, i) => {
+    // Every gateway except PayX exposes exactly one STK rail, labelled "M-Pesa" (the gateway brand is
+    // never shown, docs/35).
+    const stkProviders = providers.filter((p) => p.code !== "paynicorn");
+    stkProviders.forEach((p, i) => {
       methods.push({
         id: `${p.code}-stk`,
         provider: p.code,
         channel: "stk",
-        label: providers.length > 1 ? `M-Pesa (${i + 1})` : "M-Pesa",
+        label: stkProviders.length > 1 ? `M-Pesa (${i + 1})` : "M-Pesa",
       });
     });
+
+    // PayX is per-COUNTRY: whatever Paynicorn says this brand's country can pay with, each as its own
+    // tab. A country offering only cards shows only a card tab; one offering three shows three. A method
+    // we can collect the inputs for runs in our own form (channel "stk"); anything else has to finish on
+    // the gateway's page (channel "checkout"), because the collection API takes no other input. docs/53.
+    if (enabled.has("paynicorn") && (await this.paynicornAvailable(siteId))) {
+      for (const m of await this.listPaynicornMethods(siteId)) {
+        methods.push({
+          id: `paynicorn-${m.code.toLowerCase()}`,
+          provider: "paynicorn",
+          channel: methodIsDirect(m) ? "stk" : "checkout",
+          label: m.name,
+          methodCode: m.code,
+          fields: m.inputs.map((i) => ({ name: i.name, type: i.type, ...(i.pattern ? { pattern: i.pattern } : {}) })),
+          ...(m.iconUrl ? { iconUrl: m.iconUrl } : {}),
+        });
+      }
+    }
 
     if (enabled.has("payhero") && (await this.lipwaAvailable(siteId))) {
       methods.push({ id: "payhero-lipwa", provider: "payhero", channel: "lipwa", label: "Card & Bank" });
@@ -544,6 +774,16 @@ export class PaymentService {
       if (owner.scope === "global" && !this.payhero) return false;
       const client = await this.payheroForScope(owner.scope);
       return Boolean(await client.lipwaLink({ reference: "probe" }));
+    } catch {
+      return false;
+    }
+  }
+
+  /** Mirrors initiatePaynicornDeposit's preconditions: the System owner's client exists and the brand is on it. */
+  private async paynicornAvailable(siteId?: string): Promise<boolean> {
+    try {
+      const owner = await this.ownerOf(siteId);
+      return owner.scope === "global" && !!this.paynicorn;
     } catch {
       return false;
     }
@@ -710,16 +950,27 @@ export class PaymentService {
 
   /**
    * The minimum withdrawal in force for THIS request. Resolution order (multi-tenant safe):
-   *   1. `minWithdrawalForSite(siteId)` — the withdrawing brand's own `site_game_config.min_withdrawal`,
+   *   0. `minWithdrawalNativeForSite(siteId)` — the brand's EXPLICIT native floor (min_withdrawal_native,
+   *      e.g. $5). This is the operator's stated per-brand intent, so it OVERRIDES the platform GLOBAL
+   *      enforce; a brand that opted into its own floor is not clamped up to the global one.
+   *   1. `minWithdrawalForGlobal()` — the platform GLOBAL enforced value (0099), for brands with no native.
+   *   2. `minWithdrawalForSite(siteId)` — the withdrawing brand's own `site_game_config.min_withdrawal`,
    *      i.e. exactly the floor the player's client validated against (kills the client/server BELOW_MIN
    *      divergence for brands whose minimum differs from the platform default);
-   *   2. `minWithdrawalProvider()` — the process-wide live default (admin-editable `game_config.min_withdrawal`);
-   *   3. the boot-time constant.
+   *   3. `minWithdrawalProvider()` — the process-wide live default (admin-editable `game_config.min_withdrawal`);
+   *   4. the boot-time constant.
    * Any source that is absent, throws, or yields a non-positive / non-integer value is skipped, so a
    * transient bad config can never open the floor below the safe default.
    */
   private async currentMinWithdrawal(siteId?: string): Promise<Cents> {
-    // 0. Platform GLOBAL enforce wins over everything (decision: global overrides all clients).
+    // 0. An EXPLICIT per-brand native floor is the operator's intent and wins over the global enforce.
+    if (this.minWithdrawalNativeForSite) {
+      try {
+        const nat = await this.minWithdrawalNativeForSite(siteId);
+        if (Number.isInteger(nat) && (nat as number) > 0) return nat as Cents;
+      } catch { /* fall through to the global / per-site / provider / static chain */ }
+    }
+    // 1. Platform GLOBAL enforce wins over per-site legacy + provider + static (for brands w/o a native floor).
     if (this.minWithdrawalForGlobal) {
       try {
         const g = await this.minWithdrawalForGlobal();
@@ -739,11 +990,24 @@ export class PaymentService {
   }
 
   /**
-   * The minimum deposit in force for THIS request. The platform GLOBAL enforced value (0099) wins over
-   * the static default; a non-positive/non-integer/throwing global result defers to the static default,
-   * so a config glitch can never open the floor below the safe minimum.
+   * The minimum deposit in force for THIS request. Resolution order:
+   *   0. `minDepositForSite(siteId)` — the brand's EXPLICIT native floor (min_deposit_native, e.g. $1)
+   *      converted to KES cents at the live rate. This is the operator's stated per-brand intent, so it
+   *      OVERRIDES the platform GLOBAL enforce and may sit BELOW the static default; a valid positive
+   *      integer is used as-is. Brands with no native value return a non-positive sentinel and fall through.
+   *   1. `minDepositForGlobal` — the platform GLOBAL enforced value (0099), for brands with no native floor.
+   *   2. the static default constant.
+   * Any source that is absent, throws, or yields a non-positive/non-integer value is skipped, so a
+   * transient bad config can never open the floor below `this.minDeposit` for a brand that hasn't opted out.
    */
-  private async currentMinDeposit(): Promise<Cents> {
+  private async currentMinDeposit(siteId?: string): Promise<Cents> {
+    // 0. An EXPLICIT per-brand native floor is the operator's intent and wins over the global enforce.
+    if (this.minDepositForSite) {
+      try {
+        const perSite = await this.minDepositForSite(siteId);
+        if (Number.isInteger(perSite) && (perSite as number) > 0) return perSite as Cents;
+      } catch { /* fall through to the global / static chain */ }
+    }
     if (this.minDepositForGlobal) {
       try {
         const g = await this.minDepositForGlobal();

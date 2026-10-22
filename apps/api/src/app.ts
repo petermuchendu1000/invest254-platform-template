@@ -10,10 +10,12 @@ import type {
   SubscriptionService, TicketService,
   Page, PageQuery, LedgerEntry, PositionRecord, PositionDetail, PositionListQuery, DigitHistoryRow, TransactionRecord, TxListQuery,
 } from "@invest254/engine";
-import { Router, ApiError, serverFrom, type Ctx } from "./http.js";
+import { Router, ApiError, serverFrom, type Ctx, type Middleware } from "./http.js";
 import { registerProtectedRoutes } from "./app.payments.js";
 import { registerHistoryRoutes } from "./app.history.js";
 import { registerSiteRoutes } from "./app.site.js";
+import { registerActivityRoutes } from "./app.activity.js";
+import { registerCommunityRoutes } from "./app.community.js";
 import { registerAuthRoutes } from "./app.auth.js";
 import { registerAffiliateRoutes } from "./app.affiliate.js";
 import { registerAdminRoutes } from "./app.admin.js";
@@ -90,8 +92,8 @@ export interface Brand {
   themeTokens?: Record<string, string> | null;
   /** Per-brand price chart system (0111/0147, ADDON-1): line (free default), area, candlestick, bars, baseline. Presentation only. */
   chartStyle?: import("@invest254/shared").ChartStyle;
-  /** Per-brand trade UI layout (migration 0112): 'classic' (default) or 'digits'. Presentation only. */
-  tradeUi?: "classic" | "digits";
+  /** Per-brand trade UI layout (0112 + 0189): classic (free default), digits, broker, candlestick. Presentation only. */
+  tradeUi?: import("@invest254/shared").TradeUi;
   /**
    * Live display-currency units per 1 KES (KES→currency), e.g. USD≈0.0077. 1 for KES brands.
    * The money of record is ALWAYS KES cents; this only drives how amounts are RENDERED. Resolved
@@ -151,20 +153,61 @@ export interface MarketerAdvancesDeps {
 }
 
 export interface ApiDeps {
+  /**
+   * Transactional email sender, or null/absent when none is configured (email.ts returns null
+   * without RESEND_API_KEY + EMAIL_FROM). Optional ON PURPOSE: every route that uses it must cope
+   * with its absence by SAYING so, never by reporting a delivery that did not happen.
+   */
+  email?: { send(msg: { to: string[]; subject: string; html: string; text: string; attachments?: Array<{ filename: string; content: string }> }): Promise<{ ok: boolean; id?: string | undefined; error?: string | undefined }> } | null;
   /** JWT verifier for player/admin routes; null → DEV header auth (see requireAuth). */
   verifier: Verifier | null;
   /** Self-managed phone+password auth + basic-KYC profile (G3/G4/H1). */
   auth: Pick<AuthService, "register" | "login" | "me" | "issueToken" | "issueSessionToken"
     | "beginMfaEnrolment" | "confirmMfa" | "disableMfa" | "mfaStatus"
     | "changePassword" | "resetPassword"
-    | "setSecurityAnswers" | "securitySetupRequired" | "getResetQuestionKeys" | "assertSessionValid">;
+    | "setSecurityAnswers" | "securitySetupRequired" | "getResetQuestionKeys" | "assertSessionValid"
+    | "verifyStepUp" | "myQuestionKeys"
+    // 0198: marketer-app security questions + the marketer-gated website password reset. These reuse
+    // the operator knowledge-factor crypto for the marketers.id subject (see AuthService).
+    | "hashSecurityAnswers" | "assertSecurityAnswersAgainst" | "publicDecoyQuestionKeys"
+    | "setNonPrivilegedPasswordByPhone">;
+  /**
+   * Per-session operator state behind the step-up 2FA gate and the idle timeout (0196).
+   *
+   * A narrow port rather than the whole IdentityRepository, for the same reason `auth` above is a
+   * `Pick`: these four calls are all the auth routes and the gate need, and keeping the surface
+   * small is what lets a test supply an in-memory double in three lines instead of standing up a
+   * repository.
+   */
+  /**
+   * The step-up 2FA middleware (apps/api/src/stepup.ts). When present the Router splices it into
+   * every authenticated mutating route; when absent there is no gate at all.
+   *
+   * Optional ON PURPOSE, and worth being explicit about since "optional security" is usually a
+   * smell: the ~2100-test suite builds its own deps and would otherwise have to satisfy a second
+   * factor on every write it makes, which would say nothing about the routes under test. Production
+   * supplies it in server.ts; a `stepup.gate.e2e.test.ts` supplies it deliberately and asserts the
+   * splice actually happens, so "production forgot to pass it" is itself a test failure rather than
+   * something nobody would notice.
+   */
+  stepUp?: Middleware;
+  privilegedSessions: {
+    /** Session state for (user, token iat). `null` is meaningful — see stepup.ts on fail-closed. */
+    getSession(userId: string, tokenIatSeconds: number): Promise<{ lastSeenAtMs: number; stepUpAtMs: number | null } | null>;
+    /** Stamp that a second factor was proven on this session, by this method. */
+    recordStepUp(userId: string, tokenIatSeconds: number, method: string): Promise<void>;
+    /** Forget every session record for this user (half of a real logout). */
+    endSessions(userId: string): Promise<void>;
+    /** Stamp the 0097 force-logout epoch, which is what actually kills the stateless JWT. */
+    forceLogout(userId: string): Promise<void>;
+  };
   /** Marketer enrollment, commission accrual, dashboard reads (I1/I2/I3) + payouts (I4). */
   affiliate: Pick<AffiliateService,
     "enroll" | "accrueDaily" | "summary" | "listReferrals" | "listCommissions"
     | "requestPayout" | "approvePayout" | "completePayout" | "rejectPayout" | "siteOfPayout" | "recordClick">;
   /** Admin back office (J2): dashboard reads, user status, commission rate, withdrawal queue, audit. */
   admin: Pick<AdminService,
-    "overview" | "listUsers" | "getUserDetail" | "listUserActivity" | "setUserStatus" | "setCommissionRate" | "setUserRole" | "deleteUser" | "updateUserDetails" | "listWithdrawals" | "listTransactions" | "listAudit" | "listPlatformAudit" | "listSystemLogs"
+    "overview" | "listUsers" | "getUserDetail" | "listUserActivity" | "setUserStatus" | "setCommissionRate" | "setUserRole" | "deleteUser" | "resetSecurityAnswers" | "updateUserDetails" | "listWithdrawals" | "listTransactions" | "listAudit" | "listPlatformAudit" | "listSystemLogs"
     | "adjustBalance" | "resetBalanceToLastFunded" | "listDeposits" | "depositsReconcile" | "reportDaily" | "reportByUser" | "reportDay"
     | "getGameConfig" | "updateGameConfig" | "getMpesaConfig" | "updateMpesaConfig" | "rtpMonitor" | "realCashRtp" | "configChangeReview" | "listSeeds" | "rotateSeed"
     | "getWithdrawalPool" | "setWithdrawalPool" | "setDefaultPool" | "getWithdrawalsEnabled" | "setWithdrawalsEnabled"
@@ -254,6 +297,19 @@ export interface ApiDeps {
   /** Public brand resolution (docs/22 Task E): host (or slug) → the `sites` brand DTO, or null. */
   brandByHost(host: string): Promise<Brand | null>;
   /**
+   * The brand's real recent activity, for the candlestick screen's feed. Optional: absent (as in
+   * every in-memory test app) the route answers with an empty list rather than 404, because an
+   * empty feed is a true statement about a brand nothing has happened on yet.
+   */
+  brandActivity?: import("./activity.pg.js").BrandActivityStore | undefined;
+  /**
+   * Marketer live sessions (0191). Optional: without it the marketer's live routes answer 503
+   * rather than pretending, and no other route changes. REPORTING ONLY — see livesessions.pg.ts.
+   */
+  liveSessions?: import("./livesessions.pg.js").LiveSessionStore | undefined;
+  /** The per-brand community channel (0192). Absent -> the /community routes answer 501. */
+  community?: import("./community.pg.js").CommunityStore | undefined;
+  /**
    * Optional multi-tenant CORS allowance (docs/22, GAP 3): given a request `Origin`, return true if
    * it belongs to an ACTIVE brand domain. Consulted only when `CORS_ALLOWED_ORIGINS` is restricted
    * (not `*`); wired in server.ts to a cached, periodically-refreshed view of `sites`, so every
@@ -271,6 +327,7 @@ export interface ApiDeps {
     | "initiateMegaPayDeposit" | "handleMegaPayCallback" | "reconcileMegaPayDeposits"
     | "initiatePayHeroDeposit" | "initiateLipwaDeposit" | "handlePayHeroCallback" | "reconcilePayHeroDeposits" | "reconcilePayHeroLedger" | "listDepositProviders"
     | "handlePayHeroWithdrawResult"
+    | "initiatePaynicornDeposit" | "handlePaynicornCallback" | "reconcilePaynicornDeposits" | "listPaynicornMethods"
     | "listDepositMethods">;
   /** Resolve a player's display handle (falls back to a guest handle). */
   resolveHandle(userId: string): Promise<string>;
@@ -351,6 +408,9 @@ function gameConfigDto(cfg: GameConfig | VersionedGameConfig, economy: PlatformE
     minStakeNative: (cfg as { minStakeNative?: number | null }).minStakeNative ?? null,
     maxStakeNative: (cfg as { maxStakeNative?: number | null }).maxStakeNative ?? null,
     minDepositCents: effectiveMinDeposit(MIN_DEPOSIT_CENTS, p),
+    // Currency-native minimum deposit: the brand's DISPLAY-currency floor (e.g. 1 => $1). The player
+    // app enforces this directly for foreign brands; null => use minDepositCents. Mirrors withdrawal.
+    minDepositNative: (cfg as GameConfig).minDepositNative ?? null,
     maxDepositCents: effectiveMaxDeposit(null, p),
     maxMultiplier: eff.maxMultiplier,
     defaultDurationS: eff.defaultDurationS,
@@ -386,7 +446,24 @@ function parseLimit(ctx: Ctx, def: number, max = 100): number {
 
 /** Register the public (unauthenticated) routes — the E1 surface. */
 export function registerPublicRoutes(router: Router, deps: ApiDeps): void {
-  router.get(`${BASE}/health`, () => ({ status: "ok", time: new Date().toISOString() }));
+  /**
+   * Liveness, plus WHICH BUILD is answering.
+   *
+   * `commit` is the GIT_SHA baked into the image at build time (Dockerfile ARG, passed by the
+   * deploy workflow alongside the `git-<sha>` image label it already sets). It reads "unknown" for
+   * a local or hand-built image, which is the honest answer there.
+   *
+   * It exists because "is my change live?" had no answer over HTTP: this route returned only
+   * {status,time}, so telling a deployed fix from an undeployed one required flyctl and Fly
+   * credentials. A commit here makes that a curl. It is public on purpose and safe to be: a commit
+   * hash of a private repo identifies a build without revealing its contents, and operators,
+   * uptime checks and anyone debugging a stale page all need it.
+   */
+  router.get(`${BASE}/health`, () => ({
+    status: "ok",
+    time: new Date().toISOString(),
+    commit: process.env.GIT_SHA || "unknown",
+  }));
 
   // Brand-aware config: many brand domains share ONE API, so the public config must reflect the
   // caller's brand (its `site_game_config`, what the engine prices from), not a global singleton.
@@ -424,9 +501,15 @@ export function createRouter(deps: ApiDeps): Router {
   const router = new Router({
     ...(deps.corsAllowOrigin ? { corsAllowOrigin: deps.corsAllowOrigin } : {}),
     ...(deps.logger ? { logger: deps.logger } : {}),
+    // Step-up 2FA, spliced into every authenticated mutating route as it is registered — which is
+    // why it is passed to the constructor and not to the register* calls below. Omitted (tests,
+    // the mirror) = no gate, behaviour exactly as before.
+    ...(deps.stepUp ? { stepUp: deps.stepUp } : {}),
   });
   registerPublicRoutes(router, deps);
   registerSiteRoutes(router, deps);
+  registerActivityRoutes(router, deps);
+  registerCommunityRoutes(router, deps);
   registerAuthRoutes(router, deps);
   registerAffiliateRoutes(router, deps);
   registerReferralRoutes(router, deps);

@@ -22,8 +22,18 @@ actor + note), `ticket_comments`. **RPCs:** `fn_ticket_create` / `_add_comment` 
 `_escalate` / `_auto_escalate` (cron). Assignment + escalation notify the assignee tier via
 `user_notifications`.
 
-**Cron:** `.github/workflows/ticket-escalation.yml` (every 15 min) → `scripts/ops_ticket_escalate.mts`
-→ `fn_ticket_auto_escalate()`.
+**Auto-escalation runs IN THE API PROCESS** (`apps/api/src/server.ts`), on a 15-minute timer beside
+the deposit reconcile sweeps — `TicketService.autoEscalate()` → `fn_ticket_auto_escalate()`. First run
+is 30s after boot so a deploy does not reset the clock; `TICKET_ESCALATE_INTERVAL_MS` tunes it and 0
+disables. It is free to run more often than 15 minutes if the SLA should bite sooner.
+
+Safe on more than one machine without a lock: the RPC is one `update … returning` over
+`escalation_level = 0`, so a concurrent caller re-evaluates the predicate after the winner commits and
+finds nothing to escalate. `min_machines_running = 1` keeps somebody awake to run it.
+
+It was a GitHub Actions cron until 2026-10-22 (*/15, 96 runners a day, each `npm ci`-ing a monorepo to
+run one `select`). `.github/workflows/ticket-escalation.yml` and `scripts/ops_ticket_escalate.mts` are
+kept for a manual run — the workflow's `schedule:` is commented out, `workflow_dispatch` still works.
 
 **API:** `POST /tickets`, `GET /tickets`, `GET /tickets/:id`, `POST /tickets/:id/comments|status|escalate`
 (all `requireRole("admin")`; finer scope below the transport). **Web:** shared `TicketsView` mounted

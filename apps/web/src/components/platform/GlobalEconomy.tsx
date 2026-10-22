@@ -149,7 +149,7 @@ export function CohortEconomySection(props: {
     setDraft((d) => ({ ...d, [k]: { ...d[k]!, ...patch } }));
 
   return (
-    <Section title={`${title} — game config when pool mode is OFF`}>
+    <Section title={`${title}: game config when pool mode is OFF`}>
       <Card className="flex flex-col gap-4">
         <div className="flex flex-wrap items-start justify-between gap-2">
           <p className="max-w-2xl text-xs text-muted">{description}</p>
@@ -176,7 +176,7 @@ export function CohortEconomySection(props: {
                     value={df.input}
                     onChange={(e) => setField(k, { input: e.target.value.replace(/[^0-9.]/g, '') })}
                     trailing={<span className="pr-1 text-xs text-muted">{unit(spec)}</span>}
-                    placeholder="—"
+                    placeholder="-"
                   />
                 </div>
                 <div className="flex items-center justify-end gap-2 sm:pl-2">
@@ -193,7 +193,7 @@ export function CohortEconomySection(props: {
           <div className={`rounded-xl border p-3 text-xs ${preview.ok ? 'border-up/40 bg-up/5' : 'border-warn/40 bg-warn/5'}`}>
             <p className="font-medium">
               {preview.ok
-                ? `✓ Feasible — RTP ${(rtp(previewCfg) * 100).toFixed(1)}%, mean winning multiple ≈ ×${preview.requiredMeanWinMultiplier.toFixed(2)}`
+                ? `✓ Feasible: RTP ${(rtp(previewCfg) * 100).toFixed(1)}%, mean winning multiple ≈ ×${preview.requiredMeanWinMultiplier.toFixed(2)}`
                 : `⚠ Infeasible in isolation: ${preview.reason}`}
             </p>
             {infeasibleSites.length > 0 && (
@@ -211,7 +211,7 @@ export function CohortEconomySection(props: {
 
         <div className="flex items-center justify-between gap-3">
           <span className="text-xs text-muted">
-            {enforcedCount === 0 ? 'Nothing enforced — every client keeps its own economy.'
+            {enforcedCount === 0 ? 'Nothing enforced. Every client keeps its own economy.'
               : `${enforcedCount} field${enforcedCount === 1 ? '' : 's'} enforced across all ${activeSites.length} active client${activeSites.length === 1 ? '' : 's'}.`}
           </span>
           <div className="flex gap-2">
@@ -239,7 +239,7 @@ export function CohortEconomySection(props: {
                   return (
                     <tr key={k} className="border-t border-border">
                       <Td>{spec.label}</Td>
-                      <Td className="tabular-nums">{stored === null ? '—' : `${df.input}${unit(spec)}`}</Td>
+                      <Td className="tabular-nums">{stored === null ? '-' : `${df.input}${unit(spec)}`}</Td>
                       <Td>{df.on ? <span className="text-accent">Enforced</span> : <span className="text-muted">Off</span>}</Td>
                     </tr>
                   );
@@ -292,7 +292,7 @@ export function PaymentsEconomySection(props: { server: PaymentsEconomy; activeC
   }
 
   return (
-    <Section title="Payments — applies to every brand">
+    <Section title="Payments: applies to every brand">
       <Card className="flex flex-col gap-4">
         <p className="max-w-2xl text-xs text-muted">
           Payment limits for every brand. A value you enforce here overrides each brand&apos;s own setting;
@@ -312,7 +312,7 @@ export function PaymentsEconomySection(props: { server: PaymentsEconomy; activeC
                 <div className="w-full sm:w-40">
                   <Input inputMode="decimal" aria-label={`${spec.label} (KES)`} value={df.input}
                     onChange={(e) => setField(k, { input: e.target.value.replace(/[^0-9.]/g, '') })}
-                    trailing={<span className="pr-1 text-xs text-muted">KES</span>} placeholder="—" />
+                    trailing={<span className="pr-1 text-xs text-muted">KES</span>} placeholder="-" />
                 </div>
                 <div className="flex items-center justify-end gap-2 sm:pl-2">
                   <span className="text-[11px] text-muted">Enforce</span>
@@ -330,7 +330,7 @@ export function PaymentsEconomySection(props: { server: PaymentsEconomy; activeC
         )}
         <div className="flex items-center justify-between gap-3">
           <span className="text-xs text-muted">
-            {enforcedCount === 0 ? 'Nothing enforced — brands use their existing limits.' : `${enforcedCount} limit${enforcedCount === 1 ? '' : 's'} enforced across all ${activeCount} clients.`}
+            {enforcedCount === 0 ? 'Nothing enforced: brands use their existing limits.' : `${enforcedCount} limit${enforcedCount === 1 ? '' : 's'} enforced across all ${activeCount} clients.`}
           </span>
           <div className="flex gap-2">
             <Button size="sm" variant="outline" disabled={!dirty || setCfg.isPending}
@@ -353,7 +353,7 @@ export function PaymentsEconomySection(props: { server: PaymentsEconomy; activeC
                   return (
                     <tr key={k} className="border-t border-border">
                       <Td>{spec.label}</Td>
-                      <Td className="tabular-nums">{stored === null ? '—' : `KES ${df.input}`}</Td>
+                      <Td className="tabular-nums">{stored === null ? '-' : `KES ${df.input}`}</Td>
                       <Td>{df.on ? <span className="text-accent">Enforced</span> : <span className="text-muted">Off</span>}</Td>
                     </tr>
                   );

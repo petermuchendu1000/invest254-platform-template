@@ -47,6 +47,9 @@ const ADMIN_STATUS: Readonly<Record<string, number>> = {
   // Default-marketer assignment + lock (migration 0104)
   SITE_NOT_FOUND: 404,
   SITE_SCOPE_FORBIDDEN: 403,
+  // Raised by fn_admin_reset_security_answers (0210) when a platform_admin reaches outside its own
+  // platform. Unmapped it would surface as a 500, which reads as a bug rather than a refusal.
+  PLATFORM_SCOPE_FORBIDDEN: 403,
   OWNER_NOT_FOUND: 404,
   OWNER_NOT_MARKETER: 400,
   OWNER_NOT_ACTIVE: 409,
@@ -84,8 +87,13 @@ async function domain<T>(fn: () => Promise<T>): Promise<T> {
     if (err instanceof ApiError) throw err;
     const message = err instanceof Error ? err.message : String(err);
     // A Postgres CHECK violation (e.g. the economy-feasibility / min-house-edge guard) surfaces as a
-    // constraint-violation message, not a "CODE: ..." domain error — map it to a clean 422.
-    if (/site_cfg_feasible/.test(message)) throw new ApiError("site_cfg_feasible", message, 422);
+    // constraint-violation message, not a "CODE: ..." domain error — map it to a clean 422 with a
+    // CURATED message. The raw pg text named the table + constraint ("violates check constraint
+    // \"site_cfg_feasible\" on \"site_game_config\""), which told a client this is Postgres and
+    // leaked a schema object name; the code is enough for the client, the detail is in the log.
+    if (/site_cfg_feasible/.test(message)) {
+      throw new ApiError("site_cfg_feasible", "That economy configuration is not feasible — check RTP, win-rate and the minimum house edge.", 422);
+    }
     const code = message.split(":")[0]!.trim();
     const status = ADMIN_STATUS[code];
     if (status) throw new ApiError(code, message, status);
@@ -271,6 +279,9 @@ export function registerAdminRoutes(router: Router, deps: ApiDeps): void {
   // from the site back-office or a day-to-day `admin` impersonation token. A platform_admin manages
   // its own brands' operations through the /platform/* console routes.
   const ownerTier = requireRole("platform_superadmin");
+  // Platform tier (platform_admin + the system owner by rank). Used by the one route here that
+  // supervises OPERATORS rather than a brand's players: the security-answer reset (0210).
+  const platformTier = requireRole("platform_admin");
 
   router.get(`${BASE}/admin/overview`, auth, admin, async (ctx: Ctx) => deps.admin.overview(adminScopeSite(ctx) ?? undefined));
 
@@ -341,7 +352,7 @@ export function registerAdminRoutes(router: Router, deps: ApiDeps): void {
           await deps.notifications.resolveByCategory(targetId, "account_limited");
           await deps.notifications.create({
             userId: targetId, level: "success", dismissible: true, category: "account_reactivated",
-            title: "Your account has been reactivated", body: "Welcome back — full access is restored.",
+            title: "Your account has been reactivated", body: "Welcome back, full access is restored.",
             createdBy: ctx.claims!.userId,
           });
         }
@@ -360,6 +371,23 @@ export function registerAdminRoutes(router: Router, deps: ApiDeps): void {
     const result = await domain(() => deps.admin.deleteUser(ctx.claims!.userId, ctx.claims!.role ?? "player", targetId));
     try { await deps.notifications.resolveByCategory(targetId, "account_limited"); } catch { /* non-fatal */ }
     return result;
+  });
+
+  /**
+   * Clear a SUBORDINATE operator's security answers so they can enrol a fresh set (0210, docs/68).
+   *
+   * Security answers are scrypt-hashed and unreadable, so a forgotten set has no recovery path —
+   * and for a SITE ADMIN they are the step-up factor itself, i.e. every money action in the back
+   * office. Until this existed the only remedy was a hand-written DELETE against production.
+   *
+   * PLATFORM TIER, NOT `admin`. Deliberately gated above the rest of this file: one site admin
+   * clearing another's second factor is a lateral move inside a tier, not supervision. The ladder,
+   * the no-self rule and the platform fence are enforced again in the RPC, which is what actually
+   * protects this — the gate here only decides who may ask.
+   */
+  router.post(`${BASE}/admin/users/:id/reset-security-answers`, auth, platformTier, async (ctx: Ctx) => {
+    await ensureUserInScope(deps, ctx, ctx.params.id!);
+    return domain(() => deps.admin.resetSecurityAnswers(ctx.claims!.userId, ctx.claims!.role ?? "player", ctx.params.id!));
   });
 
   // Role management — a plain admin may promote/demote player<->marketer (the RPC confines admins to
@@ -484,7 +512,7 @@ export function registerAdminRoutes(router: Router, deps: ApiDeps): void {
               await deps.notifications.resolveByCategory(id, "account_limited");
               await deps.notifications.create({
                 userId: id, level: "success", dismissible: true, category: "account_reactivated",
-                title: "Your account has been reactivated", body: "Welcome back — full access is restored.", createdBy: actor,
+                title: "Your account has been reactivated", body: "Welcome back, full access is restored.", createdBy: actor,
               });
             }
           } catch { /* non-fatal: status change already succeeded */ }

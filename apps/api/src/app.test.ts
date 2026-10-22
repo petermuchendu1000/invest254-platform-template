@@ -14,7 +14,30 @@ test("GET /api/v1/health → 200 ok", async () => {
     const body = await json(res);
     assert.equal(body.status, "ok");
     assert.ok(typeof body.time === "string" && !Number.isNaN(Date.parse(body.time)));
+    // Which build is answering. Baked in as GIT_SHA at image build time; "unknown" anywhere it was
+    // not, which is the honest answer for a local run and is what this test sees.
+    assert.equal(typeof body.commit, "string");
+    assert.ok(body.commit.length > 0, "commit is always reported, never absent or empty");
   } finally { await api.close(); }
+});
+
+test("GET /api/v1/health: `commit` is the build's own GIT_SHA when the image carries one", async () => {
+  /**
+   * The point of the field: tell a deployed fix from an undeployed one over HTTP. Before it, that
+   * needed flyctl and Fly credentials — so "my change is not showing" could not be diagnosed by
+   * the person reporting it.
+   */
+  const prev = process.env.GIT_SHA;
+  process.env.GIT_SHA = "a347336cbccdbe7669c3168e042757a48f403ac3";
+  const api = await startTestApi();
+  try {
+    const body = await json(await fetch(`${api.baseUrl}/api/v1/health`));
+    assert.equal(body.commit, "a347336cbccdbe7669c3168e042757a48f403ac3");
+    assert.equal(body.status, "ok", "the liveness contract is unchanged by the addition");
+  } finally {
+    await api.close();
+    if (prev === undefined) delete process.env.GIT_SHA; else process.env.GIT_SHA = prev;
+  }
 });
 
 test("GET /api/v1/game/config → public config snapshot in cents", async () => {

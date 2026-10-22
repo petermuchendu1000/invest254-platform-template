@@ -12,6 +12,6 @@ export const ROLE_LABELS: Readonly<Record<string, string>> = {
 };
 
 export function roleLabel(role: string | null | undefined): string {
-  if (!role) return '—';
+  if (!role) return '-';
   return ROLE_LABELS[role] ?? role.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
 }

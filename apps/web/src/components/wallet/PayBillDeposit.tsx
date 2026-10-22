@@ -94,14 +94,14 @@ export function PayBillDeposit() {
           <CopyRow label="Account number" value={info?.accountNumber ?? ''} loading={isLoading} />
         </div>
         <div className="border-t border-white/15 px-4 py-2.5 text-xs text-white/80">
-          Recipient: <span className="font-semibold text-white">{info?.businessName || '—'}</span>
+          Recipient: <span className="font-semibold text-white">{info?.businessName || '-'}</span>
         </div>
       </div>
 
       {/* How to pay — condensed */}
       <ol className="flex flex-col gap-1.5 text-sm text-muted">
         <Step n={1}>Open M-PESA → <span className="font-medium text-fg">Lipa na M-PESA</span> → <span className="font-medium text-fg">Pay Bill</span>.</Step>
-        <Step n={2}>Business no. <span className="font-semibold text-fg">{info?.shortcode ?? '—'}</span>, Account <span className="font-semibold text-fg">{info?.accountNumber ?? '—'}</span>.</Step>
+        <Step n={2}>Business no. <span className="font-semibold text-fg">{info?.shortcode ?? '-'}</span>, Account <span className="font-semibold text-fg">{info?.accountNumber ?? '-'}</span>.</Step>
         <Step n={3}>Enter the amount and your M-PESA PIN to pay.</Step>
         <Step n={4}>Paste the confirmation code from the M-PESA SMS below.</Step>
       </ol>
@@ -153,7 +153,7 @@ function CopyRow({ label, value, loading }: { label: string; value: string; load
     <div className="flex items-center justify-between gap-3 rounded-xl bg-white/10 px-3.5 py-2.5">
       <div className="min-w-0">
         <div className="text-[11px] font-medium uppercase tracking-wider text-white/70">{label}</div>
-        <div className="font-mono text-lg font-bold tabular-nums text-white">{loading ? '···' : (value || '—')}</div>
+        <div className="font-mono text-lg font-bold tabular-nums text-white">{loading ? '···' : (value || '-')}</div>
       </div>
       <button
         type="button"

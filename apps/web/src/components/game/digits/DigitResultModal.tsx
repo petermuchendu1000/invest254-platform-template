@@ -4,6 +4,8 @@ import { FitText } from '@/components/ui/FitText';
 import { useEffect, useRef, useState } from 'react';
 import { cn } from '@/lib/cn';
 import { useAmountText } from '@/lib/game/useAmountText';
+import { useMarketerSkin } from '@/lib/marketer/isMarketer';
+import { MK } from '@/lib/marketer/labels';
 import { DIcon, type IconName } from '@/components/game/digits/icons';
 
 /** Everything needed to render a settled MANUAL digit trade, sourced from the authoritative
@@ -35,6 +37,7 @@ function prefersReducedMotion(): boolean {
  */
 export function DigitResultModal({ result, onClose }: { result: DigitResult | null; onClose: () => void }) {
   const amt = useAmountText();
+  const { isMarketer } = useMarketerSkin();
   const cardRef = useRef<HTMLDivElement>(null);
   const [reduce, setReduce] = useState(false);
   const open = result !== null;
@@ -60,7 +63,7 @@ export function DigitResultModal({ result, onClose }: { result: DigitResult | nu
   const secs = durationMs != null ? Math.max(1, Math.round(durationMs / 1000)) : null;
 
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-black/70 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label={won ? 'You won' : 'Trade lost'}>
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/70 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label={won ? (isMarketer ? 'Round won' : 'You won') : (isMarketer ? 'Round over' : 'Trade lost')}>
       <div className="absolute inset-0" onClick={onClose} aria-hidden="true" />
       <div
         ref={cardRef}
@@ -80,18 +83,18 @@ export function DigitResultModal({ result, onClose }: { result: DigitResult | nu
           <DIcon name={won ? 'trophy' : 'arrowDownRight'} className="h-7 w-7" />
         </div>
 
-        <h2 className={cn('mt-3 font-mono text-[22px] font-black tracking-wide', won ? 'text-up' : 'text-down')}>{won ? 'YOU WON!' : 'YOU LOST'}</h2>
+        <h2 className={cn('mt-3 font-mono text-[22px] font-black tracking-wide', won ? 'text-up' : 'text-down')}>{won ? (isMarketer ? MK.winHeadline : 'YOU WON!') : (isMarketer ? MK.loseHeadline : 'YOU LOST')}</h2>
 
         <div className="mt-4 rounded-xl border border-border bg-bg/40 px-3 py-3">
-          <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted">P/L</div>
+          <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted">{isMarketer ? 'Result' : 'P/L'}</div>
           <div className={cn('mt-1 font-mono text-[26px] font-bold tabular-nums', won ? 'text-up' : 'text-down')}>{amt.signed(pnlCents)}</div>
         </div>
 
         <div className="mt-3 grid grid-cols-2 gap-2 text-left">
-          <Tile icon="dollar" label="Stake" value={amt.num(stakeCents)} prefix={amt.prefix} />
-          <Tile icon="dollar" label="Payout" value={amt.num(payoutCents)} prefix={amt.prefix} />
+          <Tile icon="dollar" label={isMarketer ? MK.cost : 'Stake'} value={amt.num(stakeCents)} prefix={amt.prefix} />
+          <Tile icon="dollar" label={isMarketer ? MK.reward : 'Payout'} value={amt.num(payoutCents)} prefix={amt.prefix} />
           <Tile icon="hash" label="Digit" value={String(digit)} />
-          <Tile icon="clock" label="Duration" value={secs != null ? `${secs}s` : '—'} />
+          <Tile icon="clock" label="Duration" value={secs != null ? `${secs}s` : '-'} />
         </div>
 
         <span className={cn('mt-4 inline-block rounded-full px-3 py-1 font-mono text-[11px] font-bold uppercase', won ? 'bg-up/15 text-up' : 'bg-down/15 text-down')}>{label}</span>
