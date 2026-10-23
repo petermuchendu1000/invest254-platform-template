@@ -9,6 +9,7 @@ import type {
   AdminBulkResult,
   AdminAuditRow,
   AdminSystemLogRow,
+  AdminSweepRow,
   AdminNotificationRow,
   NotificationInput,
   NotificationTemplateRow,
@@ -259,6 +260,8 @@ export const adminApi = {
         requestId: p.requestId || undefined, sinceMs: p.sinceMs,
       },
     }),
+  // Owner-only background-job board (BUGLOG #162). One row per sweep per live machine, so no paging.
+  sweeps: (t: string) => apiFetch<{ items: AdminSweepRow[] }>('/admin/sweeps', { token: t }),
 
   // Marketers — special players who RECEIVE payments; wallet, Fuliza, airtime, PIN, status.
   marketers: (t: string, limit = 100) =>

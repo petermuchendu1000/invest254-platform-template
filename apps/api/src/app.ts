@@ -207,7 +207,7 @@ export interface ApiDeps {
     | "requestPayout" | "approvePayout" | "completePayout" | "rejectPayout" | "siteOfPayout" | "recordClick">;
   /** Admin back office (J2): dashboard reads, user status, commission rate, withdrawal queue, audit. */
   admin: Pick<AdminService,
-    "overview" | "listUsers" | "getUserDetail" | "listUserActivity" | "setUserStatus" | "setCommissionRate" | "setUserRole" | "deleteUser" | "resetSecurityAnswers" | "updateUserDetails" | "listWithdrawals" | "listTransactions" | "listAudit" | "listPlatformAudit" | "listSystemLogs"
+    "overview" | "listUsers" | "getUserDetail" | "listUserActivity" | "setUserStatus" | "setCommissionRate" | "setUserRole" | "deleteUser" | "resetSecurityAnswers" | "updateUserDetails" | "listWithdrawals" | "listTransactions" | "listAudit" | "listPlatformAudit" | "listSystemLogs" | "listSweeps"
     | "adjustBalance" | "resetBalanceToLastFunded" | "listDeposits" | "depositsReconcile" | "reportDaily" | "reportByUser" | "reportDay"
     | "getGameConfig" | "updateGameConfig" | "getMpesaConfig" | "updateMpesaConfig" | "rtpMonitor" | "realCashRtp" | "configChangeReview" | "listSeeds" | "rotateSeed"
     | "getWithdrawalPool" | "setWithdrawalPool" | "setDefaultPool" | "getWithdrawalsEnabled" | "setWithdrawalsEnabled"
@@ -380,6 +380,12 @@ export interface ApiDeps {
     check(opts?: { minDecisions?: number }): Promise<import("./poolhealth.js").PoolHealthReport>;
     page(hard: string[]): Promise<void>;
   } | undefined;
+  /**
+   * Liveness registry for the background sweeps (BUGLOG #162). Every sweep in server.ts records a
+   * heartbeat through it, so an overdue one is visible instead of indistinguishable from a quiet
+   * healthy system. Absent -> the sweeps still run, they are just not tracked (the test path).
+   */
+  sweeps?: import("@invest254/engine").SweepRegistry | undefined;
   /** BILL-1 (docs/47): invoices, payments (M-Pesa Pay now + manual), charges, plans, billing settings. */
   billing?: import("@invest254/engine").BillingService | undefined;
   /** Per-platform domain-registrar (Namecheap) configuration service (Issue 1 #3). */

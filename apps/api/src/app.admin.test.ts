@@ -857,3 +857,21 @@ test("system logs (/admin/logs) are owner-only: a site admin is refused, the sys
     assert.ok("nextCursor" in body, "page shape includes nextCursor");
   } finally { await api.close(); }
 });
+
+test("the background-job board (/admin/sweeps) is owner-only, same gate as System logs (BUGLOG #162)", async () => {
+  /**
+   * The rows name every money sweep the platform runs and when each last succeeded — an operational
+   * map of the backend. It is deliberately on the SAME owner gate as /admin/logs rather than a
+   * looser one: a site admin has no reason to see which payment rails exist or which of them is
+   * currently failing.
+   */
+  const api = await startTestApi();
+  try {
+    assert.equal((await req(api, "GET", "/api/v1/admin/sweeps", { token: "admin-1:admin:00000000-0000-0000-0000-000000000001" })).status, 403, "site admin refused");
+    assert.equal((await req(api, "GET", "/api/v1/admin/sweeps")).status, 401, "anonymous refused");
+    const ok = await req(api, "GET", "/api/v1/admin/sweeps", { token: "root-1:platform_superadmin" });
+    assert.equal(ok.status, 200, "platform_superadmin allowed");
+    const body = await json(ok);
+    assert.ok(Array.isArray(body.items), "returns items (the in-memory harness writes no heartbeats)");
+  } finally { await api.close(); }
+});

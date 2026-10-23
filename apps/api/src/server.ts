@@ -5,7 +5,7 @@ import {
   SubscriptionService, PgSubscriptionRepository, TicketService, PgTicketRepository,
   NotificationService, PgNotificationRepository,
   PushService, PgPushSubscriptionRepository,
-  GameConfigStore, mapConfigRow, makePgPools, makeSystemLogPersister,
+  GameConfigStore, mapConfigRow, makePgPools, makeSystemLogPersister, makeSweepRegistry, type SweepRegistry,
   makeMegaPayClient,
   ConfiguredMegaPayClient,
   ConfiguredPayHeroClient,
@@ -121,10 +121,18 @@ async function buildDeps(): Promise<ApiDeps> {
   // Retention: prune old rows so the store stays bounded (env LOG_RETENTION_DAYS, default 30).
   const LOG_PRUNE_MS = Number(process.env.LOG_PRUNE_INTERVAL_MS ?? 6 * 60 * 60 * 1000);
   const LOG_KEEP_DAYS = Number(process.env.LOG_RETENTION_DAYS ?? 30);
+  const SWEEP_HEARTBEAT_KEEP_DAYS = Number(process.env.SWEEP_HEARTBEAT_RETENTION_DAYS ?? 7);
   if (Number.isFinite(LOG_PRUNE_MS) && LOG_PRUNE_MS > 0) {
-    const prune = (): void => void q.query("select public.fn_prune_system_logs($1) as n", [LOG_KEEP_DAYS])
-      .then((r: { rows?: Array<{ n?: number }> }) => { const n = Number(r.rows?.[0]?.n ?? 0); if (n > 0) dbLog.info("system_logs pruned", { pruned: n, keepDays: LOG_KEEP_DAYS }); })
-      .catch(() => { /* non-fatal */ });
+    const prune = (): void => {
+      void q.query("select public.fn_prune_system_logs($1) as n", [LOG_KEEP_DAYS])
+        .then((r: { rows?: Array<{ n?: number }> }) => { const n = Number(r.rows?.[0]?.n ?? 0); if (n > 0) dbLog.info("system_logs pruned", { pruned: n, keepDays: LOG_KEEP_DAYS }); })
+        .catch(() => { /* non-fatal */ });
+      // Sweep heartbeats (0212): a machine Fly has stopped writes no more rows, so its last ones
+      // would sit there looking overdue forever. Nothing alerts off the table, but the owner UI
+      // reads it, so departed machines are dropped rather than shown as failures.
+      void q.query("select public.fn_prune_sweep_heartbeats($1) as n", [SWEEP_HEARTBEAT_KEEP_DAYS])
+        .catch(() => { /* non-fatal (e.g. migration not yet applied) */ });
+    };
     const t = setInterval(prune, LOG_PRUNE_MS); t.unref();
     setTimeout(prune, 60_000).unref();
   }
@@ -963,6 +971,39 @@ async function buildDeps(): Promise<ApiDeps> {
   const extraCors = ExtraOriginAllowlist.fromEnv();
   if (extraCors.size > 0) console.log(`[api] CORS: extra origin(s) allowed: ${extraCors.describe().join(", ")}`);
 
+  // ── Background-sweep liveness (BUGLOG #162) ────────────────────────────────────────────────────
+  // Every sweep below this function reports only when it has something to say, and the three
+  // "armed" lines went to stdout rather than through the `system_logs` sink, so the durable record
+  // of the whole sweep layer was silence — which is also exactly what a dead timer looks like. The
+  // registry gives each sweep a heartbeat: one row per (app, machine, sweep) in `sweep_heartbeats`
+  // (0212) for the owner UI and for SQL, and a page when one goes overdue.
+  //
+  // Built HERE, with `poolHealth`, because it needs the query handle and the Telegram destinations.
+  // Both callbacks are fire-and-forget BY CONTRACT: failing to record that a money sweep ran must
+  // never stop the money sweep. The registry swallows throws from either; these also swallow their
+  // own rejections so an unhandled rejection cannot take the process down.
+  const SWEEP_MACHINE = (process.env.FLY_MACHINE_ID || "local").slice(0, 64);
+  const sweeps = makeSweepRegistry({
+    persist: (s) => {
+      const iso = (ms: number | null): string | null => (ms == null ? null : new Date(ms).toISOString());
+      void q.query(
+        "select public.fn_sweep_heartbeat($1,$2,$3,$4,$5,$6,$7::timestamptz,$8::timestamptz,$9::timestamptz,$10::timestamptz,$11,$12,$13)",
+        ["api", SWEEP_MACHINE, s.name, s.everyMs, s.firstRunMs, s.status, iso(s.armedAtMs), iso(s.lastRunAtMs),
+          iso(s.lastOkAtMs), iso(s.lastErrorAtMs), s.lastError, s.runs, s.failures],
+      ).catch(() => { /* a heartbeat is never worth failing a sweep for */ });
+    },
+    page: (text) => {
+      // Log BEFORE paging, like the starvation alert: if Telegram is unset or refuses, the evidence
+      // still lands in system_logs, where the owner's System logs page will show it.
+      dbLog.error("SWEEP STALLED", { detail: text });
+      if (!telegram || (telegramChatIds.length === 0 && !telegramForumChatId)) return;
+      void Promise.all(alertDestinations().map((d) =>
+        telegram.sendMessage(d.chatId, text, d.thread)
+          .then((r) => { if (!r.ok) console.warn("[api] stale-sweep page failed:", r.error); })))
+        .catch(() => { /* fire-and-forget */ });
+    },
+  });
+
   return {
     verifier,
     auth,
@@ -999,6 +1040,7 @@ async function buildDeps(): Promise<ApiDeps> {
     onCommissionRequested: commissionRequestedAlert,
     corsAllowOrigin: (origin: string) => brandCors.allows(origin) || extraCors.allows(origin),
     logger: dbLog,
+    sweeps,
     marketers: makePgMarketerRepo((sql, params) => q.query(sql, params ?? [])),
     referral: referralRepo,
     marketerExpenses: {
@@ -1233,6 +1275,28 @@ async function buildDeps(): Promise<ApiDeps> {
 }
 
 const deps = await buildDeps();
+
+/**
+ * Sweep liveness (BUGLOG #162). Every timer below records a heartbeat here, so "this sweep has not
+ * run" becomes a fact in `sweep_heartbeats` and a page, instead of being indistinguishable from a
+ * healthy system with nothing to report. A no-op when the registry is absent (the test path), and
+ * it cannot throw — see apps/engine/src/sweeps.ts for why that contract is load-bearing.
+ *
+ * The two retention prunes inside buildDeps are deliberately NOT tracked: they are armed before the
+ * registry exists (it needs the Telegram destinations), and a prune that stops costs disk, not
+ * money. Everything that settles a payment or guards the pool is tracked.
+ *
+ * WHAT `ok` MEANS HERE: the tick completed, not that it accomplished anything. A reconciler whose
+ * rail is unconfigured returns zeros and resolves; one where every individual deposit errored
+ * returns `errors: n` and also resolves (per-item faults are counted, not thrown). Both record
+ * `ok`, which is right — this registry answers "is the timer still firing?", and the `errors` field
+ * on the sweep's own log line answers "is the work succeeding?". Conflating the two would put the
+ * board permanently amber for every rail the operator has not enabled, and an alert nobody can
+ * clear is an alert everybody learns to ignore.
+ */
+const NO_SWEEPS: SweepRegistry = { arm: () => {}, ok: () => {}, fail: () => {}, snapshot: () => [], stale: () => [] };
+const track: SweepRegistry = deps.sweeps ?? NO_SWEEPS;
+
 const server = createApp(deps);
 primeFx(); // warm the display-currency FX cache at boot (fire-and-forget; fail-safe)
 server.listen(PORT, () => {
@@ -1248,11 +1312,14 @@ if (Number.isFinite(RECONCILE_MS) && RECONCILE_MS > 0) {
   const timer = setInterval(() => {
     void deps.payments
       .reconcileDeposits()
-      .then((r) => { if (r.settled || r.errors) recLog.info("daraja reconcile sweep", { provider: "mpesa", ...r }); })
-      .catch((err: unknown) => recLog.error("daraja reconcile sweep failed", err as Error));
+      .then((r) => { track.ok("payments.reconcile.mpesa"); if (r.settled || r.errors) recLog.info("daraja reconcile sweep", { provider: "mpesa", ...r }); })
+      .catch((err: unknown) => { track.fail("payments.reconcile.mpesa", err); recLog.error("daraja reconcile sweep failed", err as Error); });
   }, RECONCILE_MS);
   timer.unref();
-  log.info("deposit reconciliation armed", { everySeconds: Math.round(RECONCILE_MS / 1000) });
+  track.arm("payments.reconcile.mpesa", { everyMs: RECONCILE_MS });
+  // Through the PERSISTED logger, not the stdout-only `log`: "armed" is the one line that answers
+  // "is this sweep running at all?", and it was the one line that never reached system_logs.
+  recLog.info("deposit reconciliation armed", { everySeconds: Math.round(RECONCILE_MS / 1000) });
 
   // Mega Pay rail (0116): the SAME sweep for provider='megapay', using Mega Pay's authoritative
   // status query, so a Mega Pay deposit whose webhook never arrived still settles. Isolated from the
@@ -1260,10 +1327,11 @@ if (Number.isFinite(RECONCILE_MS) && RECONCILE_MS > 0) {
   const megaTimer = setInterval(() => {
     void deps.payments
       .reconcileMegaPayDeposits()
-      .then((r) => { if (r.settled || r.errors) recLog.info("megapay reconcile sweep", { provider: "megapay", ...r }); })
-      .catch((err: unknown) => recLog.error("megapay reconcile sweep failed", err as Error));
+      .then((r) => { track.ok("payments.reconcile.megapay"); if (r.settled || r.errors) recLog.info("megapay reconcile sweep", { provider: "megapay", ...r }); })
+      .catch((err: unknown) => { track.fail("payments.reconcile.megapay", err); recLog.error("megapay reconcile sweep failed", err as Error); });
   }, RECONCILE_MS);
   megaTimer.unref();
+  track.arm("payments.reconcile.megapay", { everyMs: RECONCILE_MS });
 
   // FAST re-verify lane (Mega Pay). The 5-minute sweep above is the safety net; but a deposit whose
   // callback raced AHEAD of Mega Pay's status endpoint (our verify saw "processing", so we refused to
@@ -1279,17 +1347,21 @@ if (Number.isFinite(RECONCILE_MS) && RECONCILE_MS > 0) {
     const fastTimer = setInterval(() => {
       void deps.payments
         .reconcileMegaPayDeposits({ olderThanMs: FAST_RECONCILE_MIN_AGE_MS, limit: 25 })
-        .then((r) => { if (r.settled || r.errors) recLog.info("megapay fast re-verify", { provider: "megapay", fast: true, ...r }); })
-        .catch((err: unknown) => recLog.error("megapay fast re-verify failed", err as Error));
+        .then((r) => { track.ok("payments.reverify.megapay"); if (r.settled || r.errors) recLog.info("megapay fast re-verify", { provider: "megapay", fast: true, ...r }); })
+        .catch((err: unknown) => { track.fail("payments.reverify.megapay", err); recLog.error("megapay fast re-verify failed", err as Error); });
       // PayX (Paynicorn) too: a player watching "check your phone" sees the credit within seconds even
       // when the postback is late, because the sheet only ever turns green on the settled transaction.
       void deps.payments
         .reconcilePaynicornDeposits({ olderThanMs: FAST_RECONCILE_MIN_AGE_MS, limit: 25 })
-        .then((r) => { if (r.settled || r.errors) recLog.info("paynicorn fast re-verify", { provider: "paynicorn", fast: true, ...r }); })
-        .catch((err: unknown) => recLog.error("paynicorn fast re-verify failed", err as Error));
+        .then((r) => { track.ok("payments.reverify.paynicorn"); if (r.settled || r.errors) recLog.info("paynicorn fast re-verify", { provider: "paynicorn", fast: true, ...r }); })
+        .catch((err: unknown) => { track.fail("payments.reverify.paynicorn", err); recLog.error("paynicorn fast re-verify failed", err as Error); });
     }, FAST_RECONCILE_MS);
     fastTimer.unref();
-    log.info("fast deposit re-verify armed", { everySeconds: Math.round(FAST_RECONCILE_MS / 1000), minAgeMs: FAST_RECONCILE_MIN_AGE_MS });
+    // One timer, two independent providers -> two tracked sweeps, so "PayX stopped settling while
+    // Mega Pay kept going" is reported as what it is rather than averaged into one green row.
+    track.arm("payments.reverify.megapay", { everyMs: FAST_RECONCILE_MS });
+    track.arm("payments.reverify.paynicorn", { everyMs: FAST_RECONCILE_MS });
+    recLog.info("fast deposit re-verify armed", { everySeconds: Math.round(FAST_RECONCILE_MS / 1000), minAgeMs: FAST_RECONCILE_MIN_AGE_MS });
   }
 
   // PayHero rail: the SAME sweep for provider='payhero', using PayHero's authoritative transaction-status
@@ -1297,19 +1369,21 @@ if (Number.isFinite(RECONCILE_MS) && RECONCILE_MS > 0) {
   const payheroTimer = setInterval(() => {
     void deps.payments
       .reconcilePayHeroDeposits()
-      .then((r) => { if (r.settled || r.errors) recLog.info("payhero reconcile sweep", { provider: "payhero", ...r }); })
-      .catch((err: unknown) => recLog.error("payhero reconcile sweep failed", err as Error));
+      .then((r) => { track.ok("payments.reconcile.payhero"); if (r.settled || r.errors) recLog.info("payhero reconcile sweep", { provider: "payhero", ...r }); })
+      .catch((err: unknown) => { track.fail("payments.reconcile.payhero", err); recLog.error("payhero reconcile sweep failed", err as Error); });
   }, RECONCILE_MS);
   payheroTimer.unref();
+  track.arm("payments.reconcile.payhero", { everyMs: RECONCILE_MS });
 
   // Paynicorn rail: settles deposits whose postback never arrived, via the signed status query.
   const paynicornTimer = setInterval(() => {
     void deps.payments
       .reconcilePaynicornDeposits()
-      .then((r) => { if (r.settled || r.errors) recLog.info("paynicorn reconcile sweep", { provider: "paynicorn", ...r }); })
-      .catch((err: unknown) => recLog.error("paynicorn reconcile sweep failed", err as Error));
+      .then((r) => { track.ok("payments.reconcile.paynicorn"); if (r.settled || r.errors) recLog.info("paynicorn reconcile sweep", { provider: "paynicorn", ...r }); })
+      .catch((err: unknown) => { track.fail("payments.reconcile.paynicorn", err); recLog.error("paynicorn reconcile sweep failed", err as Error); });
   }, RECONCILE_MS);
   paynicornTimer.unref();
+  track.arm("payments.reconcile.paynicorn", { everyMs: RECONCILE_MS });
 
   // PayHero LEDGER sweep — settlement for Lipwa (card/bank/multi-country) and manual paybill C2B.
   // Reads PayHero's authoritative account ledger once (one shared account) and either auto-credits a
@@ -1320,10 +1394,11 @@ if (Number.isFinite(RECONCILE_MS) && RECONCILE_MS > 0) {
     const ledgerTimer = setInterval(() => {
       void deps.payments
         .reconcilePayHeroLedger()
-        .then((r) => { if (r.settled || r.ingested || r.errors) recLog.info("payhero ledger sweep", { provider: "payhero", ...r }); })
-        .catch((err: unknown) => recLog.error("payhero ledger sweep failed", err as Error));
+        .then((r) => { track.ok("payments.ledger.payhero"); if (r.settled || r.ingested || r.errors) recLog.info("payhero ledger sweep", { provider: "payhero", ...r }); })
+        .catch((err: unknown) => { track.fail("payments.ledger.payhero", err); recLog.error("payhero ledger sweep failed", err as Error); });
     }, PAYHERO_LEDGER_MS);
     ledgerTimer.unref();
+    track.arm("payments.ledger.payhero", { everyMs: PAYHERO_LEDGER_MS });
   }
 }
 
@@ -1335,10 +1410,12 @@ if (deps.billing && Number.isFinite(BILLING_RECONCILE_MS) && BILLING_RECONCILE_M
   const billLog = (deps.logger ?? log).child({ module: "billing.reconcile" });
   const billTimer = setInterval(() => {
     void billing.reconcile()
-      .then((r) => { if (r.settled || r.errors) billLog.info("billing reconcile sweep", r); })
-      .catch((err: unknown) => billLog.error("billing reconcile sweep failed", err as Error));
+      .then((r) => { track.ok("billing.reconcile"); if (r.settled || r.errors) billLog.info("billing reconcile sweep", r); })
+      .catch((err: unknown) => { track.fail("billing.reconcile", err); billLog.error("billing reconcile sweep failed", err as Error); });
   }, BILLING_RECONCILE_MS);
   billTimer.unref();
+  track.arm("billing.reconcile", { everyMs: BILLING_RECONCILE_MS });
+  billLog.info("billing reconciliation armed", { everySeconds: Math.round(BILLING_RECONCILE_MS / 1000) });
 }
 
 // Ticket auto-escalation (migration 0139): an open level-0 ticket past its urgency SLA is escalated
@@ -1368,14 +1445,15 @@ if (deps.tickets && Number.isFinite(TICKET_ESCALATE_MS) && TICKET_ESCALATE_MS > 
   const sweep = (): void => {
     void tickets
       .autoEscalate()
-      .then((n) => { if (n > 0) tkLog.info("tickets auto-escalated", { escalated: n }); })
-      .catch((err: unknown) => tkLog.error("ticket auto-escalation failed", err as Error));
+      .then((n) => { track.ok("tickets.escalate"); if (n > 0) tkLog.info("tickets auto-escalated", { escalated: n }); })
+      .catch((err: unknown) => { track.fail("tickets.escalate", err); tkLog.error("ticket auto-escalation failed", err as Error); });
   };
   const first = setTimeout(sweep, Math.max(0, TICKET_ESCALATE_FIRST_MS));
   first.unref();
   const tkTimer = setInterval(sweep, TICKET_ESCALATE_MS);
   tkTimer.unref();
-  log.info("ticket auto-escalation armed", { everyMinutes: Math.round(TICKET_ESCALATE_MS / 60_000) });
+  track.arm("tickets.escalate", { everyMs: TICKET_ESCALATE_MS, firstRunMs: Math.max(0, TICKET_ESCALATE_FIRST_MS) });
+  tkLog.info("ticket auto-escalation armed", { everyMinutes: Math.round(TICKET_ESCALATE_MS / 60_000) });
 }
 
 // Withdrawal-pool starvation monitor (docs/25 §15.7, BUGLOG #12/#12b): for each active pool-mode
@@ -1407,16 +1485,21 @@ if (deps.poolHealth && Number.isFinite(POOL_HEALTH_MS) && POOL_HEALTH_MS > 0) {
       .check({ minDecisions: POOL_HEALTH_MIN_DECISIONS })
       .then(async (r) => {
         if (r.warnings.length > 0) phLog.warn("pool below viable", { brands: r.warnings });
-        if (!r.alert) return;
-        // Log BEFORE paging: if Telegram is unset or refuses, the evidence still lands somewhere.
-        phLog.error("POOL STARVATION", new Error(r.hard.join(" | ")));
-        await poolHealth.page(r.hard);
+        if (r.alert) {
+          // Log BEFORE paging: if Telegram is unset or refuses, the evidence still lands somewhere.
+          phLog.error("POOL STARVATION", new Error(r.hard.join(" | ")));
+          await poolHealth.page(r.hard);
+        }
+        // Last, so that a tick which failed to DELIVER a starvation page is recorded as a failure
+        // (the `.catch` below) rather than as both a success and a failure.
+        track.ok("pool.health");
       })
-      .catch((err: unknown) => phLog.error("pool-health sweep failed", err as Error));
+      .catch((err: unknown) => { track.fail("pool.health", err); phLog.error("pool-health sweep failed", err as Error); });
   };
   const phFirst = setTimeout(sweep, Math.max(0, POOL_HEALTH_FIRST_MS));
   phFirst.unref();
   const phTimer = setInterval(sweep, POOL_HEALTH_MS);
   phTimer.unref();
-  log.info("pool-health monitor armed", { everyMinutes: Math.round(POOL_HEALTH_MS / 60_000), minDecisions: POOL_HEALTH_MIN_DECISIONS });
+  track.arm("pool.health", { everyMs: POOL_HEALTH_MS, firstRunMs: Math.max(0, POOL_HEALTH_FIRST_MS) });
+  phLog.info("pool-health monitor armed", { everyMinutes: Math.round(POOL_HEALTH_MS / 60_000), minDecisions: POOL_HEALTH_MIN_DECISIONS });
 }

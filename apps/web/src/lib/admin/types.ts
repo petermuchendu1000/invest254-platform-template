@@ -370,6 +370,29 @@ export interface AdminSystemLogRow {
   fields: unknown;
 }
 
+/**
+ * One background sweep's liveness (BUGLOG #162). `status`, `ageMs` and `toleranceMs` are computed
+ * server-side from the timestamps, not read from a stored column — a machine whose process died
+ * leaves that column frozen at 'ok', which is the failure this board exists to reveal.
+ */
+export interface AdminSweepRow {
+  app: string;
+  machine: string;
+  name: string;
+  everyMs: number;
+  status: 'pending' | 'ok' | 'failing' | 'stale';
+  ageMs: number;
+  toleranceMs: number;
+  armedAtMs: number;
+  lastRunAtMs: number | null;
+  lastOkAtMs: number | null;
+  lastErrorAtMs: number | null;
+  lastError: string | null;
+  runs: number;
+  failures: number;
+  updatedAtMs: number;
+}
+
 export interface AdminAuditRow {
   id: string;
   actorId: string;

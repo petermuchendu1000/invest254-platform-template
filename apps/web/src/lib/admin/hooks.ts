@@ -495,6 +495,23 @@ export function useSystemLogs(filters: { app?: string; level?: string; status?: 
   });
 }
 
+/**
+ * Owner-only background-job board (BUGLOG #162). Polled rather than fetched once: this is the panel
+ * somebody leaves open while deciding whether the backend is healthy, and a board that silently
+ * went stale itself would be a poor advertisement for the feature. 30 s matches the shortest
+ * tolerance (the 15-second fast re-verify lane is late at 60 s), so a stall shows up on the first
+ * or second refresh rather than on a manual reload.
+ */
+export function useSweeps() {
+  const t = useTok();
+  return useQuery({
+    queryKey: ['admin', 'sweeps'],
+    queryFn: () => adminApi.sweeps(t),
+    enabled: !!t,
+    refetchInterval: 30_000,
+  });
+}
+
 // ── User notifications (J7) ──
 import type { NotificationInput } from '@/lib/admin/types';
 

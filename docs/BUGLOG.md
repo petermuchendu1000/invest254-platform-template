@@ -5,6 +5,90 @@ entry: what, evidence, root cause, impact, and resolution.
 
 ---
 
+## #162 — Eleven background sweeps, none of which could tell you it was still running — FIXED (migration 0212 + a liveness registry)
+
+- **What.** Every background sweep in `apps/api/src/server.ts` reports only when it has something
+  to say: `if (r.settled || r.errors)`, `if (n > 0)`, `if (r.warnings.length > 0)`. Three of the
+  eleven also logged an "armed" line at boot — through the module-scoped `log`, whose sink is
+  `process.stdout`, **not** the `system_logs` sink (`dbLog`, `server.ts:119`). So the only durable,
+  queryable record of the whole sweep layer was silence.
+- **Why that is a bug and not a style point.** Silence is also exactly what a dead timer looks
+  like. The same empty screen means all of:
+  - every sweep is running and there is simply nothing to settle (the healthy case);
+  - `DEPOSIT_RECONCILE_INTERVAL_MS` / `TICKET_ESCALATE_INTERVAL_MS` / `POOL_HEALTH_INTERVAL_MS` set
+    to `0` in Fly secrets;
+  - `deps.payments` / `deps.tickets` / `deps.billing` / `deps.poolHealth` absent, so the arm block
+    never ran;
+  - a sweep that armed and then stopped firing.
+  The owner-visible System logs page made the inference explicit and wrong, telling the operator
+  *"Warnings and errors will appear here as they happen"* — i.e. teaching them to read a blank page
+  as reassurance.
+- **What it was costing.** These are not cosmetic jobs. `reconcileDeposits` /
+  `reconcileMegaPayDeposits` / `reconcilePayHeroDeposits` / `reconcilePaynicornDeposits` /
+  `reconcilePayHeroLedger` are what settle a deposit whose provider callback never arrived — a dead
+  reconciler means players' money is taken and never credited, with no alert. `pool.health` is what
+  notices a brand's players losing 100% of their stakes (#12, #160).
+- **How we got here.** #160 moved the pool monitor OFF a GitHub cron precisely because that cron
+  failed silently — measured 6 firings out of 48 over 24 h. Moving it to a timer whose death is
+  equally silent swapped one invisible failure for another. The same was true of the
+  ticket-escalation move before it. That is the actual defect: we fixed the mechanism and not the
+  observability.
+- **Fix.** `apps/engine/src/sweeps.ts` — an in-process liveness registry. Each sweep `arm`s with its
+  cadence and records `ok`/`fail` per tick; a sweep is **late** at `period × 2 + 30 s` (one missed
+  tick plus jitter: 60 s for the 15-second fast re-verify lane, 10.5 min for a 5-minute reconciler,
+  60.5 min for the 30-minute pool monitor). Three parts:
+  1. **It pages.** From memory, per process, about its own sweeps, evaluated on every recorded run
+     rather than on a watchdog timer — a watchdog is one more timer that can stop, and would be the
+     single point of failure for the whole scheme. Any one surviving sweep notices that the others
+     have stopped. Verified: a 15-second lane alone detects a dead half-hourly monitor in 61 min.
+  2. **It persists.** `public.sweep_heartbeats` (0212), one row per `(app, machine, name)` — an
+     UPSERT, so the table is permanently ~11–22 rows however often the sweeps fire. Throttled to
+     one write a minute per sweep, with any status change written through immediately. Deliberately
+     NOT `system_logs`: a heartbeat stream there would be ~16k rows/day and would bury the log UI.
+  3. **It is readable.** Owner-only `GET /admin/sweeps` and a job board above the System logs table,
+     which asserts health *positively and with a timestamp* ("All 10 jobs running, checked 12s ago")
+     because a positive claim can be visibly wrong and an absence cannot.
+- **The subtle part, and the one most likely to have been got wrong.** The read path **recomputes**
+  the verdict from the timestamps and never trusts the stored `status` column. A machine whose
+  process died leaves that column frozen at `'ok'` — so a board that read it would render a dead
+  sweep green, which is the exact failure this feature exists to end. One rule
+  (`resolveSweepStatus`) is shared by the registry that pages and the query that renders, so the
+  board and the alert cannot disagree; expressing it in SQL would have put the same tolerance in two
+  places, free to drift. Pinned by a pg test that ages a row to five hours, asserts the board says
+  `stale`, and asserts the row still says `ok` (the read is a view, not a mutation).
+- **Why nothing alerts off the table.** `auto_stop_machines = "stop"` with
+  `min_machines_running = 1` (fly.api.toml) means Fly stops surplus machines, leaving a legitimately
+  stale row behind. Paging off those rows would manufacture 3am false alarms. A live process pages
+  for itself; a process that is gone is Fly's `/api/v1/health` check's job. Departed machines' rows
+  are pruned after 7 days.
+- **Never-throw contract.** `persist` and `page` are fire-and-forget and both swallow their own
+  rejections, and every registry entry point is wrapped. These calls sit inside the `.then` of
+  sweeps that move money: a fault in observability must not become a fault in the thing observed.
+  Tested with a `persist` and a `page` that both throw, and with a clock that throws.
+- **One real bug found while wiring it.** `track.ok("pool.health")` placed before
+  `await poolHealth.page(...)` recorded a tick as BOTH a success and (via the `.catch`) a failure
+  when the Telegram delivery failed. Moved to the end of the handler, so a tick that failed to
+  deliver a starvation page is recorded as the failure it is.
+- **Guard.** `apps/api/src/server.sweeps.guard.test.ts` reads `server.ts` and fails if a
+  module-scope `setInterval` has no tracked sweep, if an armed sweep records only one of the two
+  outcomes (`ok` without `fail` looks healthy while failing every tick; `fail` without `ok` pages
+  the operator for a working system — the fastest way to teach somebody to ignore the alert), if an
+  outcome is recorded for a name never armed (the registry drops those by design, so a typo would
+  otherwise be invisible), or if an "armed" line slides back onto the stdout-only logger. The
+  omission is how this bug class recurs, so the twelfth sweep cannot be added the old way.
+- **Verification.** 20 unit tests (14 of 15 mutants killed; the survivor is behaviourally
+  equivalent). 2 pg tests against a real PostgreSQL 16.15 with 0212 applied: the upsert collapses
+  to one row per key, a second machine is a separate row, the frozen-`ok` case renders `stale`,
+  ordering is worst-news-first, `last_error` is bounded at 500 chars at the DB boundary, and the
+  prune drops only departed machines. 7 guard mutants, all caught (one of which exposed a guard
+  regex that matched the *other* callback's `.catch` — fixed). Full suite 2411 tests, 0 failures.
+- **Out of scope, noted.** The engine process has its own timers (game loop, config polls), but
+  their failure is immediately visible in what they feed; `sweeps.ts` lives in the shared engine
+  package so the engine can adopt it. `scripts/winrate_monitor.py` and `scripts/pool_reconcile.py`
+  are still on the Python-ops cron pattern that pool-health left in #160.
+
+---
+
 ## #161 — The schema-drift gate cannot see triggers, which is how a live one sat in production for weeks — FIXED (migration 0211 + a trigger catalog)
 - **Started as:** `schema-drift` red since 2026-10-14 on two differences and nothing else:
 ```

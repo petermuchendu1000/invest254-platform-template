@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/Button';
 import { formatExact, formatAgo } from '@/lib/format';
 import { PageHeader, Section, TableWrap, Th, Td, Empty, Toolbar, FilterSelect, SearchInput } from '@/components/admin/ui';
 import { useSystemLogs } from '@/lib/admin/hooks';
+import { SweepBoard } from '@/components/admin/SweepBoard';
 import type { AdminSystemLogRow } from '@/lib/admin/types';
 
 const LEVELS = [
@@ -53,6 +54,13 @@ function SystemLogsPageInner() {
       <PageHeader
         title="System logs"
       />
+
+      {/*
+        The job board goes FIRST, before the log table, because it answers the question somebody
+        opens this page with — "is the backend working?" — which the log table below can only answer
+        by the absence of errors. See SweepBoard for why that absence used to be misleading.
+      */}
+      <SweepBoard />
 
       <Section>
         <Toolbar>

@@ -410,8 +410,21 @@ recurrence (from that cause or any other) effectively impossible:
   second one and had drifted — it restated `playerShare` as a literal `0.15` beside the real knob in
   `pool.ts`; the module imports `DEFAULT_POOL_KNOBS` instead.
 
-Together: (A)/(B) make starvation structurally impossible to *create*, and (C) guarantees any residual
-or novel failure is *caught within ~30 minutes and paged*, instead of surfacing only via player complaints.
+- **(D) The monitor is itself monitored (BUGLOG #162, migration 0212)** — (C) only guarantees
+  detection while its timer is actually firing, and that was the one thing nothing could tell you.
+  The sweep reported only when it had a brand to complain about, and its "armed" line went to stdout
+  rather than to `system_logs`, so a dead `pool.health` timer looked exactly like a healthy
+  platform — the same ambiguity that let the GitHub cron fail unnoticed for weeks, merely relocated.
+  It now records a heartbeat per tick through the shared registry (`apps/engine/src/sweeps.ts`,
+  docs/36 §6): overdue by more than `30 min × 2 + 30 s` and the surviving sweeps page Telegram, a
+  row in `sweep_heartbeats` says when it last succeeded, and the owner's System logs page shows it
+  on the job board. See docs/36 §6 for why the verdict is recomputed from timestamps rather than
+  read from the stored status, and why nothing pages off the table.
+
+Together: (A)/(B) make starvation structurally impossible to *create*, (C) guarantees any residual
+or novel failure is *caught within ~30 minutes and paged* instead of surfacing only via player
+complaints, and (D) guarantees (C) is still running — because a safety net whose failure is silent
+is indistinguishable from no safety net at all.
 
 ## 16. Currency-native minimum withdrawal (migration 0120)
 The money of record is always integer KES cents; `sites.currency` is a DISPLAY currency rendered at the

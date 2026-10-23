@@ -676,6 +676,15 @@ export function registerAdminRoutes(router: Router, deps: ApiDeps): void {
     });
   });
 
+  // Owner-only background-job board (BUGLOG #162): is each in-process sweep actually running? The
+  // sweeps themselves only log when they have something to report, so this is the only place a
+  // STOPPED sweep is distinguishable from a quiet healthy one. Same owner gate and same capability
+  // as System logs above — it is the same operational question, answered positively instead of by
+  // the absence of errors. Unpaginated: one row per sweep per live machine, a dozen or two.
+  router.get(`${BASE}/admin/sweeps`, auth, requireRole("platform_superadmin"), async () => ({
+    items: await deps.admin.listSweeps(),
+  }));
+
   // ── J5: game configuration + RTP monitor + seed rotation (superadmin mutations) ───────────────
 
   // Resolve the brand this config call targets: a site-scoped operator is pinned to their JWT `site`

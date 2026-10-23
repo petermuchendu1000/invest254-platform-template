@@ -2,7 +2,7 @@ import type { Page, PageQuery } from "./paging.js";
 import type {
   PlatformAuditRow, PlatformAuditQuery,
   AdminRepository, AdminOverview, AdminUserRow, AdminUserDetail, AdminWithdrawalRow, AdminAuditRow,
-  AdminSystemLogRow, AdminSystemLogQuery,
+  AdminSystemLogRow, AdminSystemLogQuery, AdminSweepRow,
   AdminUserListQuery, AdminWithdrawalListQuery, AdminTransactionRow, AdminTransactionListQuery,
   SetUserStatusResult, SetCommissionRateResult, ResetSecurityAnswersResult,
   AdjustBalanceResult, AdjustBalanceKindResult, ClearBalanceResult, ResetBalanceResult, BalanceKind, UserOverrideRow, UserOverridePatch,
@@ -77,6 +77,7 @@ export class AdminService {
   /** docs/42 UI-10: audit across a platform's brands (platformId null = every brand). */
   listPlatformAudit(q: PlatformAuditQuery): Promise<Page<PlatformAuditRow>> { return this.repo.listPlatformAudit(q); }
   listSystemLogs(q: AdminSystemLogQuery): Promise<Page<AdminSystemLogRow>> { return this.repo.listSystemLogs(q); }
+  listSweeps(): Promise<AdminSweepRow[]> { return this.repo.listSweeps(); }
 
   /** Manual wallet credit/debit (J3) — signed cents, mandatory reason; guards + audit live in the repo/RPC. */
   adjustBalance(actorId: string, actorRole: string, targetId: string, amountCents: number, reason: string): Promise<AdjustBalanceResult> {

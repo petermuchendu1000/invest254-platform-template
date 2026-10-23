@@ -39,8 +39,44 @@ So no route can be added that isn't logged — the logging lives in the dispatch
 - Tests use a silent logger (`level:"error", sink:()=>{}`) so the suite stays quiet; the request-log
   path is still exercised.
 
+## §6 — Background-sweep liveness (BUGLOG #162)
+
+Logging on its own cannot answer *"is this background job still running?"*, because every sweep in
+`server.ts` logs only when it has something to report. Silence from a sweep is therefore ambiguous:
+it means both "nothing to settle" and "the timer is dead". Three of eleven sweeps did log an "armed"
+line, through the module-scoped `log` whose sink is `process.stdout` — never the `system_logs` sink
+— so not even boot left a durable trace. **A money-path sweep's death must not be invisible**, so
+liveness is tracked separately from logging:
+
+- **`apps/engine/src/sweeps.ts`** — an in-process registry. Each sweep `arm`s with its cadence and
+  records `ok`/`fail` per tick. Late at `period × 2 + 30 s` (one missed tick plus jitter). It pages
+  Telegram from memory, per process, about its own sweeps, evaluated on every recorded run rather
+  than on a watchdog timer (a watchdog is one more timer that can die). `persist`/`page` are
+  fire-and-forget and the registry never throws — these calls sit inside the `.then` of sweeps that
+  move money.
+- **`public.sweep_heartbeats`** (migration 0212) — the durable record. One UPSERTed row per
+  `(app, machine, name)`, throttled to one write a minute per sweep with status changes written
+  through at once. Deliberately not `system_logs`: a heartbeat stream there would be ~16k rows/day
+  and would bury the log UI it shares.
+- **`GET /admin/sweeps`** (owner-only, same `backoffice.logs` capability) and the **job board**
+  above the System logs table. The board asserts health positively and with a timestamp ("All 10
+  jobs running, checked 12s ago"), because a positive claim can be visibly wrong while an absence
+  cannot.
+- **The read recomputes the verdict** from the timestamps via `resolveSweepStatus` and never trusts
+  the stored `status` column: a machine whose process died leaves it frozen at `'ok'`, so a board
+  that read it would render a dead sweep green. One rule, shared by the pager and the query, so the
+  two cannot drift apart.
+- **Nothing alerts off the table.** Fly's `auto_stop_machines` leaves stopped machines' rows
+  legitimately stale; paging off them would manufacture false alarms. A live process pages for
+  itself, a dead one is the `/api/v1/health` check's job, and departed rows are pruned after 7 days.
+- **Adding a sweep.** Call `track.arm(name, { everyMs, firstRunMs })` beside the timer and
+  `track.ok(name)` / `track.fail(name, err)` in its `.then`/`.catch`, and put the "armed" line on a
+  persisted child of `deps.logger` (never the bare `log`).
+  `apps/api/src/server.sweeps.guard.test.ts` fails the build otherwise.
+
 ## Config (Fly secrets / env)
 `LOG_LEVEL` (default `info`; set `debug` to trace a live issue), `LOG_PRETTY=1` for local dev.
+`SWEEP_HEARTBEAT_RETENTION_DAYS` (default 7) prunes departed machines' heartbeat rows.
 
 ## Adoption guideline (for new/edited backend code)
 - In a request handler/service call chain, prefer `ctx.log` (already carries `requestId`).
@@ -54,3 +90,10 @@ So no route can be added that isn't logged — the logging lives in the dispatch
   error serialization, child-binding merge, circular-safety, helpers.
 - `apps/api/src/app.logging.test.ts` — one structured line per request, correct level per status,
   `requestId`/`x-request-id` present, inbound request-id honoured.
+- `apps/engine/src/sweeps.test.ts` — the staleness boundaries, `pending` vs `stale` on a young
+  process, a disabled sweep never being reported late, alert cooldown/re-arm, write throttling, and
+  the never-throw contract under a throwing `persist`, `page` and clock.
+- `apps/engine/src/sweeps.pg.test.ts` (`E2E_PG_DSN`) — the upsert key, the recomputed verdict on a
+  row frozen at `'ok'`, worst-news-first ordering, and the prune.
+- `apps/api/src/server.sweeps.guard.test.ts` — static: no untracked module-scope `setInterval`, both
+  outcomes recorded per sweep, no outcome for an unarmed name, no "armed" line on the stdout logger.

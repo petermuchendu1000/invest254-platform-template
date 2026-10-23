@@ -33,6 +33,7 @@ export * from "./paymentservice.js";
 export * from "./admin.js";
 export * from "./adminservice.js";
 export * from "./systemlog.js";
+export * from "./sweeps.js";
 export * from "./platform.js";
 export * from "./subscriptions.js";
 export * from "./tickets.js";export * from "./notifications.js";

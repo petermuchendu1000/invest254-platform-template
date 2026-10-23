@@ -5,6 +5,7 @@ import type { InMemoryIdentityRepository } from "./identity.js";
 import type { InMemoryPaymentRepository } from "./payments.js";
 import { InMemoryEngagementRepository } from "./engagement.js";
 import type { DarajaConfig } from "./daraja.js";
+import { resolveSweepStatus } from "./sweeps.js";
 
 /**
  * Admin back office (J2) — the operator domain seam the HTTP API binds to. Read aggregates
@@ -111,6 +112,34 @@ export interface AdminSystemLogQuery extends PageQuery {
   q?: string | undefined;           // substring match on msg/path
   requestId?: string | undefined;   // correlate one request's lines
   sinceMs?: number | undefined;     // t >= since
+}
+/**
+ * One background sweep's liveness, for the owner-only job board (BUGLOG #162, migration 0212).
+ *
+ * `status`, `ageMs` and `toleranceMs` are RECOMPUTED from the timestamps at read time rather than
+ * read from the stored `status` column: that column is only as fresh as the last heartbeat write,
+ * so a machine whose process died leaves it frozen at 'ok' — the exact failure this whole feature
+ * exists to make visible. The rule is `resolveSweepStatus` (sweeps.ts), shared with the registry
+ * that does the paging, so the board and the alert can never disagree.
+ */
+export interface AdminSweepRow {
+  app: string;
+  machine: string;
+  name: string;
+  everyMs: number;
+  status: "pending" | "ok" | "failing" | "stale";
+  /** Since the last run, or since arming when it has never run. */
+  ageMs: number;
+  /** The age past which this sweep counts as late. */
+  toleranceMs: number;
+  armedAtMs: number;
+  lastRunAtMs: number | null;
+  lastOkAtMs: number | null;
+  lastErrorAtMs: number | null;
+  lastError: string | null;
+  runs: number;
+  failures: number;
+  updatedAtMs: number;
 }
 export interface AdminUserListQuery extends PageQuery {
   role?: string | undefined; status?: string | undefined; q?: string | undefined;
@@ -370,6 +399,8 @@ export interface AdminRepository {
   listPlatformAudit(q: PlatformAuditQuery): Promise<Page<PlatformAuditRow>>;
   /** Owner-only: the persisted system logs (docs/36), newest-first, filterable + cursor-paginated. */
   listSystemLogs(q: AdminSystemLogQuery): Promise<Page<AdminSystemLogRow>>;
+  /** Owner-only: background-sweep liveness (BUGLOG #162). Not paginated — one row per sweep. */
+  listSweeps(): Promise<AdminSweepRow[]>;
   adjustBalance(actorId: string, actorRole: string, targetId: string, amountCents: Cents, reason: string): Promise<AdjustBalanceResult>;
   /** Reset a user's real wallet to their most recent successful deposit amount (audited). */
   resetBalanceToLastFunded(actorId: string, actorRole: string, targetId: string, reason: string): Promise<ResetBalanceResult>;
@@ -1028,6 +1059,47 @@ export class PgAdminRepository implements AdminRepository {
       fields: x.fields ?? {},
     }));
     return pageFrom(rows, limit, (a) => `${a.tMs}:${a.id}`);
+  }
+
+  /**
+   * Background-sweep liveness (BUGLOG #162). One row per (app, machine, sweep) — tiny and
+   * unpaginated by design.
+   *
+   * `now()` comes from the DATABASE, not this process, so the verdict does not depend on the API
+   * container's clock agreeing with the one that wrote the heartbeat; the two can and do drift, and
+   * a few seconds of skew would otherwise flip a sweep between late and fine at its boundary.
+   */
+  async listSweeps(): Promise<AdminSweepRow[]> {
+    const r = await this.q.query(
+      `select app, machine, name, every_ms, first_run_ms, armed_at, last_run_at, last_ok_at,
+              last_error_at, last_error, runs, failures, updated_at,
+              (extract(epoch from now()) * 1000)::bigint as now_ms
+         from sweep_heartbeats
+        order by app, machine, name`, []);
+    const rows = r.rows.map((x) => {
+      const lastRunAtMs = x.last_run_at == null ? null : ms(x.last_run_at);
+      const lastErrorAtMs = x.last_error_at == null ? null : ms(x.last_error_at);
+      const armedAtMs = ms(x.armed_at);
+      const v = resolveSweepStatus(
+        { everyMs: Number(x.every_ms) || 0, firstRunMs: Number(x.first_run_ms) || 0, armedAtMs, lastRunAtMs, lastErrorAtMs },
+        Number(x.now_ms) || Date.now(),
+      );
+      return {
+        app: String(x.app), machine: String(x.machine), name: String(x.name),
+        everyMs: Number(x.every_ms) || 0,
+        status: v.status, ageMs: v.ageMs, toleranceMs: v.toleranceMs,
+        armedAtMs, lastRunAtMs,
+        lastOkAtMs: x.last_ok_at == null ? null : ms(x.last_ok_at),
+        lastErrorAtMs,
+        lastError: x.last_error == null ? null : String(x.last_error),
+        runs: Number(x.runs) || 0, failures: Number(x.failures) || 0,
+        updatedAtMs: ms(x.updated_at),
+      } satisfies AdminSweepRow;
+    });
+    // Worst news first: a stopped sweep above a failing one above the healthy ones, and within a
+    // group the longest-overdue first. The owner should not have to read a table to find the red.
+    const rank: Record<AdminSweepRow["status"], number> = { stale: 0, failing: 1, pending: 2, ok: 3 };
+    return rows.sort((a, b) => rank[a.status] - rank[b.status] || b.ageMs - a.ageMs || a.name.localeCompare(b.name));
   }
 
   async adjustBalance(actorId: string, actorRole: string, targetId: string, amountCents: Cents, reason: string): Promise<AdjustBalanceResult> {
@@ -1951,6 +2023,10 @@ export class InMemoryAdminRepository implements AdminRepository {
   // System logs are only persisted by the DB-backed sink (docs/36); the in-memory harness has none.
   async listSystemLogs(_q: AdminSystemLogQuery): Promise<Page<AdminSystemLogRow>> {
     return { items: [], nextCursor: null };
+  }
+  // Likewise sweep heartbeats (0212): written only by the live API's sweep registry.
+  async listSweeps(): Promise<AdminSweepRow[]> {
+    return [];
   }
 
   async adjustBalance(actorId: string, actorRole: string, targetId: string, amountCents: Cents, reason: string): Promise<AdjustBalanceResult> {
