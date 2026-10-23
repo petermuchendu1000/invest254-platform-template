@@ -371,6 +371,15 @@ export interface ApiDeps {
   c2b?: import("@invest254/engine").C2bConfigService | undefined;
   /** POOL-1 (docs/46): per-brand pool overview + automatic distribution. */
   poolOps?: import("@invest254/engine").PoolOpsService | undefined;
+  /**
+   * Withdrawal-pool starvation monitor (docs/25 §15.7). Not a route — the sweep in server.ts is its
+   * only caller; it sits on the deps so it can be built where the query handle and the Telegram
+   * destinations are both in scope. Absent -> the sweep does not arm.
+   */
+  poolHealth?: {
+    check(opts?: { minDecisions?: number }): Promise<import("./poolhealth.js").PoolHealthReport>;
+    page(hard: string[]): Promise<void>;
+  } | undefined;
   /** BILL-1 (docs/47): invoices, payments (M-Pesa Pay now + manual), charges, plans, billing settings. */
   billing?: import("@invest254/engine").BillingService | undefined;
   /** Per-platform domain-registrar (Namecheap) configuration service (Issue 1 #3). */

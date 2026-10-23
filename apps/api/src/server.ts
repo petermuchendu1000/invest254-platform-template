@@ -40,6 +40,7 @@ import { AddonService } from "./addonservice.js";
 import { makeWebPushTransport } from "./webpush.js";
 import { makeResendSender, buildPayoutEmail } from "./email.js";
 import { makeTelegramClient, type PayoutAlert, type PayoutDecisionRecord } from "./telegram.js";
+import { buildStarvationAlert, checkPoolHealth, type PoolHealthReport } from "./poolhealth.js";
 import { signWithdrawalAction } from "./withdrawalactionlink.js";
 import { kesToCurrencyRate, primeFx } from "./fx.js";
 import type { PlatformOnboardDeps, OnboardInput, OnboardResult } from "./app.platform.js";
@@ -1202,6 +1203,20 @@ async function buildDeps(): Promise<ApiDeps> {
     // PAY-2 (docs/45): Pay Bill settings + Safaricom C2B URL registration with the System Daraja app.
     c2b: new C2bConfigService(new PgC2bConfigRepository(q), { darajaConfig: systemDarajaCredentials(q) }),
     poolOps: new PoolOpsService(new PgPoolOpsRepository(q), platform),
+    // The withdrawal-pool starvation monitor (docs/25 §15.7, BUGLOG #12/#12b). Read-only. Lives
+    // here rather than on a GitHub cron because that cron did not actually run — see poolhealth.ts.
+    // `page` is separate from `check` so the sweep below can report every tick to the log while
+    // only waking somebody when a brand genuinely cannot fund a win.
+    poolHealth: {
+      check: (opts?: { minDecisions?: number }): Promise<PoolHealthReport> => checkPoolHealth(q, opts ?? {}),
+      page: async (hard: string[]): Promise<void> => {
+        if (!telegram || (telegramChatIds.length === 0 && !telegramForumChatId)) return;
+        const text = buildStarvationAlert(hard);
+        await Promise.all(alertDestinations().map((d) =>
+          telegram.sendMessage(d.chatId, text, d.thread)
+            .then((r) => { if (!r.ok) console.warn("[api] pool-health page failed:", r.error); })));
+      },
+    },
     // BILL-1 (docs/47): invoices + Pay now. Money always goes to the SYSTEM Daraja account (the live-reloaded
     // store), and every result is verified with STKPushQuery before an invoice is marked paid.
     billing: new BillingService(new PgBillingRepository(q), {
@@ -1361,4 +1376,47 @@ if (deps.tickets && Number.isFinite(TICKET_ESCALATE_MS) && TICKET_ESCALATE_MS > 
   const tkTimer = setInterval(sweep, TICKET_ESCALATE_MS);
   tkTimer.unref();
   log.info("ticket auto-escalation armed", { everyMinutes: Math.round(TICKET_ESCALATE_MS / 60_000) });
+}
+
+// Withdrawal-pool starvation monitor (docs/25 §15.7, BUGLOG #12/#12b): for each active pool-mode
+// brand, is the day's pool able to fund a win, and is anything actually winning?
+//
+// This was `.github/workflows/pool-health.yml` on a half-hourly cron, and the cron did not run.
+// GitHub de-prioritises high-frequency schedules: measured over 24h on 2026-10-22 it fired SIX
+// times out of 48, at gaps of 3h14m to 5h15m, while the daily crons in the same repository fired
+// 1-for-1. A monitor whose whole purpose is to notice, early, that players are losing 100% of
+// their stakes cannot be on a schedule the scheduler treats as optional (BUGLOG #160).
+//
+// Read-only — one `select` over sites/withdrawal_pool/position_decision, no writes, no schema.
+//
+// DUPLICATE PAGES ARE ACCEPTED, DELIBERATELY. `auto_start_machines` (fly.api.toml) can bring a
+// second machine up under load, and both will sweep, so a starvation event can page twice. That is
+// the right trade: suppressing it would need a distributed lock held across the interval, and for
+// an alert that means "players are losing everything right now", twice is better than never.
+//
+// First run 45s after boot (not one full interval) so a deploy does not reset the clock and the
+// first answer after a release is prompt. 0 disables.
+const POOL_HEALTH_MS = Number(process.env.POOL_HEALTH_INTERVAL_MS ?? 1_800_000);        // 30 min, the cron's intended cadence
+const POOL_HEALTH_FIRST_MS = Number(process.env.POOL_HEALTH_FIRST_RUN_MS ?? 45_000);
+const POOL_HEALTH_MIN_DECISIONS = Number(process.env.POOL_HEALTH_MIN_DECISIONS ?? 8);   // the cron's --min-decisions
+if (deps.poolHealth && Number.isFinite(POOL_HEALTH_MS) && POOL_HEALTH_MS > 0) {
+  const poolHealth = deps.poolHealth;
+  const phLog = (deps.logger ?? log).child({ module: "pool.health" });
+  const sweep = (): void => {
+    void poolHealth
+      .check({ minDecisions: POOL_HEALTH_MIN_DECISIONS })
+      .then(async (r) => {
+        if (r.warnings.length > 0) phLog.warn("pool below viable", { brands: r.warnings });
+        if (!r.alert) return;
+        // Log BEFORE paging: if Telegram is unset or refuses, the evidence still lands somewhere.
+        phLog.error("POOL STARVATION", new Error(r.hard.join(" | ")));
+        await poolHealth.page(r.hard);
+      })
+      .catch((err: unknown) => phLog.error("pool-health sweep failed", err as Error));
+  };
+  const phFirst = setTimeout(sweep, Math.max(0, POOL_HEALTH_FIRST_MS));
+  phFirst.unref();
+  const phTimer = setInterval(sweep, POOL_HEALTH_MS);
+  phTimer.unref();
+  log.info("pool-health monitor armed", { everyMinutes: Math.round(POOL_HEALTH_MS / 60_000), minDecisions: POOL_HEALTH_MIN_DECISIONS });
 }

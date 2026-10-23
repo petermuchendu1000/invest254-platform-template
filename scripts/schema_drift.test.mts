@@ -25,6 +25,36 @@ test("schema drift: reports production-only, migrations-only and changed objects
   ]);
 });
 
+test("the gate compares TRIGGERS, which is what it missed for weeks (BUGLOG #161)", () => {
+  // Production ran `trg_platform_pool_defaults AFTER INSERT ON platforms` with no migration behind
+  // it, and this gate said nothing about the trigger. It only flagged the FUNCTION the trigger
+  // calls, and only because that function happened to be production-only as well. Attach a trigger
+  // out-of-band to a function the migrations ALREADY create and, before this catalog existed, the
+  // gate was silent — while the table had gained a side effect on every INSERT.
+  assert.ok(Object.keys(CATALOG).includes("trigger"), "a missing catalog is a blind spot, not a pass");
+
+  const prod = empty(), ref = empty();
+  prod.trigger!["platforms.trg_platform_pool_defaults"] = "h";          // added by hand in production
+  ref.trigger!["platforms.trg_platform_seed_subscription"] = "h2";      // the one a migration creates
+  prod.trigger!["platforms.trg_platform_seed_subscription"] = "h2";
+  prod.trigger!["wallets.trg_wallet_audit"] = "before";                 // body quietly changed
+  ref.trigger!["wallets.trg_wallet_audit"] = "after";
+  assert.deepEqual(diffSnapshots(prod, ref, {}).map((i) => `${i.change}:${i.kind}:${i.key}`).sort(), [
+    "differs:trigger:wallets.trg_wallet_audit",
+    "only-production:trigger:platforms.trg_platform_pool_defaults",
+  ]);
+});
+
+test("the trigger catalog ignores the constraint triggers Postgres maintains itself", () => {
+  // Every foreign key carries internal RI triggers. Comparing those would make the gate red on
+  // every schema that has a foreign key, which is every schema, so the query must exclude them —
+  // and must also skip anything an extension owns, like the rest of the catalog does.
+  assert.match(CATALOG.trigger!, /not t\.tgisinternal/);
+  assert.match(CATALOG.trigger!, /deptype = 'e'/);
+  // Keyed by table AND name: two tables may legitimately carry a trigger of the same name.
+  assert.match(CATALOG.trigger!, /c\.relname \|\| '\.' \|\| t\.tgname/);
+});
+
 test("schema drift: justified known differences are not reported", () => {
   const prod = empty(), ref = empty();
   prod.function!["rls_auto_enable()"] = "h"; prod["function-exec"]!["rls_auto_enable()"] = "false/false";

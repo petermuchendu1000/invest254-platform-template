@@ -76,8 +76,15 @@ check green. Migration 0158 reconciled it; this gate stops it recurring.
 `scripts/schema_drift.mts` builds a **reference** database from `_testkit/00_supabase_shim.sql` +
 Supabase-like default privileges + every migration, then compares it with production object by
 object: public function bodies, anon/authenticated `EXECUTE`, row policies, indexes, views (+ options),
-columns and anon/authenticated table write-grants. Extension-owned objects are ignored;
+columns, anon/authenticated table write-grants and **triggers**. Extension-owned objects are ignored;
 `KNOWN_DIFFERENCES` lists the few justified platform helpers.
+
+Triggers were added late (BUGLOG #161), after a live production-only trigger on `platforms` sat
+undetected for weeks: the gate flagged only the function it called, and would have been **silent**
+had that trigger been attached to a function the migrations already create. Internal RI triggers
+(every foreign key has them) and extension-owned ones are excluded. **The lesson generalises: a
+catalog this gate does not have is a blind spot that reads exactly like a pass.** If you add an
+object kind to the schema, add it here.
 
 ```bash
 DATABASE_URL=<production> REFERENCE_DATABASE_URL=<empty scratch db> \

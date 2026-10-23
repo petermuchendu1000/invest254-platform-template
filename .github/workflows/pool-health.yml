@@ -8,9 +8,24 @@ name: Pool Health Monitor
 # Requires repo secret DATABASE_URL. Telegram alerting is optional: set repo secrets TELEGRAM_BOT_TOKEN
 # and TELEGRAM_CHAT_IDS (comma-separated) to receive pushes; without them the job still fails loudly
 # (non-zero exit) so the run shows red in the Actions tab.
+#
+# THE SCHEDULE IS OFF, AND THE MONITOR IS MORE RELIABLE FOR IT (2026-10-22). It now runs inside the
+# API process on the same 30-minute cadence, beside the ticket-escalation and deposit sweeps
+# (apps/api/src/server.ts, POOL_HEALTH_INTERVAL_MS). The cron below asked for every 30 minutes and
+# GitHub delivered SIX runs in 24 hours instead of 48, at gaps of 3h14m to 5h15m, while the daily
+# crons in this repository fired 1-for-1 — high-frequency schedules are de-prioritised, and this one
+# exists to notice early that players are losing 100% of their stakes (BUGLOG #160).
+#
+# It is kept, dispatch-only, as the manual lever: Actions -> Pool Health Monitor -> Run workflow.
+# Worth having when the API is down, mid-rollback, or when you want an answer without waiting for
+# the next tick. Running it while the API is also running is harmless — the check is one read-only
+# `select` and the only side effect is a Telegram message, so the worst case is being told twice.
+#
+# Restoring the `schedule:` block would double up with the in-process timer. Change
+# POOL_HEALTH_INTERVAL_MS in the API instead.
 on:
-  schedule:
-    - cron: "*/30 * * * *"   # every 30 minutes
+  # schedule:
+  #   - cron: "*/30 * * * *"   # every 30 minutes
   workflow_dispatch:
 
 concurrency:
@@ -27,11 +42,16 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-node@v4
         with:
-          python-version: "3.12"
-      - name: Install psycopg2
-        run: pip install --quiet psycopg2-binary
+          node-version: 20
+          cache: npm
+      - name: Install
+        run: npm ci
+      # Calls the SAME module the API's in-process sweep calls (apps/api/src/poolhealth.ts), so the
+      # lever and the monitor cannot disagree about when a pool is starved. The Python script this
+      # replaced was a second implementation and had already drifted — it carried its own copy of
+      # playerShare (0.15) beside the real knob in pool.ts (BUGLOG #160).
       - name: Check pool health
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
@@ -41,4 +61,4 @@ jobs:
           if [ -z "$DATABASE_URL" ]; then
             echo "No DATABASE_URL secret — skipping (non-prod mirror)."; exit 0
           fi
-          python3 scripts/pool_health_monitor.py --min-decisions 8
+          node --import tsx scripts/pool_health_check.mts --min-decisions 8

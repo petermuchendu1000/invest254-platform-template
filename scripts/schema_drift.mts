@@ -47,6 +47,16 @@ export const CATALOG: Record<string, string> = {
              from information_schema.role_table_grants
             where table_schema = 'public' and grantee in ('anon','authenticated') and privilege_type in ('INSERT','UPDATE','DELETE','TRUNCATE')
             group by table_name, grantee`,
+  // Triggers were the hole this gate had (BUGLOG #161). Production ran `trg_platform_pool_defaults`
+  // on `platforms` for weeks and the gate said nothing about it — it only noticed the FUNCTION the
+  // trigger calls, and only because that function happened to be production-only too. A trigger
+  // attached out-of-band to a function the migrations already create was, until now, completely
+  // invisible: the most consequential object you can add to a table without changing its columns.
+  // `tgisinternal` excludes the constraint triggers Postgres maintains for foreign keys.
+  trigger: `select c.relname || '.' || t.tgname as k, md5(pg_get_triggerdef(t.oid)) as v
+              from pg_trigger t
+              join pg_class c on c.oid = t.tgrelid
+             where c.relnamespace = 'public'::regnamespace and not t.tgisinternal and ${NOT_EXT("t.oid")}`,
 };
 
 export type Snapshot = Record<string, Record<string, string>>;

@@ -42,9 +42,8 @@ by each job's `if`, not by which repository the file sits in.
 | `ci.yml` | PR, push `main` | both — the template's copy is how the mirror is validated |
 | `deploy.yml` | `workflow_run` of CI (+ dispatch) | production only, from `fly-auth` onward |
 | `mirror-sync.yml` / `mirror-drift.yml` | every 3h / daily + push | template only |
-| `pool-health.yml` | `*/30` | any repo that is not the mirror |
 | `pool-distribute.yml`, `subscription-lifecycle.yml`, `reproducibility.yml`, `schema-drift.yml` | nightly (+ post-deploy) | any repo that is not the mirror |
-| `ticket-escalation.yml` | dispatch only — the timer lives in the API process | any repo that is not the mirror |
+| `ticket-escalation.yml`, `pool-health.yml` | dispatch only — their timers live in the API process | any repo that is not the mirror |
 
 ### 4.2 Five rules, each of which cost something before it existed (BUGLOG #155, #156, #157)
 GitHub rounds **each job** up to the nearest minute, which is why all of these are about jobs rather

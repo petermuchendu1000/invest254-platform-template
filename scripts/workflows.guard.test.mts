@@ -14,7 +14,10 @@
  *     fire), or — `reproducibility.yml`, which has no skip guard — fail outright, 26 nights of 26.
  *     A job-level `if` is the only form that allocates no runner; a step that exits 0 still bills.
  *
- *  3. Every SCHEDULED job has a job-level `if`. The two repositories share one byte-identical tree
+ *  3. Every SCHEDULED job has a job-level `if`. The floor on how many scheduled workflows exist
+ *     drops as ops crons move into the API process where they actually run on time — ticket
+ *     escalation first, then pool health (#160) — so a falling count is progress, not rot. What
+ *     the assertion protects is that whatever IS still on a schedule carries a guard. The two repositories share one byte-identical tree
  *     (docs/30), so a cron added without a guard silently runs twice as often as it reads, in a
  *     repository that usually cannot do the work.
  *
@@ -129,7 +132,7 @@ test("every job that needs DATABASE_URL is inert in the mirror template", () => 
 
 test("every scheduled job has a job-level if, so it cannot run in both repositories unasked", () => {
   const scheduled = files.filter((f) => /^on:/m.test(texts.get(f) as string) && /^\s{2,4}schedule:/m.test(texts.get(f) as string));
-  assert.ok(scheduled.length >= 7, `expected >= 7 scheduled workflows, found ${scheduled.length}`);
+  assert.ok(scheduled.length >= 6, `expected >= 6 scheduled workflows, found ${scheduled.length}`);
   const unguarded = jobs
     .filter((j) => scheduled.includes(j.file) && !j.ifExpr)
     .map((j) => `${j.file}::${j.id}`);

@@ -394,13 +394,21 @@ recurrence (from that cause or any other) effectively impossible:
   `paid + reserved ≤ ⌊targetRtp × turnover⌋` cap still bounds actual payout, so the house edge is
   untouched. Idle brands (no trade → no row) and statistical brands are unaffected.
 
-- **(C) Active monitor (`scripts/pool_health_monitor.py`, workflow `pool-health.yml`, every 30 min)** —
-  closes the detection gap that let #12 run unnoticed. `winrate_monitor.py` only alerts on windows with
+- **(C) Active monitor (`apps/api/src/poolhealth.ts`, in the API process every 30 min;
+  `scripts/pool_health_check.mts` + workflow `pool-health.yml` as the manual lever)** —
+  closes the detection gap that let #12 run unnoticed. It used to be a `pool-health.yml` cron and
+  **the cron did not run**: GitHub de-prioritises high-frequency schedules, and over 24h on
+  2026-10-22 it fired 6 times out of 48 at gaps of 3–5 hours (BUGLOG #160). A monitor for a money
+  failure cannot be on a best-effort schedule, so the timer moved in-process
+  (`POOL_HEALTH_INTERVAL_MS`) and the workflow stayed, dispatch-only, calling the same module. `winrate_monitor.py` only alerts on windows with
   ≥50 samples, but starvation *suppresses* volume, so a starved brand rarely reaches 50 trades. This
   monitor instead watches the STRUCTURAL signal over a rolling 2-hour window and pages Telegram (same
   bot as payout approvals, `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_IDS`) on:
   `POOL_STARVED` (available < one min stake while trades are happening) or `ALL_LOSS` (≥8 live trades,
   zero wins), with a `BELOW_VIABLE` warning below the min-viable pool. Read-only; non-zero exit on alert.
+  There is **one** implementation of these thresholds. The Python script that preceded it was a
+  second one and had drifted — it restated `playerShare` as a literal `0.15` beside the real knob in
+  `pool.ts`; the module imports `DEFAULT_POOL_KNOBS` instead.
 
 Together: (A)/(B) make starvation structurally impossible to *create*, and (C) guarantees any residual
 or novel failure is *caught within ~30 minutes and paged*, instead of surfacing only via player complaints.

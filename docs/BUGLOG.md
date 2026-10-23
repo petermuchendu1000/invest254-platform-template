@@ -5,6 +5,172 @@ entry: what, evidence, root cause, impact, and resolution.
 
 ---
 
+## #161 — The schema-drift gate cannot see triggers, which is how a live one sat in production for weeks — FIXED (migration 0211 + a trigger catalog)
+- **Started as:** `schema-drift` red since 2026-10-14 on two differences and nothing else:
+```
+  only-production  function       fn_pool_auto_settings_seed()
+  only-production  function-exec  fn_pool_auto_settings_seed()  [prod=false/false]
+```
+- **What it actually is.** Not an orphaned leftover, which is what a function nothing calls looks
+  like from the repository. It is a **`SECURITY DEFINER` trigger function**, and it is **live**:
+```
+  CREATE TRIGGER trg_platform_pool_defaults AFTER INSERT ON public.platforms
+    FOR EACH ROW EXECUTE FUNCTION fn_pool_auto_settings_seed()
+```
+  It inserts a `pool_auto_settings` row for each new platform. Production: 3 platforms, 3 rows.
+  Grants `postgres=X/postgres | service_role=X/postgres` — no anon surface, consistent with the
+  gate's own `[prod=false/false]`.
+- **THE REAL BUG IS THE GATE, not the function.** `CATALOG` in `scripts/schema_drift.mts` compares
+  functions, function EXECUTE grants, policies, indexes, views, columns and table write-grants.
+  **It does not compare triggers.** So the trigger — the thing that actually changed how `platforms`
+  behaves on every INSERT — was invisible, and the only reason anything went red is that the
+  function it calls happened to be production-only too. **Attach a trigger out-of-band to a function
+  the migrations already create and this gate would have said nothing at all**, while a table
+  silently gained a side effect on every write. That is a worse version of exactly what #57 built
+  this gate to catch.
+- **Fix, two parts.**
+  1. **Migration 0211 adopts it**, rather than dropping it. Reasons, in order: it is live; the repo
+     already does precisely this for precisely this table shape (0136's
+     `trg_platform_seed_subscription`, also `AFTER INSERT ON public.platforms` — whoever wrote this
+     followed that pattern by hand and never made it a migration); and dropping live machinery to
+     satisfy a gate is the wrong direction when adopting costs nothing. If any consumer did depend
+     on the row existing from day one, adopting keeps it working and dropping would not.
+  2. **A `trigger` catalog in the gate**, keyed `table.trigger_name` on `md5(pg_get_triggerdef())`,
+     excluding `tgisinternal` (every foreign key carries RI triggers, and comparing those would make
+     the gate red on any schema with a foreign key) and extension-owned objects, like the rest of
+     the catalog.
+- **It is behaviourally a no-op, which is why adopting was safe to do unilaterally.** `0164`'s
+  `fn_pool_auto_settings_get` coalesces an **absent** row to `mode='dynamic'`, `lookback_days=14`,
+  and reports `is_default` true while `updated_by` is null — so a trigger-inserted bare row reads
+  **identically** to no row at all. And `fn_pool_auto_record_run` inserts that same row on every
+  nightly run regardless. The trigger only moves the row's creation earlier, from the first
+  distribution to the platform's own INSERT. The money-moving consumer
+  (`scripts/pool_distribute_daily.mts`) reads through that RPC, so it cannot tell the difference.
+- **Verified against production, not inferred.** With a management token that carries
+  `database_read`, built a local Postgres 16 from the shim plus all 212 migrations and compared:
+  | | production | migrations + 0211 |
+  |---|---|---|
+  | `md5(pg_get_functiondef)` | `e7380ac8ae17633053644b5408300e77` | **same** |
+  | `pg_get_triggerdef` | `CREATE TRIGGER trg_platform_pool_defaults …` | **same** |
+  | `function-exec` (anon/authenticated) | `false/false` | **same** |
+  | platforms : pool_auto_settings | 3 : 3 | 1 : 1 — the invariant holds |
+  So 0211 makes the gate **green** rather than trading one difference for another.
+- **Then the whole gate was re-run by hand, all eight catalogs, production against a
+  migrations-built reference — 0 real differences:**
+```
+  CATALOG                PROD   MIGS   REAL
+  function                292    291      0
+  function-exec           292    291      0
+  policy                   28     28      0
+  index                   232    231      0
+  view                     14     14      0
+  column                 1140   1140      0
+  table-write-grant        22     22      0
+  trigger                  32     32      0
+```
+  Six remaining rows are artefacts of this sandbox, not drift: `pgvector` cannot be installed here,
+  so 0057's `kb_chunks.embedding` / `fn_kb_search` / the hnsw index are stubbed to `text` in a local
+  COPY of the migrations (never in the repo). CI's job runs `pgvector/pgvector:pg17` and sees the
+  real types.
+- **A caution for anyone repeating this.** The first attempt reported **29** differences, and every
+  one was my own fault: the reference build applies
+  `alter default privileges in schema public grant all on tables/functions/sequences to anon,
+  authenticated, service_role` BEFORE the migrations (`schema_drift.mts:107`), reproducing Supabase's
+  real posture so that the migrations' `revoke`s have something to revoke. Skip that step and 22
+  `table-write-grant` rows and one `function-exec` row go missing — which looks exactly like
+  production having been tampered with. A reference database is only a reference if it is built the
+  way the gate builds it.
+- **And the new catalog was itself checked against production before shipping:** all **32**
+  non-internal triggers compared, production against the migrations-built reference, **zero
+  differences**. `trg_platform_pool_defaults` was the only trigger-shaped drift there was, so
+  turning this catalog on does not light up a wall of pre-existing noise.
+- **Applying 0211 to production is a no-op, by construction.** `create or replace` with a
+  byte-identical body; revoke/grant already in that state; the backfill is `on conflict do nothing`
+  against 3 rows that already exist. The `drop trigger if exists` / `create trigger` pair is the only
+  moment anything is missing, and `scripts/migrate.mts` runs each file inside `begin`/`commit`, so it
+  is atomic — there is no window in which a platform INSERT could miss its settings row.
+- **Regression guard:** two tests in `scripts/schema_drift.test.mts` — one asserting the `trigger`
+  catalog exists and that `diffSnapshots` reports a production-only trigger and a changed trigger
+  body, one asserting the query excludes internal and extension-owned triggers and keys on
+  `table.name` (two tables may legitimately carry a trigger of the same name). The first exists
+  because **a missing catalog is a blind spot that reads exactly like a pass** — the same hazard as
+  #152's scanner that examined nothing and #156's guard that found no capped jobs.
+- **Worth saying about the credential:** the first management token supplied for this could not do
+  it — missing `database_read`, and it saw 0 projects. Neither could the anon, publishable,
+  service-role or `sb_secret_` keys: PostgREST exposes only the `public` schema's own objects, so
+  `pg_catalog` is unreachable and `pg_get_functiondef` is not available to the data API at all. A
+  function body is not something the application's own credentials can read, by design.
+
+---
+
+## #160 — The withdrawal-pool starvation monitor ran six times a day instead of forty-eight — FIXED (in-process)
+- **What:** `pool-health.yml` asked GitHub for `*/30`. Measured over the 24 hours to 2026-10-22 it
+  fired **6 times out of 48**, at gaps of **3h14m, 5h15m, 5h04m, 4h16m and 3h14m**:
+```
+  00:07  05:13  10:28  15:32  19:48  23:02
+```
+  The daily crons in the same repository fired **1-for-1** over the same window, so this is not the
+  Actions billing interruption (#156) and not a repository problem — GitHub de-prioritises
+  high-frequency `schedule` events, and it will not improve by being asked again.
+- **Why that is worse than it sounds.** This monitor is the defense-in-depth net from #12/#12b, and
+  it exists *specifically* to cover the other monitor's blind spot: `winrate_monitor` only alerts on
+  windows with ≥50 samples, and starvation **suppresses volume** — players hit 100% losses and
+  leave — so a starved brand often never reaches 50 trades and the drift alert stays silent. The net
+  written to catch what the other one cannot see was itself running at one-eighth rate, on real
+  money, with an alert that is supposed to fire *early*.
+- **Fix:** the sweep now runs in the API process beside the ticket-escalation and deposit sweeps
+  (`apps/api/src/server.ts`, `POOL_HEALTH_INTERVAL_MS`, 30 min, first run 45s after boot). Same
+  shape, same reasoning and the same place as the ticket-escalation move that preceded it. The
+  workflow stays, schedule commented out, as the manual lever for when the API is down or
+  mid-rollback.
+- **And there is now ONE implementation instead of two.** `scripts/pool_health_monitor.py` was
+  deleted, not kept alongside. It was a second copy of these thresholds and had **already drifted**:
+  it restated `PLAYER_SHARE = 0.15` as a literal beside the real `DEFAULT_POOL_KNOBS.playerShare` in
+  `pool.ts`, with nothing to notice if the knob were ever retuned. The new module imports the knob,
+  and both the in-process sweep and the CLI (`scripts/pool_health_check.mts`) call it.
+- **Verification — differential, not asserted.** Built a throwaway Postgres 16 locally, applied the
+  Supabase shim plus **all 211 migrations** (109 tables, 326 functions — matching production's
+  PostgREST surface), seeded eight scenarios, and ran the Python original and the TypeScript port
+  against the same database:
+  - `--json` output **byte-identical** on all eight, and identical exit codes (1 on hard alert).
+  - Human output **byte-identical** between the old script and the new CLI.
+  - The scenarios covered healthy, `POOL_STARVED`, `ALL_LOSS`, `BELOW_VIABLE`, a quiet brand, a
+    brand hitting two alerts at once, `min_stake = 0`, and the trap below.
+- **THE TRAP, which is the single most dangerous way to get this port wrong.** Every cents column
+  here is `bigint` and `max_multiplier` is `numeric`, and node-postgres returns both as **strings**.
+  This module compares them with `<`. Left as strings, `"9000" < "25000"` is **lexicographically
+  false and numerically true**, so a brand with 9,000 cents available against a 25,000-cent minimum
+  stake — starved, every trade a guaranteed loss — would have been reported healthy and nobody paged.
+  The row values are coerced at the boundary (the repo's existing `toCents` convention), a fixture
+  pins exactly that case against the real schema, and a unit test pins it with string inputs.
+- **One deliberate divergence from the original, recorded so nobody "fixes" it.** The Python wrote
+  its ceiling as `-(-x // PLAYER_SHARE)`, and CPython's float floor-division is fmod-corrected: it
+  sees the TRUE quotient of the doubles rather than the rounded one. `0.15` as a double is a shade
+  under 0.15, so `15/0.15` is `100.0` rounded but `100.0000000000000037` exactly, and the original
+  returned **101** where `Math.ceil` returns **100**. Python's own `math.ceil(x/0.15)` also returns
+  100 — the original disagreed with itself. `Math.ceil` is kept, because the intent is the decimal
+  0.15 and not its binary neighbour. The gap is **one cent**, only when the division comes out
+  exact, and only on `BELOW_VIABLE`, which is a warning that never pages. A scan of the feasible
+  parameter space (`site_cfg_feasible` requires `max_multiplier > 1`) shows the disagreement needs
+  `min_stake ≤ 15` **cents**; production runs 25,000. Both values are pinned in the unit test.
+- **Duplicate pages are accepted, deliberately.** `auto_start_machines` (fly.api.toml) can bring a
+  second API machine up under load and both will sweep, so a starvation event can page twice.
+  Suppressing that would need a distributed lock held across the interval; for an alert that means
+  "players are losing everything right now", twice is better than never.
+- **Tests:** `poolhealth.test.ts` — 9 unit tests (the ceiling and its divergence, the knob is
+  imported not copied, the string-comparison trap, each alert's preconditions, precedence of
+  `POOL_STARVED` over `BELOW_VIABLE`, `available` never negative, warnings not raising the alert
+  flag, the page wording). `poolhealth.pg.test.ts` — the real query against the real schema
+  (`E2E_PG_DSN`, rolled back): five brands, one per verdict, plus ageing every decision past the
+  rolling window and asserting the alerts clear, which is what stops a re-funded brand being paged
+  for pre-remediation losses. Verified green against the local 211-migration database and verified
+  to SKIP without a DSN, which is how CI will see it.
+- **Caught while writing this, worth its own line:** the first draft of `poolhealth.ts` would not
+  compile, because the doc comment contained the cron spec `*` `/30` and `*/` **terminates a block
+  comment**. Same family as #152's Tailwind-in-a-comment: a comment is not inert.
+
+---
+
 ## #159 — An EXPIRED MIRROR_PAT is worse than no MIRROR_PAT: the mirror failed on its FIRST step for 23 days — PARTIALLY FIXED (needs the owner to replace the token)
 - **What:** `mirror-sync` in the template has failed every run since 2026-09-29 — 23 days, ~180 runs on
   a 3-hourly cron, each one appending to the same blocker issue (template #32). The template sits at
