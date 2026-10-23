@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { formatKes } from '@invest254/shared/money';
 import { Button } from '@/components/ui/Button';
 import { usePaybillInfo, useClaimPaybill } from '@/lib/wallet/hooks';
+import { claimErrorNotice } from '@/lib/wallet/errors';
 import { useDepositUi } from '@/lib/wallet/depositUi';
 import { useAuthUi } from '@/lib/auth/ui';
 import { useSession } from '@/lib/auth/session';
@@ -24,7 +25,8 @@ export function PayBillDeposit() {
 
   const [code, setCode] = useState('');
   const [credited, setCredited] = useState<number | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // A refusal is not always a failure here (see claimErrorNotice), so the box carries its own tone.
+  const [notice, setNotice] = useState<{ text: string; tone: 'error' | 'ok' } | null>(null);
   const [pending, setPending] = useState(false); // Safaricom hasn't confirmed yet
 
   useEffect(() => {
@@ -35,10 +37,10 @@ export function PayBillDeposit() {
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
-    setError(null);
+    setNotice(null);
     setPending(false);
     const c = code.trim().toUpperCase();
-    if (c.length < 6) { setError('Enter the full M-PESA confirmation code from your SMS.'); return; }
+    if (c.length < 6) { setNotice({ text: 'Enter the full M-PESA confirmation code from your SMS.', tone: 'error' }); return; }
     if (!token) { deferToAuth(); openAuth('register'); return; }
     try {
       const res = await claim.mutateAsync({ code: c });
@@ -48,9 +50,10 @@ export function PayBillDeposit() {
         setPending(true); // not_found — confirmation may lag a few seconds
       }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes('CODE_ALREADY_USED')) setError('This code has already been used on another account.');
-      else setError('We couldn’t verify that code. Check it and try again.');
+      // Every refusal this route can raise is mapped centrally (lib/wallet/errors), the way the other
+      // three wallet forms do it. The hand-rolled string match this replaced recognised exactly one
+      // code, so CODE_ALREADY_CREDITED — and a dropped connection — both read as "that code is wrong".
+      setNotice(claimErrorNotice(err));
     }
   }
 
@@ -117,14 +120,27 @@ export function PayBillDeposit() {
           spellCheck={false}
           placeholder="e.g. TJ84KD9P2L"
           value={code}
-          onChange={(e) => { setCode(e.target.value.toUpperCase()); setError(null); setPending(false); }}
+          onChange={(e) => { setCode(e.target.value.toUpperCase()); setNotice(null); setPending(false); }}
           className="w-full rounded-xl border border-border bg-surface-2 px-3.5 py-3 font-mono text-lg uppercase tracking-wide text-fg outline-none placeholder:text-muted focus:border-accent"
         />
         <p className="text-xs text-muted">Paste it exactly as it appears in the SMS. Deposits are verified against Safaricom records before your account is credited.</p>
       </div>
 
-      {error ? (
-        <p className="rounded-xl border border-down/40 bg-down/10 px-3 py-2 text-sm text-down" role="alert">{error}</p>
+      {/*
+        The ok tone keeps green for the border and tint but sets the TEXT in --pp-fg, not text-up:
+        `up` is a fixed semantic hue (globals.css), and at 14px on a 10% tint it measures 6.75:1 in
+        dark but only 3.11:1 under html.light — below WCAG AA, on the one line telling a player where
+        their money is. text-fg is 13.2:1 / 17.2:1. Please don't "tidy" this back to text-up.
+      */}
+      {notice ? (
+        <p
+          className={`rounded-xl px-3 py-2 text-sm ${notice.tone === 'ok'
+            ? 'border border-up/40 bg-up/10 text-fg'
+            : 'border border-down/40 bg-down/10 text-down'}`}
+          role={notice.tone === 'ok' ? 'status' : 'alert'}
+        >
+          {notice.text}
+        </p>
       ) : null}
       {pending ? (
         <p className="rounded-xl border border-warn/40 bg-warn/10 px-3 py-2 text-sm text-warn" role="status">

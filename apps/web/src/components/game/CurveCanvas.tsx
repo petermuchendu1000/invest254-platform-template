@@ -5,6 +5,7 @@ import { CURVE_AMPLITUDE, CURVE_BASE_RATE } from '@invest254/shared/config';
 import type { Tick, ConnStatus } from '@/lib/game/types';
 import { ChartPlaceholder } from '@/components/ui/ChartPlaceholder';
 import { dataPhaseOf, phaseIsBlocking } from '@/lib/ui/dataPhase';
+import { Y_SPAN_MIN, targetSpan, easeSpan, axisTicks, axisDecimals } from '@/lib/chart/autoscale';
 
 interface Colors {
   up: string;
@@ -66,10 +67,11 @@ function smoothPath(ctx: CanvasRenderingContext2D, p: Pt[]): void {
 
 // Signed display value ∈ (-1, 1): the curve's tanh signal recovered from `rate`.
 const toValue = (rate: number) => (rate - CURVE_BASE_RATE) / CURVE_AMPLITUDE;
-// Tight symmetric vertical scale so waves fill the canvas (taller); ±1 spikes clip a touch.
-const Y_MAX = 0.9;
-// y-axis calibration lines/labels at 0.2 intervals.
-const AXIS_TICKS = [-0.8, -0.6, -0.4, -0.2, 0, 0.2, 0.4, 0.6, 0.8];
+/**
+ * The vertical scale AUTOSCALES to the window (lib/chart/autoscale.ts), so the wave fills the
+ * canvas whatever the brand's configured `volatility`. It used to be a fixed ±0.9, which on the
+ * default brand left the wave at ±0.2–0.4 — under half the height, and hard to read on a phone.
+ */
 
 /** MARKETER anticipation beat: the live round's elapsed progress (0→1) and the latest settled
  *  outcome, so the board can show a "round is about to resolve" meter + payoff — all driven by the
@@ -190,14 +192,21 @@ export function CurveCanvas({
     // the board edge — the wave never runs into the edge. Players keep the full-bleed right edge.
     const PAD_RIGHT = marketer ? 28 : 0;
 
-    // Vertical geometry for the fixed ±Y_MAX scale; 0 sits dead-centre.
+    // The live autoscale span, eased frame to frame. Seeded at the floor so the first frame of a
+    // fresh socket opens tight and grows into the data rather than snapping down from ±0.9.
+    let ySpan = Y_SPAN_MIN;
+    /** Ease `ySpan` toward the span that puts this window's peak at Y_FILL of the half-height. */
+    const fitSpan = (peakAbs: number) => { ySpan = easeSpan(ySpan, targetSpan(peakAbs)); };
+
+    // Vertical geometry for the current ±ySpan scale; 0 sits dead-centre.
     const geom = () => {
       const usableH = Math.max(1, cssH - 2 * PAD_Y);
+      const span = ySpan;
       const Y = (v: number) => {
-        const c = Math.max(-Y_MAX, Math.min(Y_MAX, v));
-        return PAD_Y + usableH * ((Y_MAX - c) / (2 * Y_MAX));
+        const c = Math.max(-span, Math.min(span, v));
+        return PAD_Y + usableH * ((span - c) / (2 * span));
       };
-      return { Y, y0: PAD_Y + usableH * 0.5 };
+      return { Y, y0: PAD_Y + usableH * 0.5, span };
     };
 
     // MARKETER: a single centre DIVIDER — the reference line the wave rises above (accent) or dips
@@ -229,11 +238,14 @@ export function CurveCanvas({
     };
 
     // y-axis calibration grid (0.2 steps) + labels; the 0-axis is emphasised.
-    const drawAxis = (Y: (v: number) => number) => {
+    const drawAxis = (Y: (v: number) => number, span: number) => {
       ctx.font = '10px ui-sans-serif, system-ui, sans-serif';
       ctx.textAlign = 'right';
       ctx.textBaseline = 'middle';
-      for (const v of AXIS_TICKS) {
+      // Ticks follow the live span, so the labels stay TRUE to the curve's own value rather than
+      // being a fixed ruler the wave no longer reaches. A finer span needs a second decimal.
+      const dp = axisDecimals(span);
+      for (const v of axisTicks(span)) {
         const y = Y(v);
         const zero = v === 0;
         // Without the numbers only the zero line is drawn: it is what tells an up minute from a
@@ -247,7 +259,7 @@ export function CurveCanvas({
         ctx.stroke();
         if (!numbersRef.current) continue;
         ctx.fillStyle = hexA(colors.muted, zero ? 0.95 : 0.55);
-        ctx.fillText(v.toFixed(1), PAD_LEFT - 5, y);
+        ctx.fillText(v.toFixed(dp), PAD_LEFT - 5, y);
       }
     };
 
@@ -337,8 +349,8 @@ export function CurveCanvas({
     const drawEmpty = () => {
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, cssW, cssH);
-      const { Y, y0 } = geom();
-      if (marketerRef.current) { drawZones(y0); drawDivider(Y); } else drawAxis(Y);   // MARKETER: tint + divider
+      const { Y, y0, span } = geom();
+      if (marketerRef.current) { drawZones(y0); drawDivider(Y); } else drawAxis(Y, span);   // MARKETER: tint + divider
       /* The wording used to be painted HERE, in 12px canvas text: unthemed, unreadable by a screen
          reader, and unable to tell a first connect from a drop because the status never reached
          this file. It is now a DOM overlay below, so it inherits the brand's type and colours and
@@ -377,7 +389,16 @@ export function CurveCanvas({
         pts = ds;
       }
 
-      const { Y, y0 } = geom();
+      // Fit the scale to what this window actually holds, BEFORE the geometry that maps it. Peak is
+      // taken over the decimated points that are drawn, so the axis can never disagree with the line.
+      let peakAbs = 0;
+      for (let i = 0; i < pts.length; i++) {
+        const a = Math.abs(toValue(pts[i]!.rate));
+        if (a > peakAbs) peakAbs = a;
+      }
+      fitSpan(peakAbs);
+
+      const { Y, y0, span } = geom();
       const plotRight = cssW - PAD_RIGHT; // wave's right extent (marketer gutter; = cssW for players)
       const X = (t: number) => PAD_LEFT + ((t - start) / w) * (plotRight - PAD_LEFT);
       // MARKETER: two-tone around the centre divider — brand accent above, a contrasting neutral below.
@@ -398,7 +419,7 @@ export function CurveCanvas({
 
       // Behind the curve: the calibration grid for players; for marketers, the altitude zone tint then
       // the centre divider (the "y-axis" job done by colour + a game meter, not a numbered scale).
-      if (mk) { drawZones(y0); drawDivider(Y); } else drawAxis(Y);
+      if (mk) { drawZones(y0); drawDivider(Y); } else drawAxis(Y, span);
 
       // Closed area between the curve and the 0-axis (filled twice, clipped per side).
       const buildArea = () => {
@@ -456,7 +477,7 @@ export function CurveCanvas({
       ctx.restore();
 
       // 0-axis + labels on top of the fill (MARKETER: just the divider, redrawn so the wave doesn't bury it).
-      if (mk) drawDivider(Y); else drawAxis(Y);
+      if (mk) drawDivider(Y); else drawAxis(Y, span);
 
       // Live dot, coloured by the current side (accent above the divider, neutral below for marketers).
       const lastV = toValue(last2.rate);

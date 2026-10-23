@@ -219,17 +219,76 @@ test("writes are throttled per sweep, but a status CHANGE always writes", () => 
   c.advance(15_000); r.ok("fast");
   assert.equal(wrote.length, 2, "pending -> ok is a transition, so it writes");
 
-  // 15s cadence, 60s throttle: three more runs inside the window must collapse to no writes.
-  for (let i = 0; i < 3; i++) { c.advance(15_000); r.ok("fast"); }
-  assert.equal(wrote.length, 2, "a healthy high-frequency sweep does not write four times a minute");
+  // 15s cadence. The effective window is HALF this sweep's 60s tolerance, i.e. 30s — not the flat
+  // 60s — so that the row the board reads never looks staler than the board's own threshold. One
+  // run inside that window collapses to no write.
+  c.advance(15_000); r.ok("fast");
+  assert.equal(wrote.length, 2, "a healthy high-frequency sweep does not write on every tick");
 
   c.advance(15_000); r.ok("fast");
-  assert.equal(wrote.length, 3, "once the throttle window passes, the heartbeat lands");
+  assert.equal(wrote.length, 3, "once the window passes, the heartbeat lands");
 
   c.advance(15_000); r.fail("fast", new Error("db down"));
   assert.equal(wrote.length, 4, "ok -> failing is news and bypasses the throttle");
   assert.equal(wrote[3]!.status, "failing");
   assert.equal(wrote[3]!.lastError, "db down");
+});
+
+test("the durable row never goes staler than the verdict computed from it (BUGLOG #162b)", () => {
+  /**
+   * The board recomputes `status` from the stored `last_run_at`, so the write interval has to stay
+   * comfortably inside the staleness tolerance. Found in production: at a flat 60 s throttle the
+   * 15-second fast lane (tolerance 15 × 2 + 30 = 60 s) wrote a row as stale as its own threshold,
+   * and the board showed a healthy sweep as STOPPED while paging — correctly — stayed quiet.
+   *
+   * Asserted for every cadence the API actually runs, so adding a faster sweep cannot reintroduce it.
+   */
+  const CADENCES: ReadonlyArray<readonly [string, number, number]> = [
+    ["payments.reverify", 15_000, 15_000],
+    ["payhero.ledger", 60_000, 60_000],
+    ["billing.reconcile", 120_000, 120_000],
+    ["payments.reconcile", 300_000, 300_000],
+    ["tickets.escalate", 900_000, 30_000],
+    ["pool.health", 1_800_000, 45_000],
+  ];
+  for (const [name, everyMs, firstRunMs] of CADENCES) {
+    const c = clock();
+    const wrote: SweepState[] = [];
+    const r = makeSweepRegistry({ now: c.now, persist: (s) => wrote.push(s), minPersistMs: 60_000 });
+    r.arm(name, { everyMs, firstRunMs });
+    c.advance(firstRunMs);
+    r.ok(name);
+
+    // Run it faithfully for twenty cadences and track the worst staleness the TABLE ever showed.
+    let worstAgeAtWrite = 0;
+    let lastWriteAt = c.now();
+    for (let i = 0; i < 20; i++) {
+      c.advance(everyMs);
+      const before = wrote.length;
+      r.ok(name);
+      if (wrote.length > before) lastWriteAt = c.now();
+      worstAgeAtWrite = Math.max(worstAgeAtWrite, c.now() - lastWriteAt);
+    }
+    const tolerance = everyMs * 2 + 30_000;
+    assert.ok(
+      worstAgeAtWrite < tolerance,
+      `${name}: stored row went ${worstAgeAtWrite}ms stale against a ${tolerance}ms tolerance — the board would call a healthy sweep stopped`,
+    );
+  }
+});
+
+test("the write cap does not make slow sweeps chatty", () => {
+  // Half-tolerance only BINDS on fast sweeps. A 30-minute monitor must still write once a minute
+  // at most, not every 30 minutes and not more often than the flat throttle.
+  const c = clock();
+  const wrote: SweepState[] = [];
+  const r = makeSweepRegistry({ now: c.now, persist: (s) => wrote.push(s), minPersistMs: 60_000 });
+  r.arm("pool.health", { everyMs: 30 * MIN, firstRunMs: 45_000 });
+  c.advance(45_000);
+  r.ok("pool.health");
+  const after = wrote.length;
+  for (let i = 0; i < 4; i++) { c.advance(30 * MIN); r.ok("pool.health"); }
+  assert.equal(wrote.length - after, 4, "one write per run, as before — the cap changes nothing here");
 });
 
 // ── the never-throw contract ────────────────────────────────────────────────────────────────────

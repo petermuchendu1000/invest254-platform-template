@@ -107,18 +107,28 @@ export interface PaymentRepository {
   depositGateReject(userKey: string, holdMs: number): Promise<void>;
   completeDeposit(checkoutRequestId: string, resultCode: number, resultDesc: string, receipt: string | null, raw: unknown): Promise<CompleteResult>;
   /**
-   * Which of these provider references belong to a DEPOSIT transaction of ours — the set, answered in
-   * ONE indexed lookup (idx_tx_checkout, migration 0005).
+   * Map each provider reference that belongs to a DEPOSIT of ours to the key `completeDeposit`
+   * needs — its `checkout_request_id` — in ONE indexed lookup. A reference we do not own is absent.
    *
    * It exists so a caller holding a batch of foreign references does not have to discover that fact
    * by calling `completeDeposit` and catching TX_NOT_FOUND. That works, and the PayHero ledger sweep
    * did exactly it, but the discovery costs a raised plpgsql exception per miss and every one of them
    * lands in the Postgres log as an ERROR. See `reconcilePayHeroLedger`.
    *
-   * The predicate MUST stay identical to fn_complete_deposit's own lookup (checkout_request_id +
-   * kind='deposit'); if the two ever disagree, the skip here silently stops crediting a real deposit.
+   * WHY IT RESOLVES TWO KEYS (BUGLOG #163). It used to answer only "is this a checkout_request_id we
+   * own?", which is the key fn_complete_deposit looks up. That is right for Lipwa and Daraja, whose
+   * reference IS the stored checkout_request_id — but WRONG for a PayHero STK deposit, where we send
+   * our own `transactions.id` as PayHero's `external_reference` (paymentservice.ts) while
+   * `checkout_request_id` holds PayHero's reference instead. The two never matched, so the ledger
+   * sweep's auto-credit branch never once fired for STK and every such payment was ingested as a
+   * claimable shadow of a deposit its callback had already credited. Measured: 452 shadow rows, 0
+   * matching a checkout_request_id. Matching EITHER key, and returning the checkout_request_id to
+   * complete by, keeps fn_complete_deposit's own lookup untouched.
+   *
+   * On the (vanishingly unlikely) collision where one reference is both some deposit's
+   * checkout_request_id and another's id, the checkout_request_id wins — the historical behaviour.
    */
-  ownedDepositRefs(refs: readonly string[]): Promise<Set<string>>;
+  resolveDepositRefs(refs: readonly string[]): Promise<Map<string, string>>;
   createWithdrawal(userId: string, amountCents: Cents, phone: string, minCents: Cents, siteId?: string): Promise<CreateWithdrawalResult>;
   /**
    * Marketer instant withdrawal: if this player's phone is a marketer, move the amount from the
@@ -241,12 +251,17 @@ export class InMemoryPaymentRepository implements PaymentRepository {
     return { applied: true, status: "failed", newBalance: await this.getBalance(tx.userId) };
   }
 
-  async ownedDepositRefs(refs: readonly string[]): Promise<Set<string>> {
-    const out = new Set<string>();
+  async resolveDepositRefs(refs: readonly string[]): Promise<Map<string, string>> {
+    const out = new Map<string, string>();
+    // id matches first, so a checkout_request_id match overwrites one on collision (see the interface).
+    for (const ref of refs) {
+      const byId = this.txns.get(ref);
+      if (byId && byId.kind === "deposit" && byId.checkoutId) out.set(ref, byId.checkoutId);
+    }
     for (const ref of refs) {
       const txId = this.byCheckout.get(ref);
       const tx = txId ? this.txns.get(txId) : undefined;
-      if (tx && tx.kind === "deposit") out.add(ref);   // same predicate fn_complete_deposit uses
+      if (tx && tx.kind === "deposit") out.set(ref, ref);   // the key fn_complete_deposit looks up
     }
     return out;
   }
@@ -284,6 +299,14 @@ export class InMemoryPaymentRepository implements PaymentRepository {
     if (pay.claimedTxId) {
       if (pay.claimedBy === userId) return { status: "already_claimed", amountCents: pay.amount, newBalance: await this.getBalance(userId), txId: pay.claimedTxId };
       throw new Error("CODE_ALREADY_USED");
+    }
+    // 0213: this money already reached a wallet through its OWN deposit — refuse rather than credit
+    // it a second time. Mirrors fn_claim_c2b_deposit exactly; see that migration for why the first
+    // branch refuses on ANY status and why both sit after the claimed check.
+    const owner = pay.billRef ? this.txns.get(pay.billRef) : undefined;
+    if (owner && owner.kind === "deposit" && owner.status !== "failed") throw new Error("CODE_ALREADY_CREDITED");
+    for (const t of this.txns.values()) {
+      if (t.kind === "deposit" && t.status === "success" && t.receipt === key) throw new Error("CODE_ALREADY_CREDITED");
     }
     if (!this.balances.has(userId)) throw new Error("WALLET_NOT_FOUND");
     const txId = randomUUID();
@@ -502,15 +525,27 @@ export class PgPaymentRepository implements PaymentRepository {
     const r = await this.q.query("select applied, status, new_balance from fn_complete_deposit($1,$2,$3,$4,$5)", [checkoutRequestId, resultCode, resultDesc, receipt, JSON.stringify(raw ?? {})]);
     return { applied: Boolean(r.rows[0].applied), status: String(r.rows[0].status), newBalance: toCents(r.rows[0].new_balance) };
   }
-  async ownedDepositRefs(refs: readonly string[]): Promise<Set<string>> {
+  async resolveDepositRefs(refs: readonly string[]): Promise<Map<string, string>> {
     const wanted = [...new Set(refs)];
-    if (wanted.length === 0) return new Set();
+    if (wanted.length === 0) return new Map();
+    // `id::text = any(...)` never casts the INPUT to uuid: a foreign reference like a typed account
+    // number would raise on `any($1::uuid[])`, and this sweep sees a shared account's references.
     const r = await this.q.query(
-      `select checkout_request_id from transactions
-        where kind = 'deposit' and checkout_request_id = any($1::text[])`,
+      `select id::text as id, checkout_request_id from transactions
+        where kind = 'deposit' and checkout_request_id is not null
+          and (checkout_request_id = any($1::text[]) or id::text = any($1::text[]))`,
       [wanted],
     );
-    return new Set(r.rows.map((x: any) => String(x.checkout_request_id)));
+    const want = new Set(wanted);
+    const out = new Map<string, string>();
+    for (const x of r.rows as Array<{ id: string; checkout_request_id: string }>) {
+      if (want.has(String(x.id))) out.set(String(x.id), String(x.checkout_request_id));
+    }
+    for (const x of r.rows as Array<{ checkout_request_id: string }>) {
+      const co = String(x.checkout_request_id);
+      if (want.has(co)) out.set(co, co);   // checkout_request_id wins a collision
+    }
+    return out;
   }
   async listUnsettledDeposits(olderThanMs: number, limit: number, provider?: string): Promise<UnsettledDeposit[]> {
     const r = await this.q.query(

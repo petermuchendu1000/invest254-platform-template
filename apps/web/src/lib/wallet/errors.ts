@@ -30,7 +30,17 @@ const MESSAGES: Record<string, string> = {
   INVALID_PHONE: 'Enter a valid Kenyan phone number, e.g. 0712 345 678.',
   WITHDRAWALS_DISABLED: 'Withdrawals are temporarily paused. Please try again later.',
   ACCOUNT_NOT_ACTIVE: "Your account can't transact right now. Please contact support.",
-  CODE_ALREADY_USED: 'That code has already been used.',
+  CODE_ALREADY_USED: 'That code has already been used on another account.',
+  // 0213 / BUGLOG #163: the payment this code names has ALREADY paid out its own deposit, so the
+  // claim is refused to stop a second credit. The money is not lost — it is already banked — so the
+  // copy must send the player to their balance, not tell them their code is wrong. We do not say
+  // "added to YOUR wallet": the guard also fires when the payment credited the account that made it
+  // and that is not necessarily the account asking (a mistyped or borrowed code).
+  CODE_ALREADY_CREDITED: 'That payment has already been credited. Check your wallet balance — if you don’t see it, contact support.',
+  // The manual Pay Bill belongs to the System owner; a brand on its own payment accounts is never
+  // told to pay it (PAY-1, docs/43 §3.6). Without this, TECHNICAL_RE catches the code and the player
+  // gets "try again in a few minutes" for something that will never work.
+  PAYBILL_NOT_AVAILABLE: 'Pay Bill is not available for this account. Please use another deposit method.',
   INVALID_CODE: 'That code is not valid.',
   AUTH_REQUIRED: 'Please log in to continue.',
   DEMO_ACCOUNT: 'Switch to your Real account to withdraw.',
@@ -52,4 +62,17 @@ export function paymentErrorMessage(e: unknown): string {
     return msg; // a clean, human backend message (e.g. a specific validation hint)
   }
   return 'Network error. Please check your connection and try again.';
+}
+
+/**
+ * The same copy, plus the tone to render it in, for the Pay Bill claim form.
+ *
+ * A claim is the one wallet form where a refusal can be GOOD news: `CODE_ALREADY_CREDITED` means the
+ * payment already paid out a deposit. Shown in the red error box next to a money amount that is in
+ * fact safely banked, that reads as "your deposit failed" — the most alarming thing this screen can
+ * say, and the one most likely to produce a support ticket or a duplicate payment. Everything else
+ * stays an error.
+ */
+export function claimErrorNotice(e: unknown): { text: string; tone: 'error' | 'ok' } {
+  return { text: paymentErrorMessage(e), tone: codeOf(e) === 'CODE_ALREADY_CREDITED' ? 'ok' : 'error' };
 }

@@ -210,12 +210,26 @@ export function makeSweepRegistry(opts: SweepRegistryOptions = {}): SweepRegistr
     };
   };
 
-  /** Write through at most once per `minPersistMs` per sweep — unless the status moved, which is news. */
+  /**
+   * Write through at most once per `minPersistMs` per sweep — unless the status moved, which is news.
+   *
+   * CAPPED AT HALF THE TOLERANCE, and that cap is load-bearing. The owner's board recomputes the
+   * verdict from the stored `last_run_at`, so the row has to stay fresh enough for that verdict to
+   * be valid. At a flat 60 s the 15-second fast re-verify lane — whose tolerance is also 60 s
+   * (15 × 2 + 30) — wrote a row that was routinely as stale as its own staleness threshold, and the
+   * board rendered a perfectly healthy sweep as STOPPED. Observed in production on the first run:
+   * ages oscillating 2s → 60s while `runs` climbed in bursts, with zero failures.
+   *
+   * Paging never had this problem (it reads the in-memory value, which every tick updates), so the
+   * alert was right while the board was wrong — the worse way round, because a board that cries
+   * wolf is exactly what this feature exists not to be.
+   */
   const maybePersist = (e: Entry, nowMs: number): void => {
     if (!opts.persist) return;
     const state = resolve(e, nowMs);
     const changed = state.status !== e.lastPersistedStatus;
-    if (!changed && nowMs - e.lastPersistAtMs < minPersistMs) return;
+    const everyMs = Math.min(minPersistMs, Math.max(1_000, Math.floor(state.toleranceMs / 2)));
+    if (!changed && nowMs - e.lastPersistAtMs < everyMs) return;
     e.lastPersistAtMs = nowMs;
     e.lastPersistedStatus = state.status;
     try { opts.persist(state); } catch { /* observability must never break the observed */ }

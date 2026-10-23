@@ -635,12 +635,18 @@ export class PaymentService {
     // One indexed lookup per sweep replaces N exceptions. Money semantics are unchanged: a reference
     // we own still goes through the same idempotent RPC, and one we do not still falls through to
     // claimable-by-code, so a payment is still EITHER credited to its tx OR claimable, never both.
-    const owned = await this.repo.ownedDepositRefs(rows.map((p) => p.externalReference).filter((r): r is string => r !== null));
+    // Resolves EITHER key to the checkout_request_id fn_complete_deposit looks up: a PayHero STK
+    // deposit's external_reference is our `transactions.id`, not its checkout_request_id, so the
+    // old set-of-owned-checkout-ids never matched one and every STK payment fell through to
+    // claimable-by-code (BUGLOG #163). Lipwa and Daraja are unchanged — their reference already IS
+    // the stored checkout_request_id.
+    const resolved = await this.repo.resolveDepositRefs(rows.map((p) => p.externalReference).filter((r): r is string => r !== null));
     for (const p of rows) {
       try {
-        if (p.externalReference && owned.has(p.externalReference)) {
+        const checkout = p.externalReference ? resolved.get(p.externalReference) : undefined;
+        if (checkout) {
           try {
-            const res = await this.repo.completeDeposit(p.externalReference, 0, "ledger:payhero", p.mpesaCode,
+            const res = await this.repo.completeDeposit(checkout, 0, "ledger:payhero", p.mpesaCode,
               { ledger: true, provider: "payhero", mpesaCode: p.mpesaCode, at: new Date().toISOString() });
             if (res.applied) settled += 1;
             continue; // a tx owns this reference (credited now, or already terminal) — never also ingest it

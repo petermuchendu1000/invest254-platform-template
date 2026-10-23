@@ -34,6 +34,8 @@ const DOMAIN_STATUS: Readonly<Record<string, number>> = {
   INVALID_CODE: 400,
   INVALID_C2B: 400,
   CODE_ALREADY_USED: 409,
+  // 0213: the code names a payment that already credited its own deposit — claiming would pay twice.
+  CODE_ALREADY_CREDITED: 409,
   WITHDRAWAL_ALREADY_REVERSED: 409,   // manual mark-paid on a failed/reversed withdrawal (would double-pay)
   // Mega Pay rail (migration 0116)
   PROVIDER_NOT_FOUND: 400,

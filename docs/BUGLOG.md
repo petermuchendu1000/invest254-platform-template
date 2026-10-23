@@ -5,6 +5,130 @@ entry: what, evidence, root cause, impact, and resolution.
 
 ---
 
+## #163 — Every PayHero deposit left a claimable shadow of itself: KES 152,306 was double-claimable — FIXED in 3 parts (migration 0213 + `resolveDepositRefs` + claim copy)
+
+- **What.** `fn_claim_c2b_deposit` guarded only against claiming the SAME `c2b_payments` row twice
+  (`claimed_tx_id is not null`). It never asked whether the money that row represents had already
+  been credited through the deposit it belongs to, and it never compared the claimant to the payer.
+- **Why that was reachable.** A separate defect (part 2, not yet fixed) makes the PayHero ledger
+  sweep ingest EVERY PayHero payment as claimable. We send our own `transactions.id` as PayHero's
+  `external_reference` (`paymentservice.ts:380`, and `:391` documents depending on it), but
+  `ownedDepositRefs` (`payments.ts:509`) and `fn_complete_deposit` both resolve a payment by
+  `transactions.checkout_request_id`. The two never match, so `reconcilePayHeroLedger`'s auto-credit
+  branch has never once fired and every payment falls through to `ingestC2b`.
+- **Evidence (production).** Of 455 unclaimed PayHero ledger rows: **452 carry a `bill_ref` equal to
+  a real `transactions.id`; 0 match any `checkout_request_id`.** For all 452 the row's `trans_id` is
+  the exact `mpesa_receipt` on the player's own successful deposit — the code they read off their
+  M-Pesa SMS and their in-app history. 451 sit on brands whose live payment scope is `global` and
+  which have PayHero enabled, i.e. where the claim route does not refuse. **KES 152,306
+  double-claimable. Claimed so far: 0.**
+- **A correction worth recording.** This was first reported as "KES 152,616 received and never
+  credited". That was wrong: every one of those deposits is `success` — the players WERE credited,
+  by the callback path, which uses the right key. The bug is a duplicate claimable record, not lost
+  money. The error came from concluding before joining to the deposits' status.
+- **The invariant restored.** A C2B payment may be credited AT MOST ONCE, by exactly one of (i) the
+  deposit it was initiated for (`fn_complete_deposit`) or (ii) a manual claim
+  (`fn_claim_c2b_deposit`) — never both.
+- **The guard.** Refuse when the payment's `bill_ref` identifies one of our deposits, or when its
+  code is already an `mpesa_receipt` on a credited deposit. Compared as `id::text = bill_ref`, never
+  `bill_ref::uuid`, which would throw on the ordinary Pay Bill case where `bill_ref` is a typed
+  account reference. It sits AFTER the `claimed_tx_id` check so an impatient second tap still gets
+  the idempotent `already_claimed`, and BEFORE any write so a refusal does no partial work.
+- **`failed` is deliberately excluded, and mutation testing is why.** The first version refused for
+  ANY status. But `fn_complete_deposit` early-returns on a transaction already `success` or `failed`,
+  so a failed deposit can never be credited through its own rail — if the money nonetheless arrived
+  (the provider reports failure but M-Pesa moved it, which is precisely why the ledger sweep exists),
+  the manual claim is the ONLY way the player ever sees it. Refusing there would have traded a
+  double-credit bug for a lost-money one. Zero such rows exist in production today; the case is
+  guarded anyway.
+- **Verification.** The RPC was exercised against a local PostgreSQL 16 whose tables were generated
+  from **production's own catalog** (`format_type` + `pg_get_expr` over `pg_attribute`), so the test
+  schema cannot drift from reality. Seven scenarios: the shadow row of a credited deposit (refused),
+  a `processing` deposit (refused), a code already a receipt (refused), a FAILED deposit (credited —
+  recovery), the genuine Pay Bill claim (credited), same-user re-claim (`already_claimed`), another
+  user's code (`CODE_ALREADY_USED`). Final balances exactly as predicted, no double credit.
+  Mutants: removing the `bill_ref` branch lets the `processing` case through; removing the receipt
+  branch lets the unrelated-`bill_ref` case through — so neither branch is redundant, and the real
+  production case is refused by both. Dropping `status = 'success'` from the receipt branch is an
+  EQUIVALENT mutant: a failed deposit never records a receipt (`payments.ts:240`, and the same in
+  SQL), so its distinguishing case is unreachable; the qualifier is kept as intent.
+  In-memory mirror covered by 7 tests. Full suite 2436, 0 failures.
+- **Part 2 — the reference mismatch itself — FIXED.** `ownedDepositRefs` answered only "is this a
+  `checkout_request_id` we own?", which is the key `fn_complete_deposit` looks up. Right for Lipwa
+  and Daraja, whose reference IS that stored value; wrong for PayHero **STK**, which sends our
+  `transactions.id` while storing PayHero's own reference in `checkout_request_id`. Replaced by
+  `resolveDepositRefs`, which matches EITHER key and returns the `checkout_request_id` to complete
+  by — so the money RPC, used by every rail, is untouched. Its only caller is the PayHero ledger
+  sweep, confirmed by search.
+  - **Lipwa was never affected** and is the control: `initiateLipwaDeposit` stores
+    `checkout_request_id = txId`, so its reference always matched. Only the STK path was broken.
+  - **`id::text = any($1::text[])`, never `any($1::uuid[])`** — the ledger is a shared account whose
+    references include typed account numbers, and casting the INPUT would raise on the first one and
+    abort the sweep for every payment in the page, not just that row. Pinned by its own test.
+  - **A ≤50-cent rounding artefact is left alone, deliberately.** `centsToKes` rounds to whole KES,
+    so the charged amount can differ from the deposit by under KES 1 — measured at 2 of 452 pairs,
+    max 46 cents. `fn_complete_deposit` credits the transaction's amount, which is what the callback
+    path already does, so this changes nothing; an exact-amount guard would have REFUSED those two
+    legitimate payments. Noted, not fixed, per "smallest change that fixes the root cause".
+  - **Mutation testing found the test gap, twice.** First pass: three of four mutants survived
+    because every test exercised the in-memory double and nothing covered the production SQL — so a
+    pg test was added against production-derived DDL. Second pass: the root-cause mutant survived
+    again, because strengthening the test had let the STK row be returned via the CHECKOUT match,
+    masking a broken id match. Splitting the assertions into two queries — ids only, then provider
+    references only — isolates each branch. Final: all six mutants killed, including removing the
+    id match (the original bug). Full suite 2446, 0 failures.
+- **Part 3 — the 452 existing rows, and the message part 1 made players read — FIXED (copy only).**
+  Part 3 began as "clean up the shadow rows" and ended somewhere else, because reading the claim
+  screen showed part 1's guard had a user-visible edge the SQL review never surfaced.
+  - **The rows are deliberately NOT deleted.** They are inert after part 1 (every claim path now
+    refuses them) and no surface lists them: no admin screen reads unclaimed `c2b_payments`, and the
+    only reader is `fn_claim_c2b_deposit`. Deleting 452 production rows is irreversible, buys nothing
+    the guard does not already give, and would destroy the only record tying each PayHero payment to
+    the deposit it settled — the evidence a future reconciliation dispute needs. Left in place.
+  - **The actual bug found instead.** `CODE_ALREADY_CREDITED` was not mapped anywhere on the client.
+    `PayBillDeposit.tsx` hand-rolled its own `msg.includes('CODE_ALREADY_USED')` check — it
+    recognised exactly one code — so part 1's refusal fell to its generic branch and the player was
+    told **"We couldn't verify that code. Check it and try again."** That is false twice over: the
+    code IS valid, and the money it names IS already in a wallet. The player's rational next move is
+    to pay again, or open a ticket. The same generic branch also swallowed a dropped connection and
+    every other refusal the route can raise (`PAYBILL_NOT_AVAILABLE`, `PROVIDER_DISABLED`,
+    `RATE_LIMITED`) into "your code is wrong".
+  - **The fix.** Route the claim form through `paymentErrorMessage` like the other three wallet forms
+    already do, and map the two missing codes centrally. `CODE_ALREADY_CREDITED` now reads *"That
+    payment has already been credited. Check your wallet balance — if you don't see it, contact
+    support."*
+  - **Why it does not say "added to YOUR wallet".** The same words appear 17 lines up in the success
+    state, and reusing them here would be a lie in the one case that matters: part 1's guard also
+    fires when the payment credited the account that MADE it, which is not necessarily the account
+    asking (a mistyped or borrowed code). The copy asserts the credit happened, not whose it is, and
+    names support as the escape hatch. This is the same reason `already_claimed` keeps the success
+    state and `CODE_ALREADY_CREDITED` does not: that one is proven to be the claimant's own payment.
+  - **It is rendered green, not red.** A red alert next to a player's money reads as "your deposit
+    failed" — the most alarming thing this screen can say, and the state most likely to produce a
+    duplicate payment. The notice now carries its own tone (`claimErrorNotice`) and this one case is
+    the positive tone with `role="status"`; everything else stays `role="alert"` and red.
+  - **Green border and tint, but the text is `--pp-fg`, and that is measured not assumed.** The
+    obvious `text-up bg-up/10` — the pattern already used for the "Approved" badge — measures 6.75:1
+    in dark and **3.11:1 under `html.light`**, below WCAG AA for 14px body text, on the one line that
+    tells a player where their money is. `text-fg` on the same tint is 13.2:1 / 17.2:1. `--pp-up` is
+    a FIXED semantic hue (`globals.css`), not brand-skinned, so those two numbers are the only two.
+  - **A pre-existing contrast defect found while measuring, deliberately NOT fixed here.** The red
+    error box this screen and the other three wallet forms already ship is `text-down` on `bg-down/10`
+    = **3.97:1 dark / 4.39:1 light**, and the amber `pending` box is 4.39:1 light — both under AA.
+    Fixing that means touching every wallet form's notice, so it is recorded rather than folded into
+    a payments bug. The new tone is the only one in this family that passes, in both themes.
+  - **Verification.** 8 unit tests, all 8 mutants killed — including removing the new mapping (the
+    bug itself), rewording it to claim a credit on the asking account, inverting the tone, greening
+    the wrong code, and letting the notice fork its own wording away from the shared map. Typecheck
+    and the production `next build` clean. Full suite 2450, 0 failures.
+- **Still open, tracked separately.** The ledger sweep reads only page 1 with no cursor or backfill,
+  so a payment that scrolls off during downtime is never seen; and the 11 PayHero deposits stuck in
+  `processing` have no ledger payment at all, so part 2 does not resolve them (BUG B). Part 2's fix
+  is also not yet proven in production: no PayHero deposit has arrived since it deployed, so "zero
+  new shadow rows" is consistent with the fix working AND with nothing having been tested.
+
+---
+
 ## #162 — Eleven background sweeps, none of which could tell you it was still running — FIXED (migration 0212 + a liveness registry)
 
 - **What.** Every background sweep in `apps/api/src/server.ts` reports only when it has something

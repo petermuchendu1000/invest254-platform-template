@@ -43,6 +43,27 @@ const ceil2 = (n: number) => Math.ceil(n * 100) / 100;
  * brand and the control appears there, on that brand only, with no deploy.
  */
 
+/**
+ * The duration picker is HIDDEN, not deleted.
+ *
+ * The classic (waves) shell is vertically tight and the chart is the thing players actually read,
+ * so this row was reclaimed for it: `Segmented` is `h-12` and the panel stacks on `gap-2.5`, so
+ * turning it off returns ~58px to the chart. Its `label` is only an `aria-label`, so nothing
+ * visible is lost besides the control itself.
+ *
+ * Everything behind it is left intact — the term is still resolved, still bounded by the brand's
+ * offered options, and still sent with the order — so bringing the control back is flipping this
+ * one flag, not rebuilding it.
+ *
+ * WHAT CHANGES WHILE IT IS OFF: a waves-shell trade uses the brand's configured default term
+ * (`/game/config` → `defaultDurationS`), which is the value the picker opened on anyway. This is
+ * not a new idea in this codebase — the candlestick `TradingPanel` deliberately ships without an
+ * expiry control for the same reason and reads the same field. Players who want to choose a term
+ * still can: the MT5 terminal shell's order ticket keeps the full set (`useOrderEntry`), and that
+ * choice is remembered across surfaces by the shared duration store.
+ */
+const SHOW_DURATION_PICKER: boolean = false;
+
 export function BetPanel() {
   const hydrated = useHydrated();
   const token = useSession((s) => s.token);
@@ -276,8 +297,11 @@ export function BetPanel() {
 
       {errorHint ? <p className="text-xs text-down">{errorHint}</p> : null}
 
-      {/* Auto-sell duration: every option visible, one tap (was a hidden tap-to-cycle circle). */}
-      <Segmented label="Duration" value={String(durationS)} onChange={(v) => setDurationS(Number(v))} options={durationOptions} />
+      {/* Auto-sell duration: every option visible, one tap (was a hidden tap-to-cycle circle).
+          Hidden by default to give the chart the row — see SHOW_DURATION_PICKER above. */}
+      {SHOW_DURATION_PICKER ? (
+        <Segmented label="Duration" value={String(durationS)} onChange={(v) => setDurationS(Number(v))} options={durationOptions} />
+      ) : null}
 
       {connecting ? (
         <p className="text-center text-xs text-muted">Connecting…</p>
