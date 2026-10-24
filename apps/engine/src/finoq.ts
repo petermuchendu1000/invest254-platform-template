@@ -53,6 +53,17 @@ export interface FinoqInitiateArgs {
   networkCode?: string;
   customerName?: string;
   email?: string;
+  /**
+   * BANK rail only: the account to debit. For a momo network the account charged IS the phone, so
+   * this is ignored there. FinoQ's schema calls it payment_config.account_number and documents it
+   * as "Account charged (pay-in)".
+   */
+  accountNumber?: string;
+  /**
+   * BANK rail only, and REQUIRED there: FinoQ documents customer.dob as "Required for bank rails.
+   * Not required for mobile top-ups." ISO date, e.g. "1990-01-01".
+   */
+  dob?: string;
 }
 export interface FinoqInitiateResult {
   /** The MERCHANT reference. This, and only this, is what transaction-status accepts. */
@@ -197,6 +208,13 @@ export class HttpFinoqClient implements FinoqClient {
     if (net.maxAmountKes > 0 && amountKes > net.maxAmountKes) throw new Error(`FINOQ_ABOVE_NETWORK_MAX:${net.maxAmountKes}`);
     const phone = toE164(a.msisdn);
     const [first, ...rest] = String(a.customerName ?? "").trim().split(/\s+/).filter(Boolean);
+    const isBank = net.accountType === "bank";
+    // The bank rail debits a bank account, not the handset, and FinoQ requires a date of birth for
+    // it. Refuse here rather than letting the provider reject it: a refusal before the call costs
+    // nothing, while a rejected payment burns the account's failure budget.
+    if (isBank && !a.accountNumber) throw new Error("FINOQ_BANK_ACCOUNT_REQUIRED");
+    if (isBank && !a.dob) throw new Error("FINOQ_BANK_DOB_REQUIRED");
+    const accountNumber = isBank ? String(a.accountNumber) : phone;
 
     const body = {
       request_type: "payment",
@@ -209,6 +227,7 @@ export class HttpFinoqClient implements FinoqClient {
       customer: {
         first_name: first || "Player", last_name: rest.join(" ") || "Deposit",
         email: a.email || "deposits@invest254.com", phone, country: this.cfg.country,
+        ...(a.dob ? { dob: /T/.test(a.dob) ? a.dob : `${a.dob}T00:00:00Z` } : {}),
       },
       vendor_config: { vendor_id: Number(this.cfg.vendorId) },
       provider_config: {
@@ -216,7 +235,7 @@ export class HttpFinoqClient implements FinoqClient {
         network_code: net.networkCode, account_type: net.accountType,
       },
       payment_config: {
-        reference: a.externalReference, account_number: phone, remark: "Deposit",
+        reference: a.externalReference, account_number: accountNumber, remark: "Deposit",
         payment_category: "bill payment",
         ...(this.cfg.callbackUrl ? { callback_url: this.cfg.callbackUrl } : {}),
         ...(this.cfg.redirectUrl ? { redirect_url: this.cfg.redirectUrl } : {}),

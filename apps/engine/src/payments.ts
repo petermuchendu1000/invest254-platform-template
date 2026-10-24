@@ -72,8 +72,12 @@ export interface DepositMethod {
    * "CARD" — so it names a payment method, never the supplier behind it.
    */
   methodCode?: string;
-  /** Fields this method needs from the player. Empty/absent => nothing to collect in our own form. */
-  fields?: Array<{ name: string; type: string; pattern?: string }>;
+  /**
+   * Fields this method needs from the player. Empty/absent => nothing to collect in our own form.
+   * `options` turns a field into a picker — the FinoQ bank rail needs one, because the bank is
+   * chosen from the 39 networks discovery reports rather than typed.
+   */
+  fields?: Array<{ name: string; type: string; pattern?: string; label?: string; options?: Array<{ value: string; label: string }> }>;
   /** Method logo the gateway publishes, for the tab. */
   iconUrl?: string;
 }

@@ -52,6 +52,8 @@ const DOMAIN_STATUS: Readonly<Record<string, number>> = {
   FINOQ_NETWORK_UNAVAILABLE: 400,
   FINOQ_BELOW_NETWORK_MIN: 400,
   FINOQ_ABOVE_NETWORK_MAX: 400,
+  FINOQ_BANK_ACCOUNT_REQUIRED: 400,
+  FINOQ_BANK_DOB_REQUIRED: 400,
   MEGAPAY_NOT_CONFIGURED: 503,
   MEGAPAY_INITIATE_REJECTED: 502,
   MEGAPAY_VERIFY_PENDING: 409,   // callback arrived but status not yet final -> caller/retry + reconcile settles it
@@ -343,8 +345,16 @@ export function registerProtectedRoutes(router: Router, deps: ApiDeps): void {
     // The network is the player's choice of M-Pesa / Airtel / T-Kash. It is validated against live
     // discovery inside the client, so an unknown or disabled code is refused before any money moves.
     const network = typeof body.network === "string" && body.network.trim() !== "" ? body.network.trim() : undefined;
+    // Bank-rail extras. Only meaningful when the chosen network is a bank; the client refuses a bank
+    // network without them, so a momo deposit is unaffected by their absence.
+    const accountNumber = typeof body.accountNumber === "string" && body.accountNumber.trim() !== "" ? body.accountNumber.trim() : undefined;
+    const dob = typeof body.dob === "string" && body.dob.trim() !== "" ? body.dob.trim() : undefined;
     const out = await domain(() => deps.payments.initiateFinoqDeposit(
-      ctx.claims!.userId, amount, phone, ctx.siteId, network ? { networkCode: network } : {}), ctx);
+      ctx.claims!.userId, amount, phone, ctx.siteId, {
+        ...(network ? { networkCode: network } : {}),
+        ...(accountNumber ? { accountNumber } : {}),
+        ...(dob ? { dob } : {}),
+      }), ctx);
     return { status: 202, body: { transactionId: out.txId, reference: out.reference, checkoutRequestId: out.checkoutRequestId } };
   });
 

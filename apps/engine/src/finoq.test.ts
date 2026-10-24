@@ -254,3 +254,75 @@ test("discovery is cached, so it stays off the deposit hot path", async () => {
   await c.discoverNetworks("KE");
   assert.equal(calls, 2, "and refreshed once the cache expires");
 });
+
+// ── the bank rail ─────────────────────────────────────────────────────────────────────────────────
+
+/** Discovery with a bank network alongside momo, as the live KE body returns (39 banks, 3 momo). */
+const DISCOVERY_BANK = {
+  has_networks: true, country: "KE", currency: "KES",
+  rails: { bank: true, card: false, crypto: false, momo: true },
+  provider_networks: {
+    viewtech: [
+      { channel_type: "momo", id: "63902-deposit", max_amount: 150000, min_amount: 1, name: "M-PESA", network_code: "63902", network_id: "63902", network_name: "M-PESA", provider: "viewtech", ramp_type: "deposit", status: "active" },
+      { channel_type: "bank", id: "68-deposit", max_amount: 1000000, min_amount: 1, name: "Equity Bank", network_code: "68", network_id: "68", network_name: "Equity Bank", provider: "viewtech", ramp_type: "deposit", status: "active" },
+    ],
+  },
+};
+
+test("BANK: the account to debit and the date of birth are both required", async () => {
+  const c = new HttpFinoqClient(cfg, fakeFetch((url) =>
+    url.includes("discover-rails") ? { status: 200, body: DISCOVERY_BANK } : { status: 200, body: { merchant_reference: "B1" } }));
+  // Refused HERE, before the call: a rejected payment burns the account's failure budget, and the
+  // failure RATE is what PayHero limits us on.
+  await assert.rejects(() => c.initiate({ amountCents: 100_000 as Cents, msisdn: "0712345678", externalReference: "t", networkCode: "68" }),
+    /FINOQ_BANK_ACCOUNT_REQUIRED/);
+  await assert.rejects(() => c.initiate({ amountCents: 100_000 as Cents, msisdn: "0712345678", externalReference: "t", networkCode: "68", accountNumber: "0170123456789" }),
+    /FINOQ_BANK_DOB_REQUIRED/);
+});
+
+test("BANK: debits the ACCOUNT, not the handset, and sends the dob FinoQ requires", async () => {
+  let seen: any = null;
+  const c = new HttpFinoqClient(cfg, fakeFetch((url, init) => {
+    if (url.includes("discover-rails")) return { status: 200, body: DISCOVERY_BANK };
+    seen = JSON.parse(init.body);
+    return { status: 200, body: { merchant_reference: "B1", checkout_request_id: "co" } };
+  }));
+  await c.initiate({ amountCents: 100_000 as Cents, msisdn: "0712345678", externalReference: "t",
+                     networkCode: "68", accountNumber: "0170123456789", dob: "1990-01-01" });
+  assert.equal(seen.transaction_channel, "bank", "the network's own channel_type drives this");
+  assert.equal(seen.provider_config.account_type, "bank");
+  assert.equal(seen.provider_config.network_name, "Equity Bank");
+  assert.equal(seen.payment_config.account_number, "0170123456789", "the BANK account, not the phone");
+  assert.equal(seen.customer.phone, "+254712345678", "the phone still identifies the customer");
+  assert.equal(seen.customer.dob, "1990-01-01T00:00:00Z", "a bare date is widened to the schema's date-time");
+});
+
+test("MOMO: a momo network ignores the bank extras and still charges the handset", async () => {
+  let seen: any = null;
+  const c = new HttpFinoqClient(cfg, fakeFetch((url, init) => {
+    if (url.includes("discover-rails")) return { status: 200, body: DISCOVERY_BANK };
+    seen = JSON.parse(init.body);
+    return { status: 200, body: { merchant_reference: "M1" } };
+  }));
+  await c.initiate({ amountCents: 1000 as Cents, msisdn: "0712345678", externalReference: "t", networkCode: FINOQ_MPESA });
+  assert.equal(seen.transaction_channel, "momo");
+  assert.equal(seen.payment_config.account_number, "+254712345678", "momo charges the phone");
+  assert.equal(seen.customer.dob, undefined, "and needs no date of birth");
+});
+
+test("a dob already carrying a time is passed through untouched", async () => {
+  let seen: any = null;
+  const c = new HttpFinoqClient(cfg, fakeFetch((url, init) => {
+    if (url.includes("discover-rails")) return { status: 200, body: DISCOVERY_BANK };
+    seen = JSON.parse(init.body); return { status: 200, body: { merchant_reference: "B2" } };
+  }));
+  await c.initiate({ amountCents: 100_000 as Cents, msisdn: "0712345678", externalReference: "t",
+                     networkCode: "68", accountNumber: "123", dob: "1990-01-01T12:30:00Z" });
+  assert.equal(seen.customer.dob, "1990-01-01T12:30:00Z");
+});
+
+test("discovery surfaces bank networks too — they are not momo-only", () => {
+  const nets = parseDiscovery(DISCOVERY_BANK);
+  assert.equal(nets.length, 2);
+  assert.equal(nets.find((n) => n.networkCode === "68")!.accountType, "bank");
+});

@@ -714,7 +714,7 @@ export class PaymentService {
    */
   async initiateFinoqDeposit(
     userId: string, amountCents: number, phoneRaw: string, siteId?: string,
-    opts: { networkCode?: string } = {},
+    opts: { networkCode?: string; accountNumber?: string; dob?: string } = {},
   ): Promise<{ txId: string; reference: string; checkoutRequestId: string }> {
     const owner = await this.ownerOf(siteId);
     const client = this.finoq;
@@ -732,6 +732,8 @@ export class PaymentService {
     const res = await this.withAbandonOnReject(txId, userId, "finoq", () => client.initiate({
       amountCents: amountCents as Cents, msisdn, externalReference: txId,
       ...(opts.networkCode ? { networkCode: opts.networkCode } : {}),
+      ...(opts.accountNumber ? { accountNumber: opts.accountNumber } : {}),
+      ...(opts.dob ? { dob: opts.dob } : {}),
     }));
     // attachStk(txId, merchant_request_id, checkout_request_id): the MERCHANT reference goes in the
     // checkout slot because that is the key the status query and the reconcile sweep both use.
@@ -739,18 +741,20 @@ export class PaymentService {
     return { txId, reference: res.reference, checkoutRequestId: res.checkoutRequestId };
   }
 
-  /** The networks this account can actually charge, for the deposit sheet. Empty when unconfigured. */
-  async listFinoqNetworks(): Promise<Array<{ code: string; label: string; minKes: number; maxKes: number }>> {
+  /**
+   * Every network this account can actually charge, momo and bank alike, straight from live
+   * discovery. Empty when the rail is unconfigured, which is what keeps it from being offered.
+   */
+  async listFinoqNetworks(): Promise<Array<{ code: string; label: string; kind: string; minKes: number; maxKes: number }>> {
     if (!this.finoq) return [];
     try {
       const nets = await this.finoq.discoverNetworks("KE");
-      return nets
-        .filter((n) => n.accountType === "momo")
-        .map((n) => ({
-          code: n.networkCode,
-          label: FINOQ_NETWORK_LABELS[n.networkCode] ?? n.networkName,
-          minKes: n.minAmountKes, maxKes: n.maxAmountKes,
-        }));
+      return nets.map((n) => ({
+        code: n.networkCode,
+        label: FINOQ_NETWORK_LABELS[n.networkCode] ?? n.networkName,
+        kind: n.accountType,
+        minKes: n.minAmountKes, maxKes: n.maxAmountKes,
+      }));
     } catch { return []; }
   }
 
@@ -975,9 +979,29 @@ export class PaymentService {
     // rather than failing at payment time. M-Pesa is skipped here because the STK tab above already
     // covers it — showing it twice would just ask the player to choose between identical options.
     if (enabled.has("payhero")) {
-      for (const n of await this.listFinoqNetworks()) {
-        if (n.code === FINOQ_MPESA) continue;
+      const finoqNets = await this.listFinoqNetworks();
+
+      // Mobile money, one tab per network. M-Pesa is skipped because the STK tab above already
+      // serves it through the Kenya rail; offering it twice would only ask the player to choose
+      // between two identical things. Everything else discovery reports is offered.
+      for (const n of finoqNets.filter((x) => x.kind === "momo" && x.code !== FINOQ_MPESA)) {
         methods.push({ id: `finoq-${n.code}`, provider: "finoq", channel: "stk", label: n.label, methodCode: n.code });
+      }
+
+      // Banks are ONE tab with a picker, not 39 tabs. The bank rail debits an account rather than a
+      // handset, and FinoQ requires a date of birth for it, so the method declares both as fields
+      // for the client to collect — the same mechanism PayX already uses.
+      const banks = finoqNets.filter((x) => x.kind === "bank");
+      if (banks.length > 0) {
+        methods.push({
+          id: "finoq-bank", provider: "finoq", channel: "stk", label: "Bank Transfer",
+          fields: [
+            { name: "network", type: "select", label: "Bank",
+              options: banks.map((b) => ({ value: b.code, label: b.label })) },
+            { name: "accountNumber", type: "text", label: "Account number" },
+            { name: "dob", type: "date", label: "Date of birth" },
+          ],
+        });
       }
     }
 

@@ -205,6 +205,27 @@ Object.assign(FIXTURES, {
 });
 
 const results = [];
+/**
+ * Wait for a locator to become visible, then report it as a boolean.
+ *
+ * THE BUG THIS FIXES. `check()` evaluates its argument ONCE, so `await vis(x)` asks only
+ * "is it on screen at this instant". Every assertion was racing a fixed `waitForTimeout`, and on a
+ * slow runner the sleep expired before the fetch-and-render finished, the single sample was wrong,
+ * and the check failed for good — nothing looked again. That is what failed CI on 2026-10-24: a
+ * player detail panel asserted 500ms after the click that opened it, after 14 green runs.
+ *
+ * Waiting costs nothing when the element is already there, which is every passing assertion; it
+ * spends time only on a check that was going to fail anyway. Returns false instead of throwing, so
+ * a failure is still reported by name rather than aborting the whole run.
+ */
+const LATENCY_MS = Number(process.env.E2E_LATENCY_MS ?? 0);
+const VIS_TIMEOUT_MS = Number(process.env.E2E_VIS_TIMEOUT_MS ?? 8000);
+/** Budget for an ABSENCE assertion. Waiting the full timeout to conclude "still not there" would
+ *  add minutes across the suite for no extra confidence, so these get a short, explicit window. */
+const ABSENT_TIMEOUT_MS = Number(process.env.E2E_ABSENT_TIMEOUT_MS ?? 1500);
+const vis = (locator, ms = VIS_TIMEOUT_MS) =>
+  locator.first().waitFor({ state: 'visible', timeout: ms }).then(() => true).catch(() => false);
+
 const check = (name, ok, detail = '') => { results.push({ name, ok }); console.log(`  [${ok ? 'PASS' : 'FAIL'}] ${name}${!ok && detail ? `  -- ${detail}` : ''}`); };
 
 async function session(browser, { token, me, stash = null, viewport = null, fixtures = {} }) {
@@ -221,6 +242,11 @@ async function session(browser, { token, me, stash = null, viewport = null, fixt
     calls.push(`${req.method()} ${path}`);
     full.push(`${req.method()} ${path}${u.search}`);
     if (req.method() !== 'GET') { let b = null; try { b = req.postDataJSON(); } catch { /* none */ } bodies.push([`${req.method()} ${path}`, b]); }
+    // Deliberate latency knob. The flake this file was fixed for only appears when the mocked
+    // fetch is slow enough that a fixed sleep expires before the render — the condition a loaded CI
+    // runner produces and a developer machine almost never does. Setting E2E_LATENCY_MS reproduces
+    // it on demand, which is the only way to show the waiting assertions are load-bearing.
+    if (LATENCY_MS) await new Promise((r) => setTimeout(r, LATENCY_MS));
     const body = path === '/auth/me' ? me
       : path === '/me/referral' ? REFERRAL
       : fixtures[path] ? fixtures[path]
@@ -237,7 +263,9 @@ async function session(browser, { token, me, stash = null, viewport = null, fixt
   return { ctx, page, calls, full, bodies };
 }
 async function navTexts(page) {
-  await page.waitForTimeout(300);
+  // Same race: sampling the nav on a timer returns [] when it has not rendered, and every nav
+  // assertion then fails together. Wait for the first link instead of guessing at 300ms.
+  await vis(page.locator('aside a, nav a'));
   return (await page.locator('aside a, nav a').allInnerTexts()).map((s) => s.trim()).filter(Boolean);
 }
 async function open(page, path) {
@@ -251,7 +279,7 @@ try {
   { const { ctx, page, calls } = await session(browser, { token: T.admin, me: ME.admin });
     await open(page, '/admin/tickets'); const nav = await navTexts(page);
     check('site admin: operations nav present', nav.includes('Withdrawals') && nav.includes('Users'), nav.join('|'));
-    check('site admin: the shell names the brand (UI-8)', await page.locator('aside').getByText('Tamu Traders', { exact: true }).isVisible() && await page.locator('aside').getByText('Brand admin', { exact: true }).first().isVisible());
+    check('site admin: the shell names the brand (UI-8)', await vis(page.locator('aside').getByText('Tamu Traders', { exact: true })) && await vis(page.locator('aside').getByText('Brand admin', { exact: true }).first()));
     check('site admin: NO Audit log / Governance / Platform nav', !nav.some((n) => /Audit log|Game config|M-Pesa|Fly\.io|All brands|System logs/.test(n)), nav.join('|'));
     await open(page, '/admin/audit');
     check('UI-F site admin: old /admin/audit goes back to the back-office home (was: a console 404)', page.url().endsWith('/admin'), page.url());
@@ -259,21 +287,21 @@ try {
     await open(page, '/admin/game');
     check('UI-F site admin: old /admin/game goes back to the back-office home (was: a console 404)', page.url().endsWith('/admin'), page.url());
     await open(page, '/admin/users/u-target');
-    check('site admin: "Edit details" and "Role" sections visible', await page.getByText('Edit details', { exact: true }).isVisible().catch(() => false) && await page.getByText('Role', { exact: true }).first().isVisible().catch(() => false));
-    check('site admin: overrides are read-only (no Save overrides)', !(await page.getByText('Save overrides').isVisible().catch(() => false)));
+    check('site admin: "Edit details" and "Role" sections visible', await vis(page.getByText('Edit details', { exact: true })) && await vis(page.getByText('Role', { exact: true }).first()));
+    check('site admin: overrides are read-only (no Save overrides)', !(await vis(page.getByText('Save overrides'), ABSENT_TIMEOUT_MS)));
     check('UI-F user page: marketer money is not repeated here (lives in Marketer payouts)', (await page.getByText('Marketer expenses & advances').count()) === 0);
     check('UI-F user page: brand admins are not appointed from here (console → People)', (await page.locator('option[value="admin"]').count()) === 0);
     await open(page, '/admin/users?status=suspended');
     check('UI-F users: a ?status= deep link pre-selects the quick filter', await page.getByRole('button', { name: /^Suspended/ }).getAttribute('aria-pressed').then((v) => v === 'true').catch(() => false));
     check('UI-F users: one way to open a person (the name), no separate Manage column', (await page.getByRole('columnheader', { name: 'Manage' }).count()) === 0);
     await open(page, '/platform');
-    check('site admin: /platform is a 404', await page.getByText('This page could not be found.').isVisible());
+    check('site admin: /platform is a 404', await vis(page.getByText('This page could not be found.')));
     await ctx.close(); }
 
   // 2) Owner, own session
   { const { ctx, page, calls } = await session(browser, { token: T.owner, me: ME.owner });
     await open(page, '/admin/tickets');
-    check('owner (own session): /admin shows the brand picker, not an unscoped back office (UI-2)', await page.getByRole('heading', { name: 'Brand back office' }).isVisible());
+    check('owner (own session): /admin shows the brand picker, not an unscoped back office (UI-2)', await vis(page.getByRole('heading', { name: 'Brand back office' })));
     check('owner: no back-office data request was made without a brand', !calls.some((c) => /^GET \/(admin|tickets)/.test(c)), calls.join());
     await open(page, '/platform'); const pnav = await navTexts(page);
     check('owner console: system nav incl. moved governance (Audit log, System logs, Deployment)', ['Platforms', 'Gateways', 'Controls & economy', 'Audit log', 'System logs', 'Deployment'].every((x) => pnav.some((n) => n.includes(x))), pnav.join('|'));
@@ -286,28 +314,28 @@ try {
   { const { ctx, page, calls } = await session(browser, { token: T.ownerImp, me: ME.owner });
     await open(page, '/admin/tickets'); const nav = await navTexts(page);
     check('owner impersonating (new tab): brand admin nav only — no Audit/Governance/Platform', nav.includes('Withdrawals') && !nav.some((n) => /Audit log|Game config|All brands|System logs/.test(n)), nav.join('|'));
-    check('owner impersonating (new tab): banner names the brand from the token', await page.getByText('Tamu Traders').first().isVisible());
+    check('owner impersonating (new tab): banner names the brand from the token', await vis(page.getByText('Tamu Traders').first()));
     check('owner impersonating: token NOT re-minted by the session bootstrap', !calls.includes('POST /auth/refresh'), calls.join());
     await open(page, '/admin/users/u-target');
     check('owner impersonating: no admin-role option (API refuses it as admin)', !(await page.locator('option[value="admin"]').count()));
     await open(page, '/platform');
-    check('owner impersonating: /platform offers "Exit brand" instead of the console', await page.getByRole('button', { name: 'Exit brand' }).isVisible());
+    check('owner impersonating: /platform offers "Exit brand" instead of the console', await vis(page.getByRole('button', { name: 'Exit brand' })));
     await ctx.close(); }
 
   // 4) Platform admin, own session
   { const { ctx, page, calls } = await session(browser, { token: T.pa, me: ME.pa });
     await open(page, '/platform'); const pnav = await navTexts(page);
-    check('platform admin console: the shell names its platform (UI-8)', await page.locator('aside').getByText('Alpha Platform', { exact: true }).isVisible() && await page.locator('aside').getByText('Platform console', { exact: true }).isVisible());
+    check('platform admin console: the shell names its platform (UI-8)', await vis(page.locator('aside').getByText('Alpha Platform', { exact: true })) && await vis(page.locator('aside').getByText('Platform console', { exact: true })));
     check('platform admin console: NO system nav', !pnav.some((n) => /Platforms|Gateways|Controls|System logs|M-Pesa|Deployment|Brand back office/.test(n)), pnav.join('|'));
     check('ADDON-1: platform admins get Add-ons for their brands', pnav.includes('Add-ons'), pnav.join('|'));
     const paHrefs = await page.locator('aside nav a').evaluateAll((as) => as.map((a) => a.getAttribute('href')));
     check('UI-F platform admin console: one audit log, the same page as the owner (scoped server-side)', paHrefs.includes('/platform/audit') && !paHrefs.includes('/platform/activity'), paHrefs.join('|'));
     await open(page, '/platform/audit');
-    check('UI-F platform admin: /platform/audit opens the audit log', await page.getByRole('heading', { name: 'Audit log' }).isVisible().catch(() => false) && calls.includes('GET /platform/audit-log'), calls.filter((c) => c.includes('audit')).join());
+    check('UI-F platform admin: /platform/audit opens the audit log', await vis(page.getByRole('heading', { name: 'Audit log' })) && calls.includes('GET /platform/audit-log'), calls.filter((c) => c.includes('audit')).join());
     await open(page, '/platform/onboard');
     check('platform admin: onboarding never calls the owner-only platforms list', !calls.includes('GET /platform/platforms'), calls.filter((c) => c.includes('platforms')).join());
     await open(page, '/admin');
-    check('platform admin (raw): /admin is a 404', await page.getByText('This page could not be found.').isVisible());
+    check('platform admin (raw): /admin is a 404', await vis(page.getByText('This page could not be found.')));
     await ctx.close(); }
 
   // 5) Platform admin impersonating (the pre-fix "hidden but allowed" case)
@@ -315,15 +343,15 @@ try {
     await open(page, '/admin/tickets'); const nav = await navTexts(page);
     check('platform admin impersonating: enters the brand back office', nav.includes('Withdrawals'), nav.join('|'));
     await open(page, '/admin/users/u-target');
-    check('platform admin impersonating: "Edit details" section visible (API allows it as admin)', await page.getByText('Edit details', { exact: true }).isVisible().catch(() => false));
-    check('platform admin impersonating: "Role" section visible (player<->marketer)', await page.getByText('Role', { exact: true }).first().isVisible().catch(() => false));
+    check('platform admin impersonating: "Edit details" section visible (API allows it as admin)', await vis(page.getByText('Edit details', { exact: true })));
+    check('platform admin impersonating: "Role" section visible (player<->marketer)', await vis(page.getByText('Role', { exact: true }).first()));
     await ctx.close(); }
 
   // 6) Deploy-order safety: an impersonation token minted BEFORE the API added `act` (tab stash only)
   { const legacy = jwt({ sub: 'u-owner', role: 'admin', site: SITE });
     const { ctx, page, calls } = await session(browser, { token: legacy, me: ME.owner, stash: JSON.stringify({ siteId: SITE, slug: 'tamu', name: 'Tamu Traders', primaryDomain: null }) });
     await open(page, '/admin/tickets');
-    check('legacy impersonation (no act, tab stash): banner + exit still shown', await page.getByText('Tamu Traders').first().isVisible());
+    check('legacy impersonation (no act, tab stash): banner + exit still shown', await vis(page.getByText('Tamu Traders').first()));
     check('legacy impersonation: token not re-minted', !calls.includes('POST /auth/refresh'), calls.join());
     await ctx.close(); }
 
@@ -332,58 +360,58 @@ try {
     ['platform admin', T.pa, ME.pa], ['owner impersonating', T.ownerImp, ME.owner]]) {
     const { ctx, page, calls } = await session(browser, { token, me });
     await open(page, '/affiliate');
-    check(`${who}: /affiliate explains staff accounts can't join (UI-12)`, await page.getByText('Not available for staff accounts').isVisible());
-    check(`${who}: /affiliate offers no "Apply to the programme"`, !(await page.getByText('Apply to the programme').isVisible().catch(() => false)));
+    check(`${who}: /affiliate explains staff accounts can't join (UI-12)`, await vis(page.getByText('Not available for staff accounts')));
+    check(`${who}: /affiliate offers no "Apply to the programme"`, !(await vis(page.getByText('Apply to the programme'), ABSENT_TIMEOUT_MS)));
     await open(page, '/account');
-    check(`${who}: /account shows no referral invite card`, !(await page.getByText(/Invite & earn/).isVisible().catch(() => false)));
+    check(`${who}: /account shows no referral invite card`, !(await vis(page.getByText(/Invite & earn/), ABSENT_TIMEOUT_MS)));
     check(`${who}: no affiliate/referral request was made`, !calls.some((c) => /\/(me\/referral|affiliate)/.test(c)), calls.join());
     await ctx.close();
   }
   { const { ctx, page } = await session(browser, { token: T.player, me: ME.player });
     await open(page, '/account');
-    check('player: /account keeps the referral invite card', await page.getByText(/Invite & earn/).isVisible());
+    check('player: /account keeps the referral invite card', await vis(page.getByText(/Invite & earn/)));
     await open(page, '/affiliate');
-    check('player: /affiliate offers "Apply to the programme"', await page.getByText('Apply to the programme').isVisible());
+    check('player: /affiliate offers "Apply to the programme"', await vis(page.getByText('Apply to the programme')));
     await ctx.close(); }
 
   // 8) docs/42 UI-9: owner console gaps
   { const { ctx, page, calls, full } = await session(browser, { token: T.owner, me: ME.owner });
     await open(page, '/platform/tickets');
     await page.getByRole('button', { name: 'New ticket' }).click();
-    check("owner: new ticket asks WHICH platform and says it goes to that platform's admin", await page.getByLabel('Platform').isVisible() && await page.getByText("Assigned to the chosen platform's admin").isVisible());
-    check('owner: new ticket never claims "your platform admin"', !(await page.getByText('Assigned to your platform admin').isVisible().catch(() => false)));
+    check("owner: new ticket asks WHICH platform and says it goes to that platform's admin", await vis(page.getByLabel('Platform')) && await vis(page.getByText("Assigned to the chosen platform's admin")));
+    check('owner: new ticket never claims "your platform admin"', !(await vis(page.getByText('Assigned to your platform admin'), ABSENT_TIMEOUT_MS)));
     await page.keyboard.press('Escape');
     await page.getByText('Payouts stuck').first().click(); await page.waitForTimeout(400);
-    check('owner: a ticket offers no "Escalate to System" (it would only reassign it to the owner)', !(await page.getByRole('button', { name: 'Escalate to System' }).isVisible().catch(() => false)));
+    check('owner: a ticket offers no "Escalate to System" (it would only reassign it to the owner)', !(await vis(page.getByRole('button', { name: 'Escalate to System' }), ABSENT_TIMEOUT_MS)));
     await page.keyboard.press('Escape');
 
     await open(page, '/platform/platforms');
     await page.getByRole('button', { name: 'Platform admins' }).click(); await page.waitForTimeout(300);
-    check('owner: platform admins are listed by person (name + platform), not a count', await page.getByText('@alice').isVisible() && await page.getByText(/runs\s+Alpha Platform/).first().isVisible());
+    check('owner: platform admins are listed by person (name + platform), not a count', await vis(page.getByText('@alice')) && await vis(page.getByText(/runs\s+Alpha Platform/).first()));
     check('owner: no raw "User id" field anywhere', (await page.getByLabel('User id').count()) === 0);
     await page.getByLabel('Find a person').fill('bob'); await page.waitForTimeout(900);
-    check('owner: appoint searches people across brands', await page.getByText('@bobkamau').isVisible());
-    check("owner: an ineligible person is shown with the reason (default marketer)", await page.getByText(/default marketer: reassign/).isVisible());
+    check('owner: appoint searches people across brands', await vis(page.getByText('@bobkamau')));
+    check("owner: an ineligible person is shown with the reason (default marketer)", await vis(page.getByText(/default marketer: reassign/)));
     check('owner: the search called the directory route', calls.some((c) => c.startsWith('GET /platform/users/search')), calls.join());
 
     const poolStart = full.length;
     await open(page, '/platform/pool');
-    check('owner: /platform/pool asks which platform (was: every brand, "your brands")', await page.getByLabel('Pool for platform').isVisible() && !(await page.getByText("Set each of your brands").isVisible().catch(() => false)));
+    check('owner: /platform/pool asks which platform (was: every brand, "your brands")', await vis(page.getByLabel('Pool for platform')) && !(await vis(page.getByText("Set each of your brands"), ABSENT_TIMEOUT_MS)));
     // the page's own data requests (the shell may list all brands for navigation; that is not the pool)
     const poolCalls = full.slice(poolStart).filter((c) => c.startsWith('GET /platform/pool/'));
     check('owner: /platform/pool requests carry the chosen platform (?platform=)', poolCalls.length > 0 && poolCalls.every((c) => c.includes(`platform=${PLATFORM}`)), poolCalls.join());
     await page.getByLabel('Pool for platform').selectOption(OTHER_PLATFORM); await page.waitForTimeout(600);
     check('owner: switching platform re-scopes the pool requests', full.some((c) => c.startsWith('GET /platform/pool/distributions') && c.includes(`platform=${OTHER_PLATFORM}`)), full.filter((c) => c.includes('pool')).join());
     await open(page, '/platform/registrar');
-    check('owner: registrar page asks which platform', await page.getByLabel('Registrar for platform').isVisible());
+    check('owner: registrar page asks which platform', await vis(page.getByLabel('Registrar for platform')));
     await open(page, '/platform/onboard');
-    check('owner: onboarding asks which platform up-front', await page.getByLabel('Onboard into platform').isVisible());
+    check('owner: onboarding asks which platform up-front', await vis(page.getByLabel('Onboard into platform')));
     await open(page, `/platform/clients/${SITE}?tab=addons`);
     check('UI-C: a brand tab is deep-linkable (?tab=addons opens Add-ons)', (await page.getByRole('tab', { name: 'Add-ons' }).getAttribute('aria-selected', { timeout: 3000 }).catch(() => null)) === 'true');
-    check('owner: a brand page can ASSIGN a locked add-on (was: request only)', await page.getByRole('button', { name: 'Assign…' }).first().isVisible());
-    check('owner: a brand page can REMOVE an owned non-default add-on', await page.getByRole('button', { name: 'Remove…' }).first().isVisible());
+    check('owner: a brand page can ASSIGN a locked add-on (was: request only)', await vis(page.getByRole('button', { name: 'Assign…' }).first()));
+    check('owner: a brand page can REMOVE an owned non-default add-on', await vis(page.getByRole('button', { name: 'Remove…' }).first()));
     await page.getByRole('button', { name: 'Assign…' }).first().click();
-    check('owner: assigning states the effect on players and the price first', await page.getByRole('dialog').getByText(/becomes the price chart players see, straight away\. KES 5,000 is added once to the platform's next invoice/).isVisible().catch(() => false));
+    check('owner: assigning states the effect on players and the price first', await vis(page.getByRole('dialog').getByText(/becomes the price chart players see, straight away\. KES 5,000 is added once to the platform's next invoice/)));
     await ctx.close(); }
   { const { ctx, page, calls } = await session(browser, { token: T.pa, me: ME.pa });
     await open(page, '/platform/pool');
@@ -391,20 +419,20 @@ try {
     check('platform admin: no owner-only platforms list was requested', !calls.includes('GET /platform/platforms'), calls.join());
     await open(page, '/platform/tickets');
     await page.getByRole('button', { name: 'New ticket' }).click();
-    check('platform admin: new ticket says it goes straight to the System owner', await page.getByText('Goes straight to the System owner.').isVisible());
+    check('platform admin: new ticket says it goes straight to the System owner', await vis(page.getByText('Goes straight to the System owner.')));
     await page.keyboard.press('Escape');
     await open(page, `/platform/clients/${SITE}`);
     check('UI-C: add-ons are NOT shown under Identity (own tab)', (await page.getByRole('button', { name: /^Request/ }).count()) === 0);
     await page.getByRole('tab', { name: 'Add-ons' }).click({ timeout: 3000 }).catch(() => {}); await page.waitForTimeout(300);
-    check('platform admin: a brand page offers Request, never Assign', (await page.getByRole('button', { name: 'Assign…' }).count()) === 0 && await page.getByRole('button', { name: /Request · KES 5,000 one-off/ }).isVisible().catch(() => false));
+    check('platform admin: a brand page offers Request, never Assign', (await page.getByRole('button', { name: 'Assign…' }).count()) === 0 && await vis(page.getByRole('button', { name: /Request · KES 5,000 one-off/ })));
     await ctx.close(); }
   { const { ctx, page } = await session(browser, { token: T.admin, me: ME.admin });
     await open(page, '/admin/tickets');
     await page.getByRole('button', { name: 'New ticket' }).click();
-    check('site admin: new ticket goes to its platform admin (unchanged)', await page.getByText('Assigned to your platform admin').isVisible());
+    check('site admin: new ticket goes to its platform admin (unchanged)', await vis(page.getByText('Assigned to your platform admin')));
     await page.keyboard.press('Escape');
     await page.getByText('Payouts stuck').first().click(); await page.waitForTimeout(400);
-    check('site admin: can still escalate to System', await page.getByRole('button', { name: 'Escalate to System' }).isVisible());
+    check('site admin: can still escalate to System', await vis(page.getByRole('button', { name: 'Escalate to System' })));
     await ctx.close(); }
 
   // 9) docs/42 UI-10: platform-admin player management + one audit trail
@@ -412,13 +440,13 @@ try {
     await open(page, `/platform/clients/${SITE}`);
     await page.getByRole('tab', { name: 'People' }).click(); await page.waitForTimeout(300);
     await page.locator('section[aria-label="Players"]').getByText('@target').first().click(); await page.waitForTimeout(500);
-    check('platform admin: selecting a player shows their money + activity (detail)', await page.getByText('Bonus balance').isVisible() && await page.getByText('KES 20').first().isVisible());
-    check('UI-F platform admin: balance changes live in the back office only (no second form here)', (await page.getByRole('button', { name: 'Review adjustment' }).count()) === 0 && await page.getByRole('button', { name: 'Manage in back office' }).isVisible());
-    check('UI-F platform admin: brand admins are managed on the same People tab', await page.getByRole('region', { name: 'Brand admins' }).isVisible().catch(() => false) || await page.getByText('Brand admins', { exact: true }).isVisible());
+    check('platform admin: selecting a player shows their money + activity (detail)', await vis(page.getByText('Bonus balance')) && await vis(page.getByText('KES 20').first()));
+    check('UI-F platform admin: balance changes live in the back office only (no second form here)', (await page.getByRole('button', { name: 'Review adjustment' }).count()) === 0 && await vis(page.getByRole('button', { name: 'Manage in back office' })));
+    check('UI-F platform admin: brand admins are managed on the same People tab', await vis(page.getByRole('region', { name: 'Brand admins' })) || await vis(page.getByText('Brand admins', { exact: true })));
     await page.getByText('Game overrides for this player').click(); await page.waitForTimeout(400);
-    check('platform admin: player overrides are editable in the console (was: no UI)', await page.getByLabel('Win rate (%)').isVisible());
+    check('platform admin: player overrides are editable in the console (was: no UI)', await vis(page.getByLabel('Win rate (%)')));
     await page.getByLabel('Win rate (%)').fill('90');
-    check("platform admin: an override better than the brand is stopped before saving", await page.getByText(/at most 4\d(\.\d+)?%/).isVisible() && await page.getByRole('button', { name: 'Save overrides' }).isDisabled());
+    check("platform admin: an override better than the brand is stopped before saving", await vis(page.getByText(/at most 4\d(\.\d+)?%/)) && await page.getByRole('button', { name: 'Save overrides' }).isDisabled());
     await page.getByLabel('Win rate (%)').fill('30');
     await page.getByRole('button', { name: 'Save overrides' }).click(); await page.waitForTimeout(400);
     const ov = bodies.find(([k]) => k === 'PATCH /platform/sites/' + SITE + '/users/u-target/overrides');
@@ -427,7 +455,7 @@ try {
     check('platform admin: nav has ONE audit trail across its brands (Audit log)', nav.filter((n) => n.includes('Audit log')).length === 1, nav.join('|'));
     await open(page, '/platform/activity');
     check('UI-F platform admin: the old /platform/activity forwards to the one audit log', page.url().includes('/platform/audit'), page.url());
-    check('platform admin: the audit trail names the brand and the person', await page.getByText('@siteadmin').isVisible() && await page.getByRole('cell', { name: 'Tamu Traders' }).first().isVisible());
+    check('platform admin: the audit trail names the brand and the person', await vis(page.getByText('@siteadmin')) && await vis(page.getByRole('cell', { name: 'Tamu Traders' }).first()));
     check('platform admin: the audit trail uses the platform-scoped route', calls.includes('GET /platform/audit-log'), calls.filter((c) => c.includes('audit')).join());
     await ctx.close(); }
   { const { ctx, page } = await session(browser, { token: T.owner, me: ME.owner });
@@ -440,16 +468,16 @@ try {
     await open(page, '/platform'); const nav = await navTexts(page);
     check('platform admin: nav has "Payment accounts"', nav.some((n) => n.includes('Payment accounts')), nav.join('|'));
     await open(page, '/platform/payment-accounts');
-    check('platform admin: the page lists the whole platform and each brand, with who they pay into', await page.getByText('Whole platform · Alpha Platform').isVisible() && await page.getByText('Players pay into the System accounts').isVisible());
-    check('platform admin: configs are drafts until go-live (plain statement)', await page.getByText(/drafts until you go live/).isVisible());
-    check('platform admin: readiness is shown as a checklist (deposits ready / withdrawals still needed)', await page.getByText('Ready: M-Pesa').isVisible() && await page.getByText(/Add M-Pesa payout details/).isVisible());
-    check('platform admin: a saved secret is write-only (masked, "leave blank to keep")', await page.getByText(/saved •••• 1234, leave blank to keep/).isVisible());
+    check('platform admin: the page lists the whole platform and each brand, with who they pay into', await vis(page.getByText('Whole platform · Alpha Platform')) && await vis(page.getByText('Players pay into the System accounts')));
+    check('platform admin: configs are drafts until go-live (plain statement)', await vis(page.getByText(/drafts until you go live/)));
+    check('platform admin: readiness is shown as a checklist (deposits ready / withdrawals still needed)', await vis(page.getByText('Ready: M-Pesa')) && await vis(page.getByText(/Add M-Pesa payout details/)));
+    check('platform admin: a saved secret is write-only (masked, "leave blank to keep")', await vis(page.getByText(/saved •••• 1234, leave blank to keep/)));
     await page.getByLabel('Business shortcode').fill('600222');
     await page.getByRole('button', { name: 'Save', exact: true }).click(); await page.waitForTimeout(400);
     const put = bodies.find(([k]) => k === `PUT /platform/payment-scopes/platform/${PLATFORM}/gateways/mpesa`);
     check('platform admin: saving sends the account for ITS platform (secret left blank = keep)', put && put[1]?.shortcode === '600222' && put[1]?.consumer_key === '', JSON.stringify(put));
     await page.getByRole('button', { name: 'Go live on these accounts…' }).click(); await page.waitForTimeout(300);
-    check('platform admin: go-live states the blast radius (deposits to YOUR accounts, owner notified)', await page.getByText(/Deposits go to/).isVisible() && await page.getByText(/The System owner is notified/).isVisible());
+    check('platform admin: go-live states the blast radius (deposits to YOUR accounts, owner notified)', await vis(page.getByText(/Deposits go to/)) && await vis(page.getByText(/The System owner is notified/)));
     const goLive = page.getByRole('button', { name: 'Go live', exact: true });
     check('platform admin: without a payout account, go-live needs an explicit "withdrawals disabled" acknowledgement', await goLive.isDisabled());
     await page.getByRole('checkbox').check();
@@ -460,7 +488,7 @@ try {
     await ctx.close(); }
   { const { ctx, page } = await session(browser, { token: T.admin, me: ME.admin });
     await open(page, '/platform/payment-accounts');
-    check('site admin: /platform/payment-accounts is a 404', await page.getByText('This page could not be found.').isVisible());
+    check('site admin: /platform/payment-accounts is a 404', await vis(page.getByText('This page could not be found.')));
     await ctx.close(); }
 
   // UI-A (console shell): grouped + labelled navigation, a header that stays inside the sidebar, one current
@@ -487,7 +515,7 @@ try {
     await open(page, `/platform/clients/${SITE}`);
     check('UI-A owner: a brand page keeps "Overview" current', (await page.locator('aside [aria-current="page"]').getAttribute('href').catch(() => null)) === '/platform');
     await open(page, '/admin');
-    check('UI-A owner: the brand picker opens inside the console, with "Brand back office" current', await page.getByRole('heading', { name: 'Brand back office' }).isVisible() && (await page.locator('aside [aria-current="page"]').getAttribute('href').catch(() => null)) === '/admin');
+    check('UI-A owner: the brand picker opens inside the console, with "Brand back office" current', await vis(page.getByRole('heading', { name: 'Brand back office' })) && (await page.locator('aside [aria-current="page"]').getAttribute('href').catch(() => null)) === '/admin');
     await ctx.close(); }
   { const { ctx, page } = await session(browser, { token: T.admin, me: ME.admin });
     await open(page, '/admin/withdrawals');
@@ -500,13 +528,13 @@ try {
     const { ctx, page } = await session(browser, { token: tok, me, viewport: { width: 390, height: 844 } });
     await open(page, path);
     const menu = page.getByRole('button', { name: 'Open menu' });
-    check(`UI-A ${who} (phone): a menu button opens the navigation`, await menu.isVisible().catch(() => false));
+    check(`UI-A ${who} (phone): a menu button opens the navigation`, await vis(menu));
     await menu.click().catch(() => {}); await page.waitForTimeout(300);
     const drawer = page.getByRole('dialog', { name: 'Navigation' });
     check(`UI-A ${who} (phone): the drawer shows the current page`, (await drawer.locator('[aria-current="page"]').getAttribute('href').catch(() => null)) === path);
-    check(`UI-A ${who} (phone): Log out is reachable`, await drawer.getByRole('button', { name: 'Log out' }).isVisible().catch(() => false));
+    check(`UI-A ${who} (phone): Log out is reachable`, await vis(drawer.getByRole('button', { name: 'Log out' })));
     await page.keyboard.press('Escape'); await page.waitForTimeout(200);
-    check(`UI-A ${who} (phone): Escape closes the drawer`, !(await drawer.isVisible().catch(() => false)));
+    check(`UI-A ${who} (phone): Escape closes the drawer`, !(await vis(drawer, ABSENT_TIMEOUT_MS)));
     const sw = await page.evaluate(() => document.documentElement.scrollWidth);
     check(`UI-A ${who} (phone): no sideways page scroll`, sw <= 390, `scrollWidth ${sw}`);
     await ctx.close();
@@ -522,13 +550,13 @@ try {
     const trends = await page.locator('section').filter({ hasText: 'Trends' }).first().innerText().catch(() => '');
     check('UI-C overview: a metric that started this period says "New", never a fake ▲100%', trends.includes('New') && !/100%/.test(trends), trends.slice(0, 200));
     await open(page, '/admin/users/u-target');
-    check('UI-C user page: overrides are shown as read-only values, not inputs', await page.getByTestId('overrides-readonly').isVisible().catch(() => false) && (await page.getByLabel(/Win rate/).count()) === 0);
+    check('UI-C user page: overrides are shown as read-only values, not inputs', await vis(page.getByTestId('overrides-readonly')) && (await page.getByLabel(/Win rate/).count()) === 0);
     await ctx.close(); }
   { const { ctx, page, bodies } = await session(browser, { token: T.admin, me: ME.admin });
     await open(page, '/admin/announcements');
     await page.getByRole('textbox', { name: 'Title', exact: true }).fill('Weekend bonus', { timeout: 3000 }).catch(() => {});
     await page.getByLabel(/^Message/).fill('Deposit this weekend and get 10% extra.', { timeout: 3000 }).catch(() => {});
-    check('UI-C announcements: the preview shows the edited text', await page.getByText('Deposit this weekend and get 10% extra.').last().isVisible().catch(() => false));
+    check('UI-C announcements: the preview shows the edited text', await vis(page.getByText('Deposit this weekend and get 10% extra.').last()));
     await page.getByRole('button', { name: /^Send to 22 people/ }).click({ timeout: 3000 }).catch(() => {}); await page.waitForTimeout(200);
     await page.getByRole('button', { name: 'Yes, send it' }).click({ timeout: 3000 }).catch(() => {}); await page.waitForTimeout(400);
     const sent = bodies.find(([k]) => k === 'POST /admin/notifications/broadcast');
@@ -552,15 +580,15 @@ try {
     await open(page, '/platform/mpesa');
     const bar = await page.locator('main').innerText().catch(() => '');
     check('PAY-2: untouched auto-filled endpoints are "suggested", not "3 unsaved changes"', /Suggested endpoints are filled in/.test(bar) && !/Save 3 changes/.test(bar), bar.slice(-300));
-    const hasTab = await page.getByRole('tab', { name: 'Pay Bill (C2B)' }).isVisible().catch(() => false);
+    const hasTab = await vis(page.getByRole('tab', { name: 'Pay Bill (C2B)' }));
     check('PAY-2: the M-Pesa page has a Pay Bill (C2B) section', hasTab);
     await open(page, '/platform/mpesa?tab=c2b');
-    check('PAY-2: C2B status says it is not registered yet, with payment health', await page.getByText('Not registered', { exact: true }).isVisible().catch(() => false) && await page.getByText('Not yet claimed').isVisible().catch(() => false));
+    check('PAY-2: C2B status says it is not registered yet, with payment health', await vis(page.getByText('Not registered', { exact: true })) && await vis(page.getByText('Not yet claimed')));
     await page.getByRole('button', { name: 'Register with Safaricom' }).click({ timeout: 3000 }).catch(() => {}); await page.waitForTimeout(200);
     await page.getByRole('button', { name: 'Yes, register now' }).click({ timeout: 3000 }).catch(() => {}); await page.waitForTimeout(400);
     check('PAY-2: "Register with Safaricom" calls the registration endpoint', bodies.some(([k]) => k === 'POST /admin/c2b-config/register'), bodies.map(([k]) => k).join('|'));
     await page.getByLabel('Confirmation URL').fill('https://api.e2e.test/mpesa/confirm', { timeout: 3000 }).catch(() => {});
-    check('PAY-2: a URL Safaricom would reject is flagged before saving', await page.getByText(/Safaricom rejects URLs containing/).isVisible().catch(() => false) && await page.getByRole('button', { name: 'Save', exact: true }).isDisabled().catch(() => false));
+    check('PAY-2: a URL Safaricom would reject is flagged before saving', await vis(page.getByText(/Safaricom rejects URLs containing/)) && await page.getByRole('button', { name: 'Save', exact: true }).isDisabled().catch(() => false));
     await ctx.close(); }
 
   // POOL-1: each brand's pool today, automatic distribution (dynamic by default), history with each brand's share.
@@ -568,10 +596,10 @@ try {
     await open(page, '/platform/pool');
     const today = await page.locator('section').filter({ hasText: 'Budget today' }).first().innerText().catch(() => '');
     check('POOL-1: the pool page lists each brand with budget, paid, reserved and available today', /Tamu Traders/.test(today) && /KES 2,500/.test(today) && /KES 500/.test(today) && /Total \(pool on\)/.test(today), today.slice(0, 300));
-    check('POOL-1: a brand with withdrawals off is flagged', await page.getByText('withdrawals off').isVisible().catch(() => false));
-    check('POOL-1: automatic distribution is on, by demand, and marked as the default', await page.getByText('On: by demand').isVisible().catch(() => false) && await page.getByText('default', { exact: true }).isVisible().catch(() => false));
+    check('POOL-1: a brand with withdrawals off is flagged', await vis(page.getByText('withdrawals off')));
+    check('POOL-1: automatic distribution is on, by demand, and marked as the default', await vis(page.getByText('On: by demand')) && await vis(page.getByText('default', { exact: true })));
     await page.getByRole('radio', { name: /Even split/ }).first().click({ timeout: 3000 }).catch(() => {});
-    check('POOL-1: an even split cannot be saved without a daily total', await page.getByText('An even split needs a daily total.').isVisible().catch(() => false) && await page.getByRole('button', { name: 'Save', exact: true }).isDisabled().catch(() => false));
+    check('POOL-1: an even split cannot be saved without a daily total', await vis(page.getByText('An even split needs a daily total.')) && await page.getByRole('button', { name: 'Save', exact: true }).isDisabled().catch(() => false));
     await page.getByRole('radio', { name: /By demand/ }).first().click({ timeout: 3000 }).catch(() => {});
     await page.getByRole('button', { name: 'Run now' }).click({ timeout: 3000 }).catch(() => {}); await page.waitForTimeout(200);
     await page.getByRole('button', { name: 'Yes, run it now' }).click({ timeout: 3000 }).catch(() => {}); await page.waitForTimeout(400);
@@ -582,7 +610,7 @@ try {
     await ctx.close(); }
   { const { ctx, page } = await session(browser, { token: T.owner, me: ME.owner });
     await open(page, '/platform/config');
-    check('POOL-1: Controls & economy no longer duplicates the pool; it links to it', !(await page.getByText('Global withdrawal pool').count()) && await page.getByText('Open Withdrawal pool →').isVisible().catch(() => false));
+    check('POOL-1: Controls & economy no longer duplicates the pool; it links to it', !(await page.getByText('Global withdrawal pool').count()) && await vis(page.getByText('Open Withdrawal pool →')));
     await open(page, '/platform/pool');
     check('POOL-1: the owner can view every platform at once', await page.getByRole('option', { name: 'All platforms' }).count() === 1);
     await ctx.close(); }
@@ -593,8 +621,8 @@ try {
     await open(page, '/platform/billing');
     const banner = await page.getByRole('alert').first().innerText().catch(() => '');
     check('BILL-1: a platform in its grace period sees when its brands go offline, and what it owes', /keep your brands online/.test(banner) && /KES 45,000/.test(banner), banner.slice(0, 200));
-    check('BILL-1: the plan, next-invoice estimate and usage are shown', await page.getByText('Your plan', { exact: true }).isVisible().catch(() => false) && await page.getByText('Estimated total').isVisible().catch(() => false) && /812/.test(await page.getByRole('meter', { name: 'Players' }).locator('..').innerText().catch(() => '')));
-    check('BILL-1: invoices show a plain overdue state', await page.getByText('Overdue 5 days').first().isVisible().catch(() => false));
+    check('BILL-1: the plan, next-invoice estimate and usage are shown', await vis(page.getByText('Your plan', { exact: true })) && await vis(page.getByText('Estimated total')) && /812/.test(await page.getByRole('meter', { name: 'Players' }).locator('..').innerText().catch(() => '')));
+    check('BILL-1: invoices show a plain overdue state', await vis(page.getByText('Overdue 5 days').first()));
     check('BILL-1: platform admins get no owner money controls', !(await page.getByRole('button', { name: 'Run billing now' }).count()) && !(await page.getByRole('tab', { name: 'Settings' }).count()));
     await page.getByRole('alert').getByRole('button', { name: /Pay KES 45,000/ }).click({ timeout: 3000 }).catch(() => {}); await page.waitForTimeout(300);
     /**
@@ -615,24 +643,24 @@ try {
     await page.getByRole('button', { name: /Send prompt for KES 45,000/ }).click({ timeout: 3000 }).catch(() => {}); await page.waitForTimeout(400);
     const sent = bodies.find(([k]) => k === 'POST /platform/billing/invoices/inv-1/pay');
     check('BILL-1: Pay now sends the STK request for that invoice with the phone', !!sent && sent[1]?.phone === '0700000003', JSON.stringify(bodies.map(([k]) => k)));
-    check('BILL-1: then it says to check the phone', await page.getByText('Check your phone').isVisible().catch(() => false));
+    check('BILL-1: then it says to check the phone', await vis(page.getByText('Check your phone')));
     await open(page, '/platform/billing/invoices/inv-1');
     const doc = await page.getByRole('article').innerText().catch(() => '');
     check('BILL-1: the invoice page is a proper invoice (seller, bill-to, lines by brand, amount due, reference)',
       /TrioCodes Ltd/.test(doc) && /Bill to[\s\S]*Alpha Platform/i.test(doc) && /Area graph — Tamu Traders/.test(doc) && /Amount due[\s\S]*KES 45,000/i.test(doc) && /TRIO2600007/.test(doc), doc.slice(0, 300));
-    check('BILL-1: a platform admin cannot record, void or write off', !(await page.getByRole('button', { name: 'Record payment' }).count()) && !(await page.getByRole('button', { name: 'Void' }).count()) && await page.getByRole('button', { name: /Pay KES 45,000/ }).isVisible());
+    check('BILL-1: a platform admin cannot record, void or write off', !(await page.getByRole('button', { name: 'Record payment' }).count()) && !(await page.getByRole('button', { name: 'Void' }).count()) && await vis(page.getByRole('button', { name: /Pay KES 45,000/ })));
     await ctx.close(); }
   { const { ctx, page } = await session(browser, { token: T.pa, me: ME.pa, viewport: { width: 390, height: 844 } });
     await open(page, '/platform/billing');
     const w = await page.evaluate(() => document.documentElement.scrollWidth);
     check('BILL-1: the billing page fits a phone (no sideways scroll)', w <= 392, String(w));
-    check('BILL-1: on a phone invoices are cards with a Pay button', await page.getByRole('list', { name: 'Invoices' }).getByRole('button', { name: /Pay KES 45,000/ }).isVisible().catch(() => false));
+    check('BILL-1: on a phone invoices are cards with a Pay button', await vis(page.getByRole('list', { name: 'Invoices' }).getByRole('button', { name: /Pay KES 45,000/ })));
     await ctx.close(); }
 
   // BILL-1: owner — revenue overview, invoice filters, settings, manual invoice, record payment, credit.
   { const { ctx, page, full, bodies } = await session(browser, { token: T.owner, me: ME.owner });
     await open(page, '/platform/billing');
-    check('BILL-1: the owner sees recurring revenue, what is owed and how late', await page.getByText('Monthly recurring').isVisible().catch(() => false) && await page.getByText('Money owed, by how late it is').isVisible().catch(() => false));
+    check('BILL-1: the owner sees recurring revenue, what is owed and how late', await vis(page.getByText('Monthly recurring')) && await vis(page.getByText('Money owed, by how late it is')));
     const att = await page.locator('section').filter({ hasText: 'Needs attention' }).first().innerText().catch(() => '');
     check('BILL-1: "Needs attention" lists the platform in its final notice with the amount', /Alpha Platform/.test(att) && /Final notice/.test(att) && /KES 45,000/.test(att), att.slice(0, 200));
     await page.getByRole('tab', { name: 'Invoices' }).click(); await page.waitForTimeout(200);
@@ -641,7 +669,7 @@ try {
     check('BILL-1: the tab is kept in the URL', page.url().includes('tab=invoices'));
     await page.getByRole('tab', { name: 'Settings' }).click(); await page.waitForTimeout(300);
     await page.getByLabel('Tax rate (%)').fill('16'); await page.waitForTimeout(100);
-    check('BILL-1: settings show the unsaved-change bar and the overdue timeline', await page.getByText('1 unsaved change').isVisible().catch(() => false) && await page.getByRole('list', { name: 'Overdue timeline' }).isVisible());
+    check('BILL-1: settings show the unsaved-change bar and the overdue timeline', await vis(page.getByText('1 unsaved change')) && await vis(page.getByRole('list', { name: 'Overdue timeline' })));
     await page.getByRole('button', { name: 'Save changes' }).click(); await page.waitForTimeout(400);
     const st = bodies.find(([k]) => k === 'PATCH /platform/billing/settings');
     check('BILL-1: saving sends only what changed (16% = 1600 basis points)', !!st && JSON.stringify(st[1]) === '{"taxRateBp":1600}', JSON.stringify(st?.[1]));
@@ -674,12 +702,12 @@ try {
   // ADDON-1: owner — requests with the brand's reason and the billing consequence, catalog pricing model, brand matrix.
   { const { ctx, page, bodies } = await session(browser, { token: T.owner, me: ME.owner });
     await open(page, '/platform/addons');
-    check('ADDON-1: the owner lands on the requests inbox with the count', await page.getByRole('tab', { name: 'Requests (1)' }).isVisible().catch(() => false));
+    check('ADDON-1: the owner lands on the requests inbox with the count', await vis(page.getByRole('tab', { name: 'Requests (1)' })));
     const inbox = await page.getByRole('list', { name: 'Requests' }).innerText().catch(() => '');
     check('ADDON-1: a request shows product, brand, platform, quoted price and the brand’s reason',
       /Area graph/.test(inbox) && /Tamu Traders/.test(inbox) && /Alpha Platform/.test(inbox) && /KES 3,000 \/ month \+ KES 1,000 setup/.test(inbox) && /Players asked/.test(inbox), inbox.slice(0, 300));
     await page.getByRole('button', { name: 'Approve…' }).click(); await page.waitForTimeout(200);
-    check('ADDON-1: approving states exactly what gets billed', await page.getByRole('dialog').getByText(/KES 3,000 a month is added to the platform's invoices from the next renewal, plus a one-off KES 1,000 setup fee/).isVisible().catch(() => false));
+    check('ADDON-1: approving states exactly what gets billed', await vis(page.getByRole('dialog').getByText(/KES 3,000 a month is added to the platform's invoices from the next renewal, plus a one-off KES 1,000 setup fee/)));
     await page.getByLabel(/Note to the brand/).fill('Live now');
     await page.getByRole('button', { name: 'Approve and assign' }).click(); await page.waitForTimeout(400);
     const dec = bodies.find(([k]) => k === 'POST /addons/requests/9/decide');
@@ -688,11 +716,11 @@ try {
     check('ADDON-1: declining needs a reason the brand will see', await page.getByRole('button', { name: 'Decline', exact: true }).isDisabled().catch(() => false));
     await page.keyboard.press('Escape');
     await page.getByRole('tab', { name: 'Catalog' }).click(); await page.waitForTimeout(300);
-    check('ADDON-1: the catalog shows pricing model, setup fee and adoption', await page.getByText('Monthly', { exact: true }).first().isVisible().catch(() => false) && await page.getByText('KES 1,000').first().isVisible().catch(() => false));
+    check('ADDON-1: the catalog shows pricing model, setup fee and adoption', await vis(page.getByText('Monthly', { exact: true }).first()) && await vis(page.getByText('KES 1,000').first()));
     await page.getByRole('button', { name: 'Edit Pro chart' }).click(); await page.waitForTimeout(200);
     await page.getByRole('radio', { name: /Monthly/ }).click();
     await page.getByLabel('Price per month (KES)').fill('2,000'); await page.getByLabel('Setup fee (KES)').fill('500');
-    check('ADDON-1: the editor previews what brands will see', await page.getByText('KES 2,000 / month').last().isVisible().catch(() => false));
+    check('ADDON-1: the editor previews what brands will see', await vis(page.getByText('KES 2,000 / month').last()));
     await page.getByRole('dialog').getByRole('button', { name: 'Save' }).click(); await page.waitForTimeout(400);
     const up = bodies.find(([k]) => k === 'PATCH /addons/catalog/chart/pro');
     check('ADDON-1: saving sends the pricing model, price and setup fee in cents', !!up && up[1]?.billingType === 'monthly' && up[1]?.priceCents === 200000 && up[1]?.setupFeeCents === 50000, JSON.stringify(up?.[1]));
@@ -710,13 +738,13 @@ try {
     check('UI-F platform admin: /platform/addons is an overview that links to each brand\'s Add-ons tab (one marketplace, on the brand)',
       await page.getByRole('list', { name: "Your brands' add-ons" }).getByRole('link', { name: /Manage add-ons/ }).first().getAttribute('href').then((h) => h === `/platform/clients/${SITE}?tab=addons`).catch(() => false));
     await open(page, `/platform/clients/${SITE}?tab=addons`);
-    check('ADDON-1: the marketplace shows each add-on with its price and state', await page.locator('[data-addon="chart:area"]').getByText('Requested', { exact: true }).isVisible().catch(() => false)
-      && await page.locator('[data-addon="trade_ui:deriv"]').getByText('Owned', { exact: true }).isVisible().catch(() => false));
+    check('ADDON-1: the marketplace shows each add-on with its price and state', await vis(page.locator('[data-addon="chart:area"]').getByText('Requested', { exact: true }))
+      && await vis(page.locator('[data-addon="trade_ui:deriv"]').getByText('Owned', { exact: true })));
     await page.locator('[data-addon="trade_ui:deriv"]').getByRole('button', { name: 'Use this' }).click(); await page.waitForTimeout(400);
     const act = bodies.find(([k]) => k === 'POST /addons/activate');
     check('ADDON-1: a brand switches to a system it owns without asking', !!act && act[1]?.category === 'trade_ui' && act[1]?.key === 'deriv' && act[1]?.site === SITE, JSON.stringify(act?.[1]));
     await page.locator('[data-addon="chart:pro"]').getByRole('button', { name: /Request/ }).click(); await page.waitForTimeout(200);
-    check('ADDON-1: requesting shows the price and what happens if approved', await page.getByRole('dialog').getByText(/KES 5,000 is added once to the platform's next invoice/).isVisible().catch(() => false));
+    check('ADDON-1: requesting shows the price and what happens if approved', await vis(page.getByRole('dialog').getByText(/KES 5,000 is added once to the platform's next invoice/)));
     await page.getByLabel(/Why do you want it/).fill('Traders want candles');
     await page.getByRole('button', { name: 'Send request' }).click(); await page.waitForTimeout(400);
     const rq = bodies.find(([k]) => k === 'POST /addons/request');
@@ -745,7 +773,7 @@ try {
     const brands = () => page.getByRole('list', { name: 'Brands' }).innerText().catch(() => '');
     check('UI-F picker: ?platform= opens that platform and lists only its brands', /Kilo Bets/.test(await brands()) && !/Tamu Traders/.test(await brands()));
     await page.getByLabel('Search brands').fill('tamu'); await page.waitForTimeout(200);
-    check('UI-F picker: a search with no match here says which platform has it', await page.getByRole('button', { name: 'Alpha Platform (1)' }).isVisible().catch(() => false));
+    check('UI-F picker: a search with no match here says which platform has it', await vis(page.getByRole('button', { name: 'Alpha Platform (1)' })));
     await page.getByRole('button', { name: 'Alpha Platform (1)' }).click(); await page.waitForTimeout(200);
     check('UI-F picker: jumping to that platform shows the brand', /Tamu Traders/.test(await brands()) && page.url().includes(`platform=${PLATFORM}`), page.url());
     await page.getByLabel('Search brands').fill(''); await page.waitForTimeout(150);
@@ -759,7 +787,7 @@ try {
   { const { ctx, page } = await session(browser, { token: T.owner, me: ME.owner, viewport: { width: 390, height: 844 } });
     await open(page, '/admin');
     const w = await page.evaluate(() => document.documentElement.scrollWidth);
-    check('UI-F picker: on a phone the platform is a select and the page fits', await page.getByLabel('Platform', { exact: true }).isVisible().catch(() => false) && w <= 392, String(w));
+    check('UI-F picker: on a phone the platform is a select and the page fits', await vis(page.getByLabel('Platform', { exact: true })) && w <= 392, String(w));
     await ctx.close(); }
 
   // UI-D: Gateways as one list incl. M-Pesa, with an in-place "offered to players" switch and plain language.

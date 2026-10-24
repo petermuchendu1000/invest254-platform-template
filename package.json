@@ -16,7 +16,8 @@
     "test": "node --import tsx --test $(find packages apps -name '*.test.ts' -not -path '*/node_modules/*') $(find scripts -name '*.test.mjs' -o -name '*.test.mts')",
     "migrate": "node --import tsx scripts/migrate.mts",
     "migrate:status": "node --import tsx scripts/migrations_status.mts",
-    "engine": "tsx apps/engine/src/server.ts"
+    "engine": "tsx apps/engine/src/server.ts",
+    "test:pg": "node --import tsx --test $(find packages apps -name '*.pg.test.ts' -not -path '*/node_modules/*')"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",

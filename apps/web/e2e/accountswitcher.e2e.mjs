@@ -58,6 +58,26 @@ const PILL_REAL = /^Real account/;
 const PILL_DEMO = /^Demo account/;
 
 const results = [];
+/**
+ * Poll an async predicate until it holds, or the budget runs out.
+ *
+ * Same defect as roles.e2e.mjs: every assertion here reads the DOM — or the recorded call list —
+ * ONCE, a fixed number of milliseconds after a tap. On a slow runner the render or the fetch had
+ * not happened yet, the single sample was wrong, and the check failed for good. Polling costs
+ * nothing when the state is already correct, which is every passing run; it only spends time on a
+ * check that was going to fail anyway.
+ */
+const LATENCY_MS = Number(process.env.E2E_LATENCY_MS ?? 0);
+const UNTIL_TIMEOUT_MS = Number(process.env.E2E_UNTIL_TIMEOUT_MS ?? 8000);
+async function until(pred, ms = UNTIL_TIMEOUT_MS) {
+  const deadline = Date.now() + ms;
+  for (;;) {
+    try { if (await pred()) return true; } catch { /* mid-render; try again */ }
+    if (Date.now() >= deadline) return false;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+}
+
 const check = (n, ok, d = '') => { results.push({ n, ok }); console.log(`  [${ok ? 'PASS' : 'FAIL'}] ${n}${!ok && d ? ` -- ${d}` : ''}`); };
 
 // `undefined` (not a hard-coded path) so playwright-core uses its own installed browser on CI, the
@@ -78,6 +98,9 @@ async function session({ width = 390, height = 844, mode = 'real', touch = true 
     const req = route.request();
     const cors = { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'access-control-allow-methods': '*' };
     if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors });
+    // Same latency knob as roles.e2e.mjs: the only way to show, on a fast machine, that the polling
+    // assertions below are load-bearing rather than decoration.
+    if (LATENCY_MS) await new Promise((r) => setTimeout(r, LATENCY_MS));
     const path = new URL(req.url()).pathname.replace('/api/v1', '');
     calls.push(`${req.method()} ${path}`);
     let body;
@@ -117,7 +140,7 @@ try {
     await shot(page, 'phone-1-closed');
 
     const pill = page.locator('#balance-pill');
-    check('phone: the account pill renders', (await pill.count()) === 1, `count=${await pill.count()}`);
+    check('phone: the account pill renders', await until(async () => (await pill.count()) === 1), `count=${await pill.count()}`);
     const box = await pill.boundingBox();
     check('phone: the pill meets the 44px Apple touch target', !!box && box.height >= 44, box ? `h=${box.height}` : 'no box');
 
@@ -126,7 +149,7 @@ try {
     await shot(page, 'phone-2-open');
 
     const dialog = page.getByRole('dialog', { name: 'Switch account' });
-    check('phone: the switcher opens', (await dialog.count()) === 1);
+    check('phone: the switcher opens', await until(async () => (await dialog.count()) === 1));
     if (await dialog.count()) {
       const db = await dialog.boundingBox();
       console.log('    dialog box:', JSON.stringify(db));
@@ -148,7 +171,7 @@ try {
       }
     }
     const demoRow = page.getByRole('menuitemradio', { name: /Demo account/ });
-    check('phone: the Demo row exists', (await demoRow.count()) === 1);
+    check('phone: the Demo row exists', await until(async () => (await demoRow.count()) === 1));
     if (await demoRow.count()) {
       const rb = await demoRow.boundingBox();
       check('phone: the Demo row meets the 44px touch target', !!rb && rb.height >= 44, rb ? `h=${rb.height}` : 'no box');
@@ -162,9 +185,11 @@ try {
       }
       await demoRow.tap();
       await page.waitForTimeout(900);
+      await until(() => calls.filter((c) => c === 'POST /wallet/mode').length >= 1);
       const fired = calls.filter((c) => c === 'POST /wallet/mode');
       check('phone: tapping Demo fires POST /wallet/mode', fired.length === 1, `calls=${JSON.stringify(calls.filter((c) => c.includes('wallet')))}`);
       await shot(page, 'phone-3-after-demo');
+      await until(async () => PILL_DEMO.test((await pill.getAttribute('aria-label')) ?? ''));
       const label = await pill.getAttribute('aria-label');
       check('phone: the pill now reads Demo', PILL_DEMO.test(label ?? ''), String(label));
     }
@@ -173,7 +198,7 @@ try {
     await page.waitForTimeout(300);
     await page.tap('body', { position: { x: 195, y: 700 } });
     await page.waitForTimeout(250);
-    check('phone: an outside tap dismisses the menu', (await page.getByRole('dialog', { name: 'Switch account' }).count()) === 0);
+    check('phone: an outside tap dismisses the menu', await until(async () => (await page.getByRole('dialog', { name: 'Switch account' }).count()) === 0));
     check('phone: no page errors', errors.length === 0, errors.join(' | '));
     await ctx.close();
   })();
@@ -214,16 +239,17 @@ try {
       // 0176 — a MARKETER starts on Real (funny money, withdrawable via the instant marketer transfer)
       // and can switch to a SEPARATE Demo practice bucket that is empty, top-up-able and NEVER
       // withdrawable — exactly like a player. Both rows are real, interactive switch controls.
-      check('marketer: the Real row is a real switch control', (await realRow.count()) === 1, `rows=${await realRow.count()}`);
-      check('marketer: on Real, keeps its own Withdraw', (await page.getByRole('button', { name: /^withdraw$/i }).count()) >= 1);
+      check('marketer: the Real row is a real switch control', await until(async () => (await realRow.count()) === 1), `rows=${await realRow.count()}`);
+      check('marketer: on Real, keeps its own Withdraw', await until(async () => (await page.getByRole('button', { name: /^withdraw$/i }).count()) >= 1));
       const dtext0 = (await page.getByRole('dialog', { name: 'Switch account' }).innerText()).toLowerCase();
       check('marketer: on Real, not told its money is practice money', !dtext0.includes('practice money'), dtext0.slice(0, 120));
       check('marketer: the panel never names the account type', !dtext0.includes('marketer'), dtext0.slice(0, 120));
       // switch INTO the practice (Demo) bucket
       await page.getByRole('menuitemradio', { name: /Demo account/ }).tap();
       await page.waitForTimeout(900);
-      check('marketer: tapping Demo fires POST /wallet/mode', calls.filter((c) => c === 'POST /wallet/mode').length === 1,
+      check('marketer: tapping Demo fires POST /wallet/mode', await until(() => calls.filter((c) => c === 'POST /wallet/mode').length >= 1) && calls.filter((c) => c === 'POST /wallet/mode').length === 1,
         JSON.stringify(calls.filter((c) => c.includes('wallet'))));
+      await until(async () => PILL_DEMO.test((await page.locator('#balance-pill').getAttribute('aria-label')) ?? ''));
       const plabel = await page.locator('#balance-pill').getAttribute('aria-label');
       check('marketer: the pill now reads Demo (on the practice bucket)', PILL_DEMO.test(plabel ?? ''), String(plabel));
       // DEMO-2 parity: the practice bucket opens FUNDED to 10,000, never an empty 0.
@@ -242,13 +268,14 @@ try {
       // switch back to Real
       await page.getByRole('menuitemradio', { name: /Real account/ }).tap();
       await page.waitForTimeout(900);
+      await until(async () => PILL_REAL.test((await page.locator('#balance-pill').getAttribute('aria-label')) ?? ''));
       const rlabel = await page.locator('#balance-pill').getAttribute('aria-label');
       check('marketer: can switch back to Real', PILL_REAL.test(rlabel ?? ''), String(rlabel));
       check('demo->real: no page errors', errors.length === 0, errors.join(' | '));
       await ctx.close();
       return;
     }
-    check('demo->real: the Real row exists', (await realRow.count()) === 1);
+    check('demo->real: the Real row exists', await until(async () => (await realRow.count()) === 1));
     if (await realRow.count()) {
       const isDisabled = await realRow.isDisabled();
       const op = await realRow.evaluate((el) => getComputedStyle(el).opacity);
@@ -257,9 +284,10 @@ try {
       const pe = await realRow.evaluate((el) => getComputedStyle(el).pointerEvents);
       check('demo->real: the Real row accepts pointer events', pe !== 'none', `pointer-events=${pe}`);
       await realRow.tap();
-      await page.waitForTimeout(900);
+      await until(() => calls.filter((c) => c === 'POST /wallet/mode').length >= 1);
       const fired = calls.filter((c) => c === 'POST /wallet/mode');
       check('demo->real: tapping Real fires POST /wallet/mode', fired.length === 1, `wallet calls=${JSON.stringify(calls.filter((c) => c.includes('wallet')))}`);
+      await until(async () => /^Real account/.test((await page.locator('#balance-pill').getAttribute('aria-label')) ?? ''));
       const label = await page.locator('#balance-pill').getAttribute('aria-label');
       check('demo->real: the pill now reads Real', /^Real account/.test(label ?? ''), String(label));
     }
