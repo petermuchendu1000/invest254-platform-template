@@ -103,8 +103,24 @@ export interface PaymentRepository {
    * view of the rate is not the rate. Returns 'ok' only when a slot was consumed.
    */
   depositGate(userKey: string, merchantKey: string, limit: number, windowMs: number): Promise<DepositGate>;
+  /**
+   * 0214 — the same gate, plus the two counts PayHero's abuse protection is actually keeping: the
+   * SUCCESSIVE failed/cancelled pushes to one phone number, and the account-wide failures inside
+   * their 6h window. Both are counted by a trigger on `transactions` when a deposit that reached
+   * the gateway settles, so every rail and every settlement path feeds them without knowing it.
+   * `depositGate` above counts something different — gateway REFUSALS at initiate — and so never
+   * sees a push that was accepted and then failed.
+   */
+  depositGateWithPhone(args: DepositGateArgs): Promise<DepositGateVerdict>;
   /** 0175 — record a gateway rejection so this player's next attempt is held off. */
   depositGateReject(userKey: string, holdMs: number): Promise<void>;
+  /**
+   * 0215 — store a provider callback body verbatim on the deposit it names, for DIAGNOSIS ONLY.
+   * It writes one jsonb column and can change no status, no amount, no wallet and no ledger row, so
+   * storing a body is not trusting it: the credit decision still comes from the authoritative
+   * server-to-server re-query. Returns whether a row was annotated.
+   */
+  recordProviderCallback(ref: string, raw: unknown): Promise<boolean>;
   completeDeposit(checkoutRequestId: string, resultCode: number, resultDesc: string, receipt: string | null, raw: unknown): Promise<CompleteResult>;
   /**
    * Map each provider reference that belongs to a DEPOSIT of ours to the key `completeDeposit`
@@ -166,11 +182,26 @@ export interface PaymentRepository {
   getPaybillConfig(): Promise<PaybillConfig>;
 }
 
-interface MemTx { id: string; userId: string; kind: "deposit" | "withdrawal"; amount: Cents; status: string; phone: string; checkoutId?: string; seq: number; createdAtMs: number; receipt: string | null; siteId?: string | null; provider?: string; marketerId?: string; paymentScope?: string; resultDesc?: string; }
+interface MemTx { id: string; userId: string; kind: "deposit" | "withdrawal"; amount: Cents; status: string; phone: string; checkoutId?: string; seq: number; createdAtMs: number; receipt: string | null; siteId?: string | null; provider?: string; marketerId?: string; paymentScope?: string; resultDesc?: string; providerCallback?: unknown; }
 interface MemLedger { userId: string; type: string; amount: Cents; ref: string; }
 
 /** 0175 — the gate's three answers. 'ok' is the only one that consumed a slot. */
 export type DepositGate = "ok" | "too_soon" | "busy";
+/**
+ * 0214 — the gate's two extra answers. Both are checked BEFORE a merchant slot is consumed, so a
+ * caller refused here never eats the allowance.
+ *   'phone_blocked'    — this number has failed `phoneMax` times in a row and its backoff is running.
+ *   'merchant_failing' — the whole account has failed too often inside PayHero's 6h window.
+ */
+export type DepositGateVerdict = DepositGate | "phone_blocked" | "merchant_failing";
+/** PayHero's own sliding window for the account-wide failure count (0214). Their constant, not ours. */
+export const MERCHANT_FAIL_WINDOW_MS = 6 * 60 * 60 * 1000;
+/** Everything the 0214 gate needs. Thresholds travel from env so no policy number lives in SQL. */
+export interface DepositGateArgs {
+  userKey: string; merchantKey: string; phoneKey: string; merchantFailKey: string;
+  limit: number; windowMs: number;
+  phoneMax: number; phoneCooldownMs: number; merchantFailMax: number;
+}
 
 export class InMemoryPaymentRepository implements PaymentRepository {
   private balances = new Map<string, Cents>();
@@ -205,7 +236,7 @@ export class InMemoryPaymentRepository implements PaymentRepository {
     return id;
   }
   /** Mirrors fn_deposit_gate / fn_deposit_gate_reject (single process, so a plain map is exact here). */
-  private readonly gates = new Map<string, { windowStart: number; count: number; blockedUntil?: number }>();
+  private readonly gates = new Map<string, { windowStart: number; count: number; blockedUntil?: number; updatedAt?: number }>();
   async depositGate(userKey: string, merchantKey: string, limit: number, windowMs: number): Promise<DepositGate> {
     const now = this.now();
     const u = this.gates.get(userKey);
@@ -215,6 +246,47 @@ export class InMemoryPaymentRepository implements PaymentRepository {
     if (m.count >= Math.max(limit, 1)) return "busy";
     m.count += 1;
     return "ok";
+  }
+  /** Mirrors the 0214 overload: the two failure counts are checked before a merchant slot is taken. */
+  async depositGateWithPhone(a: DepositGateArgs): Promise<DepositGateVerdict> {
+    const now = this.now();
+    const p = this.gates.get(a.phoneKey);
+    if (a.phoneMax > 0 && p && p.count >= a.phoneMax) {
+      const over = Math.min(p.count - a.phoneMax, 16);
+      const cooldown = Math.min(Math.max(a.phoneCooldownMs, 0) * 2 ** over, MERCHANT_FAIL_WINDOW_MS * 4);
+      if (now < (p.updatedAt ?? p.windowStart) + cooldown) return "phone_blocked";
+    }
+    const f = this.gates.get(a.merchantFailKey);
+    if (a.merchantFailMax > 0 && f && f.count >= a.merchantFailMax && now - f.windowStart < MERCHANT_FAIL_WINDOW_MS) {
+      return "merchant_failing";
+    }
+    return this.depositGate(a.userKey, a.merchantKey, a.limit, a.windowMs);
+  }
+  /**
+   * Mirrors trg_tx_deposit_outcome: a deposit that REACHED the gateway and then settled moves the
+   * two counters. Called from completeDeposit below, which is the only in-memory path to a terminal
+   * deposit — the Postgres trigger catches every path, including ones added later.
+   */
+  private noteDepositOutcome(tx: MemTx, ok: boolean): void {
+    const scope = tx.paymentScope ?? "global";
+    const phoneKey = `dep:phonefail:${tx.provider ?? "mpesa"}:${scope}:${tx.phone}`;
+    if (ok) { this.gates.delete(phoneKey); return; }
+    const now = this.now();
+    const p = this.gates.get(phoneKey);
+    if (p) { p.count += 1; p.updatedAt = now; }
+    else this.gates.set(phoneKey, { windowStart: now, count: 1, updatedAt: now });
+    const merchKey = `dep:merchfail:${tx.provider ?? "mpesa"}:${scope}`;
+    const f = this.gates.get(merchKey);
+    if (!f || now - f.windowStart >= MERCHANT_FAIL_WINDOW_MS) this.gates.set(merchKey, { windowStart: now, count: 1, updatedAt: now });
+    else { f.count += 1; f.updatedAt = now; }
+  }
+  /** Mirrors fn_record_provider_callback: annotate only, by either reference column or the tx id. */
+  async recordProviderCallback(ref: string, raw: unknown): Promise<boolean> {
+    if (!ref || ref.trim() === "") return false;
+    for (const t of this.txns.values()) {
+      if (t.kind === "deposit" && (t.checkoutId === ref || t.id === ref)) { t.providerCallback = raw; return true; }
+    }
+    return false;
   }
   async depositGateReject(userKey: string, holdMs: number): Promise<void> {
     const until = this.now() + Math.max(holdMs, 0);
@@ -245,9 +317,11 @@ export class InMemoryPaymentRepository implements PaymentRepository {
       tx.status = "success"; tx.receipt = receipt;
       const bal = (this.balances.get(tx.userId) ?? 0) + tx.amount; this.balances.set(tx.userId, bal);
       this.ledger.push({ userId: tx.userId, type: "deposit", amount: tx.amount, ref: `transactions:${tx.id}` });
+      this.noteDepositOutcome(tx, true);
       return { applied: true, status: "success", newBalance: bal };
     }
     tx.status = "failed";
+    this.noteDepositOutcome(tx, false);
     return { applied: true, status: "failed", newBalance: await this.getBalance(tx.userId) };
   }
 
@@ -518,8 +592,21 @@ export class PgPaymentRepository implements PaymentRepository {
     const v = String(r.rows[0]?.verdict ?? "");
     return v === "ok" || v === "too_soon" || v === "busy" ? v : "busy";   // unknown answer => refuse
   }
+  async depositGateWithPhone(a: DepositGateArgs): Promise<DepositGateVerdict> {
+    const r = await this.q.query(
+      "select fn_deposit_gate($1,$2,$3,$4,$5,$6,$7,$8,$9) as verdict",
+      [a.userKey, a.merchantKey, a.phoneKey, a.merchantFailKey,
+       a.limit, a.windowMs, a.phoneMax, a.phoneCooldownMs, a.merchantFailMax]);
+    const v = String(r.rows[0]?.verdict ?? "");
+    return v === "ok" || v === "too_soon" || v === "busy" || v === "phone_blocked" || v === "merchant_failing"
+      ? v : "busy";   // unknown answer => refuse, exactly as the 4-arg gate does
+  }
   async depositGateReject(userKey: string, holdMs: number): Promise<void> {
     await this.q.query("select fn_deposit_gate_reject($1,$2)", [userKey, holdMs]);
+  }
+  async recordProviderCallback(ref: string, raw: unknown): Promise<boolean> {
+    const r = await this.q.query("select fn_record_provider_callback($1,$2) as ok", [ref, JSON.stringify(raw ?? {})]);
+    return Boolean(r.rows[0]?.ok);
   }
   async completeDeposit(checkoutRequestId: string, resultCode: number, resultDesc: string, receipt: string | null, raw: unknown): Promise<CompleteResult> {
     const r = await this.q.query("select applied, status, new_balance from fn_complete_deposit($1,$2,$3,$4,$5)", [checkoutRequestId, resultCode, resultDesc, receipt, JSON.stringify(raw ?? {})]);

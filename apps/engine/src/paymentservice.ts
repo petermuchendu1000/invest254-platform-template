@@ -1,8 +1,9 @@
 import { normalizeMsisdn, MIN_DEPOSIT_CENTS, MIN_WITHDRAWAL_CENTS, type Cents } from "@invest254/shared";
-import type { PaymentRepository, CompleteResult, CreateWithdrawalResult, WithdrawalOutcome, C2bPayment, ClaimResult, PaybillConfig, DepositProvider, DepositMethod } from "./payments.js";
+import type { PaymentRepository, CompleteResult, CreateWithdrawalResult, WithdrawalOutcome, C2bPayment, ClaimResult, PaybillConfig, DepositProvider, DepositMethod, DepositGateVerdict } from "./payments.js";
 import type { DarajaClient } from "./daraja.js";
 import type { MegaPayClient } from "./megapay.js";
 import type { PayHeroClient } from "./payhero.js";
+import { FINOQ_NETWORK_LABELS, FINOQ_MPESA, type FinoqClient } from "./finoq.js";
 import { toPaynicornPhone, methodIsDirect, type PaynicornClient, type PaynicornMethod } from "./paynicorn.js";
 import { paynicornCountry, formatPaynicornAmount } from "./paynicorncountries.js";
 import { kesToCurrencyRate } from "@invest254/shared/fx";
@@ -16,6 +17,50 @@ import { parseScope, type GatewayRouter, type OwnerScope, type PaymentScopeRef }
  * (credit/hold/reversal/idempotency) lives in the repository RPCs; this layer adds input
  * validation, MSISDN normalization, provider calls, and post-settlement event hooks.
  */
+/**
+ * The human-readable reason a PayHero deposit ended, for `transactions.result_desc` (0215).
+ * Falls back to the old `reconciled:payhero:<code>` shape when the provider told us nothing, so a
+ * row is never less informative than it used to be. Capped: the column is unbounded `text` and
+ * fn_complete_deposit does not truncate, so the cap belongs here.
+ */
+export function payHeroResultDesc(q: { resultCode: number | null; providerStatus?: string | null; detail?: string | null }): string {
+  return providerResultDesc("payhero", q);
+}
+
+/**
+ * The same, for any rail. Keeps the historic `reconciled:<provider>:<code>` prefix so existing
+ * reporting and the 0216 trigger's '%saf=%' guard both still behave, and appends whatever the
+ * provider actually said.
+ */
+export function providerResultDesc(
+  provider: string,
+  q: { resultCode: number | null; providerStatus?: string | null; detail?: string | null },
+): string {
+  const parts = [`reconciled:${provider}:${q.resultCode}`];
+  if (q.providerStatus) parts.push(q.providerStatus);
+  if (q.detail) parts.push(q.detail);
+  return parts.join(" ").slice(0, 200);
+}
+
+/**
+ * Find the reference a PayHero callback is about. PayHero echoes it under several names depending on
+ * the rail, and our own rail splits them across two columns: attachStk stores PayHero's `reference`
+ * in checkout_request_id and the Safaricom ws_CO id in merchant_request_id, while the STK callback
+ * carries that ws_CO id as "CheckoutRequestID". fn_record_provider_callback matches either column,
+ * so any one of these resolves the row. Returns null when the body names nothing we could match.
+ */
+export function payHeroCallbackRef(raw: unknown): string | null {
+  const b = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  const inner = (b.response && typeof b.response === "object" ? b.response : {}) as Record<string, unknown>;
+  for (const v of [b.external_reference, b.ExternalReference, b.reference, b.Reference,
+                   b.CheckoutRequestID, b.checkout_request_id, b.merchant_reference,
+                   inner.ExternalReference, inner.CheckoutRequestID, inner.MerchantRequestID,
+                   b.MerchantRequestID]) {
+    if (typeof v === "string" && v.trim() !== "") return v.trim();
+  }
+  return null;
+}
+
 export interface PaymentEvents {
   /** Fired once when a withdrawal is confirmed paid (for the real activity feed). */
   onWithdrawalSuccess?(e: { userId: string; amountCents: Cents }): void;
@@ -27,6 +72,10 @@ export interface PaymentEvents {
    * withdrawal, so the handler is invoked without await and any throw is swallowed here.
    */
   onWithdrawalRequested?(e: { txId: string; userId: string; amountCents: Cents; phone: string; siteId?: string | undefined }): void;
+  /** 0214 — a phone number hit the successive-failure ceiling and is being held off. */
+  onPhoneBlocked?(e: { provider: string; scope: string; msisdn: string }): void;
+  /** 0214 — the whole rail is failing often enough to risk PayHero's account-wide restriction. */
+  onMerchantFailing?(e: { provider: string; scope: string }): void;
 }
 export interface PaymentServiceOptions {
   minDepositCents?: Cents;
@@ -119,6 +168,8 @@ export interface PaymentServiceOptions {
   megapay?: MegaPayClient;
   /** PayHero (Lipwa) provider client — the third deposit rail. Absent => PayHero deposits refuse loudly. */
   payhero?: PayHeroClient;
+  /** 0217 — the FinoQ (PayHero Africa) Global rail: M-Pesa, Airtel Money and T-Kash. */
+  finoq?: FinoqClient;
   /**
    * Paynicorn hosted-cashier client — a System-owner (global scope) rail only: a brand on its own payment
    * accounts never routes here (assertRail refuses it). Absent => Paynicorn deposits refuse loudly.
@@ -157,6 +208,7 @@ export class PaymentService {
   private readonly entitledGatewaysForSite?: (siteId: string | undefined) => Promise<string[] | null>;
   private readonly megapay?: MegaPayClient;
   private readonly payhero?: PayHeroClient;
+  private readonly finoq?: FinoqClient;
   private readonly paynicorn?: PaynicornClient;
   private readonly countryForSite?: (siteId: string | undefined) => Promise<string | null>;
   private readonly fxRateFor: (currency: string) => Promise<number>;
@@ -182,6 +234,7 @@ export class PaymentService {
     if (opts.entitledGatewaysForSite) this.entitledGatewaysForSite = opts.entitledGatewaysForSite;
     if (opts.megapay) this.megapay = opts.megapay;
     if (opts.payhero) this.payhero = opts.payhero;
+    if (opts.finoq) this.finoq = opts.finoq;
     if (opts.paynicorn) this.paynicorn = opts.paynicorn;
     if (opts.countryForSite) this.countryForSite = opts.countryForSite;
     this.fxRateFor = opts.fxRateFor ?? ((c) => kesToCurrencyRate(c));
@@ -216,22 +269,80 @@ export class PaymentService {
   // contract (a player whose deposit just succeeded may immediately make another).
   private static readonly REJECT_COOLDOWN_MS = Number(process.env.DEPOSIT_REJECT_COOLDOWN_MS ?? 6_000);
   private static readonly MERCHANT_PER_MIN = Number(process.env.DEPOSIT_MERCHANT_PER_MIN ?? 60);
+  // ── The successive-failure breaker (0214) ──────────────────────────────────────────────────────
+  // PayHero blocks a phone number for 24h after 10 SUCCESSIVE failed/cancelled STK pushes, and
+  // restricts the whole account after 50 failures in a sliding 6h window. The gate above does not
+  // protect against either: it counts initiate REFUSALS, and every one of these is a push that was
+  // accepted (201 QUEUED) and then failed at the Safaricom end.
+  //
+  // We stop at 3, not 10. Three is enough to tell a transient failure from a number (or a channel)
+  // that is simply not going to work, and it leaves seven strikes of headroom so a race between two
+  // API machines can never walk us into PayHero's block. The account-wide ceiling is set at half of
+  // theirs for the same reason.
+  private static readonly PHONE_FAIL_MAX = Number(process.env.DEPOSIT_PHONE_FAIL_MAX ?? 3);
+  private static readonly PHONE_FAIL_COOLDOWN_MS = Number(process.env.DEPOSIT_PHONE_FAIL_COOLDOWN_MS ?? 30 * 60_000);
+  /**
+   * OFF BY DEFAULT, AND NOT TO BE ENABLED AS-IS.
+   *
+   * This counts ABSOLUTE failures in a 6h window, which is the wrong instrument. PayHero limits a
+   * failure RATE, not a count ("Failure rate more than 60%, Limit is 50%", PayHero support,
+   * 2026-10-24). A count is wrong in both directions: 40 failures against 1,000 successes is a 4%
+   * rate and perfectly safe, but a count of 25 would refuse it; 15 failures against 20 attempts is
+   * 75% and would get the account locked, but the count never reaches 25.
+   *
+   * It is left here, inert, because the trigger's bookkeeping is the same either way and the
+   * replacement needs successes counted alongside failures. Setting DEPOSIT_MERCHANT_FAIL_MAX > 0
+   * turns on a check we KNOW does not model the real limit — do not, until this is a rate.
+   *
+   * It must also not be switched on while the measured rate is above the limit (55.6% over the 7
+   * days to 2026-10-24, 69% on the last day): a governor set at PayHero's 50% trips immediately and
+   * takes the only live deposit rail to zero. Fix the failures first, then ratchet.
+   */
+  private static readonly MERCHANT_FAIL_MAX = Number(process.env.DEPOSIT_MERCHANT_FAIL_MAX ?? 0);
   private static gateUserKey(provider: string, userId: string): string { return `dep:reject:${provider}:${userId}`; }
   private static gateMerchantKey(provider: string, scope: string): string { return `dep:merchant:${provider}:${scope}`; }
+  /** Must match trg_tx_deposit_outcome's key exactly — the trigger writes it, this reads it. */
+  private static gatePhoneKey(provider: string, scope: string, msisdn: string): string { return `dep:phonefail:${provider}:${scope}:${msisdn}`; }
+  private static gateMerchantFailKey(provider: string, scope: string): string { return `dep:merchfail:${provider}:${scope}`; }
 
-  private async guardInitiate(userId: string, provider: string, scope: string): Promise<void> {
-    let verdict: "ok" | "too_soon" | "busy";
+  /**
+   * `msisdn` empty means this deposit sends NO STK push (the hosted Lipwa checkout). Both failure
+   * ceilings exist to protect the STK budget, so neither applies — and the Lipwa link is precisely
+   * the fallback a player needs when the STK rail is the thing that is broken, so holding it off on
+   * a merchant-wide STK failure count would take away the one route still working.
+   */
+  private async guardInitiate(userId: string, provider: string, scope: string, msisdn: string): Promise<void> {
+    const sendsStk = msisdn !== "";
+    let verdict: DepositGateVerdict;
     try {
-      verdict = await this.repo.depositGate(
-        PaymentService.gateUserKey(provider, userId),
-        PaymentService.gateMerchantKey(provider, scope),
-        PaymentService.MERCHANT_PER_MIN, 60_000);
+      verdict = await this.repo.depositGateWithPhone({
+        userKey: PaymentService.gateUserKey(provider, userId),
+        merchantKey: PaymentService.gateMerchantKey(provider, scope),
+        phoneKey: PaymentService.gatePhoneKey(provider, scope, msisdn),
+        merchantFailKey: PaymentService.gateMerchantFailKey(provider, scope),
+        limit: PaymentService.MERCHANT_PER_MIN, windowMs: 60_000,
+        phoneMax: sendsStk ? PaymentService.PHONE_FAIL_MAX : 0,
+        phoneCooldownMs: PaymentService.PHONE_FAIL_COOLDOWN_MS,
+        merchantFailMax: sendsStk ? PaymentService.MERCHANT_FAIL_MAX : 0,
+      });
     } catch {
       // Fail closed: a gate we cannot consult is a slot we cannot grant.
       throw new Error("PROVIDER_BUSY: payments are briefly unavailable, try again shortly");
     }
     if (verdict === "too_soon") throw new Error("DEPOSIT_TOO_SOON: that payment was refused a moment ago — wait a few seconds before trying again");
     if (verdict === "busy") throw new Error("PROVIDER_BUSY: too many payment requests right now, try again shortly");
+    // Client-safe and ACTIONABLE: the player can act on both of these (top up, or use another
+    // number/method), which a bare "try again" would not let them do.
+    if (verdict === "phone_blocked") {
+      this.events.onPhoneBlocked?.({ provider, scope, msisdn });
+      throw new Error("DEPOSIT_PHONE_BLOCKED: the last few payment attempts to this number all failed — check it has funds and is the right number, then try again later or use another payment method");
+    }
+    if (verdict === "merchant_failing") {
+      // Operators must see this one: it means the RAIL is broken, not one player's number.
+      console.error(`[payments] ${provider}/${scope}: too many failed deposits in PayHero's 6h window — initiations held off. Check the gateway channel configuration.`);
+      this.events.onMerchantFailing?.({ provider, scope });
+      throw new Error("PROVIDER_BUSY: this payment method is having trouble right now — please try another option");
+    }
   }
 
   /**
@@ -268,7 +379,7 @@ export class PaymentService {
     // re-routed, when that owner has no complete M-Pesa account).
     const owner = await this.ownerOf(siteId);
     await this.assertRail(owner, "mpesa");
-    await this.guardInitiate(userId, "mpesa", owner.scope);
+    await this.guardInitiate(userId, "mpesa", owner.scope, msisdn);
     const txId = await this.repo.createDeposit(userId, amountCents, msisdn, siteId);
     await this.stamp(txId, owner.scope);
     // Site-aware AccountReference: show the depositing brand's account, not a hardcoded one. And
@@ -299,7 +410,7 @@ export class PaymentService {
     const msisdn = normalizeMsisdn(phoneRaw);
     await this.assertRail(owner, "megapay");
     const client = await this.megapayForScope(owner.scope);
-    await this.guardInitiate(userId, "megapay", owner.scope);
+    await this.guardInitiate(userId, "megapay", owner.scope, msisdn);
     const txId = await this.repo.createDepositProvider(userId, amountCents, msisdn, "megapay", siteId);
     await this.stamp(txId, owner.scope);
     // The reference becomes the "Account no." shown to the payer — send the brand/site name in
@@ -374,7 +485,7 @@ export class PaymentService {
     const msisdn = normalizeMsisdn(phoneRaw);
     await this.assertRail(owner, "payhero");
     const client = await this.payheroForScope(owner.scope);
-    await this.guardInitiate(userId, "payhero", owner.scope);
+    await this.guardInitiate(userId, "payhero", owner.scope, msisdn);
     const txId = await this.repo.createDepositProvider(userId, amountCents, msisdn, "payhero", siteId);
     await this.stamp(txId, owner.scope);
     const res = await this.withAbandonOnReject(txId, userId, "payhero", () => client.initiateStk({ amountCents, msisdn, externalReference: txId }));
@@ -403,7 +514,7 @@ export class PaymentService {
     const client = await this.payheroForScope(owner.scope);
     if (!(await client.lipwaLink({ reference: "probe" }))) throw new Error("PAYHERO_LIPWA_NOT_CONFIGURED");
     // external_reference we pass to Lipwa === our txId === the tx's checkout_request_id, so the ledger match is unambiguous.
-    await this.guardInitiate(userId, "payhero", owner.scope);
+    await this.guardInitiate(userId, "payhero", owner.scope, "");   // Lipwa: no STK, no phone
     const txId = await this.repo.createDepositProvider(userId, amountCents, "", "payhero", siteId);
     await this.stamp(txId, owner.scope);
     // Mint the link FIRST: attaching the checkout id before the call would make a refused deposit
@@ -418,9 +529,22 @@ export class PaymentService {
    * credit. We run the authoritative sweep, which re-queries PayHero server-to-server for each recent
    * unsettled PayHero deposit — by the `reference` WE stored — and settles only the verified-paid ones
    * via fn_complete_deposit. So a forged callback can't mint balance.
+   *
+   * We do, however, now KEEP the body (0215). Storing it is not trusting it: it lands in
+   * `provider_callback`, a column nothing reads to decide a credit, and the sweep below still makes
+   * the money decision on its own. It is the only place Safaricom's real reason appears — the
+   * ResultCode 2028 that explained Friday's outage existed nowhere in our database before this.
    */
-  async handlePayHeroCallback(_raw: unknown): Promise<{ settled: number }> {
+  async handlePayHeroCallback(raw: unknown): Promise<{ settled: number }> {
     if (!this.payhero && !this.gateways) throw new Error("PAYHERO_NOT_CONFIGURED");
+    // Diagnostic capture first, so a body still gets recorded even if the sweep below throws.
+    // Never let it fail the callback: an un-stored diagnostic must not cost us a settlement.
+    try {
+      const ref = payHeroCallbackRef(raw);
+      if (ref) await this.repo.recordProviderCallback(ref, raw);
+    } catch (err) {
+      console.warn(`[payments] PayHero callback not recorded: ${(err as Error).message}`);
+    }
     // Run BOTH authoritative sweeps: the status sweep settles STK deposits by reference, and the ledger
     // sweep settles Lipwa (card/bank) + ingests manual paybill payments. The body is never trusted.
     const [status, ledger] = await Promise.all([
@@ -476,7 +600,7 @@ export class PaymentService {
 
     await this.assertRail(owner, "paynicorn");
     const client = this.paynicornClient();
-    await this.guardInitiate(userId, "paynicorn", owner.scope);
+    await this.guardInitiate(userId, "paynicorn", owner.scope, msisdn ?? "");
     const txId = await this.repo.createDepositProvider(userId, amountCents, msisdn ?? "", "paynicorn", siteId);
     await this.stamp(txId, owner.scope);
 
@@ -577,6 +701,89 @@ export class PaymentService {
     return this.paynicorn;
   }
 
+  // ── Deposit (FinoQ / PayHero Africa "Global" rail) ──
+  /**
+   * Initiate a deposit on the Global rail. This is the ONLY rail that reaches Airtel Money and
+   * T-Kash: Kenya V1 offers M-PESA through one registered channel, and probing it for Airtel
+   * returned 404 — as did the same probe for M-PESA, which is what proves the limitation is the
+   * rail, not the network.
+   *
+   * Identical validation and limits to every other rail, so no path can bypass the platform floors.
+   * The row is tagged provider='finoq' and settles through the SAME idempotent fn_complete_deposit,
+   * keyed on the MERCHANT reference — the only identifier FinoQ's transaction-status accepts.
+   */
+  async initiateFinoqDeposit(
+    userId: string, amountCents: number, phoneRaw: string, siteId?: string,
+    opts: { networkCode?: string } = {},
+  ): Promise<{ txId: string; reference: string; checkoutRequestId: string }> {
+    const owner = await this.ownerOf(siteId);
+    const client = this.finoq;
+    if (!client) throw new Error("FINOQ_NOT_CONFIGURED");
+    if (!Number.isInteger(amountCents) || amountCents <= 0) throw new Error("INVALID_AMOUNT");
+    const minDep = await this.currentMinDeposit(siteId);
+    if (amountCents < minDep) throw new Error("BELOW_MIN");
+    const maxDep = await this.currentMaxDeposit();
+    if (maxDep !== null && amountCents > maxDep) throw new Error("ABOVE_MAX");
+    const msisdn = normalizeMsisdn(phoneRaw);
+    await this.assertRail(owner, "payhero");   // the Global rail is the same gateway entitlement
+    await this.guardInitiate(userId, "finoq", owner.scope, msisdn);
+    const txId = await this.repo.createDepositProvider(userId, amountCents, msisdn, "finoq", siteId);
+    await this.stamp(txId, owner.scope);
+    const res = await this.withAbandonOnReject(txId, userId, "finoq", () => client.initiate({
+      amountCents: amountCents as Cents, msisdn, externalReference: txId,
+      ...(opts.networkCode ? { networkCode: opts.networkCode } : {}),
+    }));
+    // attachStk(txId, merchant_request_id, checkout_request_id): the MERCHANT reference goes in the
+    // checkout slot because that is the key the status query and the reconcile sweep both use.
+    await this.repo.attachStk(txId, res.checkoutRequestId, res.reference);
+    return { txId, reference: res.reference, checkoutRequestId: res.checkoutRequestId };
+  }
+
+  /** The networks this account can actually charge, for the deposit sheet. Empty when unconfigured. */
+  async listFinoqNetworks(): Promise<Array<{ code: string; label: string; minKes: number; maxKes: number }>> {
+    if (!this.finoq) return [];
+    try {
+      const nets = await this.finoq.discoverNetworks("KE");
+      return nets
+        .filter((n) => n.accountType === "momo")
+        .map((n) => ({
+          code: n.networkCode,
+          label: FINOQ_NETWORK_LABELS[n.networkCode] ?? n.networkName,
+          minKes: n.minAmountKes, maxKes: n.maxAmountKes,
+        }));
+    } catch { return []; }
+  }
+
+  /**
+   * Reconciliation sweep for the Global rail. Mirrors the PayHero sweep, scoped to provider 'finoq'.
+   * It is load-bearing here, not a backstop: FinoQ's create response reports success:false on
+   * payments that go on to settle, so the authoritative status query is the ONLY thing that may
+   * decide a credit.
+   */
+  async reconcileFinoqDeposits(opts: { olderThanMs?: number; limit?: number } = {}): Promise<{ scanned: number; settled: number; stillPending: number; errors: number }> {
+    if (!this.finoq) return { scanned: 0, settled: 0, stillPending: 0, errors: 0 };
+    const olderThanMs = opts.olderThanMs ?? 120_000;
+    const limit = opts.limit ?? 25;
+    const rows = await this.repo.listUnsettledDeposits(olderThanMs, limit, "finoq");
+    let settled = 0, stillPending = 0, errors = 0;
+    for (const d of rows) {
+      try {
+        const q = await this.finoq.queryStatus(d.checkoutRequestId);
+        if (q.processing || q.resultCode == null) { stillPending += 1; continue; }
+        const res = await this.repo.completeDeposit(
+          d.checkoutRequestId, q.resultCode, providerResultDesc("finoq", q), q.receipt,
+          { reconciled: true, provider: "finoq", at: new Date().toISOString(),
+            ...(q.providerStatus ? { providerStatus: q.providerStatus } : {}),
+            ...(q.detail ? { detail: q.detail } : {}) });
+        if (res.applied) settled += 1;
+      } catch (err) {
+        errors += 1;
+        console.warn(`[payments] FinoQ reconcile failed for ${d.checkoutRequestId}: ${(err as Error).message}`);
+      }
+    }
+    return { scanned: rows.length, settled, stillPending, errors };
+  }
+
   /**
    * Reconciliation sweep for the PayHero rail — mirrors the Mega Pay sweep, scoped to provider 'payhero'
    * and using PayHero's authoritative transaction-status query. Settles deposits whose callback never
@@ -592,7 +799,15 @@ export class PaymentService {
       try {
         const q = await (await this.payheroForScope(d.paymentScope)).queryStatus(d.checkoutRequestId);
         if (q.processing || q.resultCode == null) { stillPending += 1; continue; }
-        const res = await this.repo.completeDeposit(d.checkoutRequestId, q.resultCode, `reconciled:payhero:${q.resultCode}`, q.receipt, { reconciled: true, provider: "payhero", at: new Date().toISOString() });
+        // Record WHY, not just that it ended. `reconciled:payhero:1` on every failure made all 180
+        // production failures in the week to 2026-10-24 identical, which left the failure RATE
+        // PayHero limits us on impossible to attribute. The credit decision is still q.resultCode
+        // alone; everything added here is descriptive.
+        const res = await this.repo.completeDeposit(
+          d.checkoutRequestId, q.resultCode, payHeroResultDesc(q), q.receipt,
+          { reconciled: true, provider: "payhero", at: new Date().toISOString(),
+            ...(q.providerStatus ? { providerStatus: q.providerStatus } : {}),
+            ...(q.detail ? { detail: q.detail } : {}) });
         if (res.applied) settled += 1;
       } catch (err) {
         errors += 1;
@@ -751,6 +966,18 @@ export class PaymentService {
           fields: m.inputs.map((i) => ({ name: i.name, type: i.type, ...(i.pattern ? { pattern: i.pattern } : {}) })),
           ...(m.iconUrl ? { iconUrl: m.iconUrl } : {}),
         });
+      }
+    }
+
+    // The Global (FinoQ) rail, one tab per network it actually offers. This is where Airtel Money
+    // and T-Kash live: the Kenya V1 rail serves M-PESA only, through a single registered channel.
+    // The list comes from live discovery, so a network the account loses simply stops being offered
+    // rather than failing at payment time. M-Pesa is skipped here because the STK tab above already
+    // covers it — showing it twice would just ask the player to choose between identical options.
+    if (enabled.has("payhero")) {
+      for (const n of await this.listFinoqNetworks()) {
+        if (n.code === FINOQ_MPESA) continue;
+        methods.push({ id: `finoq-${n.code}`, provider: "finoq", channel: "stk", label: n.label, methodCode: n.code });
       }
     }
 

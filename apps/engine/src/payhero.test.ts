@@ -23,9 +23,14 @@ test("toLocalMsisdn normalizes every Kenyan form to 07XXXXXXXX", () => {
 });
 
 test("mapPayHeroStatus: SUCCESS->paid(0), FAILED->failed(1), QUEUED->processing", () => {
-  assert.deepEqual(mapPayHeroStatus("SUCCESS", "RCPT01"), { resultCode: 0, processing: false, receipt: "RCPT01" });
-  assert.deepEqual(mapPayHeroStatus("FAILED", null), { resultCode: 1, processing: false, receipt: null });
-  assert.deepEqual(mapPayHeroStatus("QUEUED", null), { resultCode: null, processing: true, receipt: null });
+  // Still an EXACT shape check, now including the 0215 diagnostic fields. Kept exact on purpose:
+  // the money fields (resultCode/receipt) must not drift, and a loosened assertion would not notice.
+  assert.deepEqual(mapPayHeroStatus("SUCCESS", "RCPT01"), { resultCode: 0, processing: false, receipt: "RCPT01", providerStatus: "SUCCESS", detail: null });
+  assert.deepEqual(mapPayHeroStatus("FAILED", null), { resultCode: 1, processing: false, receipt: null, providerStatus: "FAILED", detail: null });
+  assert.deepEqual(mapPayHeroStatus("QUEUED", null), { resultCode: null, processing: true, receipt: null, providerStatus: "QUEUED", detail: null });
+  // 0215: the reason rides along without touching the verdict.
+  assert.deepEqual(mapPayHeroStatus("FAILED", null, "code=2028 not permitted"),
+    { resultCode: 1, processing: false, receipt: null, providerStatus: "FAILED", detail: "code=2028 not permitted" });
 });
 
 test("HttpPayHeroClient.initiateStk posts the exact PayHero contract + parses reference", async () => {
@@ -50,9 +55,11 @@ test("HttpPayHeroClient.initiateStk throws on rejection (success:false / no refe
 
 test("HttpPayHeroClient.queryStatus maps SUCCESS + provider_reference; !ok -> processing", async () => {
   const ok = new HttpPayHeroClient(cfg, fakeFetch({ status: 200, body: { status: "SUCCESS", success: true, provider_reference: "SKQ96C7K7H" } }));
-  assert.deepEqual(await ok.queryStatus("E8U"), { resultCode: 0, processing: false, receipt: "SKQ96C7K7H" });
+  assert.deepEqual(await ok.queryStatus("E8U"), { resultCode: 0, processing: false, receipt: "SKQ96C7K7H", providerStatus: "SUCCESS", detail: null });
   const down = new HttpPayHeroClient(cfg, fakeFetch({ status: 500, body: {} }));
-  assert.deepEqual(await down.queryStatus("E8U"), { resultCode: null, processing: true, receipt: null }); // never credit on transient
+  // Never credit on transient. 0215 adds the HTTP status so a run of these reads as an outage
+  // rather than being indistinguishable from "still queued".
+  assert.deepEqual(await down.queryStatus("E8U"), { resultCode: null, processing: true, receipt: null, providerStatus: null, detail: "http_500" });
 });
 
 test("missingPayHeroCredentials requires basic_auth_token + channel_id", () => {

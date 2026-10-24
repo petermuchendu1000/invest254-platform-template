@@ -9,6 +9,7 @@ import {
   makeMegaPayClient,
   ConfiguredMegaPayClient,
   ConfiguredPayHeroClient,
+  makeFinoqClientFromConfig, type FinoqClient, type FinoqConfig,
   ConfiguredPaynicornClient,
   PaymentScopeService, PgPaymentScopeRepository, loadDarajaConfigFromDb, type GlobalCallbacks,
   C2bConfigService, PgC2bConfigRepository, systemDarajaCredentials, PoolOpsService, PgPoolOpsRepository, BillingService, PgBillingRepository,
@@ -228,6 +229,35 @@ async function buildDeps(): Promise<ApiDeps> {
     return over;
   });
   log.info("payhero client ready", { dbConfigLayered: true });
+
+  // FinoQ (PayHero Africa) — the Global rail. Same account and the SAME API key as the Kenya rail
+  // (their docs: "Both hosts accept the same API key"), so it reuses the payhero credentials rather
+  // than making an operator enter them twice. It is the only rail that reaches Airtel Money and
+  // T-Kash. Resolved behind a fingerprint cache so a credential change in the DB is picked up
+  // without a redeploy, exactly like the rails above.
+  let finoqCache: { fp: string; client: FinoqClient } | null = null;
+  const finoqFor = async (): Promise<FinoqClient> => {
+    const c = await platform.resolveDecryptedConfig("payhero", null).catch(() => null);
+    const token = c?.secrets.basic_auth_token
+      || (c?.secrets.api_username && c?.secrets.api_password
+            ? Buffer.from(`${c.secrets.api_username}:${c.secrets.api_password}`).toString("base64") : "");
+    const over: Partial<FinoqConfig> = {};
+    if (token) over.basicAuthToken = token;
+    if (c?.settings.account_id) over.vendorId = c.settings.account_id;      // vendor_id IS the account id
+    if (c?.settings.finoq_base_url) over.baseUrl = c.settings.finoq_base_url;
+    const cb = c?.settings.callback_url || process.env.PAYHERO_CALLBACK_URL;
+    if (cb) over.callbackUrl = cb;
+    const fp = `${over.baseUrl ?? ""}|${over.basicAuthToken ?? ""}|${over.vendorId ?? ""}|${over.callbackUrl ?? ""}`;
+    if (!finoqCache || finoqCache.fp !== fp) finoqCache = { fp, client: makeFinoqClientFromConfig(over) };
+    return finoqCache.client;
+  };
+  // One delegating client for the service, so every call re-resolves config through that cache.
+  const finoq: FinoqClient = {
+    discoverNetworks: async (country) => (await finoqFor()).discoverNetworks(country),
+    initiate: async (a) => (await finoqFor()).initiate(a),
+    queryStatus: async (r) => (await finoqFor()).queryStatus(r),
+  };
+  log.info("finoq (global rail) client ready", { dbConfigLayered: true });
 
   // Paynicorn hosted-cashier client. Same layering: encrypted DB config (Gateway configuration) over env
   // (PAYNICORN_APP_KEY / PAYNICORN_MERCHANT_SECRET); neither => fail-loud in production, so it stays dormant.
@@ -660,6 +690,7 @@ async function buildDeps(): Promise<ApiDeps> {
     // forged Mega Pay callbacks can't mint balance either.
     megapay,
     payhero,
+    finoq,
     paynicorn,
     // PayX is per-country: the brand's collection country decides its methods, currency and decimals
     // (migration 0188). Unset/unknown => Kenya, which is how every brand collected before this.
@@ -1374,6 +1405,18 @@ if (Number.isFinite(RECONCILE_MS) && RECONCILE_MS > 0) {
   }, RECONCILE_MS);
   payheroTimer.unref();
   track.arm("payments.reconcile.payhero", { everyMs: RECONCILE_MS });
+
+  // FinoQ / Global rail: load-bearing, not a backstop. FinoQ's create response reports
+  // success:false on payments that go on to settle, so this authoritative status sweep is the ONLY
+  // thing that may decide a credit on this rail. A no-op when FinoQ isn't configured.
+  const finoqTimer = setInterval(() => {
+    void deps.payments
+      .reconcileFinoqDeposits()
+      .then((r) => { track.ok("payments.reconcile.finoq"); if (r.settled || r.errors) recLog.info("finoq reconcile sweep", { provider: "finoq", ...r }); })
+      .catch((err: unknown) => { track.fail("payments.reconcile.finoq", err); recLog.error("finoq reconcile sweep failed", err as Error); });
+  }, RECONCILE_MS);
+  finoqTimer.unref();
+  track.arm("payments.reconcile.finoq", { everyMs: RECONCILE_MS });
 
   // Paynicorn rail: settles deposits whose postback never arrived, via the signed status query.
   const paynicornTimer = setInterval(() => {

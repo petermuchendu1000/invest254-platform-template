@@ -326,6 +326,7 @@ export interface ApiDeps {
     | "ingestC2b" | "claimPaybillDeposit" | "paybillConfig"
     | "initiateMegaPayDeposit" | "handleMegaPayCallback" | "reconcileMegaPayDeposits"
     | "initiatePayHeroDeposit" | "initiateLipwaDeposit" | "handlePayHeroCallback" | "reconcilePayHeroDeposits" | "reconcilePayHeroLedger" | "listDepositProviders"
+    | "initiateFinoqDeposit" | "listFinoqNetworks" | "reconcileFinoqDeposits"
     | "handlePayHeroWithdrawResult"
     | "initiatePaynicornDeposit" | "handlePaynicornCallback" | "reconcilePaynicornDeposits" | "listPaynicornMethods"
     | "listDepositMethods">;

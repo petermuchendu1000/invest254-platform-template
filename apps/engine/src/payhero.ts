@@ -27,8 +27,21 @@ export interface PayHeroStkArgs {
   networkCode?: string;
 }
 export interface PayHeroStkResult { reference: string; checkoutRequestId: string; }
-/** Normalised status: resultCode 0 when paid, non-zero when failed, null while still processing. */
-export interface PayHeroStatusResult { resultCode: number | null; processing: boolean; receipt: string | null; }
+/**
+ * Normalised status: resultCode 0 when paid, non-zero when failed, null while still processing.
+ *
+ * `providerStatus` and `detail` are DIAGNOSTIC ONLY and never feed the credit decision — that comes
+ * from `resultCode` alone, exactly as before. They exist because collapsing every terminal outcome
+ * to resultCode 1 made all 180 production failures in the week to 2026-10-24 indistinguishable, and
+ * PayHero limits us on a failure RATE we cannot manage without knowing which failures are ours.
+ */
+export interface PayHeroStatusResult {
+  resultCode: number | null; processing: boolean; receipt: string | null;
+  /** PayHero's own status word, verbatim and un-collapsed: SUCCESS / FAILED / CANCELLED / QUEUED… */
+  providerStatus?: string | null;
+  /** Any further explanation PayHero returned alongside it. */
+  detail?: string | null;
+}
 
 /**
  * A payout (withdrawal) to a customer — POST {base}/api/v2/withdraw. Mirrors Daraja B2C's role but for
@@ -114,14 +127,21 @@ export function toLocalMsisdn(raw: string): string {
   return d;
 }
 
-/** Map a PayHero `status` (+ optional MPESA receipt) to the shared {resultCode, processing, receipt}. */
-export function mapPayHeroStatus(status: string, receipt: string | null): PayHeroStatusResult {
+/**
+ * Map a PayHero `status` (+ optional MPESA receipt) to the shared {resultCode, processing, receipt}.
+ *
+ * The resultCode mapping below is the money decision and is UNCHANGED. `providerStatus`/`detail`
+ * ride alongside it untouched so the reason survives into the transaction row; nothing reads them
+ * to decide whether to credit.
+ */
+export function mapPayHeroStatus(status: string, receipt: string | null, detail?: string | null): PayHeroStatusResult {
   const s = String(status ?? "").trim().toUpperCase();
   const clean = receipt && receipt !== "N/A" ? receipt : null;
-  if (s === "SUCCESS" || s === "COMPLETED" || s === "SUCCESSFUL") return { resultCode: 0, processing: false, receipt: clean };
-  if (s === "FAILED" || s === "CANCELLED" || s === "CANCELED" || s === "REVERSED" || s === "DECLINED") return { resultCode: 1, processing: false, receipt: null };
+  const seen = { providerStatus: s || null, detail: detail != null && detail !== "" ? String(detail) : null };
+  if (s === "SUCCESS" || s === "COMPLETED" || s === "SUCCESSFUL") return { resultCode: 0, processing: false, receipt: clean, ...seen };
+  if (s === "FAILED" || s === "CANCELLED" || s === "CANCELED" || s === "REVERSED" || s === "DECLINED") return { resultCode: 1, processing: false, receipt: null, ...seen };
   // QUEUED / PENDING / unknown -> not yet resolvable; do NOT credit, retry later.
-  return { resultCode: null, processing: true, receipt: null };
+  return { resultCode: null, processing: true, receipt: null, ...seen };
 }
 
 /** Deterministic in-process stub — no network. Used in tests and local dev. */
@@ -226,10 +246,18 @@ export class HttpPayHeroClient implements PayHeroClient {
       method: "GET", headers: { Authorization: this.authHeader(), "Content-Type": "application/json" },
     });
     const j: any = await res.json().catch(() => ({}));
-    if (!res.ok) return { resultCode: null, processing: true, receipt: null }; // transient -> retry, never credit
+    // Transient -> retry, never credit. The HTTP status is kept so a run of these is visible as a
+    // provider outage rather than silently indistinguishable from "still queued".
+    if (!res.ok) return { resultCode: null, processing: true, receipt: null, providerStatus: null, detail: `http_${res.status}` };
     const status = String(j.status ?? "");
     const receipt = j.provider_reference != null && j.provider_reference !== "" ? String(j.provider_reference) : null;
-    return mapPayHeroStatus(status, receipt);
+    // PayHero echoes the Safaricom outcome under varying keys depending on the rail; take whichever
+    // is present. This is recorded, never acted on.
+    const desc = j.ResultDesc ?? j.result_desc ?? j.message ?? j.error_message ?? null;
+    const code = j.ResultCode ?? j.result_code ?? null;
+    const detail = [code != null && code !== "" ? `code=${code}` : null, desc != null && desc !== "" ? String(desc) : null]
+      .filter(Boolean).join(" ") || null;
+    return mapPayHeroStatus(status, receipt, detail);
   }
 
   async listInboundPayments(opts: { page?: number } = {}): Promise<PayHeroInboundPayment[]> {

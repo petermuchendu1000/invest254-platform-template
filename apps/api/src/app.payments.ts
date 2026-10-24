@@ -43,6 +43,15 @@ const DOMAIN_STATUS: Readonly<Record<string, number>> = {
   // 0174 / docs/52 — the initiate guard. Client-safe by design: these say "slow down", never "failed".
   DEPOSIT_TOO_SOON: 429,
   PROVIDER_BUSY: 429,
+  // 0214 — this number's last few STK pushes all failed. Client-safe and deliberately actionable:
+  // the player can check the number/their balance or switch method, which "try again" would not tell
+  // them. Held back well short of the 10 successive failures that get the number blocked by PayHero.
+  DEPOSIT_PHONE_BLOCKED: 429,
+  // 0217 — the Global rail refuses before any money moves when the chosen network is not live for
+  // this account, or the amount falls outside that network's own limits. Client-safe and actionable.
+  FINOQ_NETWORK_UNAVAILABLE: 400,
+  FINOQ_BELOW_NETWORK_MIN: 400,
+  FINOQ_ABOVE_NETWORK_MAX: 400,
   MEGAPAY_NOT_CONFIGURED: 503,
   MEGAPAY_INITIATE_REJECTED: 502,
   MEGAPAY_VERIFY_PENDING: 409,   // callback arrived but status not yet final -> caller/retry + reconcile settles it
@@ -309,6 +318,33 @@ export function registerProtectedRoutes(router: Router, deps: ApiDeps): void {
     const amount = requireIntAmount(body);
     const phone = requirePhone(body);
     const out = await domain(() => deps.payments.initiatePayHeroDeposit(ctx.claims!.userId, amount, phone, ctx.siteId), ctx);
+    return { status: 202, body: { transactionId: out.txId, reference: out.reference, checkoutRequestId: out.checkoutRequestId } };
+  });
+
+  // ── FinoQ / PayHero Africa — the Global rail ──
+  // The ONLY rail that reaches Airtel Money and T-Kash: Kenya V1 serves M-PESA through one
+  // registered channel, and probing it for Airtel returned 404 (as did the same probe for M-PESA,
+  // which is what shows the limitation is the rail and not the network). Same gateway entitlement
+  // as PayHero, same deposits master switch, same per-user throttle.
+  router.get(`${BASE}/deposits/finoq/networks`, auth, site, async (ctx: Ctx) => {
+    if (deps.platformGate && !(await deps.platformGate.allows("deposits"))) return { networks: [] };
+    if (!(await deps.payments.listDepositProviders(ctx.siteId)).some((p) => p.code === "payhero")) return { networks: [] };
+    return { networks: await deps.payments.listFinoqNetworks() };
+  });
+
+  router.post(`${BASE}/deposits/finoq`, auth, site, depositLimit, async (ctx: Ctx) => {
+    if (deps.platformGate && !(await deps.platformGate.allows("deposits")))
+      throw new ApiError("SYSTEM_DISABLED", "Deposits are temporarily disabled by the platform.", 403);
+    if (!(await deps.payments.listDepositProviders(ctx.siteId)).some((p) => p.code === "payhero"))
+      throw new ApiError("PROVIDER_DISABLED", "This payment method is not available.", 403);
+    const body = asObject(ctx.body);
+    const amount = requireIntAmount(body);
+    const phone = requirePhone(body);
+    // The network is the player's choice of M-Pesa / Airtel / T-Kash. It is validated against live
+    // discovery inside the client, so an unknown or disabled code is refused before any money moves.
+    const network = typeof body.network === "string" && body.network.trim() !== "" ? body.network.trim() : undefined;
+    const out = await domain(() => deps.payments.initiateFinoqDeposit(
+      ctx.claims!.userId, amount, phone, ctx.siteId, network ? { networkCode: network } : {}), ctx);
     return { status: 202, body: { transactionId: out.txId, reference: out.reference, checkoutRequestId: out.checkoutRequestId } };
   });
 
